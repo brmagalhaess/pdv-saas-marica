@@ -498,7 +498,7 @@ function printProductBarcode(product) {
   const popup = window.open("", "_blank", "width=440,height=620");
   if (!popup) { toast("Permita pop-ups para imprimir a etiqueta.", "error"); return; }
   const safe = value => String(value ?? "").replace(/[&<>\"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[character]));
-  popup.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiqueta ${safe(product.name)}</title><style>body{font-family:Arial,sans-serif;margin:0;padding:18px;text-align:center;color:#111}.label{width:72mm;min-height:38mm;margin:0 auto;display:grid;align-content:center;gap:5px}.name{font-weight:700;font-size:14px;line-height:1.2}.price{font-size:15px;font-weight:700}.barcode svg{width:100%;height:auto}.invalid{color:#a33}@media print{@page{size:80mm 50mm;margin:3mm}body{padding:0}.label{width:100%}}</style></head><body><main class="label"><div class="name">${safe(product.name)}</div><div class="price">${money(product.price_cents)}</div><div class="barcode">${ean13Svg(product.barcode)}</div></main><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),150));</script></body></html>`);
+  popup.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiqueta ${safe(product.name)}</title><style>*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,sans-serif}.label{width:80mm;height:50mm;padding:3mm 4mm;margin:0 auto;display:grid;grid-template-rows:auto auto 1fr;align-content:center;gap:1.5mm;overflow:hidden}.name{font-weight:700;font-size:13pt;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.price{font-size:13pt;font-weight:700;line-height:1}.barcode{width:100%;height:29mm;display:grid;place-items:center}.barcode svg{display:block;width:100%;height:100%;max-height:29mm}.invalid{color:#a33;font-size:10pt}.print-help{font:10px Arial;color:#65747a;text-align:center;margin:5mm auto;max-width:80mm}@media print{@page{size:80mm 50mm;margin:0}body{width:80mm;height:50mm}.label{margin:0}.print-help{display:none}}</style></head><body><main class="label"><div class="name">${safe(product.name)}</div><div class="price">${money(product.price_cents)}</div><div class="barcode">${ean13Svg(product.barcode)}</div></main><p class="print-help">Etiqueta 80 × 50 mm · selecione a impressora de etiquetas e mantenha a escala em 100%.</p><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));</script></body></html>`);
   popup.document.close(); popup.focus();
 }
 
@@ -663,7 +663,7 @@ async function resourcePage(key) {
       const draw = list => table(spec.columns, list, spec.edit() || (spec.remove && spec.edit()) ? row => {
         const actions = [];
         if (spec.edit()) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
-        if (key === "products" && row.barcode) actions.push({ label: "Imprimir código", onClick: () => printProductBarcode(row) });
+        if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiqueta", onClick: () => printProductBarcode(row) });
         if (spec.remove && spec.edit()) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria.", async () => {
           await api.delete(spec.endpoint + "/" + row.id);
           toast("Registro desativado.");
