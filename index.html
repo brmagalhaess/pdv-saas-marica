@@ -132,6 +132,12 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
 const localFile = location.protocol === 'file:';
+// This legacy prototype is sometimes opened directly from Finder. Redirect it
+// to the running SaaS so users get the real login, permissions and platform
+// administration instead of the old standalone demo.
+if (localFile) {
+  location.replace('http://127.0.0.1:8000/login/');
+}
 const validPassword = value => value.length >= 8 && value.length <= 128 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value);
 const fields = form => Object.fromEntries(new FormData(form).entries());
 function showMessage(target, message, kind='success'){

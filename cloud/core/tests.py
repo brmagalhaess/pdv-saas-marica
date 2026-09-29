@@ -324,6 +324,15 @@ class CloudAPITests(TestCase):
                             "password": "Support-42!", "roles": ["platform_support"]}, tenant=False)
         self.assertEqual(created.status_code, 201, created.content)
         staff = User.objects.get(username="support@example.test")
+        listed = self.api("GET", "/api/v1/platform/users", tenant=False)
+        self.assertEqual(listed.status_code, 200, listed.content)
+        rows = listed.json()["results"]
+        self.assertEqual({row["email"] for row in rows}, {"root@example.test", "support@example.test"})
+        root_row = next(row for row in rows if row["email"] == "root@example.test")
+        self.assertTrue(root_row["superuser"])
+        self.assertTrue(root_row["protected"])
+        self.assertEqual(self.api("PATCH", f"/api/v1/platform/users/{root.pk}",
+                                  {"name": "Não alterar"}, tenant=False).status_code, 409)
         self.client.force_login(staff)
         self.assertEqual(self.api("GET", "/api/v1/platform/tenants", tenant=False).status_code, 200)
         self.assertEqual(self.api("GET", "/api/v1/platform/plans", tenant=False).status_code, 403)

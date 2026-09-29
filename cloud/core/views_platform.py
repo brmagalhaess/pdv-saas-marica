@@ -19,9 +19,13 @@ from operations.services import account
 
 def _platform_staff(row):
     return {"id": row.pk, "name": row.get_full_name() or row.username,
-            "email": row.email, "roles": sorted(row.groups.filter(name__in=PLATFORM_GROUPS)
-                                              .values_list("name", flat=True)),
-            "active": row.is_active}
+            "email": row.email,
+            "roles": sorted(PLATFORM_GROUPS) if row.is_superuser else
+                     sorted(row.groups.filter(name__in=PLATFORM_GROUPS)
+                                  .values_list("name", flat=True)),
+            "active": row.is_active,
+            "superuser": row.is_superuser,
+            "protected": row.is_superuser}
 
 
 def _staff_values(data, *, creating=False):
@@ -64,7 +68,10 @@ def platform_users(request):
     actor = platform_user(request, superuser=True)
     User = get_user_model()
     if request.method == "GET":
-        rows = User.objects.filter(is_staff=True, is_superuser=False).prefetch_related("groups").order_by("email", "pk")
+        # Include the protected root account so the administrator can see every
+        # platform login. It is returned as read-only in the UI and cannot be
+        # changed through the staff endpoint.
+        rows = User.objects.filter(is_staff=True).prefetch_related("groups").order_by("email", "pk")
         return page(request, rows, _platform_staff)
     data = payload(request)
     fields(data, ("name", "email", "password", "roles", "active"),
@@ -90,6 +97,12 @@ def platform_user_detail(request, pk):
     actor = platform_user(request, superuser=True)
     User = get_user_model()
     row = User.objects.filter(pk=pk, is_staff=True, is_superuser=False).first()
+    if row is None:
+        protected = User.objects.filter(pk=pk, is_staff=True, is_superuser=True).first()
+        if protected is not None and request.method == "GET":
+            return JsonResponse(_platform_staff(protected))
+        if protected is not None:
+            raise APIError("A conta principal do SaaS é protegida e não pode ser alterada aqui", 409)
     if row is None:
         raise APIError("Usuário de plataforma não encontrado", 404)
     if request.method == "GET":

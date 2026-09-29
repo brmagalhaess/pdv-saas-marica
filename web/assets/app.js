@@ -41,7 +41,7 @@ const platformNav = [
   { group: "Plataforma", id: "plans", label: "Planos", icon: "◉", roles:["platform_billing"] },
   { group: "Plataforma", id: "subscriptions", label: "Assinaturas", icon: "▤", roles:["platform_support","platform_billing"] },
   { group: "Plataforma", id: "devices", label: "Terminais", icon: "▥", roles:["platform_support","platform_ops"] },
-  { group: "Plataforma", id: "platform_users", label: "Equipe da plataforma", icon: "♙", roles:[], superuserOnly:true },
+  { group: "Plataforma", id: "platform_users", label: "Usuários e permissões", icon: "♙", roles:[], superuserOnly:true },
   { group: "Plataforma", id: "services", label: "Serviços", icon: "◇", roles:["platform_support","platform_billing","platform_ops"] },
   { group: "Plataforma", id: "releases", label: "Versões", icon: "↥", roles:["platform_ops"] },
   { group: "Plataforma", id: "invoices", label: "Cobranças", icon: "◎", roles:["platform_billing"] },
@@ -1465,6 +1465,9 @@ const platformApi = path => api.get("/platform" + path, { tenant:false });
 async function platformOverview() {
   const token = ++state.renderId;
   const view = page("Visão geral", "Acompanhe empresas, assinaturas e terminais da plataforma.", "Plataforma");
+  if (platformSuperuser()) {
+    view.actions.append(button("Usuários e permissões", () => { location.hash = "#platform_users"; }, "secondary"));
+  }
   view.outer.append(info("O MRR soma apenas assinaturas pagas. Acessos VIP e ativações manuais aparecem em separado e não representam receita.", true));
   const output = el("div"); view.outer.append(output); output.append(loadingSurface());
   try {
@@ -2018,6 +2021,10 @@ async function platformAuditPage() {
 }
 async function platformUserForm(record) {
   const editing=!!record;
+  if (record?.protected) {
+    toast("A conta principal do SaaS é protegida e não pode ser editada.", "error");
+    return;
+  }
   const fields=[
     {key:"name",label:"Nome",required:true,max:150},
     {key:"email",label:"E-mail",type:"email",required:true,max:254},
@@ -2061,21 +2068,22 @@ async function platformUserForm(record) {
 }
 async function platformUsersPage() {
   const token=++state.renderId;
-  const view=page("Equipe da plataforma","Acessos para atendimento, cobrança e operações.","Plataforma");
+  const view=page("Usuários e permissões","Crie acessos administrativos e defina exatamente o que cada pessoa pode fazer.","Plataforma");
   view.actions.append(button("+ Adicionar pessoa",()=>platformUserForm().catch(handleError)));
   view.outer.append(info("Estes acessos são administrativos. Conceda apenas os papéis necessários para cada pessoa.",true));
-  const box=surface("Contas administrativas");view.outer.append(box);box.append(loadingSurface());
+  const box=surface("Contas com acesso ao SaaS","A conta principal aparece protegida; as demais podem ser criadas, editadas e desativadas.");view.outer.append(box);box.append(loadingSurface());
   try {
     const result=await platformApi("/users");
     if(token!==state.renderId)return;
     box.lastChild.remove();const rows=records(result);
     box.append(pagedContent(result,"/platform/users",[
       {label:"Pessoa",render:row=>row.name},{label:"E-mail",render:row=>row.email},
+      {label:"Tipo",render:row=>row.superuser?"Conta principal":"Equipe"},
       {label:"Papéis",render:row=>(row.roles||[]).map(role=>({
         platform_support:"Atendimento",platform_billing:"Cobrança",platform_ops:"Operação"
       })[role]||role).join(", ")},
       {label:"Acesso",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
-    ],row=>[{label:"Editar",onClick:()=>platformUserForm(row).catch(handleError)}],
+    ],row=>row.protected?[{label:"Protegida",onClick:()=>toast("A conta principal não pode ser alterada por esta tela.","error")}]:[{label:"Editar",onClick:()=>platformUserForm(row).catch(handleError)}],
       empty("Nenhuma conta","Adicione a primeira pessoa da equipe."),{tenant:false}));
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
