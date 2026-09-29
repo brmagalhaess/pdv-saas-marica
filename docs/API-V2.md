@@ -20,7 +20,7 @@ Listagens devolvem `{results:[...],next_cursor:null|"..."}`. Recursos em `GET/PO
 
 - `shops`: `{id,name,active,address}`.
 - `categories`: `{id,name,active}`.
-- `products`: `{id,sku,barcode,name,category_id,variant,unit,price_cents,cost_cents,stock_minimum_milli,tax_fields,active}`; `unit` em `UN|KG|L`. Filtro `?q=`.
+- `products`: `{id,sku,barcode,name,category_id,variant,unit,price_cents,cost_cents,stock_minimum_milli,tax_fields,active}`; `unit` em `UN|KG|L`. O servidor gera SKU e código de barras EAN-13 interno ao criar; ambos são somente leitura e únicos por empresa. O prefixo `2` identifica código de circulação interna, não um GTIN GS1. Filtro `?q=`.
 - `customers`: `{id,name,document,email,phone,active}`.
 - `suppliers`: `{id,name,document,email,phone,active}`.
 - `stock?shop_id=<uuid>`: `{results:[{product_id,sku,name,unit,quantity_milli,stock_minimum_milli,below_minimum}]}`.

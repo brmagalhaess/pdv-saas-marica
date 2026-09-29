@@ -315,8 +315,8 @@ const resourceSpecs = {
     endpoint: "/products", singular: "produto", create: canCatalog, edit: canCatalog, remove: true, search: true,
     fields: [
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
-      { key: "sku", label: "Código interno (SKU)", required: true, max: 60 },
-      { key: "barcode", label: "Código de barras", max: 32 },
+      { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
+      { key: "barcode", label: "Código de barras", generated: true, max: 13, help: "Código interno EAN-13 gerado para esta empresa; bloqueado para edição." },
       { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
       { key: "variant", label: "Variação", placeholder: "Ex.: Tamanho M ou sabor morango", max: 100 },
       { key: "unit", label: "Unidade", type: "select", required: true, choices: [["UN","Unidade"],["KG","Quilo"],["L","Litro"]], default: "UN" },
@@ -328,6 +328,7 @@ const resourceSpecs = {
     columns: [
       { label: "Produto", render: row => row.name },
       { label: "SKU", render: row => row.sku },
+      { label: "Código de barras", render: row => row.barcode || "—" },
       { label: "Variação", render: row => row.variant },
       { label: "Unidade", render: row => row.unit },
       { label: "Preço", render: row => money(row.price_cents) },
@@ -372,7 +373,7 @@ const resourceSpecs = {
   }
 };
 
-async function fieldNode(field, value) {
+async function fieldNode(field, value, creating = false) {
   const wrap = el("div", "field" + (field.full ? " full" : ""));
   const id = "field-" + field.key;
   const label = el("label", "", field.label);
@@ -409,6 +410,12 @@ async function fieldNode(field, value) {
   }
   input.id = id;
   input.name = field.key;
+  if (field.generated) {
+    input.readOnly = true;
+    input.value = value || "";
+    input.placeholder = creating ? "Gerado ao salvar" : "Não cadastrado";
+    input.setAttribute("aria-readonly", "true");
+  }
   input.required = !!field.required;
   if (field.max) input.maxLength = field.max;
   if (field.minLength) input.minLength = field.minLength;
@@ -423,14 +430,15 @@ async function fieldNode(field, value) {
   if (field.help) wrap.append(el("small", "", field.help));
   return wrap;
 }
-async function formFor(fields, values = {}) {
+async function formFor(fields, values = {}, creating = false) {
   const form = el("form", "form-grid");
-  for (const field of fields) form.append(await fieldNode(field, values[field.key]));
+  for (const field of fields) form.append(await fieldNode(field, values[field.key], creating));
   return form;
 }
 function formPayload(form, fields) {
   const payload = {};
   for (const field of fields) {
+    if (field.generated) continue;
     const input = form.elements.namedItem(field.key);
     if (!input) continue;
     let value;
@@ -454,7 +462,7 @@ async function resourceForm(spec, record) {
   const fields = editing ? (spec.editFields || spec.fields) : spec.fields;
   const body = el("div");
   const formValues = editing && spec.endpoint === "/shops" ? { ...record, address: addressText(record.address) === "—" ? "" : addressText(record.address) } : record || {};
-  const form = await formFor(fields, formValues);
+  const form = await formFor(fields, formValues, !editing);
   const message = el("p", "dialog-message feedback error");
   message.hidden = true;
   const actions = el("div", "form-actions");

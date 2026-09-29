@@ -1,4 +1,6 @@
 """Tenant-scoped catalog, shops and contacts."""
+import secrets
+
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
@@ -29,15 +31,41 @@ def response_for(row, serializer, member):
     return result
 
 
+def _ean13_check_digit(first_twelve):
+    total = sum(int(digit) * (1 if index % 2 == 0 else 3)
+                for index, digit in enumerate(first_twelve))
+    return str((-total) % 10)
+
+
+def generated_product_codes(tenant):
+    """Generate tenant-unique SKU and internal-use EAN-13 barcode.
+
+    The tenant row is locked by the caller, and unique database constraints
+    remain the final guard against collisions.
+    """
+    while True:
+        sku = f"P{secrets.randbelow(1_000_000_000):09d}"
+        if not Product.objects.filter(tenant=tenant, sku=sku).exists():
+            break
+    while True:
+        # Prefix 2 marks this as an internal/restricted-circulation code;
+        # it is not a GS1-assigned GTIN for sale across unrelated businesses.
+        body = f"2{secrets.randbelow(100_000_000_000):011d}"
+        barcode = body + _ean13_check_digit(body)
+        if not Product.objects.filter(tenant=tenant, barcode=barcode).exists():
+            break
+    return {"sku": sku, "barcode": barcode}
+
+
 def form_values(kind, data, tenant, creating):
     if kind == "shops":
         allowed, required = {"name", "address", "active"}, {"name"}
     elif kind == "categories":
         allowed, required = {"name", "active"}, {"name"}
     elif kind == "products":
-        allowed = {"sku", "barcode", "name", "category_id", "variant", "unit",
+        allowed = {"name", "category_id", "variant", "unit",
                    "price_cents", "cost_cents", "stock_minimum_milli", "tax_fields", "active"}
-        required = {"sku", "name", "price_cents"}
+        required = {"name", "price_cents"}
     else:
         allowed, required = {"name", "document", "email", "phone", "active"}, {"name"}
     fields(data, allowed, required if creating else ())
@@ -118,6 +146,11 @@ def collection(request, kind):
                 active = Shop.objects.filter(tenant=tenant, active=True).count()
                 if active >= tenant.subscription.plan.shop_limit:
                     raise APIError("Limite de lojas do plano atingido", 409)
+            elif kind == "products":
+                # Serialize generation for this company; database uniqueness
+                # constraints protect the identifiers if another writer races.
+                type(tenant).objects.select_for_update().get(pk=tenant.pk)
+                values.update(generated_product_codes(tenant))
             row = model.objects.create(tenant=tenant, **values)
             audit(tenant, member.user, f"{kind}.created", row)
     except IntegrityError:
