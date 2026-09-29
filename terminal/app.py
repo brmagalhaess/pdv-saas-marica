@@ -100,6 +100,11 @@ def create_app(config=None):
     def index():
         return render_template("index.html")
 
+    @app.get("/favicon.ico")
+    def favicon():
+        # The terminal has no separate ICO asset; avoid a noisy, harmless 404.
+        return "", 204
+
     @app.get("/health")
     def health():
         return jsonify({"status": "ok", "service": "terminal-local"})
@@ -134,8 +139,9 @@ def create_app(config=None):
 
     @app.post("/api/bootstrap")
     def bootstrap():
-        if store.operators() and not session.get("operator_id"):
-            raise TerminalError("Faça login com PIN", 401)
+        # A PIN may have changed in the cloud since this terminal last synced.
+        # The paired device token authorizes this read-only bootstrap, so it
+        # must also be possible from the login screen before local PIN auth.
         return jsonify(sync.refresh_bootstrap(store))
 
     @app.post("/api/login")
