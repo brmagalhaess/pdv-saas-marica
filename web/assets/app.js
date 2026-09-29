@@ -2076,8 +2076,8 @@ async function platformUsersPage() {
   const token=++state.renderId;
   const view=page("Usuários e permissões","Crie acessos administrativos e defina exatamente o que cada pessoa pode fazer.","Plataforma");
   view.actions.append(button("+ Adicionar pessoa",()=>platformUserForm().catch(handleError)));
-  view.outer.append(info("A lista inclui usuários de empresas. Use ‘Conceder acesso SaaS’ para promover um usuário existente sem criar outro login.",true));
-  const box=surface("Usuários e acessos","A conta principal aparece protegida; os demais usuários podem receber, trocar ou remover permissões SaaS.");view.outer.append(box);box.append(loadingSurface());
+  view.outer.append(info("A lista mostra a conta principal e o login proprietário criado em cada contratação. Somente o proprietário ativo pode ser promovido ao SaaS.",true));
+  const box=surface("Proprietários e acessos","O mesmo login que administra a empresa pode receber permissões de atendimento, cobrança ou operação na plataforma.");view.outer.append(box);box.append(loadingSurface());
   try {
     const result=await platformApi("/users");
     if(token!==state.renderId)return;
@@ -2092,8 +2092,8 @@ async function platformUsersPage() {
       {label:"Conta",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
     ],row=>row.protected
       ? [{label:"Protegida",onClick:()=>toast("A conta principal não pode ser alterada por esta tela.","error")}]
-      : [{label:row.platform_access?"Editar permissões":"Conceder acesso SaaS",onClick:()=>platformUserForm(row).catch(handleError)}],
-      empty("Nenhum usuário","Cadastre uma empresa ou adicione um usuário para começar."),{tenant:false}));
+      : [{label:row.platform_access?"Editar permissões":"Promover para admin SaaS",onClick:()=>platformUserForm(row).catch(handleError)}],
+      empty("Nenhum proprietário","A conta criada na contratação aparecerá aqui."),{tenant:false}));
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
 

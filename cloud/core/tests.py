@@ -324,11 +324,15 @@ class CloudAPITests(TestCase):
                             "password": "Support-42!", "roles": ["platform_support"]}, tenant=False)
         self.assertEqual(created.status_code, 201, created.content)
         staff = User.objects.get(username="support@example.test")
+        cashier = User.objects.create_user(username="cashier@example.test", email="cashier@example.test",
+                                           password="Cashier-42!")
+        Membership.objects.create(tenant=self.tenant, user=cashier, name="Caixa", role="cashier")
         listed = self.api("GET", "/api/v1/platform/users", tenant=False)
         self.assertEqual(listed.status_code, 200, listed.content)
         rows = listed.json()["results"]
         self.assertEqual({row["email"] for row in rows}, {
             "root@example.test", "support@example.test", "owner@example.test", "other@example.test"})
+        self.assertNotIn("cashier@example.test", {row["email"] for row in rows})
         root_row = next(row for row in rows if row["email"] == "root@example.test")
         self.assertTrue(root_row["superuser"])
         self.assertTrue(root_row["protected"])
@@ -347,6 +351,8 @@ class CloudAPITests(TestCase):
         self.assertEqual(demoted.status_code, 200, demoted.content)
         self.owner.refresh_from_db()
         self.assertFalse(self.owner.is_staff)
+        self.assertEqual(self.api("PATCH", f"/api/v1/platform/users/{cashier.pk}",
+                                  {"roles": ["platform_support"]}, tenant=False).status_code, 403)
         self.client.force_login(staff)
         self.assertEqual(self.api("GET", "/api/v1/platform/tenants", tenant=False).status_code, 200)
         self.assertEqual(self.api("GET", "/api/v1/platform/plans", tenant=False).status_code, 403)

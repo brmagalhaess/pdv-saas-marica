@@ -21,6 +21,7 @@ def _platform_staff(row):
     memberships = [{"tenant_id": str(member.tenant_id), "tenant_name": member.tenant.name,
                     "role": member.role, "active": member.active}
                    for member in row.pdv_memberships.all()]
+    company_owner = any(member.role == "owner" and member.active for member in row.pdv_memberships.all())
     roles = sorted(PLATFORM_GROUPS) if row.is_superuser else sorted(
         row.groups.filter(name__in=PLATFORM_GROUPS).values_list("name", flat=True))
     return {"id": row.pk, "name": row.get_full_name() or row.username,
@@ -28,6 +29,7 @@ def _platform_staff(row):
             "roles": roles,
             "active": row.is_active,
             "platform_access": row.is_superuser or bool(roles),
+            "eligible_for_promotion": row.is_superuser or bool(roles) or company_owner,
             "memberships": memberships,
             "superuser": row.is_superuser,
             "protected": row.is_superuser}
@@ -78,7 +80,8 @@ def platform_users(request):
         # Include the protected root account so the administrator can see every
         # platform login. It is returned as read-only in the UI and cannot be
         # changed through the staff endpoint.
-        rows = (User.objects.filter(Q(is_staff=True) | Q(pdv_memberships__isnull=False)).distinct()
+        rows = (User.objects.filter(Q(is_staff=True) | Q(pdv_memberships__role="owner",
+                                                           pdv_memberships__active=True)).distinct()
                 .prefetch_related("groups", "pdv_memberships__tenant").order_by("email", "pk"))
         return page(request, rows, _platform_staff)
     data = payload(request)
@@ -122,6 +125,9 @@ def platform_user_detail(request, pk):
     if not data:
         raise APIError("Informe ao menos um campo")
     values = _staff_values(data)
+    if ("roles" in values and values["roles"] and not row.is_staff and
+            not Membership.objects.filter(user=row, role="owner", active=True).exists()):
+        raise APIError("Somente o login proprietário da empresa pode ser promovido ao SaaS", 403)
     if "email" in values and User.objects.filter(email__iexact=values["email"]).exclude(pk=row.pk).exists():
         raise APIError("E-mail já cadastrado", 409)
     try:
