@@ -344,6 +344,13 @@ def create_app(config=None):
     def print_label(_operator):
         return jsonify(store.queue_label(body().get("product_id")))
 
+    @app.post("/api/discount/authorize")
+    @authenticated(*SELL_ROLES)
+    def authorize_discount(_operator):
+        data = body()
+        return jsonify(store.authorize_discount(data.get("pin"), data.get("gross_cents"),
+                                                data.get("discount_cents")))
+
     @app.post("/api/print/jobs/<job_id>/retry")
     @authenticated(*SELL_ROLES)
     def retry_print(operator, job_id):

@@ -560,6 +560,22 @@ class Store:
                 (failures, now + 300 if failures >= 5 else 0))
         raise TerminalError("PIN de gerente inválido", 403)
 
+    def authorize_discount(self, pin, gross_cents, discount_cents):
+        """Validate a manager PIN and the company discount ceiling before checkout."""
+        self.ensure_sale_allowed()
+        gross = _positive_int(gross_cents, "Total da venda")
+        discount = _positive_int(discount_cents, "Desconto", zero=True)
+        if gross <= 0 or discount <= 0 or discount >= gross:
+            raise TerminalError("Desconto ou total inválido")
+        with self.connection() as conn:
+            configured_limit = int(self._meta(conn, "discount_max_bps") or 10000)
+        if not 0 <= configured_limit <= 10000:
+            configured_limit = 10000
+        if discount * 10000 > gross * configured_limit:
+            raise TerminalError("Desconto acima do limite configurado pela administração", 403)
+        self.manager_override(pin)
+        return {"authorized": True}
+
     def products(self, query="", category=""):
         query = str(query)[:100].strip()
         with self.connection() as conn:

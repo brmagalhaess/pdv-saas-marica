@@ -81,6 +81,19 @@ class TerminalTests(unittest.TestCase):
                                                    "Origin": "http://evil.example"}).status_code, 403)
         self.assertEqual(self.client.get("/api/session", headers={"Host": "evil.example"}).status_code, 403)
 
+    def test_discount_pin_is_authorized_before_sale(self):
+        self.login()
+        csrf = self.csrf()
+        invalid = self.client.post("/api/discount/authorize",
+                                   json={"pin": "000000", "gross_cents": 1299, "discount_cents": 100},
+                                   headers={"X-CSRF-Token": csrf})
+        self.assertEqual(invalid.status_code, 403, invalid.json)
+        valid = self.client.post("/api/discount/authorize",
+                                 json={"pin": "654321", "gross_cents": 1299, "discount_cents": 100},
+                                 headers={"X-CSRF-Token": self.csrf()})
+        self.assertEqual(valid.status_code, 200, valid.json)
+        self.assertEqual(valid.json, {"authorized": True})
+
     def test_license_key_and_one_time_pairing_do_not_store_full_key(self):
         fresh = Store(Path(self.temp.name) / "fresh.sqlite3")
         claims = dict(self.claims, device_id=fresh.identity()["device_id"])
