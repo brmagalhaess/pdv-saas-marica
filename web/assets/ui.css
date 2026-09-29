@@ -284,3 +284,5 @@ td.actions { white-space: nowrap; text-align: right; }
   .button, .sidebar { transition: none; }
   .skeleton { animation: none; }
 }
+:root{--product-thumb-size:42px}
+.product-thumb{display:block;width:var(--product-thumb-size);height:var(--product-thumb-size);object-fit:cover;border-radius:10px;border:1px solid #dce9e6;background:#f3faf7}

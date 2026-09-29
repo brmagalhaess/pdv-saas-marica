@@ -308,6 +308,13 @@ class TerminalTests(unittest.TestCase):
             self.store.apply_bootstrap(tampered)
         self.assertEqual(self.store.login(self.cashier_id, "123987")["id"], self.cashier_id)
 
+    def test_bootstrap_refreshes_cloud_stock_when_no_local_events_are_pending(self):
+        updated = copy.deepcopy(self.bootstrap)
+        updated["products"] = [self.products[0], dict(self.products[1], quantity_milli=4321)]
+        self.store.apply_bootstrap(updated)
+        product = next(row for row in self.store.products() if row["id"] == self.unit_product_id)
+        self.assertEqual(product["stock_milli"], 4321)
+
     def test_catalog_accepts_blank_and_moved_barcodes_and_deactivates_removed_product(self):
         third = dict(self.products[1], id=str(uuid.uuid4()), sku="NOVO", barcode="")
         blank = [dict(self.products[0], barcode=""), dict(self.products[1], barcode=""), third]
@@ -392,7 +399,8 @@ class TerminalTests(unittest.TestCase):
 
         new_product = dict(self.products[0], id=str(uuid.uuid4()), sku="NOVO", barcode="7899999999999")
         first = dict(self.bootstrap, products=[self.products[0]], next_cursor="1")
-        second = dict(self.bootstrap, products=[self.products[1], new_product], next_cursor=None)
+        # The cloud response reflects the sale that was acknowledged above.
+        second = dict(self.bootstrap, products=[dict(self.products[1], quantity_milli=2000), new_product], next_cursor=None)
         with patch("terminal.sync._request", side_effect=[first, second,
                 {"release": None, "public_key": self.public}]) as request:
             result = refresh_bootstrap(self.store)

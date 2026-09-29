@@ -105,6 +105,7 @@ class Product(models.Model):
     price_cents = models.PositiveBigIntegerField(default=0)
     cost_cents = models.PositiveBigIntegerField(default=0)
     stock_minimum_milli = models.PositiveBigIntegerField(default=0)
+    image_url = models.CharField(max_length=500, blank=True)
     tax_fields = models.JSONField(default=dict, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

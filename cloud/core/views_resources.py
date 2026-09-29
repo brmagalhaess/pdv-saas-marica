@@ -57,6 +57,24 @@ def generated_product_codes(tenant):
     return {"sku": sku, "barcode": barcode}
 
 
+def default_product_image(name, category=""):
+    """Choose a small bundled image from the local product image bank.
+
+    The path is served by the web application, so a product remains useful
+    without relying on an external image host. A custom URL can still be
+    supplied by the company when a catalog photo is available.
+    """
+    text_value = f"{name} {category}".casefold()
+    groups = {
+        "beverages": ("bebida", "água", "agua", "refrigerante", "suco", "cerveja", "vinho", "café", "cafe", "leite"),
+        "bakery": ("pão", "pao", "bolo", "biscoito", "padaria", "massa"),
+        "cleaning": ("limpeza", "sabão", "sabao", "detergente", "desinfetante", "higiene", "papel"),
+        "produce": ("fruta", "verdura", "legume", "hortifruti", "banana", "maçã", "maca", "tomate"),
+    }
+    key = next((key for key, words in groups.items() if any(word in text_value for word in words)), "grocery")
+    return f"/assets/product-images/{key}.svg"
+
+
 def form_values(kind, data, tenant, creating):
     if kind == "shops":
         allowed, required = {"name", "address", "active"}, {"name"}
@@ -64,7 +82,7 @@ def form_values(kind, data, tenant, creating):
         allowed, required = {"name", "active"}, {"name"}
     elif kind == "products":
         allowed = {"name", "category_id", "variant", "unit",
-                   "price_cents", "cost_cents", "stock_minimum_milli", "tax_fields", "active"}
+                   "price_cents", "cost_cents", "stock_minimum_milli", "image_url", "tax_fields", "active"}
         required = {"name", "price_cents"}
     else:
         allowed, required = {"name", "document", "email", "phone", "active"}, {"name"}
@@ -91,6 +109,11 @@ def form_values(kind, data, tenant, creating):
         elif key == "tax_fields":
             if not isinstance(value, dict) or len(str(value)) > 16000:
                 raise APIError("Dados tributários inválidos")
+            result[key] = value
+        elif key == "image_url":
+            value = text(value, "Imagem", 500, optional=True)
+            if value and not (value.startswith("/") or value.startswith("https://") or value.startswith("http://")):
+                raise APIError("Imagem deve ser uma URL http(s) ou um caminho local")
             result[key] = value
         elif key == "unit":
             if value not in ("UN", "KG", "L"):
@@ -138,6 +161,9 @@ def collection(request, kind):
             rows = rows.filter(active=True)
         return page(request, rows.order_by("id"), lambda row: response_for(row, serializer, member))
     values = form_values(kind, payload(request), tenant, True)
+    if kind == "products" and not values.get("image_url"):
+        category = values.get("category")
+        values["image_url"] = default_product_image(values["name"], category.name if category else "")
     try:
         with transaction.atomic():
             if kind == "shops":
@@ -175,6 +201,9 @@ def detail(request, kind, pk):
         values = {"active": False}
     else:
         values = form_values(kind, payload(request), member.tenant, False)
+        if isinstance(row, Product) and "image_url" in values and not values["image_url"]:
+            category = values.get("category", row.category)
+            values["image_url"] = default_product_image(row.name, category.name if category else "")
     try:
         with transaction.atomic():
             if isinstance(row, Shop) and "active" in values:

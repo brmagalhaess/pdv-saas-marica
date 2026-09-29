@@ -23,6 +23,7 @@ def product(row):
             "variant": row.variant, "unit": row.unit,
             "price_cents": row.price_cents, "cost_cents": row.cost_cents,
             "stock_minimum_milli": row.stock_minimum_milli,
+            "image_url": row.image_url,
             "tax_fields": row.tax_fields, "active": row.active}
 
 

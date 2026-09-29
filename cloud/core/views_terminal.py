@@ -258,7 +258,7 @@ def bootstrap(request):
     by_product = {row["product_id"]: row["q"] for row in balances}
     products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode,
                  "name": p.name, "unit": p.unit, "price_cents": p.price_cents,
-                 "cost_cents": p.cost_cents, "active": p.active,
+                 "cost_cents": p.cost_cents, "image_url": p.image_url, "active": p.active,
                  "quantity_milli": by_product.get(p.id, 0),
                  "category": p.category.name if p.category else None}
                 for p in shown]

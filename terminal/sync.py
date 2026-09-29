@@ -208,7 +208,10 @@ class Worker:
                     errors.append(str(exc))
                 try:
                     bootstrap_at = int(self.store.meta().get("bootstrap_at") or 0)
-                    if int(time.time() * 1000) - bootstrap_at > 5 * 60 * 1000:
+                    # Keep the local catalog close to the cloud so product
+                    # edits and stock receipts reach an open cashier quickly.
+                    # Pending local events are preserved by Store.apply_bootstrap.
+                    if int(time.time() * 1000) - bootstrap_at > 30 * 1000:
                         refresh_bootstrap(self.store)
                 except (TerminalError, OSError, ValueError) as exc:
                     errors.append(str(exc))

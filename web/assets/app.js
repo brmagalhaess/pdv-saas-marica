@@ -423,10 +423,12 @@ const resourceSpecs = {
       { key: "price_cents", label: "Preço de venda (R$)", type: "money", required: true, min: 0 },
       { key: "cost_cents", label: "Custo (R$)", type: "money", min: 0, default: 0 },
       { key: "stock_minimum_milli", label: "Estoque mínimo", type: "milli", min: 0, default: 0 },
+      { key: "image_url", label: "Imagem do produto (URL opcional)", placeholder: "https://... ou /assets/product-images/...", max: 500, full: true, help: "Se ficar vazio, o PDV escolhe automaticamente uma imagem da categoria." },
       { key: "active", label: "Produto ativo", type: "checkbox", default: true }
     ],
     columns: [
       { label: "Produto", render: row => row.name },
+      { label: "Imagem", render: row => { const image = el("img", "product-thumb"); image.src = row.image_url || "/assets/product-images/grocery.svg"; image.alt = "Imagem de " + row.name; image.loading = "lazy"; return image; } },
       { label: "SKU", render: row => row.sku },
       { label: "Código de barras", render: row => row.barcode || "—" },
       { label: "Variação", render: row => row.variant },

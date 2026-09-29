@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from collections import defaultdict
 from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -89,6 +90,7 @@ class Store:
                     unit TEXT NOT NULL CHECK(unit IN ('UN','KG','L')),category TEXT,
                     price_cents INTEGER NOT NULL CHECK(price_cents>=0),
                     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents>=0),
+                    image_url TEXT NOT NULL DEFAULT '',
                     stock_milli INTEGER NOT NULL CHECK(stock_milli>=0),
                     active INTEGER NOT NULL CHECK(active IN (0,1)),updated_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS operators(
@@ -134,6 +136,8 @@ class Store:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(products)")}
             if "cost_cents" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN cost_cents INTEGER NOT NULL DEFAULT 0")
+            if "image_url" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
             conn.commit()
         try:
             self.path.chmod(0o600)
@@ -354,6 +358,27 @@ class Store:
             self._set_meta(conn, "cloud_url", cloud_url)
             self._audit(conn, None, "terminal.paired", response["terminal_id"])
 
+    @staticmethod
+    def _pending_stock_deltas(conn):
+        """Return local stock effects not yet reflected by the cloud balance."""
+        deltas = defaultdict(int)
+        events = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY created_at,rowid")]
+        for event in events:
+            event_type = event.get("type")
+            data = event.get("data") or {}
+            if event_type == "sale.completed":
+                for item in data.get("items") or []:
+                    deltas[str(item.get("product_id"))] -= int(item.get("quantity_milli") or 0)
+            elif event_type == "stock.adjusted":
+                deltas[str(data.get("product_id"))] += int(data.get("delta_milli") or 0)
+            elif event_type == "sale.voided":
+                sale = conn.execute("SELECT snapshot FROM sales WHERE id=?", (event.get("aggregate_id"),)).fetchone()
+                if sale:
+                    for item in (json.loads(sale[0]).get("items") or []):
+                        deltas[str(item.get("product_id"))] += int(item.get("quantity_milli") or 0)
+        return deltas
+
     def apply_bootstrap(self, response):
         from shared.licensing import LicenseError, payload_digest, verify_lease
 
@@ -375,6 +400,7 @@ class Store:
             if claims.get("operators_hash") != payload_digest(operators):
                 raise TerminalError("Lista de operadores não corresponde à licença assinada", 403)
             timestamp = _now_ms()
+            pending_deltas = self._pending_stock_deltas(conn)
             # The cloud permits several products without barcodes and may move a
             # barcode between products. Clear old assignments before upserting.
             # Missing catalog entries remain on disk for sale history, inactive.
@@ -388,25 +414,30 @@ class Store:
                 stock = product.get("quantity_milli", 0)
                 if type(stock) is not int:
                     raise TerminalError("Estoque recebido inválido")
-                # Cloud may flag negative balance after a late offline sync. A new
-                # local catalog entry starts at zero; an existing local balance
-                # always remains untouched until explicit reconciliation.
-                stock = max(0, stock)
-                existing = conn.execute("SELECT stock_milli FROM products WHERE id=?", (product_id,)).fetchone()
+                # Cloud is authoritative for acknowledged movements. Preserve
+                # only effects still waiting in this terminal's outbox, so a
+                # purchase or adjustment made in the web panel reaches the
+                # cashier without overwriting an offline sale.
+                stock = max(0, stock + pending_deltas.get(product_id, 0))
                 category = product.get("category")
                 if isinstance(category, dict):
                     category = category.get("name")
+                image_url = product.get("image_url") or ""
+                if not isinstance(image_url, str) or len(image_url) > 500:
+                    raise TerminalError("Imagem do produto inválida")
                 conn.execute("""INSERT INTO products
-                    (id,sku,barcode,name,unit,category,price_cents,cost_cents,stock_milli,active,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    (id,sku,barcode,name,unit,category,price_cents,cost_cents,image_url,stock_milli,active,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
                     name=excluded.name,unit=excluded.unit,category=excluded.category,
                     price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
+                    image_url=excluded.image_url,stock_milli=excluded.stock_milli,
                     active=excluded.active,updated_at=excluded.updated_at""",
                     (product_id, product.get("sku"), product.get("barcode") or None,
                      _str(product.get("name"), "Nome do produto"), unit, category or "Geral",
                      price, _positive_int(product.get("cost_cents", 0), "Custo", zero=True),
-                     stock if existing is None else existing["stock_milli"],
+                     image_url,
+                     stock,
                      int(bool(product.get("active", True))), timestamp))
             operator_ids = []
             for operator in operators:
