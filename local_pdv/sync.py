@@ -2,6 +2,8 @@
 import argparse
 import json
 import os
+import sys
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -21,8 +23,17 @@ def sync_once(pdv, base_url, token, transport=urlopen):
                       data=json.dumps({"events": events}, ensure_ascii=False).encode(),
                       headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
                       method="POST")
-    with transport(request, timeout=15) as response:
-        result = json.loads(response.read())
+    try:
+        with transport(request, timeout=15) as response:
+            result = json.loads(response.read())
+    except HTTPError as exc:
+        raise PDVError(f"Servidor recusou a sincronização (HTTP {exc.code})") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise PDVError("Servidor indisponível; eventos continuam pendentes") from exc
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise PDVError("Resposta inválida do servidor; eventos continuam pendentes") from exc
+    if not isinstance(result, dict):
+        raise PDVError("Resposta inválida do servidor; eventos continuam pendentes")
     accepted = result.get("accepted_event_ids")
     sent_ids = [event["event_id"] for event in events]
     if not isinstance(accepted, list) or accepted != sent_ids:
@@ -38,9 +49,14 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8000")
     args = parser.parse_args()
     token = os.environ.get("PDV_TERMINAL_TOKEN", "")
-    pdv = LocalPDV(args.db)
-    print(json.dumps(sync_once(pdv, args.url, token), ensure_ascii=False))
+    try:
+        pdv = LocalPDV(args.db)
+        print(json.dumps(sync_once(pdv, args.url, token), ensure_ascii=False))
+        return 0
+    except PDVError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

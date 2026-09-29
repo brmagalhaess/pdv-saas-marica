@@ -13,7 +13,7 @@ Este repositório é um **incremento de desenvolvimento**. A landing apresenta o
 - Backup consistente do banco de desenvolvimento.
 - Testes básicos de isolamento entre empresas.
 
-O código do catálogo e do caixa local é um protótipo. O recebimento de eventos funciona, mas ainda não reconcilia o estoque central nem configura o terminal pela interface. Emissão fiscal, impressoras reais, cobrança, segurança e operação de produção seguem pendentes.
+O código do catálogo e do caixa local é um protótipo. Vendas sincronizadas geram uma baixa única no saldo central e mostram divergência negativa, mas ainda não há fila operacional de conciliação, envio automático do catálogo ao caixa nem configuração do terminal pela interface. Emissão fiscal, impressoras reais, cobrança, segurança e operação de produção seguem pendentes.
 
 ## Portões para uma loja piloto
 
@@ -39,4 +39,4 @@ Além do piloto: cobrança e webhooks idempotentes, licenças e dispositivos, at
 
 ## Próximo incremento técnico recomendado
 
-Fechar o fluxo de ponta a ponta: catálogo no SaaS → catálogo local → venda local → outbox → sincronização idempotente → painel. Só depois ligar o fluxo fiscal e a impressão a equipamentos reais. Esse percurso revela os riscos centrais de consistência antes de multiplicar telas e módulos.
+Automatizar o fluxo de catálogo do SaaS para o caixa, mostrar pendências e divergências de sincronização na interface operacional e testar com equipamentos físicos. Só depois ligar o fluxo fiscal e a impressão a modelos validados em bancada.

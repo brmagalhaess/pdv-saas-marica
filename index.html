@@ -29,40 +29,42 @@
     @media(max-width:950px){.navlinks{gap:15px}.mock-body{grid-template-columns:1fr}.mock-total{display:none}.hero-grid{gap:28px}}
     @media(max-width:720px){.container{width:min(100% - 32px,560px)}header.site{position:static}nav.main{flex-wrap:wrap;gap:10px;padding:12px 0}.navlinks{order:3;width:100%;margin:0;justify-content:space-between}.navlinks a{font-size:11px;white-space:nowrap}nav.main>.btn{margin-left:auto}.hero{padding:64px 0}.hero-grid,.account-grid,.faq-grid{grid-template-columns:1fr}.mock-wrap{margin:20px 12px 0 0}.mock-body{grid-template-columns:1.25fr .75fr}.mock-total{display:block}section.section,.account{padding:69px 0}.cards,.steps,.plans{grid-template-columns:1fr}.card{min-height:0}.icon{margin-bottom:17px}.plan>p{min-height:0}.faq-grid{gap:10px}.stats{grid-template-columns:1fr 1fr}.panels{grid-template-columns:1fr}.wide-panel{grid-column:auto}}
     @media(max-width:480px){.brand{font-size:18px}.hero h1{font-size:44px}.actions .btn{width:100%}.mock-body{display:block}.mock-total{display:none}.auth-body{padding:24px}.app-hero{align-items:start;flex-direction:column;padding:24px}.stats{grid-template-columns:1fr}.inline-form{display:block}.inline-form .btn{width:100%;margin-top:8px}.user-form,.inventory-form{grid-template-columns:1fr}.app-nav-right .small-note{display:none}}
+    section[id]{scroll-margin-top:88px}.state.future{color:#75561d}.mock-row small{color:#5a6c5d}.mock-total p:last-child{color:#536d58}footer .brand b{color:#9ce3af}
+    @media(max-width:720px){section[id]{scroll-margin-top:16px}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.btn{transition:none}}
   </style>
 </head>
 <body>
 <a class="skip" href="#main">Pular para o conteúdo</a>
 <div id="marketing">
-  <div class="notice"><strong>Protótipo em desenvolvimento:</strong> contas, catálogo e estoque disponíveis; vendas, NFC-e, apps e cobrança ainda serão implementados.</div>
+  <div class="notice"><strong>Protótipo em desenvolvimento:</strong> contas, catálogo e estoque disponíveis para teste; caixa local experimental. NFC-e, apps e cobrança ainda não estão prontos.</div>
   <header class="site"><nav class="main container" aria-label="Navegação principal">
     <a class="brand" href="#inicio" aria-label="PDV2, início"><span class="brand-mark" aria-hidden="true"><svg width="25" height="25" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 28V8h11a7 7 0 0 1 0 14H9" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span><span>PDV<b>2</b></span></a>
     <div class="navlinks"><a href="#solucao">Solução</a><a href="#como">Como funciona</a><a href="#planos">Planos</a><a href="#duvidas">Dúvidas</a></div>
-    <a class="btn small" href="#acesso" data-tab="register">Começar agora <span aria-hidden="true">→</span></a>
+    <a class="btn small" href="#acesso" data-tab="register">Criar teste <span aria-hidden="true">→</span></a>
   </nav></header>
   <main id="main">
     <section class="hero" id="inicio"><div class="container hero-grid">
-      <div><span class="eyebrow">Feito para o comércio que não para</span><h1>Mais ritmo para o caixa. <em>Mais visão</em> para você.</h1>
-        <p class="lead">Estamos construindo o PDV2, um SaaS para mercados e mercearias, começando por quem tem uma loja e um terminal. Gestão simples na nuvem e um caixa preparado para seguir vendendo quando a conexão falhar.</p>
+      <div><span class="eyebrow">Feito para o comércio que não para</span><h1 tabindex="-1">Mais ritmo para o caixa. <em>Mais visão</em> para você.</h1>
+        <p class="lead">Estamos construindo o PDV2, um SaaS para mercados e mercearias, começando por quem tem uma loja e um terminal. A gestão já pode ser testada; o futuro caixa local está sendo projetado para operar durante falhas de conexão.</p>
         <div class="actions"><a class="btn" href="#acesso" data-tab="register">Criar conta de teste <span aria-hidden="true">→</span></a><a class="btn ghost" href="#planos">Ver planos</a></div>
         <p class="small-note">Nesta fase, a conta permite administrar empresa, lojas, usuários, produtos e estoque. Não há cobrança ativa.</p>
         <ul class="checks"><li>Um caixa como ponto de partida</li><li>Planos transparentes</li><li>Suporte pensado desde o início</li></ul>
       </div>
-      <div class="mock-wrap" aria-label="Ilustração conceitual da futura tela de venda"><div class="mock">
+      <div class="mock-wrap" role="img" aria-label="Prévia conceitual de uma venda no caixa. Esta tela ainda não está disponível."><div class="mock" aria-hidden="true">
         <div class="mock-head"><span>▦ &nbsp; Nova venda</span><span class="badge">Prévia conceitual</span></div>
         <div class="mock-body"><div class="mock-items"><p class="mock-label">Itens no carrinho</p>
           <div class="mock-row"><i aria-hidden="true">🥖</i><span><b>Pão francês</b><small>0,5 kg × R$ 17,90</small></span><strong>R$ 8,95</strong></div>
           <div class="mock-row"><i aria-hidden="true">🥛</i><span><b>Leite integral</b><small>2 un. × R$ 5,49</small></span><strong>R$ 10,98</strong></div>
           <div class="mock-row"><i aria-hidden="true">🍌</i><span><b>Banana prata</b><small>1 kg × R$ 6,90</small></span><strong>R$ 6,90</strong></div>
-        </div><div class="mock-total"><p class="mock-label">Resumo</p><div class="mock-sum"><span>Total</span><strong>R$ 26,83</strong></div><div class="fake-button">Finalizar venda →</div><p>Ilustração. O caixa ainda não está disponível.</p></div></div>
+        </div><div class="mock-total"><p class="mock-label">Resumo</p><div class="mock-sum"><span>Total</span><strong>R$ 26,83</strong></div><div class="fake-button">Finalizar venda →</div><p>Ilustração. Esta tela de caixa ainda não está disponível.</p></div></div>
       </div></div>
     </div></section>
     <section class="section" id="solucao"><div class="container">
       <div class="section-head"><span class="eyebrow">O produto</span><h2>O essencial para vender bem, sem complicar a operação.</h2><p>A primeira entrega foca a rotina real de um mercado ou mercearia. Cada módulo será lançado após testes de uso, falhas e equipamentos.</p></div>
       <div class="cards">
         <article class="card"><span class="icon" aria-hidden="true">▣</span><h3>Gestão da empresa</h3><p>Crie sua conta e organize lojas, pessoas, produtos e movimentações de estoque.</p><span class="state">Disponível neste protótipo</span></article>
-        <article class="card"><span class="icon" aria-hidden="true">⚡</span><h3>Caixa preparado para falhas</h3><p>Aplicativo local planejado para registrar vendas e sincronizar com segurança.</p><span class="state future">Em desenvolvimento</span></article>
+        <article class="card"><span class="icon" aria-hidden="true">⚡</span><h3>Núcleo de caixa local</h3><p>Protótipo técnico com vendas e fila de eventos. Interface de operação, hardware e fiscal ainda pendentes.</p><span class="state future">Protótipo técnico</span></article>
         <article class="card"><span class="icon" aria-hidden="true">▤</span><h3>Fiscal e impressão</h3><p>NFC-e do RJ, impressoras térmicas e etiquetas após homologação e testes físicos.</p><span class="state future">Em desenvolvimento</span></article>
         <article class="card"><span class="icon" aria-hidden="true">◇</span><h3>Estoque com histórico</h3><p>Saldo por loja e movimentações auditáveis já disponíveis. Inventário e importação virão depois.</p><span class="state">Parcialmente disponível</span></article>
         <article class="card"><span class="icon" aria-hidden="true">◫</span><h3>Gestão no celular</h3><p>Indicadores, alertas e consultas para acompanhar a loja.</p><span class="state future">Planejado</span></article>
@@ -77,10 +79,10 @@
       <div class="section-head center"><span class="eyebrow">Planos planejados</span><h2>Comece com um caixa. Cresça no seu tempo.</h2><p>Todos os planos começam com uma loja e um terminal. Valores previstos para o lançamento; contratação e cobrança ainda não estão disponíveis.</p></div>
       <div class="plans">
         <article class="plan"><span class="plan-name">Essencial</span><div class="price"><strong data-plan-price="essential">R$ 149</strong> <span>/ mês</span></div><p>Para fazer o básico com clareza e controle.</p><a class="btn ghost" href="#acesso" data-tab="register" data-plan="Essencial">Criar conta de teste →</a><ul><li>1 loja e 1 terminal</li><li>Produtos disponíveis; venda e caixa no lançamento</li><li>Estoque disponível; NFC-e do RJ no lançamento</li><li>Suporte remoto em horário comercial</li></ul></article>
-        <article class="plan featured"><span class="ribbon">Mais indicado</span><span class="plan-name">Gestão</span><div class="price"><strong data-plan-price="management">R$ 229</strong> <span>/ mês</span></div><p>Para quem quer mais visão sobre a loja.</p><a class="btn" href="#acesso" data-tab="register" data-plan="Gestão">Criar conta de teste →</a><ul><li>1 loja e 1 terminal</li><li>Tudo do Essencial</li><li>Relatórios ampliados e etiquetas</li><li>App de gestão do proprietário</li></ul></article>
+        <article class="plan featured"><span class="ribbon">Mais recursos</span><span class="plan-name">Gestão</span><div class="price"><strong data-plan-price="management">R$ 229</strong> <span>/ mês</span></div><p>Para quem quer mais visão sobre a loja.</p><a class="btn" href="#acesso" data-tab="register" data-plan="Gestão">Criar conta de teste →</a><ul><li>1 loja e 1 terminal</li><li>Tudo do Essencial</li><li>Relatórios ampliados e etiquetas</li><li>App de gestão do proprietário</li></ul></article>
         <article class="plan"><span class="plan-name">Avançado</span><div class="price"><strong data-plan-price="advanced">R$ 349</strong> <span>/ mês</span></div><p>Para operações que precisam de acompanhamento.</p><a class="btn ghost" href="#acesso" data-tab="register" data-plan="Avançado">Criar conta de teste →</a><ul><li>1 loja e 1 terminal</li><li>Tudo do Gestão</li><li>Permissões e gestão avançadas</li><li>Atendimento prioritário</li></ul></article>
       </div>
-      <p class="pricing-note">Terminal adicional: preço planejado de R$ 39/mês. Implantação presencial e migração de dados terão orçamento próprio. Toda conta criada agora entra em teste no Essencial; a seleção comercial dos demais planos será habilitada futuramente.</p>
+      <p class="pricing-note" id="pricing-note">Terminal adicional: preço planejado de R$ 39/mês. Implantação presencial e migração de dados terão orçamento próprio. Toda conta criada agora entra em teste no Essencial; a seleção comercial dos demais planos será habilitada futuramente.</p>
     </div></section>
     <section class="account" id="acesso"><div class="container account-grid">
       <div class="account-copy"><span class="eyebrow">Acesso ao protótipo</span><h2>Veja de perto a base do seu futuro PDV.</h2><p>Crie uma empresa de teste e explore as funções disponíveis. Vendas, documentos fiscais, pagamentos e aplicativos móveis ainda estão em construção.</p><ul><li>Empresa e loja principal</li><li>Usuários e papéis de acesso</li><li>Catálogo e movimentações de estoque</li><li>Plano Essencial em modo de teste</li></ul></div>
@@ -91,7 +93,7 @@
           <section id="panel-register" role="tabpanel" aria-labelledby="tab-register"><h3>Comece seu teste</h3><p id="register-context">A conta será criada no Essencial em teste, sem cobrança.</p><form id="register">
             <div class="field"><label for="company">Nome da empresa</label><input id="company" name="company" autocomplete="organization" maxlength="120" placeholder="Ex.: Mercearia do Bairro" required></div>
             <div class="field"><label for="register-email">E-mail do proprietário</label><input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" placeholder="voce@empresa.com.br" required></div>
-            <div class="field"><label for="register-password">Senha</label><input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" aria-describedby="password-help" required><small id="password-help">Mínimo de 8 caracteres, com maiúscula, minúscula, número e símbolo.</small></div>
+            <div class="field"><label for="register-password">Senha</label><input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" aria-describedby="password-help" required><small id="password-help">Use de 8 a 128 caracteres, com maiúscula, minúscula, número e símbolo.</small></div>
             <button class="btn" type="submit">Criar conta de teste →</button></form></section>
           <section id="panel-login" role="tabpanel" aria-labelledby="tab-login" hidden><h3>Bem-vindo de volta</h3><p>Acesse a área de gestão da sua empresa.</p><form id="login">
             <div class="field"><label for="login-email">E-mail</label><input id="login-email" name="email" type="email" autocomplete="email" required></div>
@@ -102,7 +104,7 @@
       </div>
     </div></section>
     <section class="section" id="duvidas"><div class="container faq-grid"><div class="section-head"><span class="eyebrow">Dúvidas frequentes</span><h2>Tudo claro, desde o começo.</h2><p>Estamos abrindo a base para testes enquanto construímos os módulos de operação comercial.</p></div><div>
-      <details><summary>Já posso vender com o sistema?</summary><p>Ainda não. Esta versão permite criar empresa, lojas, usuários, produtos e movimentações de estoque. O caixa e a NFC-e precisam ser implementados e testados antes do piloto em loja.</p></details>
+      <details><summary>Já posso vender com o sistema?</summary><p>Ainda não. Esta versão permite criar empresa, lojas, usuários, produtos e movimentações de estoque. O caixa local existe como protótipo técnico, mas interface operacional e NFC-e precisam ser concluídas e testadas antes do piloto em loja.</p></details>
       <details><summary>Quando serei cobrado?</summary><p>Não há cobrança ativa. Os preços são planejados para o lançamento. O cadastro atual cria assinatura de teste no Essencial.</p></details>
       <details><summary>Preciso de um servidor na loja?</summary><p>O plano é que uma loja com um caixa não precise. Um servidor local será opcional para operações com vários terminais.</p></details>
       <details><summary>E se a internet cair?</summary><p>O futuro aplicativo de caixa local está sendo projetado para continuar registrando operações e sincronizar depois, dentro das regras fiscais aplicáveis. Essa função ainda não está disponível.</p></details>
@@ -112,34 +114,39 @@
 </div>
 <div class="app" id="dashboard" hidden>
   <header class="app-header"><nav class="app-nav container" aria-label="Navegação da conta"><span class="brand"><span class="brand-mark" aria-hidden="true"><svg width="25" height="25" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 28V8h11a7 7 0 0 1 0 14H9" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span><span>PDV<b>2</b></span></span><div class="app-nav-right"><span id="signed-email" class="small-note"></span><button class="btn ghost small" id="logout" type="button">Sair</button></div></nav></header>
-  <main class="container app-main"><section class="app-hero"><div><span class="eyebrow">Área de gestão · protótipo</span><h1 id="welcome">Sua empresa</h1><p>Gerencie lojas e acessos enquanto desenvolvemos o restante da plataforma.</p></div><a class="btn white" href="#app-content">Ver painel ↓</a></section>
+  <main class="container app-main"><section class="app-hero"><div><span class="eyebrow">Área de gestão · protótipo</span><h1 id="welcome" tabindex="-1">Sua empresa</h1><p>Gerencie lojas e acessos enquanto desenvolvemos o restante da plataforma.</p></div><a class="btn white" href="#app-content">Ver painel ↓</a></section>
     <p class="app-description">Esta área mostra apenas dados reais da conta. Catálogo e estoque central estão disponíveis; vendas recebidas do caixa local aparecem como protótipo e ainda não conciliam o saldo central automaticamente. NFC-e e cobrança ainda não estão disponíveis.</p>
+    <p id="dashboard-message" role="status" aria-live="polite" hidden></p>
     <div class="stats" id="app-content" aria-label="Resumo da conta"><div class="stat"><span>Plano atual</span><strong id="summary-plan">—</strong><small id="summary-status">—</small></div><div class="stat"><span>Lojas cadastradas</span><strong id="summary-shops">—</strong><small>Inclui a loja principal</small></div><div class="stat"><span>Seu acesso</span><strong id="summary-role">—</strong><small>Permissões da sua conta</small></div></div>
     <div class="panels">
-      <section class="panel"><h2>Lojas</h2><p>Organize as unidades da empresa.</p><ul class="data-list" id="shops"></ul><form class="inline-form" id="new-shop"><div class="field"><label for="shop-name">Nova loja</label><input id="shop-name" name="name" maxlength="120" placeholder="Nome da loja" required></div><button class="btn" type="submit">Adicionar</button></form></section>
-      <section class="panel"><h2>Produtos</h2><p>Cadastre itens para o catálogo inicial da empresa.</p><div class="field"><label for="product-search">Buscar no catálogo</label><input id="product-search" type="search" maxlength="120" placeholder="Nome, SKU ou código de barras"></div><ul class="data-list scroll-list" id="products"></ul><form class="inventory-form" id="new-product"><div class="field wide"><label for="product-name">Nome do produto</label><input id="product-name" name="name" maxlength="160" required></div><div class="field"><label for="product-sku">Código interno (SKU)</label><input id="product-sku" name="sku" maxlength="60" required></div><div class="field"><label for="product-barcode">Código de barras (opcional)</label><input id="product-barcode" name="barcode" inputmode="numeric" pattern="[0-9]*" maxlength="32"></div><div class="field"><label for="product-unit">Unidade</label><select id="product-unit" name="unit"><option value="UN">Unidade</option><option value="KG">Quilo</option><option value="L">Litro</option></select></div><div class="field"><label for="product-price">Preço de venda (R$)</label><input id="product-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" required></div><div class="field wide"><label for="product-cost">Custo (R$)</label><input id="product-cost" name="cost" type="number" min="0" step="0.01" inputmode="decimal" value="0" required></div><button class="btn" type="submit">Cadastrar produto</button></form></section>
-      <section class="panel"><h2>Estoque</h2><p>Saldo por loja e ajustes auditáveis. Venda automática ainda não está integrada.</p><div class="field"><label for="stock-shop">Loja</label><select id="stock-shop" aria-label="Loja para consultar estoque"></select></div><ul class="data-list scroll-list" id="stock"></ul><form class="inventory-form" id="new-movement"><div class="field wide"><label for="stock-product-search">Buscar produto para movimentar</label><input id="stock-product-search" type="search" maxlength="120" placeholder="Nome, SKU ou código de barras"><small>A lista de produtos será filtrada enquanto você digita.</small></div><div class="field wide"><label for="stock-product">Produto</label><select id="stock-product" name="product_id" required></select></div><div class="field"><label for="stock-quantity">Variação de quantidade</label><input id="stock-quantity" name="quantity" type="number" step="0.001" inputmode="decimal" required><small>Positivo para entrada; negativo para saída.</small></div><div class="field"><label for="stock-reason">Motivo</label><input id="stock-reason" name="reason" maxlength="240" minlength="3" placeholder="Ex.: Entrada de mercadoria" required></div><button class="btn" type="submit">Registrar movimentação</button></form><p class="panel-note">Produtos em quilos e litros aceitam até três casas decimais.</p></section>
+      <section class="panel"><h2>Lojas</h2><p>Organize as unidades da empresa.</p><ul class="data-list" id="shops"></ul><form class="inline-form" id="new-shop"><div class="field"><label for="shop-name">Nova loja</label><input id="shop-name" name="name" maxlength="120" placeholder="Nome da loja" required></div><button class="btn" type="submit">Adicionar</button></form><p id="shop-message" role="status" aria-live="polite" hidden></p></section>
+      <section class="panel"><h2>Produtos</h2><p>Cadastre itens para o catálogo inicial da empresa.</p><div class="field"><label for="product-search">Buscar no catálogo</label><input id="product-search" type="search" maxlength="120" placeholder="Nome, SKU ou código de barras"></div><ul class="data-list scroll-list" id="products"></ul><form class="inventory-form" id="new-product"><div class="field wide"><label for="product-name">Nome do produto</label><input id="product-name" name="name" maxlength="160" required></div><div class="field"><label for="product-sku">Código interno (SKU)</label><input id="product-sku" name="sku" maxlength="60" required></div><div class="field"><label for="product-barcode">Código de barras (opcional)</label><input id="product-barcode" name="barcode" inputmode="numeric" pattern="[0-9]*" maxlength="32"></div><div class="field"><label for="product-unit">Unidade</label><select id="product-unit" name="unit"><option value="UN">Unidade</option><option value="KG">Quilo</option><option value="L">Litro</option></select></div><div class="field"><label for="product-price">Preço de venda (R$)</label><input id="product-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" required></div><div class="field wide"><label for="product-cost">Custo (R$)</label><input id="product-cost" name="cost" type="number" min="0" step="0.01" inputmode="decimal" value="0" required></div><button class="btn" type="submit">Cadastrar produto</button></form><p id="product-message" role="status" aria-live="polite" hidden></p></section>
+      <section class="panel"><h2>Estoque</h2><p>Saldo por loja e ajustes auditáveis. Venda automática ainda não está integrada.</p><div class="field"><label for="stock-shop">Loja</label><select id="stock-shop" aria-label="Loja para consultar estoque"></select></div><ul class="data-list scroll-list" id="stock"></ul><form class="inventory-form" id="new-movement"><div class="field wide"><label for="stock-product-search">Buscar produto para movimentar</label><input id="stock-product-search" type="search" maxlength="120" placeholder="Nome, SKU ou código de barras"><small>A lista de produtos será filtrada enquanto você digita.</small></div><div class="field wide"><label for="stock-product">Produto</label><select id="stock-product" name="product_id" required></select></div><div class="field"><label for="stock-quantity">Variação de quantidade</label><input id="stock-quantity" name="quantity" type="number" step="0.001" inputmode="decimal" required><small>Positivo para entrada; negativo para saída.</small></div><div class="field"><label for="stock-reason">Motivo</label><input id="stock-reason" name="reason" maxlength="240" minlength="3" placeholder="Ex.: Entrada de mercadoria" required></div><button class="btn" type="submit">Registrar movimentação</button></form><p id="stock-message" role="status" aria-live="polite" hidden></p><p class="panel-note">Produtos em quilos e litros aceitam até três casas decimais.</p></section>
       <section class="panel wide-panel"><h2>Vendas recebidas</h2><p>Eventos de venda enviados pelo caixa local de teste. Esta lista não comprova pagamento ou emissão fiscal e não baixa o estoque central.</p><ul class="data-list scroll-list" id="sales"></ul></section>
-      <section class="panel" id="team-panel" hidden><h2>Equipe</h2><p>Convide gerente ou operador para esta empresa.</p><ul class="data-list" id="team"></ul><form class="user-form" id="new-user"><div class="field"><label for="user-email">E-mail</label><input id="user-email" name="email" type="email" maxlength="254" required></div><div class="field"><label for="user-role">Papel</label><select id="user-role" name="role"><option value="manager">Gerente</option><option value="cashier">Operador</option></select></div><div class="field wide"><label for="user-password">Senha inicial</label><input id="user-password" name="password" type="password" autocomplete="new-password" minlength="8" aria-describedby="user-password-help" required><small id="user-password-help">Mínimo de 8 caracteres, com maiúscula, minúscula, número e símbolo.</small></div><button class="btn" type="submit">Adicionar usuário</button></form></section>
+      <section class="panel" id="team-panel" hidden><h2>Equipe</h2><p>Convide gerente ou operador para esta empresa.</p><ul class="data-list" id="team"></ul><form class="user-form" id="new-user"><div class="field"><label for="user-email">E-mail</label><input id="user-email" name="email" type="email" maxlength="254" required></div><div class="field"><label for="user-role">Papel</label><select id="user-role" name="role"><option value="manager">Gerente</option><option value="cashier">Operador</option></select></div><div class="field wide"><label for="user-password">Senha inicial</label><input id="user-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" aria-describedby="user-password-help" required><small id="user-password-help">Use de 8 a 128 caracteres, com maiúscula, minúscula, número e símbolo.</small></div><button class="btn" type="submit">Adicionar usuário</button></form><p id="user-message" role="status" aria-live="polite" hidden></p></section>
       <section class="panel wide-panel" id="audit-panel" hidden><h2>Atividade recente</h2><p>Eventos de criação registrados para sua empresa.</p><ul class="data-list" id="audit"></ul></section>
     </div>
-    <p id="dashboard-message" role="status" aria-live="polite" hidden></p>
   </main>
 </div>
 <script>
 'use strict';
 const $ = selector => document.querySelector(selector);
 const localFile = location.protocol === 'file:';
-const validPassword = value => value.length >= 8 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value);
+const validPassword = value => value.length >= 8 && value.length <= 128 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value);
 const fields = form => Object.fromEntries(new FormData(form).entries());
 function showMessage(target, message, kind='success'){
   target.textContent=message; target.className='form-message '+kind; target.hidden=!message;
+  target.setAttribute('role',kind==='error'?'alert':'status');
+  target.setAttribute('aria-live',kind==='error'?'assertive':'polite');
 }
-function busy(form, isBusy){const button=form.querySelector('button[type="submit"]');button.disabled=isBusy;button.setAttribute('aria-busy',String(isBusy))}
+function busy(form, isBusy){const button=form.querySelector('button[type="submit"]');button.disabled=isBusy;form.setAttribute('aria-busy',String(isBusy))}
 async function api(path,method='GET',data){
-  const response=await fetch(path,{method,credentials:'same-origin',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined});
-  let result;try{result=await response.json()}catch(_){throw Error('Resposta inválida do servidor.')}
-  if(!response.ok)throw Error(result.error||'Não foi possível concluir a solicitação.');
+  let response;
+  try{response=await fetch(path,{method,credentials:'same-origin',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined})}
+  catch(_){throw Error('Servidor indisponível. Confirme que o PDV2 está em execução e tente novamente.')}
+  let result;
+  try{result=await response.json()}catch(_){throw Error('O servidor enviou uma resposta inválida. Tente novamente.')}
+  if(!response.ok){const error=Error(result.error||'Não foi possível concluir a solicitação.');error.status=response.status;throw error}
   return result;
 }
 function tab(name){
@@ -151,24 +158,33 @@ function tab(name){
 }
 $('#tab-register').addEventListener('click',()=>tab('register'));
 $('#tab-login').addEventListener('click',()=>tab('login'));
-$('.tabs').addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();const next=$('#tab-register').getAttribute('aria-selected')==='true'?'login':'register';tab(next);$('#tab-'+next).focus()});
+$('.tabs').addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?'register':event.key==='End'?'login':$('#tab-register').getAttribute('aria-selected')==='true'?'login':'register';tab(next);$('#tab-'+next).focus()});
 document.querySelectorAll('[data-tab]').forEach(link=>link.addEventListener('click',()=>{
   tab(link.dataset.tab);
   const choice=link.dataset.plan;
   $('#register-context').textContent=choice&&choice!=='Essencial'?'Você demonstrou interesse no plano '+choice+'. Nesta fase, a conta é criada em teste no Essencial, sem cobrança.':'A conta será criada no Essencial em teste, sem cobrança.';
 }));
 function serverRequired(target){if(!localFile)return false;showMessage(target,'Para continuar, inicie python3 app.py e abra http://127.0.0.1:8000.','error');return true}
+function reportError(error,target,fallback){
+  if(error.status===401&&!$('#dashboard').hidden){
+    $('#marketing').hidden=false;$('#dashboard').hidden=true;$('.skip').href='#main';
+    tab('login');showMessage($('#auth-message'),'Sua sessão terminou. Entre novamente.','error');
+    location.hash='#acesso';$('#login-email').focus();return;
+  }
+  showMessage(target,error.message||fallback,'error');
+}
 async function submit(form,path,success,target=$('#auth-message')){
   if(serverRequired(target))return;
   const data=fields(form);
-  if(data.password&&['/api/register','/api/users'].includes(path)&&!validPassword(data.password)){showMessage(target,'Use ao menos 8 caracteres, com letra maiúscula, minúscula, número e símbolo.','error');return}
+  if(data.password&&['/api/register','/api/users'].includes(path)&&!validPassword(data.password)){showMessage(target,'Use de 8 a 128 caracteres, com letra maiúscula, minúscula, número e símbolo.','error');return}
+  showMessage(target,'');
   busy(form,true);
-  try{const result=await api(path,'POST',data);form.reset();await success(result)}
-  catch(error){showMessage(target,error.message||'Não foi possível acessar o servidor.','error')}
+  try{const result=await api(path,'POST',data);form.reset();await success(result,data)}
+  catch(error){reportError(error,target,'Não foi possível acessar o servidor.')}
   finally{busy(form,false)}
 }
-$('#register').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/register',async()=>{tab('login');showMessage($('#auth-message'),'Empresa criada. Entre com o e-mail e a senha cadastrados.');$('#login-email').focus()})});
-$('#login').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/login',async()=>{await refresh();window.scrollTo(0,0)})});
+$('#register').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/register',async(_result,data)=>{tab('login');$('#login-email').value=data.email.trim();showMessage($('#auth-message'),'Empresa criada. Entre com o e-mail e a senha cadastrados.');$('#login-email').focus()})});
+$('#login').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/login',async()=>{if(!await refresh())throw Error('Não foi possível abrir o painel. Tente entrar novamente.');window.scrollTo(0,0);$('#welcome').focus()})});
 const roleNames={owner:'Proprietário',manager:'Gerente',cashier:'Operador'};
 const statusNames={trial:'Em teste',active:'Ativo',past_due:'Pagamento pendente',suspended:'Suspenso',cancelled:'Cancelado'};
 const actionNames={'tenant.created':'Empresa criada','shop.created':'Loja adicionada','user.created':'Usuário adicionado','product.created':'Produto cadastrado','product.updated':'Produto alterado','stock.moved':'Estoque movimentado'};
@@ -193,7 +209,7 @@ function list(selector,rows,render,empty){
   if(!rows.length){const item=document.createElement('li');item.className='empty';item.textContent=empty;element.append(item);return}
   rows.forEach(row=>{const item=document.createElement('li');item.textContent=render(row);element.append(item)});
 }
-function searchOnInput(selector,render){
+function searchOnInput(selector,render,messageTarget){
   let timer;
   $(selector).addEventListener('input',()=>{
     clearTimeout(timer);
@@ -202,17 +218,19 @@ function searchOnInput(selector,render){
       try{
         const result=await api('/api/products?q='+encodeURIComponent(query));
         if(query===$(selector).value.trim())render(result.products);
-      }catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível buscar produtos.','error')}
+      }catch(error){if(query===$(selector).value.trim())reportError(error,$(messageTarget),'Não foi possível buscar produtos.')}
     },220);
   });
 }
-searchOnInput('#product-search',products=>list('#products',products,product=>product.name+' · '+product.sku+' · '+money.format(product.price_cents/100),'Nenhum produto encontrado.'));
-searchOnInput('#stock-product-search',products=>options($('#stock-product'),products,product=>product.id,product=>product.name+' ('+product.sku+')'));
+searchOnInput('#product-search',products=>list('#products',products,product=>product.name+' · '+product.sku+' · '+money.format(product.price_cents/100),'Nenhum produto encontrado.'),'#product-message');
+searchOnInput('#stock-product-search',products=>options($('#stock-product'),products,product=>product.id,product=>product.name+' ('+product.sku+')'),'#stock-message');
 async function refresh(){
-  if(localFile)return;
+  if(localFile)return false;
+  const wasDashboardVisible=!$('#dashboard').hidden;
   try{
     const [me,shops]=await Promise.all([api('/api/me'),api('/api/shops')]);
     $('#marketing').hidden=true;$('#dashboard').hidden=false;
+    $('.skip').href='#app-content';
     $('#welcome').textContent=me.tenant.name;$('#signed-email').textContent=me.user.email;
     $('#summary-plan').textContent={essential:'Essencial',management:'Gestão',advanced:'Avançado'}[me.subscription.plan_id]||me.subscription.plan_id;
     $('#summary-status').textContent=statusNames[me.subscription.status]||me.subscription.status;
@@ -253,40 +271,51 @@ async function refresh(){
       catch(_){list('#audit',[],()=>'', 'Não foi possível carregar a atividade.')}
     }
     showMessage($('#dashboard-message'),'');
+    return true;
   }catch(error){
-    $('#marketing').hidden=false;$('#dashboard').hidden=true;
-    if(error.message!=='Não autenticado')showMessage($('#auth-message'),error.message||'Não foi possível acessar o servidor.','error');
+    if(error.status===401){
+      $('#marketing').hidden=false;$('#dashboard').hidden=true;$('.skip').href='#main';
+      if(error.message!=='Não autenticado')showMessage($('#auth-message'),error.message,'error');
+    }else if(wasDashboardVisible){
+      showMessage($('#dashboard-message'),error.message||'Não foi possível atualizar o painel.','error');
+    }else{
+      $('#marketing').hidden=false;$('#dashboard').hidden=true;$('.skip').href='#main';
+      showMessage($('#auth-message'),error.message||'Não foi possível acessar o servidor.','error');
+    }
+    return false;
   }
 }
-$('#new-shop').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/shops',async()=>{await refresh();showMessage($('#dashboard-message'),'Loja adicionada.')},$('#dashboard-message'))});
+$('#new-shop').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/shops',async()=>{const updated=await refresh();showMessage($('#shop-message'),updated?'Loja adicionada.':'Loja adicionada, mas o painel não foi atualizado.',updated?'success':'error')},$('#shop-message'))});
 $('#new-product').addEventListener('submit',async event=>{
   event.preventDefault();const form=event.currentTarget;
   const data=fields(form);
   const price=Number(data.price),cost=Number(data.cost);
-  if(!Number.isFinite(price)||!Number.isFinite(cost)||price<0||cost<0){showMessage($('#dashboard-message'),'Informe preço e custo válidos.','error');return}
+  if(!Number.isFinite(price)||!Number.isFinite(cost)||price<0||cost<0){showMessage($('#product-message'),'Informe preço e custo válidos.','error');return}
   const payload={name:data.name,sku:data.sku,barcode:data.barcode||null,unit:data.unit,price_cents:Math.round(price*100),cost_cents:Math.round(cost*100)};
+  showMessage($('#product-message'),'');
   busy(form,true);
-  try{await api('/api/products','POST',payload);form.reset();await refresh();showMessage($('#dashboard-message'),'Produto cadastrado.')}
-  catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível cadastrar o produto.','error')}
+  try{await api('/api/products','POST',payload);form.reset();const updated=await refresh();showMessage($('#product-message'),updated?'Produto cadastrado.':'Produto cadastrado, mas o painel não foi atualizado.',updated?'success':'error')}
+  catch(error){reportError(error,$('#product-message'),'Não foi possível cadastrar o produto.')}
   finally{busy(form,false)}
 });
 $('#new-movement').addEventListener('submit',async event=>{
   event.preventDefault();const form=event.currentTarget;
   const data=fields(form),delta=Math.round(Number(data.quantity)*1000);
-  if(!Number.isSafeInteger(delta)||delta===0){showMessage($('#dashboard-message'),'Informe uma variação diferente de zero.','error');return}
+  if(!Number.isSafeInteger(delta)||delta===0){showMessage($('#stock-message'),'Informe uma variação diferente de zero.','error');return}
   const base={shop_id:$('#stock-shop').value,product_id:data.product_id,delta_milli:delta,reason:data.reason.trim()};
   const signature=JSON.stringify(base);
   if(form.dataset.pendingPayload!==signature){form.dataset.pendingPayload=signature;form.dataset.pendingKey=globalThis.crypto&&typeof globalThis.crypto.randomUUID==='function'?globalThis.crypto.randomUUID():String(Date.now())+'-'+Math.random()}
+  showMessage($('#stock-message'),'');
   busy(form,true);
-  try{await api('/api/stock/movements','POST',{...base,idempotency_key:form.dataset.pendingKey});form.reset();delete form.dataset.pendingPayload;delete form.dataset.pendingKey;await refresh();showMessage($('#dashboard-message'),'Movimentação de estoque registrada.')}
-  catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível registrar a movimentação.','error')}
+  try{await api('/api/stock/movements','POST',{...base,idempotency_key:form.dataset.pendingKey});form.reset();delete form.dataset.pendingPayload;delete form.dataset.pendingKey;const updated=await refresh();showMessage($('#stock-message'),updated?'Movimentação de estoque registrada.':'Movimentação registrada, mas o painel não foi atualizado.',updated?'success':'error')}
+  catch(error){reportError(error,$('#stock-message'),'Não foi possível registrar a movimentação.')}
   finally{busy(form,false)}
 });
-$('#new-user').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/users',async()=>{await refresh();showMessage($('#dashboard-message'),'Usuário adicionado.')},$('#dashboard-message'))});
-$('#logout').addEventListener('click',async()=>{try{await api('/api/logout','POST',{});await refresh();location.hash='#inicio'}catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível sair.','error')}});
+$('#new-user').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/users',async()=>{const updated=await refresh();showMessage($('#user-message'),updated?'Usuário adicionado.':'Usuário adicionado, mas o painel não foi atualizado.',updated?'success':'error')},$('#user-message'))});
+$('#logout').addEventListener('click',async()=>{try{await api('/api/logout','POST',{});$('#marketing').hidden=false;$('#dashboard').hidden=true;$('.skip').href='#main';location.hash='#inicio';$('#inicio h1').focus()}catch(error){reportError(error,$('#dashboard-message'),'Não foi possível sair.')}});
 if(localFile)$('#local-help').hidden=false;
 else{
-  api('/api/plans').then(result=>{const planMoney=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});result.plans.forEach(plan=>{const price=document.querySelector('[data-plan-price="'+plan.id+'"]');if(price)price.textContent=planMoney.format(plan.price_cents/100)})}).catch(()=>{});
+  api('/api/plans').then(result=>{const planMoney=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});result.plans.forEach(plan=>{const price=document.querySelector('[data-plan-price="'+plan.id+'"]');if(price)price.textContent=planMoney.format(plan.price_cents/100)})}).catch(()=>{$('#pricing-note').textContent+=' Não foi possível consultar os preços configurados no servidor agora.'});
   refresh();
 }
 </script>

@@ -29,11 +29,12 @@
 - [ ] Testes de carga e monitoramento.
 - [ ] Backup externo criptografado, retenção, alertas e restauração automatizada.
 - [ ] Pipeline de build/teste/deploy e ambiente de homologação implantado.
-- [ ] Conciliação do saldo central após sincronização de vendas e tratamento de divergências.
+- [x] Baixa idempotente no saldo central após sincronização de vendas.
+- [ ] Tratamento guiado de divergências de estoque e conflitos entre terminais.
 - [ ] Provisionamento de catálogo e licença no caixa local.
 - [ ] Interface operacional Windows, NFC-e, impressão física e integração de pagamentos.
 - [ ] Aplicativos Android e iOS.
 
 ## Próximo incremento recomendado
 
-Implementar catálogo multiempresa (`products`, código de barras e preço versionado), com importação assistida para um piloto de mercearia. Em paralelo, desenhar o contrato de sincronização e comprar os equipamentos de teste.
+Concluir o fluxo catálogo no SaaS → provisionamento do caixa local → venda local → sincronização → conciliação central → painel. Depois, validar impressão e NFC-e com equipamentos físicos, certificado e homologação fiscal. A pesquisa documental dos modelos está em [HARDWARE.md](HARDWARE.md).

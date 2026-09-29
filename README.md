@@ -25,7 +25,7 @@ Também é possível executar sem Docker: `python3 app.py` (Python 3.9+). O banc
 - Cadastro de empresas e loja principal; login, papéis e sessões.
 - Catálogo de produtos, busca, preços em centavos e estoque por loja com movimentações auditáveis.
 - Planos propostos na landing: R$ 149, R$ 229 e R$ 349/mês. A cobrança ainda não existe; contas novas ficam em teste no Essencial.
-- Registro de um terminal e ingestão idempotente de eventos locais; vendas recebidas aparecem no painel. O saldo central **ainda não é conciliado** com essas vendas.
+- Registro de um terminal e ingestão idempotente de eventos locais; vendas recebidas aparecem no painel com itens e pagamentos. O saldo central reflete uma única baixa por venda; ainda falta um fluxo operacional para tratar divergências.
 - [Caixa local experimental](local_pdv/README.md): abertura/fechamento, venda, pagamentos informados pelo operador, baixa local e outbox. Não emite NFC-e nem imprime em hardware.
 - [Backup local](backup.py) consistente, com verificação de integridade e hash. Falta cópia externa criptografada.
 
@@ -57,6 +57,9 @@ Os endpoints foram criados para prototipagem local. A página pública e o servi
 - [Estado real e critérios para piloto](docs/STATUS.md)
 - [Backlog](docs/BACKLOG.md)
 - [Pesquisa de periféricos](docs/HARDWARE.md)
+- [Sincronização de vendas e estoque](docs/SYNC-VENDAS.md)
 - [Preparação futura para Dokploy](docs/DEPLOY-DOKPLOY.md)
+- [Prompt mestre atualizado](docs/PROMPT-MESTRE.md)
+- [Plano comercial e conta para R$ 1 milhão/ano](docs/PLANO-COMERCIAL.md)
 
 O logo provisório está em `logo-pdv2.svg` e é um SVG editável. Consulte marca e domínio antes de adotá-lo comercialmente.

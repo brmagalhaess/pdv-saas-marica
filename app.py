@@ -97,6 +97,52 @@ def init_db():
           FOREIGN KEY(tenant_id, product_id) REFERENCES products(tenant_id, id),
           UNIQUE(tenant_id, idempotency_key)
         );
+        CREATE TABLE IF NOT EXISTS sales (
+          tenant_id TEXT NOT NULL REFERENCES tenants(id), id TEXT NOT NULL,
+          shop_id TEXT NOT NULL, terminal_id TEXT NOT NULL,
+          event_id TEXT NOT NULL UNIQUE, request_id TEXT NOT NULL,
+          cash_session_id TEXT NOT NULL, total_cents INTEGER NOT NULL,
+          change_cents INTEGER NOT NULL, created_at INTEGER NOT NULL,
+          received_at INTEGER NOT NULL, content_hash TEXT NOT NULL,
+          stock_status TEXT NOT NULL CHECK(stock_status IN ('ok','negative')),
+          PRIMARY KEY(tenant_id, id),
+          UNIQUE(tenant_id, terminal_id, request_id),
+          FOREIGN KEY(tenant_id, shop_id) REFERENCES shops(tenant_id, id),
+          FOREIGN KEY(tenant_id, terminal_id) REFERENCES terminals(tenant_id, id)
+        );
+        CREATE TABLE IF NOT EXISTS sale_items (
+          tenant_id TEXT NOT NULL, sale_id TEXT NOT NULL,
+          line_number INTEGER NOT NULL, product_id TEXT NOT NULL,
+          name TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0),
+          unit_price_cents INTEGER NOT NULL CHECK(unit_price_cents >= 0),
+          line_total_cents INTEGER NOT NULL CHECK(line_total_cents >= 0),
+          PRIMARY KEY(tenant_id, sale_id, line_number),
+          FOREIGN KEY(tenant_id, sale_id) REFERENCES sales(tenant_id, id)
+        );
+        CREATE TABLE IF NOT EXISTS sale_payments (
+          tenant_id TEXT NOT NULL, sale_id TEXT NOT NULL,
+          line_number INTEGER NOT NULL, method TEXT NOT NULL,
+          amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+          PRIMARY KEY(tenant_id, sale_id, line_number),
+          FOREIGN KEY(tenant_id, sale_id) REFERENCES sales(tenant_id, id)
+        );
+        CREATE TABLE IF NOT EXISTS sale_stock_movements (
+          tenant_id TEXT NOT NULL, sale_id TEXT NOT NULL,
+          shop_id TEXT NOT NULL, product_id TEXT NOT NULL,
+          delta_milli INTEGER NOT NULL CHECK(delta_milli < 0),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(tenant_id, sale_id, product_id),
+          FOREIGN KEY(tenant_id, sale_id) REFERENCES sales(tenant_id, id)
+        );
+        CREATE TABLE IF NOT EXISTS terminal_stock_movements (
+          tenant_id TEXT NOT NULL, adjustment_id TEXT NOT NULL,
+          event_id TEXT NOT NULL UNIQUE, shop_id TEXT NOT NULL,
+          terminal_id TEXT NOT NULL, product_id TEXT NOT NULL,
+          delta_milli INTEGER NOT NULL CHECK(delta_milli != 0),
+          reason TEXT NOT NULL, created_at INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          PRIMARY KEY(tenant_id, terminal_id, adjustment_id)
+        );
         CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
         CREATE INDEX IF NOT EXISTS idx_shops_tenant ON shops(tenant_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_shops_tenant_id ON shops(tenant_id, id);
@@ -104,7 +150,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_products_tenant ON products(tenant_id, name);
         CREATE INDEX IF NOT EXISTS idx_stock_tenant_shop_product ON stock_movements(tenant_id, shop_id, product_id);
         CREATE INDEX IF NOT EXISTS idx_terminals_tenant ON terminals(tenant_id, shop_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_terminals_tenant_id ON terminals(tenant_id, id);
         CREATE INDEX IF NOT EXISTS idx_sync_events_tenant ON sync_events(tenant_id, received_at);
+        CREATE INDEX IF NOT EXISTS idx_sales_page ON sales(tenant_id, received_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_sale_stock_shop ON sale_stock_movements(tenant_id, shop_id, product_id);
+        CREATE INDEX IF NOT EXISTS idx_terminal_stock_shop ON terminal_stock_movements(tenant_id, shop_id, product_id);
         """)
         conn.executemany("INSERT OR IGNORE INTO plans VALUES (?,?,?,?,1)", [
             ("essential", "Essencial", 14900, 1),
@@ -180,6 +230,164 @@ def product_payload(data, existing=None):
         raise ValueError("Estado do produto inválido")
     result["active"] = active
     return result
+
+
+def valid_positive_int(value, maximum=10**12):
+    return type(value) is int and 0 < value <= maximum
+
+
+def validate_sale(data):
+    """Validate the immutable financial snapshot sent by the offline terminal."""
+    if not isinstance(data, dict):
+        raise ValueError("Venda inválida")
+    for name in ("request_id", "cash_session_id"):
+        value = data.get(name)
+        if not isinstance(value, str) or not 1 <= len(value) <= 160:
+            raise ValueError(f"{name} inválido")
+    if (not valid_positive_int(data.get("total_cents")) or
+        type(data.get("change_cents")) is not int or not 0 <= data["change_cents"] <= 10**12 or
+        type(data.get("created_at")) is not int or not 0 < data["created_at"] <= 2**63 - 1):
+        raise ValueError("Totais ou data da venda inválidos")
+    items, payments = data.get("items"), data.get("payments")
+    if not isinstance(items, list) or not 1 <= len(items) <= 200:
+        raise ValueError("Itens da venda inválidos")
+    if not isinstance(payments, list) or not 1 <= len(payments) <= 20:
+        raise ValueError("Pagamentos da venda inválidos")
+    seen, total, normalized_items = set(), 0, []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Item inválido")
+        product_id, name = item.get("product_id"), item.get("name")
+        quantity, price, line_total = (item.get("quantity"), item.get("unit_price_cents"),
+                                       item.get("line_total_cents"))
+        if (not isinstance(product_id, str) or not 1 <= len(product_id) <= 160 or
+            product_id in seen or not isinstance(name, str) or not 1 <= len(name.strip()) <= 160 or
+            not valid_positive_int(quantity, 10**6) or
+            type(price) is not int or not 0 <= price <= 10**12 or
+            type(line_total) is not int or line_total != quantity * price or line_total > 10**12):
+            raise ValueError("Item inválido")
+        seen.add(product_id)
+        total += line_total
+        normalized_items.append({"product_id": product_id, "name": name.strip(),
+                                 "quantity": quantity, "unit_price_cents": price,
+                                 "line_total_cents": line_total})
+    if total != data["total_cents"]:
+        raise ValueError("Total da venda não confere com os itens")
+    paid, cash_paid, normalized_payments = 0, 0, []
+    for payment in payments:
+        if (not isinstance(payment, dict) or payment.get("method") not in ("cash", "pix", "card") or
+            not valid_positive_int(payment.get("amount_cents"))):
+            raise ValueError("Pagamento inválido")
+        amount = payment["amount_cents"]
+        paid += amount
+        if payment["method"] == "cash":
+            cash_paid += amount
+        normalized_payments.append({"method": payment["method"], "amount_cents": amount})
+    if paid != total + data["change_cents"] or data["change_cents"] > cash_paid:
+        raise ValueError("Pagamentos não fecham a venda")
+    return normalized_items, normalized_payments
+
+
+def validate_terminal_adjustment(data):
+    if not isinstance(data, dict):
+        raise ValueError("Ajuste inválido")
+    product_id, reason, delta, created_at = (data.get("product_id"), data.get("reason"),
+                                             data.get("delta"), data.get("created_at"))
+    if (not isinstance(product_id, str) or not 1 <= len(product_id) <= 160 or
+        not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 240 or
+        type(delta) is not int or delta == 0 or abs(delta) > 10**6 or
+        type(created_at) is not int or not 0 < created_at <= 2**63 - 1):
+        raise ValueError("Ajuste inválido")
+    return product_id, delta * 1000, reason.strip(), created_at
+
+
+def stock_balance(conn, tenant_id, shop_id, product_id):
+    """Central ledger: manual movements + terminal adjustments + one debit per sale."""
+    return conn.execute("""SELECT
+        (SELECT COALESCE(SUM(delta_milli),0) FROM stock_movements
+         WHERE tenant_id=? AND shop_id=? AND product_id=?) +
+        (SELECT COALESCE(SUM(delta_milli),0) FROM terminal_stock_movements
+         WHERE tenant_id=? AND shop_id=? AND product_id=?) +
+        (SELECT COALESCE(SUM(delta_milli),0) FROM sale_stock_movements
+         WHERE tenant_id=? AND shop_id=? AND product_id=?) AS balance""",
+        (tenant_id, shop_id, product_id) * 3).fetchone()["balance"]
+
+
+class SyncConflict(Exception):
+    pass
+
+
+def persist_sale(conn, terminal, event):
+    """Materialize one immutable sale and one central stock debit per item."""
+    tenant_id, shop_id, terminal_id = (terminal["tenant_id"], terminal["shop_id"], terminal["id"])
+    sale_id, sale = event["aggregate_id"], event["data"]
+    items, payments = validate_sale(sale)
+    content = json.dumps(sale, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    previous = conn.execute("""SELECT terminal_id,content_hash FROM sales
+        WHERE tenant_id=? AND id=?""", (tenant_id, sale_id)).fetchone()
+    if previous:
+        if previous["terminal_id"] != terminal_id or previous["content_hash"] != content_hash:
+            raise SyncConflict("Venda já recebida com conteúdo diferente")
+        return
+    same_request = conn.execute("""SELECT id FROM sales
+        WHERE tenant_id=? AND terminal_id=? AND request_id=?""",
+        (tenant_id, terminal_id, sale["request_id"])).fetchone()
+    if same_request:
+        raise SyncConflict("Identificador de venda já usado por outra venda")
+    stock_status = "ok"
+    for item in items:
+        exists = conn.execute("SELECT 1 FROM products WHERE tenant_id=? AND id=?",
+                              (tenant_id, item["product_id"])).fetchone()
+        if not exists:
+            raise ValueError("Produto da venda não pertence à empresa")
+        if stock_balance(conn, tenant_id, shop_id, item["product_id"]) - item["quantity"] * 1000 < 0:
+            stock_status = "negative"
+    received_at = int(time.time())
+    conn.execute("""INSERT INTO sales
+        (tenant_id,id,shop_id,terminal_id,event_id,request_id,cash_session_id,total_cents,
+         change_cents,created_at,received_at,content_hash,stock_status)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (tenant_id, sale_id, shop_id, terminal_id, event["event_id"], sale["request_id"],
+         sale["cash_session_id"], sale["total_cents"], sale["change_cents"],
+         sale["created_at"], received_at, content_hash, stock_status))
+    conn.executemany("""INSERT INTO sale_items
+        (tenant_id,sale_id,line_number,product_id,name,quantity,unit_price_cents,line_total_cents)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        [(tenant_id, sale_id, number, item["product_id"], item["name"], item["quantity"],
+          item["unit_price_cents"], item["line_total_cents"])
+         for number, item in enumerate(items)])
+    conn.executemany("""INSERT INTO sale_payments
+        (tenant_id,sale_id,line_number,method,amount_cents) VALUES (?,?,?,?,?)""",
+        [(tenant_id, sale_id, number, payment["method"], payment["amount_cents"])
+         for number, payment in enumerate(payments)])
+    conn.executemany("""INSERT INTO sale_stock_movements
+        (tenant_id,sale_id,shop_id,product_id,delta_milli,created_at)
+        VALUES (?,?,?,?,?,?)""",
+        [(tenant_id, sale_id, shop_id, item["product_id"], -item["quantity"] * 1000,
+          sale["created_at"]) for item in items])
+
+
+def persist_terminal_adjustment(conn, terminal, event):
+    tenant_id, shop_id, terminal_id = (terminal["tenant_id"], terminal["shop_id"], terminal["id"])
+    product_id, delta_milli, reason, created_at = validate_terminal_adjustment(event["data"])
+    content = json.dumps(event["data"], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    previous = conn.execute("""SELECT content_hash FROM terminal_stock_movements
+        WHERE tenant_id=? AND terminal_id=? AND adjustment_id=?""",
+        (tenant_id, terminal_id, event["aggregate_id"])).fetchone()
+    if previous:
+        if previous["content_hash"] != content_hash:
+            raise SyncConflict("Ajuste já recebido com conteúdo diferente")
+        return
+    if not conn.execute("SELECT 1 FROM products WHERE tenant_id=? AND id=?",
+                        (tenant_id, product_id)).fetchone():
+        raise ValueError("Produto do ajuste não pertence à empresa")
+    conn.execute("""INSERT INTO terminal_stock_movements
+        (tenant_id,adjustment_id,event_id,shop_id,terminal_id,product_id,delta_milli,
+         reason,created_at,content_hash) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (tenant_id, event["aggregate_id"], event["event_id"], shop_id, terminal_id,
+         product_id, delta_milli, reason, created_at, content_hash))
 
 
 class API(BaseHTTPRequestHandler):
@@ -285,18 +493,51 @@ class API(BaseHTTPRequestHandler):
                     WHERE tenant_id=? ORDER BY created_at""", (user["tenant_id"],)).fetchall()
                 return self.respond(200, {"terminals": [dict(x) for x in rows]})
             if path == "/api/sales":
-                rows = conn.execute("""SELECT event_id,shop_id,terminal_id,aggregate_id,payload,received_at
-                    FROM sync_events WHERE tenant_id=? AND event_type='sale.completed'
-                    ORDER BY received_at DESC LIMIT 100""", (user["tenant_id"],)).fetchall()
-                sales = []
-                for row in rows:
-                    event = json.loads(row["payload"])
-                    sales.append({"id": row["aggregate_id"], "shop_id": row["shop_id"],
-                                  "terminal_id": row["terminal_id"],
-                                  "total_cents": event["data"]["total_cents"],
-                                  "created_at": event["data"]["created_at"],
-                                  "received_at": row["received_at"]})
-                return self.respond(200, {"sales": sales})
+                query = parse_qs(parsed.query)
+                try:
+                    limit = int(query.get("limit", ["50"])[0])
+                    if not 1 <= limit <= 100:
+                        raise ValueError
+                    cursor = query.get("cursor", [""])[0]
+                    if cursor:
+                        cursor_time, cursor_id = cursor.split(":", 1)
+                        cursor_time = int(cursor_time)
+                        if not 0 <= cursor_time <= 2**63 - 1 or not 1 <= len(cursor_id) <= 160:
+                            raise ValueError
+                except ValueError:
+                    return self.respond(400, {"error": "Paginação inválida"})
+                shop_id = query.get("shop_id", [""])[0]
+                if shop_id and not conn.execute("SELECT 1 FROM shops WHERE tenant_id=? AND id=?",
+                                                (user["tenant_id"], shop_id)).fetchone():
+                    return self.respond(404, {"error": "Loja não encontrada"})
+                where, params = "tenant_id=?", [user["tenant_id"]]
+                if shop_id:
+                    where += " AND shop_id=?"
+                    params.append(shop_id)
+                if cursor:
+                    where += " AND (received_at<? OR (received_at=? AND id<?))"
+                    params.extend((cursor_time, cursor_time, cursor_id))
+                rows = conn.execute(f"""SELECT id,shop_id,terminal_id,total_cents,change_cents,
+                    created_at,received_at,stock_status FROM sales WHERE {where}
+                    ORDER BY received_at DESC,id DESC LIMIT ?""", (*params, limit + 1)).fetchall()
+                page = rows[:limit]
+                next_cursor = f"{page[-1]['received_at']}:{page[-1]['id']}" if len(rows) > limit else None
+                return self.respond(200, {"sales": [dict(row) for row in page], "next_cursor": next_cursor})
+            if path.startswith("/api/sales/"):
+                sale_id = path.removeprefix("/api/sales/")
+                row = conn.execute("""SELECT id,shop_id,terminal_id,event_id,request_id,cash_session_id,
+                    total_cents,change_cents,created_at,received_at,stock_status
+                    FROM sales WHERE tenant_id=? AND id=?""", (user["tenant_id"], sale_id)).fetchone()
+                if not row:
+                    return self.respond(404, {"error": "Venda não encontrada"})
+                sale = dict(row)
+                sale["items"] = [dict(item) for item in conn.execute("""SELECT product_id,name,quantity,
+                    unit_price_cents,line_total_cents FROM sale_items
+                    WHERE tenant_id=? AND sale_id=? ORDER BY line_number""", (user["tenant_id"], sale_id))]
+                sale["payments"] = [dict(payment) for payment in conn.execute("""SELECT method,amount_cents
+                    FROM sale_payments WHERE tenant_id=? AND sale_id=? ORDER BY line_number""",
+                    (user["tenant_id"], sale_id))]
+                return self.respond(200, {"sale": sale})
             if path == "/api/products":
                 query = parse_qs(parsed.query)
                 search = query.get("q", [""])[0].strip()
@@ -329,11 +570,15 @@ class API(BaseHTTPRequestHandler):
                 if not shop:
                     return self.respond(404, {"error": "Loja não encontrada"})
                 rows = conn.execute("""SELECT p.id AS product_id,p.sku,p.name,p.unit,p.active,
-                    COALESCE(SUM(m.delta_milli),0) AS quantity_milli
-                    FROM products p LEFT JOIN stock_movements m ON m.tenant_id=p.tenant_id
-                      AND m.product_id=p.id AND m.shop_id=?
-                    WHERE p.tenant_id=? GROUP BY p.id ORDER BY p.name,p.id LIMIT 1000""",
-                    (shop_id, user["tenant_id"])).fetchall()
+                    COALESCE((SELECT SUM(delta_milli) FROM stock_movements m
+                      WHERE m.tenant_id=p.tenant_id AND m.shop_id=? AND m.product_id=p.id),0) +
+                    COALESCE((SELECT SUM(delta_milli) FROM terminal_stock_movements a
+                      WHERE a.tenant_id=p.tenant_id AND a.shop_id=? AND a.product_id=p.id),0) +
+                    COALESCE((SELECT SUM(delta_milli) FROM sale_stock_movements s
+                      WHERE s.tenant_id=p.tenant_id AND s.shop_id=? AND s.product_id=p.id),0)
+                    AS quantity_milli FROM products p
+                    WHERE p.tenant_id=? ORDER BY p.name,p.id LIMIT 1000""",
+                    (shop_id, shop_id, shop_id, user["tenant_id"])).fetchall()
                 return self.respond(200, {"shop_id": shop_id, "stock": [dict(x) for x in rows]})
             if path == "/api/stock/movements":
                 query = parse_qs(parsed.query)
@@ -342,10 +587,24 @@ class API(BaseHTTPRequestHandler):
                 if not shop:
                     return self.respond(404, {"error": "Loja não encontrada"})
                 product_id = query.get("product_id", [""])[0]
-                rows = conn.execute("""SELECT id,shop_id,product_id,delta_milli,reason,reference,created_by,created_at
-                    FROM stock_movements WHERE tenant_id=? AND shop_id=?
-                      AND (?='' OR product_id=?) ORDER BY created_at DESC,id DESC LIMIT 100""",
-                    (user["tenant_id"], shop_id, product_id, product_id)).fetchall()
+                rows = conn.execute("""SELECT id,shop_id,product_id,delta_milli,reason,reference,
+                    created_by,created_at,source,terminal_id,sale_id FROM (
+                    SELECT id,shop_id,product_id,delta_milli,reason,reference,created_by,created_at,
+                      'manual' AS source,NULL AS terminal_id,NULL AS sale_id,created_at AS sort_at
+                    FROM stock_movements WHERE tenant_id=? AND shop_id=? AND (?='' OR product_id=?)
+                    UNION ALL
+                    SELECT adjustment_id AS id,shop_id,product_id,delta_milli,reason,
+                      NULL AS reference,NULL AS created_by,created_at,
+                      'terminal_adjustment' AS source,terminal_id,NULL AS sale_id,created_at / 1000 AS sort_at
+                    FROM terminal_stock_movements WHERE tenant_id=? AND shop_id=? AND (?='' OR product_id=?)
+                    UNION ALL
+                    SELECT s.sale_id || ':' || s.product_id AS id,s.shop_id,s.product_id,s.delta_milli,
+                      'Venda' AS reason,s.sale_id AS reference,NULL AS created_by,s.created_at,
+                      'sale' AS source,v.terminal_id,s.sale_id,v.received_at AS sort_at
+                    FROM sale_stock_movements s JOIN sales v ON v.tenant_id=s.tenant_id AND v.id=s.sale_id
+                    WHERE s.tenant_id=? AND s.shop_id=? AND (?='' OR s.product_id=?))
+                    ORDER BY sort_at DESC,id DESC LIMIT 100""",
+                    (user["tenant_id"], shop_id, product_id, product_id) * 3).fetchall()
                 return self.respond(200, {"movements": [dict(x) for x in rows]})
             if path == "/api/users":
                 if user["role"] not in ("owner", "manager"):
@@ -388,33 +647,42 @@ class API(BaseHTTPRequestHandler):
                         return self.respond(403, {"error": "Identidade do evento não corresponde ao terminal"})
                     if (not isinstance(event["event_id"], str) or len(event["event_id"]) != 32 or
                         not all(c in "0123456789abcdef" for c in event["event_id"]) or
-                        event["type"] not in allowed_types or
+                        not isinstance(event["type"], str) or event["type"] not in allowed_types or
                         not isinstance(event["aggregate_id"], str) or not 1 <= len(event["aggregate_id"]) <= 160 or
                         not isinstance(event["data"], dict)):
                         return self.respond(400, {"error": "Campos do evento inválidos"})
-                    if event["type"] == "sale.completed":
-                        sale = event["data"]
-                        if (type(sale.get("total_cents")) is not int or sale["total_cents"] <= 0 or
-                            type(sale.get("created_at")) is not int or
-                            not isinstance(sale.get("items"), list) or not sale["items"]):
-                            return self.respond(400, {"error": "Venda inválida"})
+                    try:
+                        if event["type"] == "sale.completed":
+                            validate_sale(event["data"])
+                        elif event["type"] == "stock.adjusted":
+                            validate_terminal_adjustment(event["data"])
+                    except ValueError as exc:
+                        return self.respond(400, {"error": str(exc)})
                     payload = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                     prepared.append((event, payload, hashlib.sha256(payload.encode()).hexdigest()))
                 conn.execute("BEGIN IMMEDIATE")
                 accepted = []
-                for event, payload, digest in prepared:
-                    prior = conn.execute("SELECT tenant_id,terminal_id,payload_hash FROM sync_events WHERE event_id=?",
-                                         (event["event_id"],)).fetchone()
-                    if prior:
-                        if (prior["tenant_id"], prior["terminal_id"], prior["payload_hash"]) != (terminal["tenant_id"], terminal["id"], digest):
-                            conn.rollback()
-                            return self.respond(409, {"error": "Evento já recebido com conteúdo diferente"})
-                    else:
-                        conn.execute("""INSERT INTO sync_events VALUES (?,?,?,?,?,?,?,?,?)""",
-                            (event["event_id"], terminal["tenant_id"], terminal["shop_id"],
-                             terminal["id"], event["type"], event["aggregate_id"],
-                             payload, digest, int(time.time())))
-                    accepted.append(event["event_id"])
+                try:
+                    for event, payload, digest in prepared:
+                        prior = conn.execute("SELECT tenant_id,terminal_id,payload_hash FROM sync_events WHERE event_id=?",
+                                             (event["event_id"],)).fetchone()
+                        if prior:
+                            if (prior["tenant_id"], prior["terminal_id"], prior["payload_hash"]) != (terminal["tenant_id"], terminal["id"], digest):
+                                raise SyncConflict("Evento já recebido com conteúdo diferente")
+                        else:
+                            conn.execute("""INSERT INTO sync_events VALUES (?,?,?,?,?,?,?,?,?)""",
+                                (event["event_id"], terminal["tenant_id"], terminal["shop_id"],
+                                 terminal["id"], event["type"], event["aggregate_id"],
+                                 payload, digest, int(time.time())))
+                        if event["type"] == "sale.completed":
+                            persist_sale(conn, terminal, event)
+                        elif event["type"] == "stock.adjusted":
+                            persist_terminal_adjustment(conn, terminal, event)
+                        accepted.append(event["event_id"])
+                except (ValueError, SyncConflict, sqlite3.IntegrityError) as exc:
+                    conn.rollback()
+                    return self.respond(409 if isinstance(exc, SyncConflict) else 400,
+                                        {"error": str(exc) if not isinstance(exc, sqlite3.IntegrityError) else "Evento conflitante"})
                 conn.commit()
                 return self.respond(200, {"accepted_event_ids": accepted})
             if path == "/api/register":
@@ -559,9 +827,7 @@ class API(BaseHTTPRequestHandler):
                 product = conn.execute("SELECT id FROM products WHERE tenant_id=? AND id=? AND active=1", (user["tenant_id"], product_id)).fetchone()
                 if not shop or not product:
                     return self.respond(404, {"error": "Loja ou produto não encontrado"})
-                balance = conn.execute("""SELECT COALESCE(SUM(delta_milli),0) AS quantity_milli
-                    FROM stock_movements WHERE tenant_id=? AND shop_id=? AND product_id=?""",
-                    (user["tenant_id"], shop_id, product_id)).fetchone()["quantity_milli"]
+                balance = stock_balance(conn, user["tenant_id"], shop_id, product_id)
                 if balance + delta < 0:
                     return self.respond(409, {"error": "Estoque insuficiente para a movimentação"})
                 movement_id, now = new_id(), int(time.time())
