@@ -100,6 +100,19 @@ class CloudAPITests(TestCase):
                                "delta_milli": 500, "reason": "Carga", "idempotency_key": "half-unit"})
         self.assertEqual(fractional.status_code, 400)
 
+    def test_product_gets_local_image_default_and_accepts_custom_image(self):
+        self.client.force_login(self.owner)
+        created = self.api("POST", "/api/v1/products",
+                           {"name": "Leite integral", "price_cents": 499,
+                            "category_id": None})
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertTrue(created.json()["image_url"].endswith("/beverages.svg"))
+        product_id = created.json()["id"]
+        updated = self.api("PATCH", f"/api/v1/products/{product_id}",
+                           {"image_url": "https://cdn.example.test/leite.png"})
+        self.assertEqual(updated.status_code, 200, updated.content)
+        self.assertEqual(updated.json()["image_url"], "https://cdn.example.test/leite.png")
+
     def test_last_owner_and_plan_features(self):
         self.client.force_login(self.owner)
         self.assertEqual(self.api("PATCH", f"/api/v1/users/{self.member.id}", {"active": False}).status_code, 409)
