@@ -1,0 +1,8 @@
+.git
+*.sqlite3
+*.sqlite3-*
+__pycache__
+*.pyc
+tests
+local_pdv/tests
+docs

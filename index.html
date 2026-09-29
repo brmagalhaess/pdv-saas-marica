@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#12352b">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <meta name="description" content="PDV2 para mercados e mercearias. Planos pensados para começar com uma loja e um terminal.">
+  <title>PDV2 — mais ritmo para o seu negócio</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17352b;background:#f7f9f5;--dark:#12352b;--green:#178453;--light:#dff4e5;--ink:#17352b;--muted:#627568;--line:#dfe8df}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-width:320px}button,input,select{font:inherit}button{cursor:pointer}a{color:inherit}[hidden]{display:none!important}:focus-visible{outline:3px solid #eeb648;outline-offset:3px}.container{width:min(1150px,calc(100% - 48px));margin:auto}
+    .skip{position:absolute;top:-70px;left:12px;z-index:100;background:white;padding:10px}.skip:focus{top:10px}
+    .notice{padding:9px 20px;text-align:center;background:var(--dark);color:#ccebd4;font-size:12px}.notice strong{color:white}
+    header.site{position:sticky;top:0;z-index:20;background:#fffc;border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}
+    nav.main{display:flex;align-items:center;gap:30px;min-height:74px}.brand{display:inline-flex;align-items:center;gap:10px;font-size:20px;font-weight:850;letter-spacing:-.05em;text-decoration:none;white-space:nowrap}.brand b{color:var(--green)}.brand-mark{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;background:var(--green);color:white;font-size:22px;letter-spacing:0}
+    .navlinks{display:flex;gap:27px;margin-left:auto}.navlinks a{text-decoration:none;color:#526c5a;font-size:13px;font-weight:650}.navlinks a:hover{color:var(--green)}
+    .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:46px;padding:11px 18px;border:1px solid transparent;border-radius:10px;background:var(--green);color:#fff;font-size:13px;font-weight:750;text-decoration:none;transition:transform .16s,background .16s}.btn:hover{background:#0c6e43;transform:translateY(-1px)}.btn:disabled{opacity:.6;cursor:wait}.btn.ghost{background:white;color:var(--dark);border-color:#ccdcd0}.btn.ghost:hover{background:#edf8ef}.btn.white{background:white;color:var(--dark)}.btn.small{min-height:39px;padding:8px 14px}
+    .hero{position:relative;overflow:hidden;padding:96px 0 88px;background:radial-gradient(circle at 74% 13%,#dff7e4,transparent 35%),linear-gradient(145deg,#fffefa,#f4fbf4)}.hero-grid{display:grid;grid-template-columns:1.04fr .96fr;gap:5vw;align-items:center}.eyebrow{display:inline-flex;align-items:center;gap:9px;color:#16784e;text-transform:uppercase;letter-spacing:.11em;font-size:11px;font-weight:850}.eyebrow:before{content:"";width:7px;height:7px;background:#1dac6e;border-radius:50%;box-shadow:0 0 0 4px #dff4e2}
+    h1,h2,h3,p{margin-top:0}h1{font-size:clamp(44px,5vw,70px);line-height:1.05;letter-spacing:-.065em;margin:21px 0}h1 em{font-style:normal;color:var(--green)}h2{font-size:clamp(30px,3.4vw,46px);letter-spacing:-.05em;line-height:1.15;margin:14px 0}h3{letter-spacing:-.025em}.lead{color:#526b5d;line-height:1.75;font-size:17px;max-width:580px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:29px 0 14px}.small-note{color:var(--muted);font-size:12px;line-height:1.6}.checks{display:flex;gap:12px 20px;flex-wrap:wrap;list-style:none;padding:0;margin:35px 0 0;color:#3e624e;font-size:12px;font-weight:750}.checks li:before{content:"✓";display:inline-grid;place-items:center;width:21px;height:21px;margin-right:7px;border-radius:50%;background:#daf4e2;color:#087949}
+    .mock-wrap{position:relative}.mock-wrap:before{content:"";position:absolute;inset:24px -16px -20px 20px;transform:rotate(4deg);background:#c4ecd0;border-radius:24px}.mock{position:relative;overflow:hidden;border:1px solid #deeadf;border-radius:19px;background:#fff;box-shadow:0 30px 70px #164d2b29}.mock-head{padding:18px 22px;border-bottom:1px solid #e9efe9;display:flex;justify-content:space-between;gap:10px;align-items:center;font-weight:800;font-size:13px}.badge{padding:7px 9px;border-radius:20px;background:#e4f6e8;color:#18774d;font-size:10px;font-weight:800}.mock-body{display:grid;grid-template-columns:1.25fr .75fr}.mock-items,.mock-total{padding:23px}.mock-total{background:#f5faf5;border-left:1px solid #e9efe9}.mock-label{color:#81958a;font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:.13em}.mock-row{display:flex;align-items:center;gap:10px;padding:13px 0;border-bottom:1px solid #edf1eb;font-size:12px}.mock-row:last-child{border:0}.mock-row i{display:grid;place-items:center;width:29px;height:29px;background:#f1f5e9;border-radius:7px;font-style:normal}.mock-row span{flex:1}.mock-row small{display:block;color:#8b998d;margin-top:3px}.mock-row strong{white-space:nowrap}.mock-sum{display:flex;align-items:end;justify-content:space-between;gap:6px;margin:35px 0 14px;color:#61776a;font-size:11px}.mock-sum strong{color:var(--dark);font-size:25px;letter-spacing:-.05em}.fake-button{padding:12px;background:var(--green);color:white;border-radius:7px;text-align:center;font-size:11px;font-weight:800}.mock-total p:last-child{font-size:10px;color:#829789;line-height:1.5;margin:12px 0 0}
+    section.section{padding:90px 0}.section-head{max-width:650px}.section-head.center{text-align:center;margin:auto}.section-head p{color:var(--muted);font-size:15px;line-height:1.75}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:37px}.card{min-height:217px;padding:27px;background:white;border:1px solid var(--line);border-radius:16px;box-shadow:0 9px 30px #0a362106}.icon{display:grid;place-items:center;width:43px;height:43px;margin-bottom:26px;border-radius:11px;background:#e4f5e8;color:#0e7346;font-size:21px}.card h3{font-size:17px;margin-bottom:9px}.card p{font-size:13px;line-height:1.65;color:var(--muted);margin-bottom:11px}.state{font-size:11px;font-weight:850;color:#137247}.state.future{color:#9a7943}
+    .steps-section{background:var(--dark);color:white}.steps-section .section-head p,.step p{color:#b5d2bf}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:45px}.step{border-top:1px solid #ffffff3b;padding-top:22px}.step b{display:block;margin-bottom:31px;color:#88daa4;font-size:12px}.step h3{font-size:18px;margin-bottom:8px}.step p{font-size:13px;line-height:1.7}
+    .pricing{background:#fffcf5}.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:42px}.plan{position:relative;display:flex;flex-direction:column;background:white;border:1px solid #e4eade;border-radius:16px;padding:28px;box-shadow:0 8px 30px #1f3d1c08}.plan.featured{border:2px solid var(--green);padding:27px;box-shadow:0 20px 50px #1b58321a}.ribbon{position:absolute;right:20px;top:-13px;padding:7px 11px;color:#fff;background:var(--green);border-radius:20px;font-size:10px;font-weight:850;text-transform:uppercase}.plan-name{font-size:12px;color:#6b806f;font-weight:850;letter-spacing:.11em;text-transform:uppercase}.price{margin:17px 0 9px}.price strong{font-size:42px;letter-spacing:-.06em}.price span{font-size:12px;color:var(--muted)}.plan>p{font-size:13px;color:var(--muted);line-height:1.6;min-height:41px}.plan>.btn{width:100%;margin:10px 0 20px}.plan ul{list-style:none;padding:19px 0 0;margin:auto 0 0;border-top:1px solid var(--line)}.plan li{display:flex;gap:9px;margin:10px 0;font-size:12px;color:#4c6654;line-height:1.5}.plan li:before{content:"✓";color:var(--green);font-weight:850}.pricing-note{max-width:830px;margin:22px auto 0;color:var(--muted);font-size:12px;line-height:1.7;text-align:center}
+    .account{padding:90px 0;background:linear-gradient(140deg,#e6f5e8,#f8fbf6 65%)}.account-grid{display:grid;grid-template-columns:.82fr 1fr;gap:7vw;align-items:center}.account-copy p{font-size:14px;line-height:1.75;color:var(--muted)}.account-copy ul{list-style:none;padding:0;margin:24px 0;color:#315c43;font-size:13px;font-weight:720}.account-copy li{margin:13px 0}.account-copy li:before{content:"✓";color:var(--green);margin-right:10px}.auth{background:white;border:1px solid #dce8dd;border-radius:19px;overflow:hidden;box-shadow:0 20px 55px #103d2418}.tabs{display:grid;grid-template-columns:1fr 1fr;padding:6px;background:#f7faf7;border-bottom:1px solid var(--line)}.tabs button{padding:13px;border:0;border-radius:9px;background:transparent;color:#6e8073;font-weight:800;font-size:13px}.tabs button[aria-selected=true]{background:white;color:var(--dark);box-shadow:0 3px 12px #1a392112}.auth-body{padding:29px}.auth-body h3{font-size:22px;margin-bottom:7px}.auth-body p{font-size:12px;line-height:1.6;color:var(--muted)}.field{margin-top:15px}.field label{display:block;margin-bottom:7px;font-size:12px;font-weight:800;color:#385344}.field input,.field select{width:100%;min-height:43px;padding:10px 12px;border:1px solid #cbdbcd;border-radius:8px;background:white;color:var(--ink);outline:none}.field input:focus,.field select:focus{border-color:var(--green);box-shadow:0 0 0 3px #dbf3df}.field input::placeholder{color:#a0afa3}.field small{display:block;margin-top:6px;font-size:11px;line-height:1.5;color:var(--muted)}.auth form>.btn{width:100%;margin-top:20px}.form-message,.local-help{padding:11px 13px;border-radius:8px;font-size:12px;line-height:1.6;margin:14px 0 0}.form-message.success{background:#e3f7e9;color:#075f38}.form-message.error{background:#fff0ea;color:#9a3b2b}.local-help{margin:0 0 16px;background:#fff5da;color:#775b26;border:1px solid #efdda5}.local-help code{overflow-wrap:anywhere}
+    .faq-grid{display:grid;grid-template-columns:.75fr 1fr;gap:60px}.faq details{border-bottom:1px solid var(--line);padding:17px 0}.faq summary{font-size:14px;font-weight:800;cursor:pointer}.faq details p{font-size:13px;line-height:1.7;color:var(--muted);margin:12px 0 0}
+    footer{padding:42px 0;background:#0d251b;color:#c6d8c9}.footer-inner{display:flex;justify-content:space-between;align-items:center;gap:20px}.footer-inner .brand{color:white}.footer-inner p,.footer-inner small{font-size:11px;color:#bed0c0;margin:9px 0 0}
+    .app{min-height:100vh;background:#f4f8f3}.app-header{background:white;border-bottom:1px solid var(--line)}.app-nav{min-height:72px;display:flex;align-items:center;justify-content:space-between;gap:20px}.app-nav-right{display:flex;align-items:center;gap:12px}.app-main{padding-top:38px;padding-bottom:70px}.app-hero{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:31px;border-radius:18px;background:var(--dark);color:white}.app-hero .eyebrow{color:#a9e7bd}.app-hero h1{font-size:35px;margin:11px 0}.app-hero p{color:#b9d1c0;font-size:13px;margin:0}.app-description{font-size:13px;line-height:1.6;color:var(--muted);margin:21px 0}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:22px 0}.stat,.panel{background:white;border:1px solid var(--line);border-radius:14px;padding:22px}.stat span{display:block;color:var(--muted);font-size:12px;margin-bottom:12px}.stat strong{display:block;font-size:21px}.stat small{font-size:11px;color:#64806b}.panels{display:grid;grid-template-columns:repeat(2,1fr);gap:15px}.panel h2{font-size:20px;margin:0 0 7px}.panel>p{font-size:12px;color:var(--muted);line-height:1.5}.data-list{list-style:none;padding:0;margin:0 0 15px}.data-list li{padding:12px 0;border-bottom:1px solid #ecf1ec;font-size:13px;color:#385446;overflow-wrap:anywhere}.data-list li:last-child{border-bottom:0}.data-list .empty{color:#829284;font-style:italic}.inline-form{display:flex;align-items:end;gap:9px}.inline-form .field{margin:0;flex:1}.inline-form .btn{min-height:43px}.user-form,.inventory-form{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px}.user-form .field,.inventory-form .field{margin:0}.user-form .wide,.user-form .btn,.inventory-form .wide,.inventory-form .btn{grid-column:1/-1}.user-form .btn,.inventory-form .btn{margin-top:8px}.wide-panel{grid-column:1/-1}.scroll-list{max-height:290px;overflow:auto}.panel-note{font-size:11px!important;color:#6b816f!important}
+    @media(max-width:950px){.navlinks{gap:15px}.mock-body{grid-template-columns:1fr}.mock-total{display:none}.hero-grid{gap:28px}}
+    @media(max-width:720px){.container{width:min(100% - 32px,560px)}header.site{position:static}nav.main{flex-wrap:wrap;gap:10px;padding:12px 0}.navlinks{order:3;width:100%;margin:0;justify-content:space-between}.navlinks a{font-size:11px;white-space:nowrap}nav.main>.btn{margin-left:auto}.hero{padding:64px 0}.hero-grid,.account-grid,.faq-grid{grid-template-columns:1fr}.mock-wrap{margin:20px 12px 0 0}.mock-body{grid-template-columns:1.25fr .75fr}.mock-total{display:block}section.section,.account{padding:69px 0}.cards,.steps,.plans{grid-template-columns:1fr}.card{min-height:0}.icon{margin-bottom:17px}.plan>p{min-height:0}.faq-grid{gap:10px}.stats{grid-template-columns:1fr 1fr}.panels{grid-template-columns:1fr}.wide-panel{grid-column:auto}}
+    @media(max-width:480px){.brand{font-size:18px}.hero h1{font-size:44px}.actions .btn{width:100%}.mock-body{display:block}.mock-total{display:none}.auth-body{padding:24px}.app-hero{align-items:start;flex-direction:column;padding:24px}.stats{grid-template-columns:1fr}.inline-form{display:block}.inline-form .btn{width:100%;margin-top:8px}.user-form,.inventory-form{grid-template-columns:1fr}.app-nav-right .small-note{display:none}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.btn{transition:none}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#main">Pular para o conteúdo</a>
+<div id="marketing">
+  <div class="notice"><strong>Protótipo em desenvolvimento:</strong> contas, catálogo e estoque disponíveis; vendas, NFC-e, apps e cobrança ainda serão implementados.</div>
+  <header class="site"><nav class="main container" aria-label="Navegação principal">
+    <a class="brand" href="#inicio" aria-label="PDV2, início"><span class="brand-mark" aria-hidden="true"><svg width="25" height="25" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 28V8h11a7 7 0 0 1 0 14H9" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span><span>PDV<b>2</b></span></a>
+    <div class="navlinks"><a href="#solucao">Solução</a><a href="#como">Como funciona</a><a href="#planos">Planos</a><a href="#duvidas">Dúvidas</a></div>
+    <a class="btn small" href="#acesso" data-tab="register">Começar agora <span aria-hidden="true">→</span></a>
+  </nav></header>
+  <main id="main">
+    <section class="hero" id="inicio"><div class="container hero-grid">
+      <div><span class="eyebrow">Feito para o comércio que não para</span><h1>Mais ritmo para o caixa. <em>Mais visão</em> para você.</h1>
+        <p class="lead">Estamos construindo o PDV2, um SaaS para mercados e mercearias, começando por quem tem uma loja e um terminal. Gestão simples na nuvem e um caixa preparado para seguir vendendo quando a conexão falhar.</p>
+        <div class="actions"><a class="btn" href="#acesso" data-tab="register">Criar conta de teste <span aria-hidden="true">→</span></a><a class="btn ghost" href="#planos">Ver planos</a></div>
+        <p class="small-note">Nesta fase, a conta permite administrar empresa, lojas, usuários, produtos e estoque. Não há cobrança ativa.</p>
+        <ul class="checks"><li>Um caixa como ponto de partida</li><li>Planos transparentes</li><li>Suporte pensado desde o início</li></ul>
+      </div>
+      <div class="mock-wrap" aria-label="Ilustração conceitual da futura tela de venda"><div class="mock">
+        <div class="mock-head"><span>▦ &nbsp; Nova venda</span><span class="badge">Prévia conceitual</span></div>
+        <div class="mock-body"><div class="mock-items"><p class="mock-label">Itens no carrinho</p>
+          <div class="mock-row"><i aria-hidden="true">🥖</i><span><b>Pão francês</b><small>0,5 kg × R$ 17,90</small></span><strong>R$ 8,95</strong></div>
+          <div class="mock-row"><i aria-hidden="true">🥛</i><span><b>Leite integral</b><small>2 un. × R$ 5,49</small></span><strong>R$ 10,98</strong></div>
+          <div class="mock-row"><i aria-hidden="true">🍌</i><span><b>Banana prata</b><small>1 kg × R$ 6,90</small></span><strong>R$ 6,90</strong></div>
+        </div><div class="mock-total"><p class="mock-label">Resumo</p><div class="mock-sum"><span>Total</span><strong>R$ 26,83</strong></div><div class="fake-button">Finalizar venda →</div><p>Ilustração. O caixa ainda não está disponível.</p></div></div>
+      </div></div>
+    </div></section>
+    <section class="section" id="solucao"><div class="container">
+      <div class="section-head"><span class="eyebrow">O produto</span><h2>O essencial para vender bem, sem complicar a operação.</h2><p>A primeira entrega foca a rotina real de um mercado ou mercearia. Cada módulo será lançado após testes de uso, falhas e equipamentos.</p></div>
+      <div class="cards">
+        <article class="card"><span class="icon" aria-hidden="true">▣</span><h3>Gestão da empresa</h3><p>Crie sua conta e organize lojas, pessoas, produtos e movimentações de estoque.</p><span class="state">Disponível neste protótipo</span></article>
+        <article class="card"><span class="icon" aria-hidden="true">⚡</span><h3>Caixa preparado para falhas</h3><p>Aplicativo local planejado para registrar vendas e sincronizar com segurança.</p><span class="state future">Em desenvolvimento</span></article>
+        <article class="card"><span class="icon" aria-hidden="true">▤</span><h3>Fiscal e impressão</h3><p>NFC-e do RJ, impressoras térmicas e etiquetas após homologação e testes físicos.</p><span class="state future">Em desenvolvimento</span></article>
+        <article class="card"><span class="icon" aria-hidden="true">◇</span><h3>Estoque com histórico</h3><p>Saldo por loja e movimentações auditáveis já disponíveis. Inventário e importação virão depois.</p><span class="state">Parcialmente disponível</span></article>
+        <article class="card"><span class="icon" aria-hidden="true">◫</span><h3>Gestão no celular</h3><p>Indicadores, alertas e consultas para acompanhar a loja.</p><span class="state future">Planejado</span></article>
+        <article class="card"><span class="icon" aria-hidden="true">↗</span><h3>Suporte com diagnóstico</h3><p>Versões, sincronização e falhas visíveis para ajudar o lojista mais rápido.</p><span class="state future">Planejado</span></article>
+      </div>
+    </div></section>
+    <section class="section steps-section" id="como"><div class="container">
+      <div class="section-head"><span class="eyebrow">Simples de começar</span><h2>Um caminho claro da conta ao caixa.</h2><p>Começamos com uma loja e um terminal. Vários caixas serão adicionados sem obrigar o pequeno comércio a manter um servidor próprio.</p></div>
+      <div class="steps"><div class="step"><b>01 / Cadastre</b><h3>Organize a empresa</h3><p>Crie a conta, loja e usuários com acesso apropriado. Esta etapa já está disponível.</p></div><div class="step"><b>02 / Configure</b><h3>Prepare o catálogo</h3><p>Catálogo e estoque já têm uma base. A próxima etapa incluirá fluxo de venda e configuração fiscal validada para o RJ.</p></div><div class="step"><b>03 / Venda</b><h3>Opere o caixa</h3><p>PDV local, impressão e sincronização serão liberados após testes em lojas piloto.</p></div></div>
+    </div></section>
+    <section class="section pricing" id="planos"><div class="container">
+      <div class="section-head center"><span class="eyebrow">Planos planejados</span><h2>Comece com um caixa. Cresça no seu tempo.</h2><p>Todos os planos começam com uma loja e um terminal. Valores previstos para o lançamento; contratação e cobrança ainda não estão disponíveis.</p></div>
+      <div class="plans">
+        <article class="plan"><span class="plan-name">Essencial</span><div class="price"><strong data-plan-price="essential">R$ 149</strong> <span>/ mês</span></div><p>Para fazer o básico com clareza e controle.</p><a class="btn ghost" href="#acesso" data-tab="register" data-plan="Essencial">Criar conta de teste →</a><ul><li>1 loja e 1 terminal</li><li>Produtos disponíveis; venda e caixa no lançamento</li><li>Estoque disponível; NFC-e do RJ no lançamento</li><li>Suporte remoto em horário comercial</li></ul></article>
+        <article class="plan featured"><span class="ribbon">Mais indicado</span><span class="plan-name">Gestão</span><div class="price"><strong data-plan-price="management">R$ 229</strong> <span>/ mês</span></div><p>Para quem quer mais visão sobre a loja.</p><a class="btn" href="#acesso" data-tab="register" data-plan="Gestão">Criar conta de teste →</a><ul><li>1 loja e 1 terminal</li><li>Tudo do Essencial</li><li>Relatórios ampliados e etiquetas</li><li>App de gestão do proprietário</li></ul></article>
+        <article class="plan"><span class="plan-name">Avançado</span><div class="price"><strong data-plan-price="advanced">R$ 349</strong> <span>/ mês</span></div><p>Para operações que precisam de acompanhamento.</p><a class="btn ghost" href="#acesso" data-tab="register" data-plan="Avançado">Criar conta de teste →</a><ul><li>1 loja e 1 terminal</li><li>Tudo do Gestão</li><li>Permissões e gestão avançadas</li><li>Atendimento prioritário</li></ul></article>
+      </div>
+      <p class="pricing-note">Terminal adicional: preço planejado de R$ 39/mês. Implantação presencial e migração de dados terão orçamento próprio. Toda conta criada agora entra em teste no Essencial; a seleção comercial dos demais planos será habilitada futuramente.</p>
+    </div></section>
+    <section class="account" id="acesso"><div class="container account-grid">
+      <div class="account-copy"><span class="eyebrow">Acesso ao protótipo</span><h2>Veja de perto a base do seu futuro PDV.</h2><p>Crie uma empresa de teste e explore as funções disponíveis. Vendas, documentos fiscais, pagamentos e aplicativos móveis ainda estão em construção.</p><ul><li>Empresa e loja principal</li><li>Usuários e papéis de acesso</li><li>Catálogo e movimentações de estoque</li><li>Plano Essencial em modo de teste</li></ul></div>
+      <div class="auth">
+        <div class="tabs" role="tablist" aria-label="Acesso à conta"><button id="tab-register" type="button" role="tab" aria-controls="panel-register" aria-selected="true">Criar conta</button><button id="tab-login" type="button" role="tab" aria-controls="panel-login" aria-selected="false">Entrar</button></div>
+        <div class="auth-body">
+          <div id="local-help" class="local-help" hidden>Para usar cadastro e login, inicie o servidor nesta pasta com <code>python3 app.py</code> e abra <code>http://127.0.0.1:8000</code>. Esta página aberta como arquivo mostra apenas a apresentação.</div>
+          <section id="panel-register" role="tabpanel" aria-labelledby="tab-register"><h3>Comece seu teste</h3><p id="register-context">A conta será criada no Essencial em teste, sem cobrança.</p><form id="register">
+            <div class="field"><label for="company">Nome da empresa</label><input id="company" name="company" autocomplete="organization" maxlength="120" placeholder="Ex.: Mercearia do Bairro" required></div>
+            <div class="field"><label for="register-email">E-mail do proprietário</label><input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" placeholder="voce@empresa.com.br" required></div>
+            <div class="field"><label for="register-password">Senha</label><input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" aria-describedby="password-help" required><small id="password-help">Mínimo de 8 caracteres, com maiúscula, minúscula, número e símbolo.</small></div>
+            <button class="btn" type="submit">Criar conta de teste →</button></form></section>
+          <section id="panel-login" role="tabpanel" aria-labelledby="tab-login" hidden><h3>Bem-vindo de volta</h3><p>Acesse a área de gestão da sua empresa.</p><form id="login">
+            <div class="field"><label for="login-email">E-mail</label><input id="login-email" name="email" type="email" autocomplete="email" required></div>
+            <div class="field"><label for="login-password">Senha</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div>
+            <button class="btn" type="submit">Entrar na conta →</button></form></section>
+          <p id="auth-message" role="status" aria-live="polite" hidden></p>
+        </div>
+      </div>
+    </div></section>
+    <section class="section" id="duvidas"><div class="container faq-grid"><div class="section-head"><span class="eyebrow">Dúvidas frequentes</span><h2>Tudo claro, desde o começo.</h2><p>Estamos abrindo a base para testes enquanto construímos os módulos de operação comercial.</p></div><div>
+      <details><summary>Já posso vender com o sistema?</summary><p>Ainda não. Esta versão permite criar empresa, lojas, usuários, produtos e movimentações de estoque. O caixa e a NFC-e precisam ser implementados e testados antes do piloto em loja.</p></details>
+      <details><summary>Quando serei cobrado?</summary><p>Não há cobrança ativa. Os preços são planejados para o lançamento. O cadastro atual cria assinatura de teste no Essencial.</p></details>
+      <details><summary>Preciso de um servidor na loja?</summary><p>O plano é que uma loja com um caixa não precise. Um servidor local será opcional para operações com vários terminais.</p></details>
+      <details><summary>E se a internet cair?</summary><p>O futuro aplicativo de caixa local está sendo projetado para continuar registrando operações e sincronizar depois, dentro das regras fiscais aplicáveis. Essa função ainda não está disponível.</p></details>
+    </div></div></section>
+  </main>
+  <footer><div class="container footer-inner"><div><a class="brand" href="#inicio"><span class="brand-mark" aria-hidden="true"><svg width="25" height="25" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 28V8h11a7 7 0 0 1 0 14H9" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span><span>PDV<b>2</b></span></a><p>Construído para começar perto do lojista, em Maricá. PDV2 é nome provisório; marca e domínio a validar.</p></div><small>Protótipo de produto · funções comerciais em desenvolvimento</small></div></footer>
+</div>
+<div class="app" id="dashboard" hidden>
+  <header class="app-header"><nav class="app-nav container" aria-label="Navegação da conta"><span class="brand"><span class="brand-mark" aria-hidden="true"><svg width="25" height="25" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 28V8h11a7 7 0 0 1 0 14H9" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span><span>PDV<b>2</b></span></span><div class="app-nav-right"><span id="signed-email" class="small-note"></span><button class="btn ghost small" id="logout" type="button">Sair</button></div></nav></header>
+  <main class="container app-main"><section class="app-hero"><div><span class="eyebrow">Área de gestão · protótipo</span><h1 id="welcome">Sua empresa</h1><p>Gerencie lojas e acessos enquanto desenvolvemos o restante da plataforma.</p></div><a class="btn white" href="#app-content">Ver painel ↓</a></section>
+    <p class="app-description">Esta área mostra apenas dados reais da conta. Catálogo e estoque central estão disponíveis; vendas recebidas do caixa local aparecem como protótipo e ainda não conciliam o saldo central automaticamente. NFC-e e cobrança ainda não estão disponíveis.</p>
+    <div class="stats" id="app-content" aria-label="Resumo da conta"><div class="stat"><span>Plano atual</span><strong id="summary-plan">—</strong><small id="summary-status">—</small></div><div class="stat"><span>Lojas cadastradas</span><strong id="summary-shops">—</strong><small>Inclui a loja principal</small></div><div class="stat"><span>Seu acesso</span><strong id="summary-role">—</strong><small>Permissões da sua conta</small></div></div>
+    <div class="panels">
+      <section class="panel"><h2>Lojas</h2><p>Organize as unidades da empresa.</p><ul class="data-list" id="shops"></ul><form class="inline-form" id="new-shop"><div class="field"><label for="shop-name">Nova loja</label><input id="shop-name" name="name" maxlength="120" placeholder="Nome da loja" required></div><button class="btn" type="submit">Adicionar</button></form></section>
+      <section class="panel"><h2>Produtos</h2><p>Cadastre itens para o catálogo inicial da empresa.</p><div class="field"><label for="product-search">Buscar no catálogo</label><input id="product-search" type="search" maxlength="120" placeholder="Nome, SKU ou código de barras"></div><ul class="data-list scroll-list" id="products"></ul><form class="inventory-form" id="new-product"><div class="field wide"><label for="product-name">Nome do produto</label><input id="product-name" name="name" maxlength="160" required></div><div class="field"><label for="product-sku">Código interno (SKU)</label><input id="product-sku" name="sku" maxlength="60" required></div><div class="field"><label for="product-barcode">Código de barras (opcional)</label><input id="product-barcode" name="barcode" inputmode="numeric" pattern="[0-9]*" maxlength="32"></div><div class="field"><label for="product-unit">Unidade</label><select id="product-unit" name="unit"><option value="UN">Unidade</option><option value="KG">Quilo</option><option value="L">Litro</option></select></div><div class="field"><label for="product-price">Preço de venda (R$)</label><input id="product-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" required></div><div class="field wide"><label for="product-cost">Custo (R$)</label><input id="product-cost" name="cost" type="number" min="0" step="0.01" inputmode="decimal" value="0" required></div><button class="btn" type="submit">Cadastrar produto</button></form></section>
+      <section class="panel"><h2>Estoque</h2><p>Saldo por loja e ajustes auditáveis. Venda automática ainda não está integrada.</p><div class="field"><label for="stock-shop">Loja</label><select id="stock-shop" aria-label="Loja para consultar estoque"></select></div><ul class="data-list scroll-list" id="stock"></ul><form class="inventory-form" id="new-movement"><div class="field wide"><label for="stock-product-search">Buscar produto para movimentar</label><input id="stock-product-search" type="search" maxlength="120" placeholder="Nome, SKU ou código de barras"><small>A lista de produtos será filtrada enquanto você digita.</small></div><div class="field wide"><label for="stock-product">Produto</label><select id="stock-product" name="product_id" required></select></div><div class="field"><label for="stock-quantity">Variação de quantidade</label><input id="stock-quantity" name="quantity" type="number" step="0.001" inputmode="decimal" required><small>Positivo para entrada; negativo para saída.</small></div><div class="field"><label for="stock-reason">Motivo</label><input id="stock-reason" name="reason" maxlength="240" minlength="3" placeholder="Ex.: Entrada de mercadoria" required></div><button class="btn" type="submit">Registrar movimentação</button></form><p class="panel-note">Produtos em quilos e litros aceitam até três casas decimais.</p></section>
+      <section class="panel wide-panel"><h2>Vendas recebidas</h2><p>Eventos de venda enviados pelo caixa local de teste. Esta lista não comprova pagamento ou emissão fiscal e não baixa o estoque central.</p><ul class="data-list scroll-list" id="sales"></ul></section>
+      <section class="panel" id="team-panel" hidden><h2>Equipe</h2><p>Convide gerente ou operador para esta empresa.</p><ul class="data-list" id="team"></ul><form class="user-form" id="new-user"><div class="field"><label for="user-email">E-mail</label><input id="user-email" name="email" type="email" maxlength="254" required></div><div class="field"><label for="user-role">Papel</label><select id="user-role" name="role"><option value="manager">Gerente</option><option value="cashier">Operador</option></select></div><div class="field wide"><label for="user-password">Senha inicial</label><input id="user-password" name="password" type="password" autocomplete="new-password" minlength="8" aria-describedby="user-password-help" required><small id="user-password-help">Mínimo de 8 caracteres, com maiúscula, minúscula, número e símbolo.</small></div><button class="btn" type="submit">Adicionar usuário</button></form></section>
+      <section class="panel wide-panel" id="audit-panel" hidden><h2>Atividade recente</h2><p>Eventos de criação registrados para sua empresa.</p><ul class="data-list" id="audit"></ul></section>
+    </div>
+    <p id="dashboard-message" role="status" aria-live="polite" hidden></p>
+  </main>
+</div>
+<script>
+'use strict';
+const $ = selector => document.querySelector(selector);
+const localFile = location.protocol === 'file:';
+const validPassword = value => value.length >= 8 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value);
+const fields = form => Object.fromEntries(new FormData(form).entries());
+function showMessage(target, message, kind='success'){
+  target.textContent=message; target.className='form-message '+kind; target.hidden=!message;
+}
+function busy(form, isBusy){const button=form.querySelector('button[type="submit"]');button.disabled=isBusy;button.setAttribute('aria-busy',String(isBusy))}
+async function api(path,method='GET',data){
+  const response=await fetch(path,{method,credentials:'same-origin',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined});
+  let result;try{result=await response.json()}catch(_){throw Error('Resposta inválida do servidor.')}
+  if(!response.ok)throw Error(result.error||'Não foi possível concluir a solicitação.');
+  return result;
+}
+function tab(name){
+  const register=name==='register';
+  $('#tab-register').setAttribute('aria-selected',String(register));$('#tab-login').setAttribute('aria-selected',String(!register));
+  $('#tab-register').tabIndex=register?0:-1;$('#tab-login').tabIndex=register?-1:0;
+  $('#panel-register').hidden=!register;$('#panel-login').hidden=register;
+  showMessage($('#auth-message'),'');
+}
+$('#tab-register').addEventListener('click',()=>tab('register'));
+$('#tab-login').addEventListener('click',()=>tab('login'));
+$('.tabs').addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();const next=$('#tab-register').getAttribute('aria-selected')==='true'?'login':'register';tab(next);$('#tab-'+next).focus()});
+document.querySelectorAll('[data-tab]').forEach(link=>link.addEventListener('click',()=>{
+  tab(link.dataset.tab);
+  const choice=link.dataset.plan;
+  $('#register-context').textContent=choice&&choice!=='Essencial'?'Você demonstrou interesse no plano '+choice+'. Nesta fase, a conta é criada em teste no Essencial, sem cobrança.':'A conta será criada no Essencial em teste, sem cobrança.';
+}));
+function serverRequired(target){if(!localFile)return false;showMessage(target,'Para continuar, inicie python3 app.py e abra http://127.0.0.1:8000.','error');return true}
+async function submit(form,path,success,target=$('#auth-message')){
+  if(serverRequired(target))return;
+  const data=fields(form);
+  if(data.password&&['/api/register','/api/users'].includes(path)&&!validPassword(data.password)){showMessage(target,'Use ao menos 8 caracteres, com letra maiúscula, minúscula, número e símbolo.','error');return}
+  busy(form,true);
+  try{const result=await api(path,'POST',data);form.reset();await success(result)}
+  catch(error){showMessage(target,error.message||'Não foi possível acessar o servidor.','error')}
+  finally{busy(form,false)}
+}
+$('#register').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/register',async()=>{tab('login');showMessage($('#auth-message'),'Empresa criada. Entre com o e-mail e a senha cadastrados.');$('#login-email').focus()})});
+$('#login').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/login',async()=>{await refresh();window.scrollTo(0,0)})});
+const roleNames={owner:'Proprietário',manager:'Gerente',cashier:'Operador'};
+const statusNames={trial:'Em teste',active:'Ativo',past_due:'Pagamento pendente',suspended:'Suspenso',cancelled:'Cancelado'};
+const actionNames={'tenant.created':'Empresa criada','shop.created':'Loja adicionada','user.created':'Usuário adicionado','product.created':'Produto cadastrado','product.updated':'Produto alterado','stock.moved':'Estoque movimentado'};
+const money=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'});
+const quantity=new Intl.NumberFormat('pt-BR',{maximumFractionDigits:3});
+let catalogProducts=[];
+function options(select,rows,value,label){
+  const old=select.value;
+  select.replaceChildren();
+  rows.forEach(row=>{const option=document.createElement('option');option.value=value(row);option.textContent=label(row);select.append(option)});
+  if(rows.some(row=>value(row)===old))select.value=old;
+}
+async function loadStock(){
+  const shop=$('#stock-shop').value;
+  if(!shop){list('#stock',[],()=>'', 'Cadastre uma loja para consultar o estoque.');return}
+  try{const result=await api('/api/stock?shop_id='+encodeURIComponent(shop));list('#stock',result.stock,row=>row.name+' · '+quantity.format(row.quantity_milli/1000)+' '+row.unit,'Nenhum produto cadastrado.')}
+  catch(error){list('#stock',[],()=>'',error.message||'Não foi possível carregar o estoque.')}
+}
+$('#stock-shop').addEventListener('change',loadStock);
+function list(selector,rows,render,empty){
+  const element=$(selector);element.replaceChildren();
+  if(!rows.length){const item=document.createElement('li');item.className='empty';item.textContent=empty;element.append(item);return}
+  rows.forEach(row=>{const item=document.createElement('li');item.textContent=render(row);element.append(item)});
+}
+function searchOnInput(selector,render){
+  let timer;
+  $(selector).addEventListener('input',()=>{
+    clearTimeout(timer);
+    timer=setTimeout(async()=>{
+      const query=$(selector).value.trim();
+      try{
+        const result=await api('/api/products?q='+encodeURIComponent(query));
+        if(query===$(selector).value.trim())render(result.products);
+      }catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível buscar produtos.','error')}
+    },220);
+  });
+}
+searchOnInput('#product-search',products=>list('#products',products,product=>product.name+' · '+product.sku+' · '+money.format(product.price_cents/100),'Nenhum produto encontrado.'));
+searchOnInput('#stock-product-search',products=>options($('#stock-product'),products,product=>product.id,product=>product.name+' ('+product.sku+')'));
+async function refresh(){
+  if(localFile)return;
+  try{
+    const [me,shops]=await Promise.all([api('/api/me'),api('/api/shops')]);
+    $('#marketing').hidden=true;$('#dashboard').hidden=false;
+    $('#welcome').textContent=me.tenant.name;$('#signed-email').textContent=me.user.email;
+    $('#summary-plan').textContent={essential:'Essencial',management:'Gestão',advanced:'Avançado'}[me.subscription.plan_id]||me.subscription.plan_id;
+    $('#summary-status').textContent=statusNames[me.subscription.status]||me.subscription.status;
+    $('#summary-shops').textContent=String(shops.shops.length);
+    $('#summary-role').textContent=roleNames[me.user.role]||me.user.role;
+    list('#shops',shops.shops,shop=>shop.name,'Nenhuma loja cadastrada.');
+    $('#new-shop').hidden=me.user.role!=='owner';
+    $('#new-product').hidden=me.user.role==='cashier';
+    options($('#stock-shop'),shops.shops,shop=>shop.id,shop=>shop.name);
+    $('#product-search').value='';
+    $('#stock-product-search').value='';
+    try{
+      const result=await api('/api/products');
+      catalogProducts=result.products;
+      list('#products',catalogProducts,product=>product.name+' · '+product.sku+' · '+money.format(product.price_cents/100),'Nenhum produto cadastrado.');
+      options($('#stock-product'),catalogProducts.filter(product=>product.active),product=>product.id,product=>product.name+' ('+product.sku+')');
+    }catch(error){
+      catalogProducts=[];
+      list('#products',[],()=>'',error.message||'Não foi possível carregar o catálogo.');
+      options($('#stock-product'),[],product=>product.id,product=>product.name);
+    }
+    $('#new-movement').hidden=me.user.role==='cashier'||!shops.shops.length||!catalogProducts.length;
+    await loadStock();
+    try{
+      const result=await api('/api/sales');
+      const names=Object.fromEntries(shops.shops.map(shop=>[shop.id,shop.name]));
+      list('#sales',result.sales,sale=>money.format(sale.total_cents/100)+' · '+(names[sale.shop_id]||'Loja não encontrada')+' · '+new Date(sale.created_at*1000).toLocaleString('pt-BR')+' · '+String(sale.id).slice(0,8),'Nenhuma venda sincronizada ainda.');
+    }catch(error){list('#sales',[],()=>'',error.message||'Não foi possível carregar as vendas recebidas.')}
+    $('#team-panel').hidden=!['owner','manager'].includes(me.user.role);
+    $('#new-user').hidden=me.user.role!=='owner';
+    $('#audit-panel').hidden=me.user.role!=='owner';
+    if(['owner','manager'].includes(me.user.role)){
+      try{const users=await api('/api/users');list('#team',users.users,user=>user.email+' · '+(roleNames[user.role]||user.role),'Nenhum usuário cadastrado.')}
+      catch(_){list('#team',[],()=>'', 'Não foi possível carregar a equipe.')}
+    }
+    if(me.user.role==='owner'){
+      try{const audit=await api('/api/audit');list('#audit',audit.events,event=>(actionNames[event.action]||event.action)+' · '+new Date(event.created_at*1000).toLocaleString('pt-BR'),'Ainda não há eventos.')}
+      catch(_){list('#audit',[],()=>'', 'Não foi possível carregar a atividade.')}
+    }
+    showMessage($('#dashboard-message'),'');
+  }catch(error){
+    $('#marketing').hidden=false;$('#dashboard').hidden=true;
+    if(error.message!=='Não autenticado')showMessage($('#auth-message'),error.message||'Não foi possível acessar o servidor.','error');
+  }
+}
+$('#new-shop').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/shops',async()=>{await refresh();showMessage($('#dashboard-message'),'Loja adicionada.')},$('#dashboard-message'))});
+$('#new-product').addEventListener('submit',async event=>{
+  event.preventDefault();const form=event.currentTarget;
+  const data=fields(form);
+  const price=Number(data.price),cost=Number(data.cost);
+  if(!Number.isFinite(price)||!Number.isFinite(cost)||price<0||cost<0){showMessage($('#dashboard-message'),'Informe preço e custo válidos.','error');return}
+  const payload={name:data.name,sku:data.sku,barcode:data.barcode||null,unit:data.unit,price_cents:Math.round(price*100),cost_cents:Math.round(cost*100)};
+  busy(form,true);
+  try{await api('/api/products','POST',payload);form.reset();await refresh();showMessage($('#dashboard-message'),'Produto cadastrado.')}
+  catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível cadastrar o produto.','error')}
+  finally{busy(form,false)}
+});
+$('#new-movement').addEventListener('submit',async event=>{
+  event.preventDefault();const form=event.currentTarget;
+  const data=fields(form),delta=Math.round(Number(data.quantity)*1000);
+  if(!Number.isSafeInteger(delta)||delta===0){showMessage($('#dashboard-message'),'Informe uma variação diferente de zero.','error');return}
+  const base={shop_id:$('#stock-shop').value,product_id:data.product_id,delta_milli:delta,reason:data.reason.trim()};
+  const signature=JSON.stringify(base);
+  if(form.dataset.pendingPayload!==signature){form.dataset.pendingPayload=signature;form.dataset.pendingKey=globalThis.crypto&&typeof globalThis.crypto.randomUUID==='function'?globalThis.crypto.randomUUID():String(Date.now())+'-'+Math.random()}
+  busy(form,true);
+  try{await api('/api/stock/movements','POST',{...base,idempotency_key:form.dataset.pendingKey});form.reset();delete form.dataset.pendingPayload;delete form.dataset.pendingKey;await refresh();showMessage($('#dashboard-message'),'Movimentação de estoque registrada.')}
+  catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível registrar a movimentação.','error')}
+  finally{busy(form,false)}
+});
+$('#new-user').addEventListener('submit',event=>{event.preventDefault();submit(event.currentTarget,'/api/users',async()=>{await refresh();showMessage($('#dashboard-message'),'Usuário adicionado.')},$('#dashboard-message'))});
+$('#logout').addEventListener('click',async()=>{try{await api('/api/logout','POST',{});await refresh();location.hash='#inicio'}catch(error){showMessage($('#dashboard-message'),error.message||'Não foi possível sair.','error')}});
+if(localFile)$('#local-help').hidden=false;
+else{
+  api('/api/plans').then(result=>{const planMoney=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});result.plans.forEach(plan=>{const price=document.querySelector('[data-plan-price="'+plan.id+'"]');if(price)price.textContent=planMoney.format(plan.price_cents/100)})}).catch(()=>{});
+  refresh();
+}
+</script>
+</body>
+</html>

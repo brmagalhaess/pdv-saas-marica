@@ -1,0 +1,16 @@
+# Development preview only. Do not expose this prototype to paying customers.
+services:
+  pdv-preview:
+    build: .
+    environment:
+      PDV_HOST: 0.0.0.0
+      PDV_PORT: "8000"
+      PDV_DB: /data/pdv.sqlite3
+    volumes:
+      - pdv_preview_data:/data
+    ports:
+      - "127.0.0.1:${PDV_PREVIEW_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  pdv_preview_data:
