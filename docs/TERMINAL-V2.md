@@ -20,6 +20,10 @@ No painel SaaS, crie a empresa, loja, operadores com PIN, produtos, saldo inicia
 
 Para testes em Docker, `PDV_ENV=development` libera apenas `http://cloud:8080` e `http://host.docker.internal:8000` além de localhost. Em produção, servidor remoto exige HTTPS. O token do terminal nunca é enviado ao navegador. O banco local e `session.key` precisam de proteção do sistema operacional e backup seguro.
 
+### Outro terminal ou outra empresa no mesmo computador
+
+Um banco local não pode ser reaproveitado por outra empresa depois que existem vendas, caixa, fila de sincronização ou backup. Na tela de pareamento/login, use **Criar novo perfil para outra empresa**. O terminal cria um SQLite novo em `data/profiles/perfil-.../terminal.sqlite3`, grava um backup verificado do banco anterior e seleciona o novo perfil também nos próximos reinícios. O banco antigo permanece preservado; antes de trocar, feche o caixa e sincronize eventos pendentes. Para instalações separadas, também é possível iniciar outro processo com `PDV_TERMINAL_DATA` e `PDV_TERMINAL_DB` apontando para outro diretório.
+
 ## Operação
 
 - PIN local e papéis vindos do cloud; sessão HttpOnly/SameSite Strict, token CSRF em mutações, validação de Host e Origin.

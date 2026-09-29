@@ -28,6 +28,8 @@
       </form>
       <p class="hint">A licença identifica a assinatura; o código de pareamento autoriza este dispositivo por uma única vez. Depois, cada operador entra com seu próprio PIN.</p>
       <p class="hint">No Docker local, use <code>http://cloud:8080</code>. Em outro computador, use o endereço HTTPS informado no painel. ID deste dispositivo: <code id="deviceId"></code></p>
+      <button id="newProfileBtn" class="text-button danger-link" type="button">Criar novo perfil para outra empresa</button>
+      <p class="hint">Isso preserva o banco atual em um backup e cria um diretório de dados separado para o próximo pareamento.</p>
     </div>
   </section>
 
@@ -45,6 +47,7 @@
       <button id="refreshBootstrap" class="text-button">Atualizar operadores</button>
       <p id="operatorSyncStatus" class="hint" aria-live="polite"></p>
       <button id="changeConnection" class="text-button danger-link">Corrigir pareamento sem operações</button>
+      <button id="newProfileLoginBtn" class="text-button danger-link" type="button">Criar novo perfil para outra empresa</button>
       <p id="operatorEmptyHint" class="hint hidden">Nenhum operador com PIN está disponível para este terminal. Cadastre um PIN no painel da empresa e clique em “Atualizar operadores”.</p>
       <p class="hint">Com vendas, caixa ou movimentações neste computador, preserve este banco e use uma instalação ou diretório de dados novo para outra empresa.</p>
     </div>

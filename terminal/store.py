@@ -233,7 +233,7 @@ class Store:
             if self._meta(conn, "terminal_id"):
                 raise TerminalError("Este dispositivo já está pareado; acione o suporte para transferência", 409)
             if self._has_business_history(conn):
-                raise TerminalError("Este computador contém histórico de outra empresa. Use uma nova instalação ou diretório de dados para conectar outro terminal; preserve o banco atual.", 409)
+                raise TerminalError("Este computador contém histórico de outra empresa. Clique em 'Criar novo perfil para outra empresa' ou use um diretório de dados separado; o banco atual será preservado.", 409)
 
     def _event(self, conn, event_type, aggregate_id, data):
         event_id = uuid.uuid4().hex
@@ -327,7 +327,7 @@ class Store:
             if self._meta(conn, "terminal_id"):
                 raise TerminalError("Este dispositivo já está pareado; acione o suporte para transferência", 409)
             if self._has_business_history(conn):
-                raise TerminalError("Este computador contém histórico de outra empresa. Use uma nova instalação ou diretório de dados para conectar outro terminal; preserve o banco atual.", 409)
+                raise TerminalError("Este computador contém histórico de outra empresa. Clique em 'Criar novo perfil para outra empresa' ou use um diretório de dados separado; o banco atual será preservado.", 409)
             old_key = self._meta(conn, "public_key")
             if old_key and old_key != response["public_key"]:
                 raise TerminalError("Chave pública mudou; suporte precisa verificar o servidor", 409)

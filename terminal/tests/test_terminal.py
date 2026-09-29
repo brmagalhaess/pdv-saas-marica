@@ -162,6 +162,24 @@ class TerminalTests(unittest.TestCase):
             pair(self.store, "http://127.0.0.1:8000", "PDV2-EXAMPLE-KEY", "codigo-temporario")
         send.assert_not_called()
 
+    def test_new_profile_preserves_database_and_is_selected_after_restart(self):
+        old_path = self.store.path
+        old_device = self.store.identity()["device_id"]
+        response = self.client.post("/api/new-profile", json={"confirm": True},
+                                    headers={"X-CSRF-Token": self.csrf()})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertTrue(old_path.exists())
+        self.assertTrue(list((old_path.parent / "backups").glob("terminal-*.sqlite3")))
+        active = self.app.extensions["terminal_store"]
+        self.assertNotEqual(active.path, old_path)
+        self.assertFalse(active.connection_info()["paired"])
+        self.assertNotEqual(active.identity()["device_id"], old_device)
+        self.assertTrue((Path(self.temp.name) / "active-profile.json").exists())
+        restarted = create_app({"TESTING": True, "DATA_DIR": self.temp.name,
+                                "DB_PATH": old_path, "START_WORKER": False})
+        self.assertEqual(restarted.extensions["terminal_store"].path, active.path)
+        self.assertFalse(restarted.extensions["terminal_store"].connection_info()["paired"])
+
     def test_preserved_backup_blocks_switch_even_if_audit_was_lost(self):
         backup = self.store.backup_now()
         self.assertTrue(Path(backup["directory"], backup["name"]).exists())

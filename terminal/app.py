@@ -21,6 +21,31 @@ def _default_data_dir():
     return Path.home() / ".local" / "share" / "pdv2"
 
 
+def _active_profile_db(data_dir, fallback):
+    """Resolve the selected local profile without trusting arbitrary paths."""
+    pointer = data_dir / "active-profile.json"
+    try:
+        value = json.loads(pointer.read_text(encoding="utf-8"))
+        name = value.get("profile") if isinstance(value, dict) else None
+    except (OSError, ValueError, TypeError):
+        return fallback
+    if not isinstance(name, str) or not name or Path(name).name != name:
+        return fallback
+    candidate = data_dir / "profiles" / name / "terminal.sqlite3"
+    return candidate if candidate.exists() else fallback
+
+
+def _write_active_profile(data_dir, name):
+    pointer = data_dir / "active-profile.json"
+    temporary = data_dir / ".active-profile.tmp"
+    temporary.write_text(json.dumps({"profile": name}, ensure_ascii=False), encoding="utf-8")
+    try:
+        temporary.chmod(0o600)
+    except OSError:
+        pass
+    os.replace(temporary, pointer)
+
+
 def create_app(config=None):
     config = dict(config or {})
     data_dir = Path(config.get("DATA_DIR") or os.environ.get("PDV_TERMINAL_DATA") or _default_data_dir())
@@ -42,8 +67,10 @@ def create_app(config=None):
                       SESSION_COOKIE_SAMESITE="Strict", SESSION_COOKIE_NAME="pdv2_session",
                       MAX_CONTENT_LENGTH=256 * 1024)
     app.config.update(config)
-    db_path = Path(config.get("DB_PATH") or os.environ.get("PDV_TERMINAL_DB") or data_dir / "terminal.sqlite3")
+    configured_db = Path(config.get("DB_PATH") or os.environ.get("PDV_TERMINAL_DB") or data_dir / "terminal.sqlite3")
+    db_path = _active_profile_db(data_dir, configured_db)
     store = Store(db_path)
+    worker = None
     app.extensions["terminal_store"] = store
     allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]"))
 
@@ -140,6 +167,54 @@ def create_app(config=None):
         result = store.unpair()
         session.clear()
         return jsonify(result)
+
+    @app.post("/api/new-profile")
+    def new_profile():
+        """Create a clean local profile while preserving the current database."""
+        nonlocal store, worker
+        data = body()
+        if data.get("confirm") is not True:
+            raise TerminalError("Confirme a criação de um novo perfil", 409)
+        if session.get("operator_id"):
+            raise TerminalError("Saia do operador antes de criar outro perfil", 409)
+        current = store
+        previous_pointer = data_dir / "active-profile.json"
+        previous_contents = previous_pointer.read_bytes() if previous_pointer.exists() else None
+        old_worker = worker
+        if old_worker:
+            old_worker.stop()
+            worker = None
+        try:
+            if current.pending_events():
+                raise TerminalError("Sincronize os eventos pendentes antes de criar outro perfil", 409)
+            if current.cash_state():
+                raise TerminalError("Feche o caixa antes de criar outro perfil", 409)
+            backup = current.backup_now() if current.path.exists() else None
+            profile_name = "perfil-" + secrets.token_hex(6)
+            profile_dir = data_dir / "profiles" / profile_name
+            profile_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+            new_store = Store(profile_dir / "terminal.sqlite3")
+            _write_active_profile(data_dir, profile_name)
+            store = new_store
+            app.extensions["terminal_store"] = store
+            if old_worker:
+                worker = sync.Worker(store)
+                worker.start()
+                app.extensions["terminal_worker"] = worker
+            session.clear()
+            return jsonify({"profile": profile_name, "paired": False, "preserved_backup": backup})
+        except Exception:
+            if previous_contents is None:
+                previous_pointer.unlink(missing_ok=True)
+            else:
+                previous_pointer.write_bytes(previous_contents)
+            store = current
+            app.extensions["terminal_store"] = store
+            if old_worker:
+                worker = sync.Worker(store)
+                worker.start()
+                app.extensions["terminal_worker"] = worker
+            raise
 
     @app.post("/api/pair")
     def pair():
