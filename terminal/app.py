@@ -129,8 +129,7 @@ def create_app(config=None):
 
     @app.get("/favicon.ico")
     def favicon():
-        # The terminal has no separate ICO asset; avoid a noisy, harmless 404.
-        return "", 204
+        return app.send_static_file("favicon.svg")
 
     @app.get("/health")
     def health():
