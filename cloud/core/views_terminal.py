@@ -30,6 +30,24 @@ def _subscription_can_issue(tenant):
     return subscription_window(tenant)
 
 
+def _effective_license_status(row):
+    """Present the same activation window enforced when issuing terminal leases."""
+    now = timezone.now()
+    if row.status == "trial":
+        return "trial" if row.trial_ends_at and row.trial_ends_at > now else "expired"
+    if row.status in ("suspended", "cancelled"):
+        return row.status
+    if row.status in ("active", "past_due") and row.current_period_end:
+        deadline = (row.current_period_end if row.license_source == "vip" else
+                    row.current_period_end + timedelta(hours=72))
+        if deadline <= now:
+            return "expired"
+        if row.status == "active" and row.current_period_end > now:
+            return "active"
+        return "past_due"
+    return "expired"
+
+
 def _operators(tenant):
     return [{"id": str(m.id), "name": m.name, "role": m.role, "pin_hash": m.pin_hash}
             for m in Membership.objects.filter(tenant=tenant, active=True).exclude(pin_hash="").order_by("id")]
@@ -76,9 +94,19 @@ def subscription(request):
     row = Subscription.objects.select_related("plan").filter(tenant=member.tenant).first()
     if row is None:
         raise APIError("Assinatura não encontrada", 404)
-    return JsonResponse({"id": str(row.id), "status": row.status, "plan": plan_data(row.plan),
-                         "trial_ends_at": row.trial_ends_at.isoformat() if row.trial_ends_at else None,
-                         "current_period_end": row.current_period_end.isoformat() if row.current_period_end else None})
+    used = Terminal.objects.filter(tenant=member.tenant, revoked=False).count()
+    limit = row.plan.terminal_limit
+    effective_status = _effective_license_status(row)
+    response = JsonResponse({"id": str(row.id), "status": row.status, "plan": plan_data(row.plan),
+                             "trial_ends_at": row.trial_ends_at.isoformat() if row.trial_ends_at else None,
+                             "current_period_end": row.current_period_end.isoformat() if row.current_period_end else None,
+                             "license": {"key": row.license_key if member.role in DEVICE_ROLES else None,
+                                         "source": row.license_source, "status": effective_status,
+                                         "can_activate": effective_status in ("trial", "active", "past_due"),
+                                         "terminal_limit": limit, "terminal_used": used,
+                                         "terminal_available": max(0, limit - used)}})
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @endpoint
@@ -154,7 +182,9 @@ def terminal_detail(request, pk):
 def pair(request):
     method(request, "POST")
     data = payload(request)
-    fields(data, ("code", "device_id", "version"), ("code", "device_id", "version"))
+    fields(data, ("license_key", "code", "device_id", "version"),
+           ("license_key", "code", "device_id", "version"))
+    license_key = text(data["license_key"], "Licença", 40).upper()
     code = text(data["code"], "Código", 80)
     device_id = text(data["device_id"], "Dispositivo", 160)
     version = text(data["version"], "Versão", 80)
@@ -164,6 +194,7 @@ def pair(request):
         with transaction.atomic():
             row = Terminal.objects.select_for_update().select_related("tenant", "shop").filter(
                 pairing_code_hash=_hash(code), revoked=False,
+                tenant__subscription__license_key=license_key,
                 pairing_expires_at__gt=timezone.now()).first()
             if not row:
                 raise APIError("Pareamento inválido ou expirado", 401)
@@ -197,6 +228,7 @@ def pair(request):
     reset_rate(limit_key)
     return JsonResponse({"token": token, "terminal_id": str(row.id),
                          "tenant_id": str(row.tenant_id), "shop_id": str(row.shop_id),
+                         "license_hint": row.tenant.subscription.license_key.replace("-", "")[-4:],
                          "tenant": {"id": str(row.tenant_id), "name": row.tenant.name},
                          "shop": {"id": str(row.shop_id), "name": row.shop.name},
                          "terminal": terminal_data(row),
@@ -234,7 +266,8 @@ def bootstrap(request):
                          "shop": {"id": str(terminal.shop_id), "name": terminal.shop.name},
                          "terminal": terminal_data(terminal), "products": products,
                          "next_cursor": str(offset + limit) if len(rows) > limit else None,
-                         "operators": operators, "lease": lease, "public_key": public_key})
+                         "operators": operators, "lease": lease, "public_key": public_key,
+                         "license_hint": terminal.tenant.subscription.license_key.replace("-", "")[-4:]})
 
 
 def _validate_event(event, terminal):

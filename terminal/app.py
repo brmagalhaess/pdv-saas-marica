@@ -144,7 +144,7 @@ def create_app(config=None):
     @app.post("/api/pair")
     def pair():
         data = body()
-        result = sync.pair(store, data.get("cloud_url"), data.get("code"))
+        result = sync.pair(store, data.get("cloud_url"), data.get("license_key"), data.get("code"))
         return jsonify({"paired": True, "bootstrap": result})
 
     @app.post("/api/bootstrap")

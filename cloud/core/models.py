@@ -1,4 +1,5 @@
 """Tenant-scoped business records. Money is integer cents; quantity is milliunits."""
+import secrets
 import uuid
 from django.conf import settings
 from django.db import models
@@ -7,6 +8,12 @@ from django.db.models import Q
 
 def uid():
     return uuid.uuid4()
+
+
+def new_license_key():
+    """Public subscription identifier; device pairing also requires a one-time code."""
+    token = secrets.token_hex(12).upper()
+    return "PDV2-" + "-".join(token[index:index + 6] for index in range(0, 24, 6))
 
 
 class Plan(models.Model):
@@ -38,10 +45,13 @@ class Tenant(models.Model):
 
 class Subscription(models.Model):
     STATUS = [(s, s) for s in ("trial", "active", "past_due", "suspended", "cancelled")]
+    LICENSE_SOURCES = [(s, s) for s in ("trial", "subscription", "vip", "manual")]
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     tenant = models.OneToOneField(Tenant, on_delete=models.PROTECT, related_name="subscription")
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT)
     status = models.CharField(max_length=20, choices=STATUS, default="trial")
+    license_key = models.CharField(max_length=40, unique=True, default=new_license_key, editable=False)
+    license_source = models.CharField(max_length=20, choices=LICENSE_SOURCES, default="trial")
     trial_ends_at = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
     external_id = models.CharField(max_length=160, blank=True)

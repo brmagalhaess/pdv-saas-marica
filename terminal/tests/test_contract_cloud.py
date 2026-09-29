@@ -73,8 +73,8 @@ class CloudContractTests(unittest.TestCase):
                                   role="manager", pin_hash=hash_pin("543210"))
         shop = Shop.objects.create(tenant=tenant, name="Loja principal")
         plan = Plan.objects.get(slug="essential")
-        Subscription.objects.create(tenant=tenant, plan=plan, status="trial",
-                                    trial_ends_at=timezone.now() + timedelta(days=14))
+        subscription = Subscription.objects.create(tenant=tenant, plan=plan, status="trial",
+                                                   trial_ends_at=timezone.now() + timedelta(days=14))
         product = Product.objects.create(tenant=tenant, sku="QUEIJO", name="Queijo",
                                          unit="KG", price_cents=1299)
         StockMovement.objects.create(tenant=tenant, shop=shop, product=product,
@@ -102,9 +102,12 @@ class CloudContractTests(unittest.TestCase):
                           "DB_PATH": local_path, "START_WORKER": False})
         store = app.extensions["terminal_store"]
         with patch("terminal.sync._request", side_effect=django_request):
-            bootstrap = pair(store, "http://127.0.0.1:8000", code)
+            bootstrap = pair(store, "http://127.0.0.1:8000", subscription.license_key, code)
         self.assertEqual(bootstrap["products"], 1)
         self.assertEqual(store.identity()["terminal_id"], str(cloud_terminal.id))
+        self.assertEqual(store.connection_info()["license_hint"],
+                         subscription.license_key.replace("-", "")[-4:])
+        self.assertNotIn("license_key", store.meta())
         self.assertTrue(store.lease_status()["can_sell"])
         operator = store.login(str(Membership.objects.get(tenant=tenant).id), "543210")
         store.open_cash(operator["id"], 0)

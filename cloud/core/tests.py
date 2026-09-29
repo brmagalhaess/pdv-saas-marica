@@ -6,15 +6,19 @@ import time
 import uuid
 from datetime import timedelta
 from ipaddress import ip_network
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import Client, RequestFactory, TestCase, override_settings
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import Client, RequestFactory, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from shared.licensing import generate_keypair, verify_lease
+from operations.models import BillingBinding
+from operations.services import enqueue
 from .api_common import client_ip, password_policy
-from .models import Membership, Plan, Product, RateLimit, Shop, Subscription, SyncEvent, Tenant, Terminal
+from .models import AuditEvent, Membership, Plan, Product, RateLimit, Shop, Subscription, SyncEvent, Tenant, Terminal
 
 
 class CloudAPITests(TestCase):
@@ -122,7 +126,8 @@ class CloudAPITests(TestCase):
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
             pairing_code_hash=hashlib.sha256(code.encode()).hexdigest(),
             pairing_expires_at=timezone.now() + timedelta(minutes=10))
-        body = {"code": code, "device_id": "device-1", "version": "1.0"}
+        body = {"license_key": self.sub.license_key, "code": code,
+                "device_id": "device-1", "version": "1.0"}
         self.assertEqual(self.api("POST", "/api/v1/terminal/pair", body, tenant=False).status_code, 403)
         self.sub.current_period_end = timezone.now() - timedelta(hours=24)
         self.sub.save(update_fields=["current_period_end"])
@@ -135,6 +140,156 @@ class CloudAPITests(TestCase):
                               expected={"terminal_id": terminal.id, "device_id": "device-1"})
         self.assertEqual(claims["status"], "past_due")
         self.assertLessEqual(claims["expires_at"], int(self.sub.current_period_end.timestamp()) + 72 * 3600)
+
+    def test_license_is_stable_company_scoped_and_visible_to_administrators(self):
+        self.assertTrue(self.sub.license_key.startswith("PDV2-"))
+        other_key = Subscription.objects.get(tenant=self.other_tenant).license_key
+        self.assertNotEqual(self.sub.license_key, other_key)
+        self.client.force_login(self.owner)
+        before = self.api("GET", "/api/v1/subscription").json()
+        self.assertEqual(before["license"]["key"], self.sub.license_key)
+        self.assertEqual(before["license"]["status"], "trial")
+        self.assertTrue(before["license"]["can_activate"])
+        self.assertEqual(before["license"]["terminal_limit"], 1)
+        self.assertEqual(before["license"]["terminal_used"], 0)
+        self.assertEqual(before["license"]["terminal_available"], 1)
+        Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa 1")
+        after = self.api("GET", "/api/v1/subscription").json()
+        self.assertEqual(after["license"]["terminal_used"], 1)
+        self.assertEqual(after["license"]["terminal_available"], 0)
+        cashier = get_user_model().objects.create_user(username="cashier@example.test",
+                                                        password="Cashier-42!")
+        Membership.objects.create(tenant=self.tenant, user=cashier, name="Caixa", role="cashier")
+        self.client.force_login(cashier)
+        self.assertIsNone(self.api("GET", "/api/v1/subscription").json()["license"]["key"])
+        self.assertEqual(self.api("GET", "/api/v1/subscription", tenant=self.other_tenant.id).status_code, 403)
+
+    def test_subscription_panel_reports_effective_expiry(self):
+        self.client.force_login(self.owner)
+        response = self.api("GET", "/api/v1/subscription")
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.sub.trial_ends_at = timezone.now() - timedelta(minutes=1)
+        self.sub.save(update_fields=["trial_ends_at"])
+        data = self.api("GET", "/api/v1/subscription").json()
+        self.assertEqual(data["license"]["status"], "expired")
+        self.assertFalse(data["license"]["can_activate"])
+        self.sub.status = "active"
+        self.sub.current_period_end = timezone.now() - timedelta(hours=1)
+        self.sub.save(update_fields=["status", "current_period_end"])
+        self.assertEqual(self.api("GET", "/api/v1/subscription").json()["license"]["status"], "past_due")
+        self.sub.current_period_end = timezone.now() - timedelta(days=4)
+        self.sub.save(update_fields=["current_period_end"])
+        self.assertEqual(self.api("GET", "/api/v1/subscription").json()["license"]["status"], "expired")
+
+    def test_pair_requires_matching_license_and_one_time_code(self):
+        code = "pair-company-1"
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            pairing_code_hash=hashlib.sha256(code.encode()).hexdigest(),
+            pairing_expires_at=timezone.now() + timedelta(minutes=10))
+        body = {"code": code, "device_id": "device-1", "version": "1.0"}
+        self.assertEqual(self.api("POST", "/api/v1/terminal/pair", body, tenant=False).status_code, 400)
+        body["license_key"] = Subscription.objects.get(tenant=self.other_tenant).license_key
+        self.assertEqual(self.api("POST", "/api/v1/terminal/pair", body, tenant=False).status_code, 401)
+        self.assertIsNotNone(Terminal.objects.get(pk=terminal.pk).pairing_code_hash)
+        body["license_key"] = self.sub.license_key.lower()
+        private, public = generate_keypair()
+        with patch.dict(os.environ, {"PDV_LICENSE_PRIVATE_KEY": private, "PDV_LICENSE_PUBLIC_KEY": public,
+                                    "PDV_LICENSE_PRIVATE_KEY_FILE": "", "PDV_LICENSE_PUBLIC_KEY_FILE": ""}):
+            result = self.api("POST", "/api/v1/terminal/pair", body, tenant=False)
+            bootstrap = self.api("GET", "/api/v1/terminal/bootstrap", tenant=False,
+                                 HTTP_AUTHORIZATION="Bearer " + result.json()["token"])
+        self.assertEqual(result.status_code, 200, result.content)
+        self.assertEqual(result.json()["license_hint"], self.sub.license_key[-4:])
+        self.assertEqual(bootstrap.status_code, 200, bootstrap.content)
+        self.assertEqual(bootstrap.json()["license_hint"], self.sub.license_key[-4:])
+        self.assertEqual(self.api("POST", "/api/v1/terminal/pair", body, tenant=False).status_code, 401)
+
+    def test_vip_requires_platform_root_is_audited_and_clears_on_manual_edit(self):
+        User = get_user_model()
+        root = User.objects.create_superuser(username="root-vip@example.test",
+                                             email="root-vip@example.test", password="Root-42!")
+        end = (timezone.now() + timedelta(days=365)).replace(microsecond=0)
+        body = {"plan_id": str(self.management.id), "current_period_end": end.isoformat(),
+                "reason": "Piloto comercial"}
+        path = f"/api/v1/platform/subscriptions/{self.sub.id}/vip"
+        self.client.force_login(self.owner)
+        self.assertEqual(self.api("POST", path, body, tenant=False).status_code, 403)
+        self.client.force_login(root)
+        granted = self.api("POST", path, body, tenant=False)
+        self.assertEqual(granted.status_code, 200, granted.content)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.license_source, "vip")
+        self.assertEqual(self.sub.status, "active")
+        self.assertEqual(self.sub.plan_id, self.management.id)
+        self.assertEqual(granted.json()["license_source"], "vip")
+        self.assertEqual(AuditEvent.objects.filter(action="platform.vip_granted").count(), 1)
+        self.assertEqual(self.api("POST", path, body, tenant=False).status_code, 200)
+        self.assertEqual(AuditEvent.objects.filter(action="platform.vip_granted").count(), 1)
+        cancelled = self.api("PATCH", f"/api/v1/platform/subscriptions/{self.sub.id}",
+                             {"status": "cancelled"}, tenant=False)
+        self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.license_source, "manual")
+        self.assertEqual(self.sub.status, "cancelled")
+        with patch.dict(os.environ, {"PDV_LICENSE_PRIVATE_KEY": "", "PDV_LICENSE_PRIVATE_KEY_FILE": ""}):
+            self.assertEqual(self.api("POST", "/api/v1/terminals",
+                {"shop_id": str(self.shop.id), "name": "Caixa"}).status_code, 403)
+
+    def test_vip_rejects_active_recurring_charge(self):
+        root = get_user_model().objects.create_superuser(
+            username="root-billing@example.test", email="root-billing@example.test",
+            password="Root-42!")
+        self.client.force_login(root)
+        binding = BillingBinding.objects.create(tenant=self.tenant, plan=self.plan,
+            external_id="sub-vip-block", customer_id="customer-1", cycle="MONTHLY",
+            amount_cents=self.plan.price_month_cents)
+        body = {"plan_id": str(self.plan.id),
+                "current_period_end": (timezone.now() + timedelta(days=30)).isoformat()}
+        path = f"/api/v1/platform/subscriptions/{self.sub.id}/vip"
+        provider = Mock()
+        provider.get_subscription.return_value = {"id": binding.external_id,
+            "customer": binding.customer_id, "status": "ACTIVE"}
+        with patch("core.views_platform.account", return_value=provider):
+            result = self.api("POST", path, body, tenant=False)
+        self.assertEqual(result.status_code, 409, result.content)
+        self.assertIn("Pause", result.json()["error"])
+        self.assertEqual(Subscription.objects.get(pk=self.sub.pk).license_source, "trial")
+        provider.get_subscription.return_value["status"] = "INACTIVE"
+        with patch("core.views_platform.account", return_value=provider):
+            self.assertEqual(self.api("POST", path, body, tenant=False).status_code, 200)
+        binding.refresh_from_db()
+        self.assertFalse(binding.active)
+        self.assertEqual(Subscription.objects.get(pk=self.sub.pk).license_source, "vip")
+        self.assertEqual(AuditEvent.objects.filter(action="platform.billing_paused_verified").count(), 1)
+
+    def test_vip_blocks_pending_billing_creation(self):
+        root = get_user_model().objects.create_superuser(
+            username="root-pending@example.test", email="root-pending@example.test",
+            password="Root-42!")
+        self.client.force_login(root)
+        job = enqueue("billing.subscribe", self.tenant, "vip-pending", {"plan_id": str(self.plan.id)})
+        body = {"plan_id": str(self.plan.id),
+                "current_period_end": (timezone.now() + timedelta(days=30)).isoformat()}
+        path = f"/api/v1/platform/subscriptions/{self.sub.id}/vip"
+        result = self.api("POST", path, body, tenant=False)
+        self.assertEqual(result.status_code, 409, result.content)
+        self.assertEqual(Subscription.objects.get(pk=self.sub.pk).license_source, "trial")
+        job.status = "needs_review"
+        job.save(update_fields=["status"])
+        self.assertEqual(self.api("POST", path, body, tenant=False).status_code, 409)
+
+    def test_vip_expires_on_selected_date_without_paid_grace(self):
+        from .api_common import APIError, subscription_window
+        self.client.force_login(self.owner)
+        self.sub.status = "active"
+        self.sub.license_source = "vip"
+        self.sub.current_period_end = timezone.now() - timedelta(minutes=1)
+        self.sub.save()
+        response = self.api("GET", "/api/v1/subscription")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["license"]["status"], "expired")
+        with self.assertRaises(APIError):
+            subscription_window(self.tenant)
 
     def test_invalid_terminal_batch_rolls_back_and_replay_is_idempotent(self):
         token = "terminal-token-" + uuid.uuid4().hex
@@ -183,3 +338,38 @@ class CloudAPITests(TestCase):
         allowed = self.api("POST", "/api/v1/categories", {"name": "Secos"},
                            client=client, HTTP_X_CSRFTOKEN=token)
         self.assertEqual(allowed.status_code, 201, allowed.content)
+
+
+class LicenseBackfillMigrationTests(TransactionTestCase):
+    def test_existing_subscriptions_keep_individual_keys_and_sources(self):
+        before = [("core", "0006_advanced_terminal_limit"),
+                  ("operations", "0002_productrelease")]
+        after = [("core", "0007_subscription_license"),
+                 ("operations", "0002_productrelease")]
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        try:
+            old_apps = executor.loader.project_state(before).apps
+            PlanOld = old_apps.get_model("core", "Plan")
+            TenantOld = old_apps.get_model("core", "Tenant")
+            SubscriptionOld = old_apps.get_model("core", "Subscription")
+            plan = PlanOld.objects.create(slug="migration-check", name="Migração")
+            rows = []
+            for name, status, external_id in (("Teste", "trial", ""),
+                                              ("Pago", "active", "provider-123"),
+                                              ("Manual", "active", "")):
+                tenant = TenantOld.objects.create(name=name)
+                rows.append(SubscriptionOld.objects.create(
+                    tenant=tenant, plan=plan, status=status, external_id=external_id).pk)
+            executor = MigrationExecutor(connection)
+            executor.migrate(after)
+            new_apps = executor.loader.project_state(after).apps
+            SubscriptionNew = new_apps.get_model("core", "Subscription")
+            licenses = list(SubscriptionNew.objects.filter(pk__in=rows)
+                            .order_by("tenant__name").values_list("license_key", "license_source"))
+            self.assertEqual(len(licenses), 3)
+            self.assertEqual(len({key for key, _ in licenses}), 3)
+            self.assertTrue(all(key.startswith("PDV2-") and len(key) == 32 for key, _ in licenses))
+            self.assertEqual({source for _, source in licenses}, {"trial", "subscription", "manual"})
+        finally:
+            MigrationExecutor(connection).migrate(after)

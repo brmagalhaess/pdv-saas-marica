@@ -66,6 +66,7 @@ class OperationsTests(TestCase):
             provider.get_payment.return_value['status']='RECEIVED'
             reconcile_payment(job);reconcile_payment(job)
             self.sub.refresh_from_db();self.assertEqual(self.sub.status,'active')
+            self.assertEqual(self.sub.license_source,'subscription')
             end=self.sub.current_period_end
             self.assertEqual(BillingInvoice.objects.count(),1)
             provider.get_payment.return_value.update(id='pay_old',dueDate='2026-08-29',status='RECEIVED')
@@ -92,6 +93,44 @@ class OperationsTests(TestCase):
         self.sub.refresh_from_db();self.assertEqual(self.sub.status,'trial')
         self.assertEqual(BillingInvoice.objects.get().status,'paid')
 
+    def test_inactive_old_binding_cannot_change_vip_license(self):
+        BillingBinding.objects.create(tenant=self.tenant,plan=self.plan,external_id='old_sub',
+            customer_id='old_customer',cycle='MONTHLY',amount_cents=14900,active=False)
+        self.sub.status='active';self.sub.license_source='vip'
+        self.sub.current_period_end=timezone.now()+timedelta(days=180)
+        self.sub.external_id='';self.sub.save()
+        provider=Mock();provider.payment_state=Asaas.payment_state
+        provider.get_payment.return_value={'id':'late_payment','subscription':'old_sub',
+            'customer':'old_customer','value':149,'dueDate':'2026-08-29','status':'OVERDUE'}
+        job=enqueue('billing.reconcile',None,'late-old-payment',{'payment_id':'late_payment'})
+        with patch('operations.services.account',return_value=provider):
+            reconcile_payment(job)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.status,'active')
+        self.assertEqual(self.sub.license_source,'vip')
+        self.assertEqual(BillingInvoice.objects.get().status,'overdue')
+
+    def test_verified_first_payment_replaces_longer_vip_grant(self):
+        vip_plan=Plan.objects.create(slug='vip-long',name='VIP longo',terminal_limit=3,
+                                     price_month_cents=29900,price_year_cents=299000)
+        vip_end=timezone.now()+timedelta(days=365)
+        self.sub.plan=vip_plan;self.sub.status='active';self.sub.license_source='vip'
+        self.sub.current_period_end=vip_end;self.sub.external_id='';self.sub.save()
+        BillingBinding.objects.create(tenant=self.tenant,plan=self.plan,external_id='new_paid_sub',
+            customer_id='new_customer',cycle='MONTHLY',amount_cents=14900)
+        provider=Mock();provider.payment_state=Asaas.payment_state
+        provider.get_payment.return_value={'id':'first_paid_payment','subscription':'new_paid_sub',
+            'customer':'new_customer','value':149,'dueDate':timezone.localdate().isoformat(),
+            'status':'RECEIVED'}
+        job=enqueue('billing.reconcile',None,'vip-conversion-payment',{'payment_id':'first_paid_payment'})
+        with patch('operations.services.account',return_value=provider):
+            reconcile_payment(job)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.plan_id,self.plan.id)
+        self.assertEqual(self.sub.license_source,'subscription')
+        self.assertEqual(self.sub.external_id,'new_paid_sub')
+        self.assertLess(self.sub.current_period_end,vip_end)
+
     def test_ambiguous_customer_creation_recovers_via_read_only_lookup(self):
         source=enqueue('billing.subscribe',self.tenant,'source-customer',{'document':'12345678901'})
         source.status='needs_review';source.save()
@@ -111,6 +150,11 @@ class OperationsTests(TestCase):
         self.assertEqual(data['tenants_total'],57);self.assertIsNone(data['mrr_cents'])
         self.user.is_superuser=True;self.user.save()
         self.assertEqual(self.client.get('/api/v1/ops/platform/metrics').json()['mrr_cents'],0)
+        self.sub.status='active';self.sub.license_source='vip'
+        self.sub.current_period_end=timezone.now()+timedelta(days=30);self.sub.save()
+        metrics=self.client.get('/api/v1/ops/platform/metrics').json()
+        self.assertEqual(metrics['subscriptions_vip'],1)
+        self.assertEqual(metrics['mrr_cents'],0)
 
     def test_ambiguous_mutation_is_never_automatically_repeated(self):
         job=enqueue('billing.subscribe',self.tenant,'ambiguous',{})

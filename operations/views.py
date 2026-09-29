@@ -239,10 +239,11 @@ def platform_metrics(request):
     if financial:
         contracted={x.external_id:((x.amount_cents+6)//12 if x.cycle=='YEARLY' else x.amount_cents) for x in BillingBinding.objects.filter(active=True)}
         mrr=sum(contracted.get(sub.external_id,sub.plan.price_month_cents)
-                for sub in active.select_related('plan'))
+                for sub in active.filter(license_source='subscription').select_related('plan'))
         paid=BillingInvoice.objects.filter(status='paid').aggregate(value=Sum('amount_cents'))['value'] or 0
     return JsonResponse({'tenants_total':Tenant.objects.count(),'tenants_active':Tenant.objects.filter(active=True).count(),
-        'subscriptions_active':active.count(),'subscriptions_trial':Subscription.objects.filter(status='trial',trial_ends_at__gt=timezone.now()).count(),
+        'subscriptions_active':active.count(),'subscriptions_vip':active.filter(license_source='vip').count(),
+        'subscriptions_trial':Subscription.objects.filter(status='trial',trial_ends_at__gt=timezone.now()).count(),
         'subscriptions_past_due':Subscription.objects.filter(status='past_due').count(),
         'terminals_total':Terminal.objects.count(),'terminals_revoked':Terminal.objects.filter(revoked=True).count(),
         'mrr_cents':mrr,'paid_invoices_cents':paid,'pending_jobs':ProviderJob.objects.filter(status='queued').count(),

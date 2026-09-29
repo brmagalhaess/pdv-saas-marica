@@ -191,6 +191,7 @@ class Store:
             "shop_name": meta.get("shop_name"),
             "terminal_id": meta.get("terminal_id"),
             "terminal_name": meta.get("terminal_name"),
+            "license_hint": meta.get("license_hint"),
             "device_id": meta.get("device_id"),
             "cloud_url": meta.get("cloud_url"),
         }
@@ -198,6 +199,41 @@ class Store:
     def _audit(self, conn, operator_id, action, subject_id=None, detail=None):
         conn.execute("INSERT INTO audit VALUES (?,?,?,?,?,?)",
                      (uuid.uuid4().hex, operator_id, action, subject_id, detail, _now_ms()))
+
+    def _has_business_history(self, conn):
+        # An old company's sales, receipts or audit trail must never become
+        # visible to the next company's operators through this SQLite file.
+        if any((self.path.parent / "backups").glob("terminal-*.sqlite3")):
+            return True
+        for table in ("sales", "cash_sessions", "cash_movements", "suspended_carts",
+                      "outbox", "print_jobs"):
+            if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                return True
+        return conn.execute("""SELECT 1 FROM audit
+            WHERE action NOT IN ('terminal.paired', 'terminal.bootstrap',
+                                 'terminal.unpaired') LIMIT 1""").fetchone() is not None
+
+    @staticmethod
+    def _clear_company_cache(conn):
+        # These are downloaded/setup data, not locally created business records.
+        # Clearing them also makes exports after a new pairing tenant-isolated.
+        for table in ("products", "operators", "login_attempts", "audit", "print_settings"):
+            conn.execute(f"DELETE FROM {table}")
+
+    @staticmethod
+    def _clear_connection_meta(conn):
+        for key in ("token", "tenant_id", "tenant_name", "shop_id", "shop_name",
+                    "terminal_id", "terminal_name", "license_hint", "lease", "public_key", "cloud_url",
+                    "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
+                    "release_info", "release_error", "release_checked_at", "last_backup_at"):
+            conn.execute("DELETE FROM meta WHERE key=?", (key,))
+
+    def ensure_pairable(self):
+        with self.connection() as conn:
+            if self._meta(conn, "terminal_id"):
+                raise TerminalError("Este dispositivo já está pareado; acione o suporte para transferência", 409)
+            if self._has_business_history(conn):
+                raise TerminalError("Este computador contém histórico de outra empresa. Use uma nova instalação ou diretório de dados para conectar outro terminal; preserve o banco atual.", 409)
 
     def _event(self, conn, event_type, aggregate_id, data):
         event_id = uuid.uuid4().hex
@@ -288,6 +324,10 @@ class Store:
             if key not in response:
                 raise TerminalError(f"Pareamento incompleto: {key}")
         with self.transaction() as conn:
+            if self._meta(conn, "terminal_id"):
+                raise TerminalError("Este dispositivo já está pareado; acione o suporte para transferência", 409)
+            if self._has_business_history(conn):
+                raise TerminalError("Este computador contém histórico de outra empresa. Use uma nova instalação ou diretório de dados para conectar outro terminal; preserve o banco atual.", 409)
             old_key = self._meta(conn, "public_key")
             if old_key and old_key != response["public_key"]:
                 raise TerminalError("Chave pública mudou; suporte precisa verificar o servidor", 409)
@@ -297,12 +337,16 @@ class Store:
                 verify_lease(response["lease"], response["public_key"], expected=expected)
             except LicenseError as exc:
                 raise TerminalError("Licença do pareamento inválida", 403) from exc
+            self._clear_company_cache(conn)
+            self._clear_connection_meta(conn)
             for key in ("token", "tenant_id", "shop_id", "terminal_id", "lease", "public_key"):
                 self._set_meta(conn, key, _json(response[key]) if key == "lease" else response[key])
             for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
                 value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
                 if value:
                     self._set_meta(conn, key, _str(value, key))
+            if response.get("license_hint"):
+                self._set_meta(conn, "license_hint", _str(response["license_hint"], "Licença", 16))
             self._set_meta(conn, "cloud_url", cloud_url)
             self._audit(conn, None, "terminal.paired", response["terminal_id"])
 
@@ -385,6 +429,8 @@ class Store:
                 value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
                 if value:
                     self._set_meta(conn, key, _str(value, key))
+            if response.get("license_hint"):
+                self._set_meta(conn, "license_hint", _str(response["license_hint"], "Licença", 16))
             self._set_meta(conn, "lease", _json(lease))
             self._set_meta(conn, "bootstrap_at", str(timestamp))
             self._audit(conn, None, "terminal.bootstrap", None,
@@ -392,22 +438,18 @@ class Store:
             return {"products": len(products), "operators": len(operators)}
 
     def unpair(self):
-        """Forget the cloud identity while retaining sales/audit history locally."""
+        """Undo a clean setup; a database with business history stays bound."""
         with self.transaction() as conn:
             pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0]
             if pending:
                 raise TerminalError("Sincronize as vendas pendentes antes de trocar de empresa", 409)
             if conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone():
                 raise TerminalError("Feche o caixa antes de trocar de empresa", 409)
-            old_terminal = self._meta(conn, "terminal_id")
-            for key in ("token", "tenant_id", "tenant_name", "shop_id", "shop_name",
-                        "terminal_id", "terminal_name", "lease", "public_key", "cloud_url",
-                        "bootstrap_at", "last_seen"):
-                conn.execute("DELETE FROM meta WHERE key=?", (key,))
-            conn.execute("UPDATE operators SET active=0")
-            conn.execute("UPDATE products SET active=0, barcode=NULL")
-            conn.execute("DELETE FROM login_attempts")
-            self._audit(conn, None, "terminal.unpaired", old_terminal)
+            if self._has_business_history(conn):
+                raise TerminalError("Este computador contém histórico desta empresa. Use uma nova instalação ou diretório de dados para conectar outra empresa; preserve o banco atual.", 409)
+            self._clear_company_cache(conn)
+            self._clear_connection_meta(conn)
+            self._audit(conn, None, "terminal.unpaired")
         return {"paired": False}
 
     def operators(self):

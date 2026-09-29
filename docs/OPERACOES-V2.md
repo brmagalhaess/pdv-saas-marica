@@ -16,6 +16,8 @@ Tokens são criptografados com Fernet e não são retornados pelas APIs. A chave
 
 A criação vira tarefa e não ativa a assinatura como paga. `POST webhooks/asaas` exige header `asaas-access-token`. O evento é deduplicado e apenas agenda uma consulta ao provedor; o status enviado no webhook não é suficiente para liberar acesso. A conciliação confere assinatura, pagador e valor.
 
+A licença empresarial é criada com a assinatura, inclusive no teste inicial. Um pagamento confirmado e reconciliado muda a origem da licença para `subscription`; somente então a assinatura entra nas métricas de MRR pago/contratado. O superusuário da plataforma pode conceder VIP por período e plano, sem gerar cobrança nem receita fictícia. O limite de caixas continua vindo do plano; cada caixa recebe licença offline assinada após pareamento.
+
 Se uma criação tem resposta incerta, ela fica `needs_review`, sem repetição automática. Administrador financeiro pode conferir a referência externa no Asaas e solicitar `POST jobs/<id>/reconcile` com `subscription_id`. O worker consulta a assinatura e exige referência, pagador, ciclo e valor correspondentes antes de vinculá-la. Isso não gera outra cobrança.
 
 Não existe coleta de número de cartão neste sistema. Mudanças de assinatura já ativa exigem conciliação administrativa; o endpoint bloqueia uma segunda assinatura para evitar cobrança duplicada.

@@ -49,14 +49,17 @@ def _request(method, url, **kwargs):
         raise TerminalError("Sem conexão com o servidor; dados locais preservados", 503) from exc
 
 
-def pair(store, cloud_url, code):
+def pair(store, cloud_url, license_key, code):
     cloud_url = validate_cloud_url(cloud_url)
+    if not isinstance(license_key, str) or not 8 <= len(license_key.strip()) <= 160:
+        raise TerminalError("Chave da licença inválida")
     if not isinstance(code, str) or not 4 <= len(code.strip()) <= 100:
         raise TerminalError("Código de pareamento inválido")
-    if store.meta().get("terminal_id"):
-        raise TerminalError("Este dispositivo já está pareado; acione o suporte para transferência", 409)
+    # Reject a reused local database before consuming the cloud's one-time code.
+    store.ensure_pairable()
     response = _request("POST", cloud_url + "/api/v1/terminal/pair",
-                        json={"code": code.strip(), "device_id": store.identity()["device_id"],
+                        json={"license_key": license_key.strip(), "code": code.strip(),
+                              "device_id": store.identity()["device_id"],
                               "version": VERSION})
     store.set_pairing(response, cloud_url)
     return refresh_bootstrap(store)

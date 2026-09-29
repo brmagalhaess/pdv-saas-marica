@@ -149,7 +149,10 @@ def subscription_window(tenant):
         return sub, "trial", sub.trial_ends_at + timedelta(hours=24)
     if sub.current_period_end is None:
         raise APIError("Assinatura sem período de cobrança", 403)
-    deadline = sub.current_period_end + timedelta(hours=72)
+    # Complimentary VIP access ends on the date granted by the platform.
+    # The payment grace period applies only to paid/manual entitlements.
+    deadline = (sub.current_period_end if sub.license_source == "vip" else
+                sub.current_period_end + timedelta(hours=72))
     if deadline <= now:
         raise APIError("Prazo de pagamento encerrado", 403)
     effective = "active" if sub.status == "active" and sub.current_period_end > now else "past_due"

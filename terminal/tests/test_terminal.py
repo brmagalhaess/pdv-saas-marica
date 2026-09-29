@@ -14,7 +14,7 @@ from shared.security import hash_pin
 from terminal.app import create_app
 from terminal.printers import label_bytes, receipt_bytes
 from terminal.store import Store, TerminalError
-from terminal.sync import check_release, print_once, refresh_bootstrap, sync_once
+from terminal.sync import check_release, pair, print_once, refresh_bootstrap, sync_once
 
 
 class TerminalTests(unittest.TestCase):
@@ -80,6 +80,118 @@ class TerminalTests(unittest.TestCase):
                                           headers={"X-CSRF-Token": self.csrf(),
                                                    "Origin": "http://evil.example"}).status_code, 403)
         self.assertEqual(self.client.get("/api/session", headers={"Host": "evil.example"}).status_code, 403)
+
+    def test_license_key_and_one_time_pairing_do_not_store_full_key(self):
+        fresh = Store(Path(self.temp.name) / "fresh.sqlite3")
+        claims = dict(self.claims, device_id=fresh.identity()["device_id"])
+        response = {"token": "x" * 48, "tenant_id": self.tenant_id,
+                    "shop_id": self.shop_id, "terminal_id": self.terminal_id,
+                    "tenant": {"name": "Mercearia Aurora"},
+                    "shop": {"name": "Centro"},
+                    "terminal": {"name": "Caixa 1"},
+                    "license_hint": "7B2C", "lease": sign_lease(claims, self.private),
+                    "public_key": self.public}
+        with self.assertRaisesRegex(TerminalError, "Chave da licença"):
+            pair(fresh, "http://127.0.0.1:8000", "", "codigo-temporario")
+        with patch("terminal.sync._request", return_value=response) as send, \
+             patch("terminal.sync.refresh_bootstrap", return_value={"products": 0, "operators": 0}):
+            pair(fresh, "http://127.0.0.1:8000", " PDV2-LICENSE-7B2C ", " codigo-temporario ")
+        self.assertEqual(send.call_args.kwargs["json"]["license_key"], "PDV2-LICENSE-7B2C")
+        self.assertEqual(send.call_args.kwargs["json"]["code"], "codigo-temporario")
+        self.assertNotIn("license_key", fresh.meta())
+        self.assertEqual(fresh.connection_info()["license_hint"], "7B2C")
+        self.assertEqual(fresh.connection_info()["tenant_name"], "Mercearia Aurora")
+        with self.assertRaisesRegex(TerminalError, "já está pareado"):
+            pair(fresh, "http://127.0.0.1:8000", "PDV2-LICENSE-7B2C", "outro-codigo")
+
+    def test_clean_pairing_can_be_corrected_without_exposing_old_company_cache(self):
+        fresh = Store(Path(self.temp.name) / "clean-switch.sqlite3")
+        old_claims = dict(self.claims, device_id=fresh.identity()["device_id"])
+        old_lease = sign_lease(old_claims, self.private)
+        fresh.set_pairing({"token": "a" * 48, "tenant_id": self.tenant_id,
+                           "shop_id": self.shop_id, "terminal_id": self.terminal_id,
+                           "tenant": {"name": "Empresa Antiga"}, "lease": old_lease,
+                           "public_key": self.public}, "http://127.0.0.1:8000")
+        fresh.apply_bootstrap(dict(self.bootstrap, lease=old_lease))
+        self.assertTrue(fresh.export_data()["products"])
+
+        self.assertEqual(fresh.unpair(), {"paired": False})
+        self.assertFalse(fresh.connection_info()["paired"])
+        self.assertEqual(fresh.operators(), [])
+        self.assertEqual(fresh.export_data()["products"], [])
+        self.assertEqual(fresh.sales(), [])
+
+        new_tenant, new_shop, new_terminal, new_product, new_operator = (str(uuid.uuid4()) for _ in range(5))
+        new_operators = [{"id": new_operator, "name": "Pessoa Nova", "role": "cashier",
+                          "pin_hash": hash_pin("831947")}]
+        new_claims = dict(old_claims, tenant_id=new_tenant, shop_id=new_shop,
+                          terminal_id=new_terminal, operators_hash=payload_digest(new_operators))
+        new_lease = sign_lease(new_claims, self.private)
+        fresh.set_pairing({"token": "b" * 48, "tenant_id": new_tenant,
+                           "shop_id": new_shop, "terminal_id": new_terminal,
+                           "tenant": {"name": "Empresa Nova"}, "lease": new_lease,
+                           "public_key": self.public}, "http://127.0.0.1:8000")
+        fresh.apply_bootstrap({"products": [{"id": new_product, "sku": "NOVO", "barcode": "7890000000099",
+            "name": "Produto Novo", "unit": "UN", "price_cents": 100,
+            "quantity_milli": 1000, "active": True}], "operators": new_operators,
+            "lease": new_lease, "public_key": self.public})
+        exported = json.dumps(fresh.export_data(), ensure_ascii=False)
+        self.assertIn("Produto Novo", exported)
+        self.assertNotIn("Empresa Antiga", exported)
+        self.assertNotIn("Queijo", exported)
+        self.assertNotIn(self.terminal_id, exported)
+        self.assertEqual([row["name"] for row in fresh.operators()], ["Pessoa Nova"])
+
+    def test_business_history_blocks_unpair_and_repair_without_erasing_data(self):
+        self.store.open_cash(self.cashier_id, 0)
+        sale = self.store.sale(self.cashier, {"request_id": "old-company-sale",
+            "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+            "payments": [{"method": "cash", "amount_cents": 700}],
+            "customer_name": "Cliente antigo"})
+        self.store.close_cash(self.cashier_id, 700)
+        self.store.ack_events([event["event_id"] for event in self.store.pending_events()])
+        response = self.client.post("/api/unpair", json={"confirm": True},
+                                    headers={"X-CSRF-Token": self.csrf()})
+        self.assertEqual(response.status_code, 409, response.json)
+        self.assertIn("diretório de dados", response.json["error"])
+        self.assertEqual(self.store.identity()["terminal_id"], self.terminal_id)
+        self.assertEqual(self.store.sale_detail(sale["id"])["customer_name"], "Cliente antigo")
+        with self.store.transaction() as conn:
+            conn.execute("DELETE FROM meta WHERE key IN ('terminal_id', 'token')")
+        with patch("terminal.sync._request") as send, self.assertRaisesRegex(TerminalError, "histórico"):
+            pair(self.store, "http://127.0.0.1:8000", "PDV2-EXAMPLE-KEY", "codigo-temporario")
+        send.assert_not_called()
+
+    def test_preserved_backup_blocks_switch_even_if_audit_was_lost(self):
+        backup = self.store.backup_now()
+        self.assertTrue(Path(backup["directory"], backup["name"]).exists())
+        with self.store.transaction() as conn:
+            conn.execute("DELETE FROM audit WHERE action='terminal.backup'")
+        with self.assertRaisesRegex(TerminalError, "histórico"):
+            self.store.unpair()
+        self.assertEqual(self.store.identity()["terminal_id"], self.terminal_id)
+
+    def test_offline_operator_login_after_restart(self):
+        reopened = Store(self.path)
+        self.assertEqual({o["name"] for o in reopened.operators()}, {"Ana", "Bruno"})
+        self.assertEqual(reopened.login(self.cashier_id, "123987")["role"], "cashier")
+        self.assertEqual(reopened.login(self.manager_id, "654321")["role"], "manager")
+
+    def test_read_only_operator_can_enter_without_cash_permissions(self):
+        viewer_id = str(uuid.uuid4())
+        operators = [*self.operators,
+                     {"id": viewer_id, "name": "Consulta", "role": "viewer",
+                      "pin_hash": hash_pin("321987")}]
+        claims = dict(self.claims, operators_hash=payload_digest(operators))
+        self.store.apply_bootstrap(dict(self.bootstrap, operators=operators,
+                                        lease=sign_lease(claims, self.private)))
+        self.login(viewer_id, "321987")
+        self.assertEqual(self.client.get("/api/products").status_code, 200)
+        self.assertEqual(self.client.get("/api/sales").status_code, 200)
+        self.assertEqual(self.client.get("/api/sync").status_code, 200)
+        self.assertEqual(self.client.get("/api/carts/suspended").status_code, 403)
+        self.assertEqual(self.client.post("/api/cash/open", json={"opening_cents": 0},
+                                          headers={"X-CSRF-Token": self.csrf()}).status_code, 403)
 
     def test_login_lockout_and_pin_rotation_invalidates_cookie(self):
         for _ in range(5):

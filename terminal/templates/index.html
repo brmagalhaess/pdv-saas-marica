@@ -17,15 +17,17 @@
 
   <section id="pairView" class="gate hidden">
     <div class="gate-card">
-      <span class="eyebrow">PRIMEIRO ACESSO</span>
-      <h1>Conecte este caixa à sua loja</h1>
-      <p>Este computador ainda não está vinculado a uma empresa. O código de pareamento é criado no painel SaaS e conecta este caixa à loja correta.</p>
+      <span class="eyebrow">ATIVAÇÃO DESTE COMPUTADOR</span>
+      <h1>Conecte o caixa à empresa</h1>
+      <p>Esta configuração é feita uma vez. No painel da empresa, abra <strong>Assinatura</strong> para copiar a chave da licença e <strong>Terminais</strong> para criar este caixa e gerar o código de pareamento.</p>
       <form id="pairForm">
-        <label>Endereço do servidor <input id="cloudUrl" type="url" placeholder="https://suaempresa.com" required></label>
-        <label>Código de pareamento <input id="pairCode" autocomplete="off" placeholder="Código do painel" required></label>
-        <button class="primary" type="submit">Parear terminal</button>
+        <label>Endereço do servidor da empresa <input id="cloudUrl" type="url" placeholder="https://suaempresa.com" required></label>
+        <label>Chave da licença <input id="licenseKey" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PDV2-…" required></label>
+        <label>Código de pareamento deste caixa <input id="pairCode" autocomplete="off" spellcheck="false" placeholder="Código temporário do painel" required></label>
+        <button class="primary" type="submit">Conectar este terminal</button>
       </form>
-      <p class="hint">No Docker local, use <code>http://cloud:8080</code>. Se o terminal estiver fora do Docker, use <code>http://127.0.0.1:8000</code>. ID deste dispositivo: <code id="deviceId"></code></p>
+      <p class="hint">A licença identifica a assinatura; o código de pareamento autoriza este dispositivo por uma única vez. Depois, cada operador entra com seu próprio PIN.</p>
+      <p class="hint">No Docker local, use <code>http://cloud:8080</code>. Em outro computador, use o endereço HTTPS informado no painel. ID deste dispositivo: <code id="deviceId"></code></p>
     </div>
   </section>
 
@@ -34,16 +36,17 @@
       <span class="eyebrow">ACESSO DO OPERADOR</span>
       <h1>Pronto para vender</h1>
       <div id="connectionIdentity" class="connection-card" aria-live="polite"></div>
-      <p>Selecione seu nome e digite o <strong>PIN do terminal</strong> cadastrado no painel de gestão. Ele é diferente da senha web. O papel de cada pessoa aparece ao lado do nome.</p>
+      <p>Selecione seu nome e digite sua <strong>chave de operador (PIN)</strong> cadastrada em Equipe no painel da empresa. Ela é diferente da senha web.</p>
       <form id="loginForm">
         <label>Operador <select id="operatorSelect" required></select></label>
         <label>PIN <input id="operatorPin" type="password" inputmode="numeric" autocomplete="off" required></label>
         <button class="primary" type="submit">Entrar no caixa</button>
       </form>
       <button id="refreshBootstrap" class="text-button">Atualizar operadores</button>
-      <button id="changeConnection" class="text-button danger-link">Trocar empresa ou terminal</button>
+      <p id="operatorSyncStatus" class="hint" aria-live="polite"></p>
+      <button id="changeConnection" class="text-button danger-link">Corrigir pareamento sem operações</button>
       <p id="operatorEmptyHint" class="hint hidden">Nenhum operador com PIN está disponível para este terminal. Cadastre um PIN no painel da empresa e clique em “Atualizar operadores”.</p>
-      <p class="hint">Se você criou um novo terminal no painel para este mesmo computador, revogue o terminal antigo antes de trocar a conexão.</p>
+      <p class="hint">Com vendas, caixa ou movimentações neste computador, preserve este banco e use uma instalação ou diretório de dados novo para outra empresa.</p>
     </div>
   </section>
 

@@ -15,7 +15,8 @@ const platformEdit = () => platformCan("platform_billing");
 const platformSuperuser = () => !!state.user?.is_superuser;
 const tenantOption = platform ? { tenant: false } : {};
 const roleNames = { owner: "Proprietário", admin: "Administrador", manager: "Gerente", cashier: "Operador de caixa", inventory: "Estoque", finance: "Financeiro", viewer: "Consulta" };
-const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
+const cancellationAccess = role => ["owner","admin","manager"].includes(role) ? "Autorizado" : role==="cashier" ? "Com PIN de gerente" : "Sem permissão";
+const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
 
 const tenantNav = [
   { group: "Acompanhar", id: "dashboard", label: "Visão geral", icon: "◫", feature:"cloud_dashboard", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
@@ -118,7 +119,7 @@ function info(text, warning = false) {
 }
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
-  const tone = ["suspended","cancelled","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
+  const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
     : ["trial","past_due","pending","open","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
     : ["active","settled","completed","succeeded","paid","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
   return el("span", "badge " + tone, statusNames[normalized] || value || "—");
@@ -181,6 +182,18 @@ function pagedContent(response, path, columns, actionsFor, emptyNode, options={}
   draw();
   return host;
 }
+async function collectPages(path, first, options={}) {
+  const rows=[...records(first)],seen=new Set();
+  let cursor=first?.next_cursor;
+  while(cursor){
+    if(seen.has(cursor))throw new Error("A paginação de usuários retornou um cursor repetido.");
+    seen.add(cursor);
+    const separator=path.includes("?")?"&":"?";
+    const result=await api.get(path+separator+"cursor="+encodeURIComponent(cursor),options);
+    rows.push(...records(result));cursor=result?.next_cursor;
+  }
+  return rows;
+}
 function detailRow(label, value) {
   const row = el("div", "detail-row");
   row.append(el("span", "", label));
@@ -204,6 +217,50 @@ function addressText(value) {
 function httpsUrl(value) {
   try { const url=new URL(value); return url.protocol==="https:"?url.href:""; }
   catch { return ""; }
+}
+function terminalLink() { return "http://127.0.0.1:8010/"; }
+function localDocker() { return ["localhost", "127.0.0.1"].includes(location.hostname); }
+function licenseSource(value) {
+  return { vip:"VIP (cortesia)", subscription:"Assinatura paga", manual:"Ativação manual", trial:"Teste" }[value] || (value ? String(value) : "—");
+}
+function copyableValue(label, value, help = "") {
+  const field=el("div","connection-field");
+  field.append(el("strong","",label));
+  const row=el("div","connection-value"),input=el("input");
+  input.readOnly=true;input.value=value||"";input.setAttribute("aria-label",label);
+  input.addEventListener("focus",()=>input.select());
+  const copy=button("Copiar",async()=>{
+    try { await navigator.clipboard.writeText(input.value); toast(label+" copiado."); }
+    catch { input.focus();input.select();toast("Selecione e copie o valor exibido."); }
+  },"secondary","small");
+  copy.disabled=!value;
+  row.append(input,copy);field.append(row);
+  if(help)field.append(el("small","",help));
+  return field;
+}
+function terminalAccessBox(license) {
+  const box=surface("Acesso e conexão do caixa","Configure a empresa uma vez. Depois, cada operador entra com o próprio PIN.");
+  const grid=el("div","connection-grid");
+  const key=license?.key;
+  grid.append(copyableValue("Licença da empresa",key,"Identifica a empresa no primeiro vínculo. O código de pareamento é gerado separadamente para cada caixa."));
+  const serverUrl=localDocker()?"http://cloud:8080":location.origin;
+  grid.append(copyableValue("Endereço do servidor para o terminal",serverUrl,localDocker()
+    ? "Use este endereço quando o terminal roda no Docker Compose deste projeto."
+    : "Informe este endereço no terminal instalado na empresa."));
+  if(localDocker())grid.append(copyableValue("Servidor fora do Docker, no mesmo computador",location.origin,"Use apenas se o terminal estiver instalado fora do Docker nesta máquina."));
+  grid.append(copyableValue("Link para abrir o terminal neste computador",terminalLink(),"O aplicativo local precisa estar em execução neste computador."));
+  if(localDocker())grid.append(copyableValue("Segundo terminal local, se iniciado", "http://127.0.0.1:8011/",
+    "Cada instalação local tem dados próprios. Confira a empresa mostrada no caixa antes de operar."));
+  box.append(grid);
+  const actions=el("div","connection-actions"),open=el("a","button secondary","Abrir terminal local");
+  open.href=terminalLink();open.target="_blank";open.rel="noopener noreferrer";
+  actions.append(open);box.append(actions);
+  if(localDocker()){
+    const second=el("a","button secondary","Abrir segundo terminal local");
+    second.href="http://127.0.0.1:8011/";second.target="_blank";second.rel="noopener noreferrer";
+    actions.append(second);
+  }
+  return box;
 }
 
 let dialogCleanup = null;
@@ -1177,29 +1234,46 @@ function userPin(row) {
 }
 async function usersPage() {
   const token = ++state.renderId;
-  const view = page("Equipe", "Gerencie as pessoas que podem acessar a empresa e o caixa.", "Administração");
+  const view = page("Equipe", "Defina os operadores do caixa, seus papéis e seus PINs de acesso.", "Administração");
   view.actions.append(button("+ Adicionar pessoa", () => userCreate().catch(handleError)));
+  view.outer.append(info("O PIN é a chave pessoal do operador no terminal. Ele pode ser definido ou trocado aqui, mas não é exibido depois de salvo. Após qualquer alteração, atualize os operadores no terminal."));
+  const operatorBox=surface("Logins disponíveis no caixa");view.outer.append(operatorBox);operatorBox.append(loadingSurface());
   const box = surface("Acessos cadastrados"); view.outer.append(box); box.append(loadingSurface());
   try {
-    const response = await api.get("/users");
+    const response = await api.get("/users?limit=100");
     if (token !== state.renderId) return;
-    box.lastChild.remove(); const rows = records(response);
-    box.append(pagedContent(response,"/users",[
+    const rows=await collectPages("/users?limit=100",response);
+    if(token!==state.renderId)return;
+    box.lastChild.remove();
+    operatorBox.lastChild.remove();
+    const operators=rows.filter(row=>row.active&&row.has_pin);
+    operatorBox.append(operators.length?table([
+      {label:"Operador",render:row=>row.name},
+      {label:"Papel",render:row=>roleNames[row.role]||row.role},
+      {label:"Pode cancelar venda",render:row=>cancellationAccess(row.role)}
+    ],operators,row=>[{label:"Trocar PIN",onClick:()=>userPin(row)}])
+      :empty("Nenhum login de caixa pronto","Ative uma pessoa e defina um PIN para ela aparecer na tela de login do terminal."));
+    box.append(pagedContent(response,"/users?limit=100",[
       { label:"Pessoa", render: row => row.name },{ label:"E-mail", render: row => row.email },
-      { label:"Papel", render: row => roleNames[row.role] || row.role },{ label:"PIN", render: row => row.has_pin ? "Definido" : "Não definido" },
+      { label:"Papel", render: row => roleNames[row.role] || row.role },{ label:"PIN do caixa", render: row => row.has_pin ? "Definido" : "Definir PIN" },
       { label:"Acesso", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
-    ], row => [...(row.role==="owner"&&state.role!=="owner"?[]:[{label:"Editar",onClick:()=>userEdit(row).catch(handleError)}]),{label:"PIN",onClick:()=>userPin(row)}],
+    ], row => [...(row.role==="owner"&&state.role!=="owner"?[]:[{label:"Editar",onClick:()=>userEdit(row).catch(handleError)}]),{label:row.has_pin?"Trocar PIN":"Definir PIN",onClick:()=>userPin(row)}],
       empty("Equipe vazia", "Adicione pessoas para distribuir o acesso.")));
-  } catch (error) { if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } }
+  } catch (error) { if (token === state.renderId) { operatorBox.replaceChildren();box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } }
 }
 
 function pairingDialog(terminal) {
   const body = el("div");
-  body.append(info("Este código aparece uma vez e expira em 10 minutos. Digite-o no aplicativo do terminal."));
+  body.append(info("No primeiro vínculo, informe a licença da empresa, o endereço do servidor e este código no terminal. O vínculo permanece salvo depois de fechar o caixa."));
+  if(state.subscription?.license?.key)body.append(copyableValue("Licença da empresa",state.subscription.license.key));
+  body.append(copyableValue("Endereço do servidor",localDocker()?"http://cloud:8080":location.origin));
   const code = el("div", "pairing-code", terminal.pairing_code || "Código indisponível");
   code.setAttribute("aria-label", "Código de pareamento");
-  body.append(code, detailList([["Terminal",terminal.name],["Validade",dateTime(terminal.pairing_expires_at)]]));
-  const actions = el("div", "form-actions"); actions.append(button("Concluir", closeDialog)); body.append(actions);
+  body.append(code,copyableValue("Código de pareamento",terminal.pairing_code,"Uso único. Expira em 10 minutos."),
+    detailList([["Terminal",terminal.name],["Validade",dateTime(terminal.pairing_expires_at)]]));
+  const actions = el("div", "form-actions");
+  const open=el("a","button secondary","Abrir terminal local");open.href=terminalLink();open.target="_blank";open.rel="noopener noreferrer";
+  actions.append(open,button("Concluir", renderRoute));body.append(actions);
   openDialog("Parear terminal", "Guarde o código antes de fechar esta janela.", body);
 }
 async function terminalCreate() {
@@ -1220,31 +1294,58 @@ async function terminalCreate() {
 }
 async function terminalsPage() {
   const token = ++state.renderId;
-  const view = page("Terminais", "Cadastre caixas e acompanhe seus pareamentos.", "Administração");
+  const view = page("Terminais", "Conecte cada caixa à empresa uma única vez e libere o acesso dos operadores.", "Administração");
   view.actions.append(button("+ Novo terminal", () => terminalCreate().catch(handleError)));
-  view.outer.append(info("O pareamento gera um código único. O aplicativo local precisa estar instalado e configurado para utilizá-lo.", true));
+  const access=el("div");view.outer.append(access);
+  view.outer.append(info("Para conectar: crie um terminal, abra o aplicativo local e informe a licença, o servidor e o código de pareamento. O código expira em 10 minutos; o vínculo permanece após o primeiro acesso."));
   const box = surface("Dispositivos da empresa"); view.outer.append(box); box.append(loadingSurface());
+  const operatorBox=surface("Operadores habilitados para entrar no caixa","Defina ou troque o PIN em Equipe. No terminal, use Atualizar operadores para baixar mudanças.");
+  view.outer.append(operatorBox);operatorBox.append(loadingSurface());
   try {
-    const response = await api.get("/terminals");
+    const [response,subscription,usersFirst]=await Promise.all([api.get("/terminals"),api.get("/subscription"),api.get("/users?limit=100")]);
     if (token !== state.renderId) return;
-    box.lastChild.remove(); const rows = records(response);
+    const users=await collectPages("/users?limit=100",usersFirst);
+    if(token!==state.renderId)return;
+    state.subscription=subscription;
+    const license=subscription.license||{};
+    access.replaceChildren(terminalAccessBox(license));
+    if(!license.key)access.prepend(info("A licença ainda não está disponível. Ative uma assinatura ou solicite acesso VIP à plataforma.",true));
+    const canActivate=license.can_activate!==false&&(!license.status||['active','trial','past_due'].includes(license.status));
+    if(!canActivate)
+      access.prepend(info("A licença está "+String(statusNames[license.status]||license.status||"indisponível").toLowerCase()+". Regularize a assinatura ou o acesso VIP antes de conectar um novo terminal.",true));
+    const limit=Number(license.terminal_limit??subscription.plan?.terminal_limit);
+    const used=Number(license.terminal_used);
+    const createButton=view.actions.querySelector("button");
+    if(createButton&&(!canActivate||Number.isFinite(limit)&&Number.isFinite(used)&&used>=limit))createButton.disabled=true;
+    box.lastChild.remove();const rows=records(response);
+    if(Number.isFinite(limit)&&Number.isFinite(used))box.append(info(`${used} de ${limit} terminais utilizados; ${Math.max(0,limit-used)} disponíveis no plano.`));
     box.append(pagedContent(response,"/terminals",[
       {label:"Terminal",render:row=>row.name},{label:"Loja",render:row=>shopName(row.shop_id)},
       {label:"Dispositivo",render:row=>row.device_id || "Aguardando pareamento"},{label:"Versão",render:row=>row.version},
       {label:"Último contato",render:row=>dateTime(row.last_seen_at)},{label:"Estado",render:row=>statusBadge(row.revoked ? "Revogado" : row.paired ? "Pareado" : "Aguardando")}
     ], row => row.revoked ? [] : [
-      {label:"Novo código",onClick:async()=>{
+      ...(canActivate?[{label:"Novo código",onClick:async()=>{
         try { const updated=await api.patch("/terminals/"+row.id,{reissue_pairing:true}); pairingDialog(updated); }
         catch(error){handleError(error);}
-      }},
+      }}]:[]),
       {label:"Revogar",danger:true,onClick:()=>confirmAction("Revogar terminal", "Este terminal deixará de receber novas autorizações. As vendas offline já realizadas ainda exigem reconciliação.", async()=>{ await api.patch("/terminals/"+row.id,{revoked:true}); toast("Terminal revogado."); renderRoute(); },"Revogar")}
     ], empty("Nenhum terminal", "Crie o primeiro caixa para gerar um código de pareamento.")));
-  } catch (error) { if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar",errorText(error),"!")); handleError(error); } }
+    operatorBox.lastChild.remove();
+    const available=users.filter(row=>row.active&&row.has_pin);
+    operatorBox.append(available.length?table([
+      {label:"Login",render:row=>row.name},
+      {label:"Nível",render:row=>roleNames[row.role]||row.role},
+      {label:"Cancelamento",render:row=>cancellationAccess(row.role)}
+    ],available,row=>[{label:"Trocar PIN",onClick:()=>userPin(row)}])
+      :empty("Nenhum operador liberado","Abra Equipe e defina um PIN para ao menos uma pessoa ativa."));
+    const teamLink=el("a","button secondary small","Gerenciar equipe e PINs");teamLink.href="#users";
+    const actions=el("div","connection-actions");actions.append(teamLink);operatorBox.append(actions);
+  } catch (error) { if (token === state.renderId) { access.replaceChildren();operatorBox.replaceChildren();box.replaceChildren(empty("Falha ao carregar",errorText(error),"!")); handleError(error); } }
 }
 
 async function subscriptionPage() {
   const token = ++state.renderId;
-  const view = page("Assinatura", "Conheça os limites e a situação do plano atual.", "Administração");
+  const view = page("Assinatura e licença", "Veja o acesso da empresa, os limites do plano e os dados para conectar o caixa.", "Administração");
   view.actions.append(button("Solicitar assinatura", async () => {
     try {
       const plans = records(await api.get("/plans", { tenant:false }));
@@ -1252,18 +1353,25 @@ async function subscriptionPage() {
       billingForm(plans);
     } catch (error) { handleError(error); }
   }));
-  view.outer.append(info("A cobrança automática ainda não está disponível. Mudanças de plano e status são realizadas pela plataforma nesta etapa.", true));
   const box = surface("Plano da empresa"); view.outer.append(box); box.append(loadingSurface());
   try {
     const data = await api.get("/subscription");
     if (token !== state.renderId) return;
-    box.lastChild.remove(); const plan = data.plan || {};
+    state.subscription=data;
+    box.lastChild.remove(); const plan = data.plan || {},license=data.license||{};
     box.append(detailList([
-      ["Plano",plan.name || "Não atribuído"],["Estado",statusBadge(data.status)],
-      ["Mensalidade de referência",money(plan.price_month_cents)],["Limite de terminais",plan.terminal_limit ?? "—"],
+      ["Plano",plan.name || "Não atribuído"],["Estado da assinatura",statusBadge(data.status)],
+      ["Estado da licença",statusBadge(license.status)],
+      ["Tipo de acesso",licenseSource(license.source)],
+      [license.source==="vip"?"Preço de referência (VIP sem cobrança)":"Mensalidade de referência",money(plan.price_month_cents)],
+      ["Limite de terminais",plan.terminal_limit ?? "—"],
+      ["Terminais utilizados",license.terminal_used??"—"],["Terminais disponíveis",license.terminal_available??"—"],
       ["Limite de lojas",plan.shop_limit ?? "—"],["Fim do teste",dateOnly(data.trial_ends_at)],
       ["Fim do período",dateOnly(data.current_period_end)]
     ]));
+    view.outer.append(terminalAccessBox(license));
+    if(!license.key)view.outer.append(info("A chave da licença será exibida quando a assinatura estiver pronta para uso.",true));
+    if(license.can_activate===false)view.outer.append(info("A licença não permite conectar um novo terminal no momento. Regularize a assinatura ou solicite acesso VIP à plataforma.",true));
     if (plan.features && typeof plan.features === "object") {
       const feature = surface("Recursos do plano", "Recursos comerciais contratados; acompanhe a implantação no atendimento.");
       const list = el("ul", "feature-list");
@@ -1326,7 +1434,7 @@ const platformApi = path => api.get("/platform" + path, { tenant:false });
 async function platformOverview() {
   const token = ++state.renderId;
   const view = page("Visão geral", "Acompanhe empresas, assinaturas e terminais da plataforma.", "Plataforma");
-  view.outer.append(info("A receita recorrente representa contratos ativos; os valores recebidos são cobranças confirmadas. Eles medem coisas diferentes.", true));
+  view.outer.append(info("O MRR soma apenas assinaturas pagas. Acessos VIP e ativações manuais aparecem em separado e não representam receita.", true));
   const output = el("div"); view.outer.append(output); output.append(loadingSurface());
   try {
     const [metrics,tenantResult] = await Promise.all([
@@ -1340,8 +1448,9 @@ async function platformOverview() {
     cards.append(
       metric("Empresas cadastradas",String(metrics.tenants_total??0),String(metrics.tenants_active??0)+" ativas"),
       metric("Assinaturas ativas",String(metrics.subscriptions_active??0),String(metrics.subscriptions_trial??0)+" em teste"),
-      metric("MRR contratado",billingValue(metrics.mrr_cents),metrics.mrr_cents==null?"Acesso de cobrança":"Valor mensal equivalente; não recebido"),
+      metric("MRR de assinaturas",billingValue(metrics.mrr_cents),metrics.mrr_cents==null?"Acesso de cobrança":"Somente contratos pagos; VIP excluído"),
       metric("Cobranças pagas",billingValue(metrics.paid_invoices_cents),metrics.paid_invoices_cents==null?"Acesso de cobrança":"Total confirmado em faturas"),
+      metric("Empresas VIP",String(metrics.subscriptions_vip??0),"Acesso cortesia, fora do MRR"),
       metric("Pagamento pendente",String(metrics.subscriptions_past_due??0),"Assinaturas sinalizadas"),
       metric("Terminais cadastrados",String(metrics.terminals_total??0),String(metrics.terminals_revoked??0)+" revogados"),
       metric("Tarefas na fila",String(metrics.pending_jobs??0),"Integrações"),
@@ -1367,9 +1476,13 @@ async function platformTenants() {
     box.append(pagedContent(response,"/platform/tenants",[
       {label:"Empresa",render:row=>row.name},{label:"Documento",render:row=>row.document},
       {label:"Plano",render:row=>row.subscription?.plan?.name},
+      {label:"Acesso",render:row=>licenseSource(row.subscription?.license_source)},
       {label:"Estado",render:row=>statusBadge(row.subscription?.status)},
       {label:"Desde",render:row=>dateTime(row.created_at)}
-    ],platformSuperuser()?row=>[{label:"Editar",onClick:()=>platformTenantForm(row)}]:null,
+    ],platformSuperuser()?row=>[
+      {label:"Editar",onClick:()=>platformTenantForm(row)},
+      ...(row.subscription?[{label:row.subscription.license_source==="vip"?"Renovar VIP":"Conceder VIP",onClick:()=>vipForm({...row.subscription,tenant_name:row.name}).catch(handleError)}]:[])
+    ]:null,
       empty("Nenhuma empresa","O primeiro cadastro aparecerá aqui."),{tenant:false}));
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
@@ -1450,7 +1563,7 @@ async function subscriptionEdit(row) {
     {key:"plan_id",label:"Plano",type:"select",required:true,choices:plans.filter(plan=>plan.active||plan.id===row.plan?.id).map(plan=>[plan.id,plan.name])},
     {key:"status",label:"Estado",type:"select",required:true,choices:[["trial","Teste"],["active","Ativa"],["past_due","Pagamento pendente"],["suspended","Suspensa"],["cancelled","Cancelada"]]},
     {key:"trial_ends_at",label:"Fim do teste",type:"date"},
-    {key:"current_period_end",label:"Fim do período pago",type:"date",help:"Obrigatório para assinatura ativa ou com pagamento pendente."}
+    {key:"current_period_end",label:"Fim do período de acesso",type:"date",help:"Obrigatório para acesso ativo ou com pagamento pendente."}
   ];
   const form=await formFor(fields,{plan_id:row.plan?.id,status:row.status,trial_ends_at:row.trial_ends_at?.slice(0,10),current_period_end:row.current_period_end?.slice(0,10)});
   const message=formMessage(form),submit=formButtons(form,"Salvar assinatura");
@@ -1462,12 +1575,42 @@ async function subscriptionEdit(row) {
       if(payload.trial_ends_at)payload.trial_ends_at=new Date(payload.trial_ends_at+"T12:00:00Z").toISOString();
       if(payload.current_period_end)payload.current_period_end=new Date(payload.current_period_end+"T12:00:00Z").toISOString();
       if(["active","past_due"].includes(payload.status)&&!payload.current_period_end&&!row.current_period_end)
-        throw new Error("Informe o fim do período pago antes de ativar a assinatura.");
+        throw new Error("Informe o fim do período de acesso antes de ativar a assinatura.");
       await api.patch("/platform/subscriptions/"+row.id,payload,{tenant:false});
       closeDialog();toast("Assinatura atualizada.");renderRoute();
     }catch(error){handleError(error,message);submit.disabled=false;}
   });
-  openDialog("Assinatura de "+row.tenant_name,"Confirme a situação de pagamento antes de ativar. Alterar o estado não processa cobrança.",form);
+  openDialog("Assinatura de "+row.tenant_name,"Este ajuste administrativo será identificado como ativação manual e não processa cobrança.",form);
+}
+async function vipForm(row) {
+  const plans=records(await platformApi("/plans"));
+  const choices=plans.filter(plan=>plan.active).map(plan=>[plan.id,`${plan.name} · ${plan.terminal_limit} terminal(is)`]);
+  if(!choices.length)throw new Error("Cadastre um plano ativo antes de conceder VIP.");
+  const selected=choices.some(([id])=>id===row.plan?.id)?row.plan.id:choices[0][0];
+  const current=row.current_period_end?new Date(row.current_period_end):new Date();
+  const end=new Date(Math.max(Date.now(),current.getTime()));end.setFullYear(end.getFullYear()+1);
+  const fields=[
+    {key:"plan_id",label:"Plano e limite de caixas",type:"select",required:true,choices},
+    {key:"current_period_end",label:"Válido até",type:"date",required:true,help:"O acesso VIP expira nesta data."},
+    {key:"reason",label:"Motivo da cortesia",max:240,full:true,placeholder:"Ex.: parceria comercial"}
+  ];
+  const form=await formFor(fields,{plan_id:selected,current_period_end:end.toISOString().slice(0,10)});
+  form.prepend(info("Acesso VIP é uma cortesia para esta empresa. Ele não gera cobrança, usa os limites do plano escolhido e não altera o papel dos usuários. Se já houver assinatura recorrente, pause-a no Asaas antes; o sistema verificará o estado no provedor.",true));
+  const message=formMessage(form),submit=formButtons(form,"Ativar VIP");
+  form.addEventListener("submit",async event=>{
+    event.preventDefault();if(!form.reportValidity())return;
+    submit.disabled=true;
+    try {
+      const data=formPayload(form,fields);
+      if(new Date(data.current_period_end+"T23:59:59Z")<=new Date())throw new Error("Escolha uma data futura.");
+      await api.post("/platform/subscriptions/"+row.id+"/vip",{
+        plan_id:data.plan_id,current_period_end:new Date(data.current_period_end+"T23:59:59Z").toISOString(),
+        ...(data.reason?{reason:data.reason}:{})
+      },{tenant:false});
+      closeDialog();toast("Acesso VIP ativado para a empresa.");renderRoute();
+    }catch(error){handleError(error,message);submit.disabled=false;}
+  });
+  openDialog((row.license_source==="vip"?"Renovar":"Conceder")+" VIP · "+row.tenant_name,"O acesso será registrado e poderá ser auditado.",form);
 }
 async function platformSubscriptions() {
   const token=++state.renderId;
@@ -1480,9 +1623,13 @@ async function platformSubscriptions() {
     state.plans=records(plans);box.lastChild.remove();const rows=records(response);
     box.append(pagedContent(response,"/platform/subscriptions",[
       {label:"Empresa",render:row=>row.tenant_name},{label:"Plano",render:row=>row.plan?.name},
+      {label:"Acesso",render:row=>licenseSource(row.license_source)},
       {label:"Estado",render:row=>statusBadge(row.status)},{label:"Fim do teste",render:row=>dateOnly(row.trial_ends_at)},
       {label:"Período até",render:row=>dateOnly(row.current_period_end)}
-    ],platformEdit()?row=>[{label:"Editar",onClick:()=>subscriptionEdit(row).catch(handleError)}]:null,
+    ],platformEdit()?row=>[
+      {label:"Editar",onClick:()=>subscriptionEdit(row).catch(handleError)},
+      ...(platformSuperuser()?[{label:row.license_source==="vip"?"Renovar VIP":"Conceder VIP",onClick:()=>vipForm(row).catch(handleError)}]:[])
+    ]:null,
       empty("Nenhuma assinatura","As empresas cadastradas aparecerão aqui."),{tenant:false}));
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }

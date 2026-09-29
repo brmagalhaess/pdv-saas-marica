@@ -41,12 +41,16 @@ Se a prévia antiga ocupar a porta 8000, pare apenas `pdv-saas-phase1-pdv-previe
 
 ## Pareamento
 
-1. Entre na empresa, configure o PIN na equipe e crie o terminal.
-2. No terminal, informe o código e `http://cloud:8080` se ambos estiverem no Compose local. O código expira em 10 minutos.
-3. Escolha operador/PIN e abra o caixa antes de vender.
-4. No terminal nativo em loja, use o endereço HTTPS real da nuvem.
+1. Entre na empresa, abra **Assinatura** e copie a chave de licença da empresa. A chave identifica a assinatura e o plano define quantos terminais podem ser criados.
+2. Em **Equipe**, cadastre cada operador e defina um PIN numérico separado da senha web. Em **Terminais**, crie o caixa e copie o código de pareamento de uso único, válido por 10 minutos.
+3. Abra `http://127.0.0.1:8010/` no computador do caixa. Informe a chave de licença, o código temporário e o endereço do servidor: `http://cloud:8080` quando terminal e cloud estão no mesmo Compose local, ou o HTTPS real da nuvem na instalação da loja.
+4. O vínculo empresa/loja/caixa fica gravado nesse computador. Depois, escolha o operador e entre com seu PIN; abra o caixa antes de vender. Novos operadores com PIN são sincronizados quando a nuvem estiver acessível.
 
-A chave pública fica fixada no pareamento. Revogações alcançam um terminal offline quando ele reconectar ou a licença vencer. O prazo da licença não é prazo de contingência fiscal.
+A chave empresarial não autoriza um dispositivo sozinha: o servidor também confere o código temporário e emite uma licença assinada vinculada ao dispositivo. A chave pública fica fixada no pareamento. Revogações alcançam um terminal offline quando ele reconectar ou a licença vencer. O prazo da licença não é prazo de contingência fiscal.
+
+Se um caixa foi conectado à empresa errada e ainda não contém operações nem backups, a opção **Corrigir conexão deste caixa** limpa os dados baixados e permite novo pareamento. Depois de registrar operações ou backups, preserve o banco local e use uma instalação ou diretório de dados separado para outra empresa.
+
+Para testar duas empresas no mesmo Docker Desktop sem misturar históricos, inicie também `docker compose --env-file .runtime/local.env -f compose.local.yaml --profile multi-terminal up -d terminal_second`. O segundo caixa usa volume próprio e abre em `http://127.0.0.1:8011/`; o primeiro continua em `http://127.0.0.1:8010/`.
 
 ## Testes
 

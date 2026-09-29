@@ -87,13 +87,20 @@ def reconcile_payment(job):
         if not invoice:invoice=BillingInvoice(tenant=binding.tenant,subscription=sub,provider='asaas',external_id=payment['id'],amount_cents=amount,due_date=due)
         invoice.status=state;invoice.checkout_url=payment.get('invoiceUrl','');invoice.save()
         period_end=_end_period(due,binding.cycle)
-        if state=='paid' and (sub.current_period_end is None or period_end>=sub.current_period_end):
+        # A verified first payment takes over a complimentary/manual grant even
+        # when that grant lasts longer than the newly purchased billing cycle.
+        # Once paid, older invoices must not shorten the paid period.
+        paid_takeover = sub.license_source != 'subscription'
+        if state=='paid' and binding.active and (paid_takeover or sub.current_period_end is None or period_end>=sub.current_period_end):
             if not capacity_fits(binding.tenant,binding.plan):blocked_capacity=True
             else:
-                sub.plan=binding.plan;sub.status='active';sub.current_period_end=period_end;sub.external_id=binding.external_id;sub.save()
-        elif state in ('refunded','disputed') and sub.external_id==binding.external_id and sub.current_period_end==period_end:
+                sub.plan=binding.plan;sub.status='active';sub.current_period_end=period_end;sub.external_id=binding.external_id
+                # Only a payment verified against the provider changes a grant
+                # from trial or VIP to a paid subscription.
+                sub.license_source='subscription';sub.save()
+        elif state in ('refunded','disputed') and binding.active and sub.external_id==binding.external_id and sub.current_period_end==period_end:
             sub.status='past_due';sub.save(update_fields=['status','updated_at'])
-        elif state=='overdue' and sub.current_period_end and sub.current_period_end<=timezone.now():
+        elif state=='overdue' and binding.active and sub.external_id==binding.external_id and sub.current_period_end and sub.current_period_end<=timezone.now():
             sub.status='past_due';sub.save(update_fields=['status','updated_at'])
         ProviderJob.objects.filter(pk=job.pk).update(tenant=binding.tenant)
     if blocked_capacity:raise ValueError('Pagamento confirmado, mas plano abaixo do uso atual; ajuste lojas/terminais e concilie novamente')

@@ -12,6 +12,9 @@ from django.utils.dateparse import parse_datetime
 from .api_common import APIError, PLATFORM_GROUPS, audit, endpoint, fields, method, money, page, password_policy, payload, platform_user, subscription_window, text, uuid_value
 from .models import AuditEvent, BillingInvoice, Plan, Shop, Subscription, Tenant, Terminal
 from .serializers import plan as plan_data, terminal as terminal_data
+from integrations.base import ProviderError
+from operations.models import BillingBinding, ProviderJob
+from operations.services import account
 
 
 def _platform_staff(row):
@@ -123,12 +126,15 @@ def _tenant(row):
     return {"id": str(row.id), "name": row.name, "document": row.document,
             "active": row.active, "created_at": row.created_at.isoformat(),
             "subscription": {"id": str(sub.id), "status": sub.status,
+                             "license_source": sub.license_source,
                              "plan": plan_data(sub.plan)} if sub else None}
 
 
 def _subscription(row):
     return {"id": str(row.id), "tenant_id": str(row.tenant_id), "tenant_name": row.tenant.name,
-            "status": row.status, "plan": plan_data(row.plan),
+            "status": row.status, "license_source": row.license_source,
+            "license_hint": row.license_key.replace("-", "")[-4:],
+            "plan": plan_data(row.plan),
             "trial_ends_at": row.trial_ends_at.isoformat() if row.trial_ends_at else None,
             "current_period_end": row.current_period_end.isoformat() if row.current_period_end else None}
 
@@ -298,8 +304,85 @@ def subscription_detail(request, pk):
             raise APIError("Informe o fim do período de cobrança para ativar a assinatura")
         for key, value in data.items():
             setattr(row, key, value)
+        # Manual entitlement changes are not evidence of a settled payment.
+        # An ordinary downgrade or cancellation also clears a VIP grant.
+        if {"plan", "status", "current_period_end"}.intersection(data):
+            row.license_source = "trial" if row.status == "trial" else "manual"
         row.save()
         audit(row.tenant, user, "platform.subscription_updated", row, {"fields": list(data)})
+    return JsonResponse(_subscription(row))
+
+
+@endpoint
+def subscription_vip(request, pk):
+    """Grant a time-bound complimentary plan to a company, with a full audit."""
+    method(request, "POST")
+    actor = platform_user(request, superuser=True)
+    data = payload(request)
+    fields(data, ("plan_id", "current_period_end", "reason"),
+           ("plan_id", "current_period_end"))
+    plan = Plan.objects.filter(pk=uuid_value(data["plan_id"]), active=True).first()
+    if plan is None:
+        raise APIError("Plano não encontrado", 404)
+    end = parse_datetime(data["current_period_end"]) if isinstance(data["current_period_end"], str) else None
+    if end is None or timezone.is_naive(end) or end <= timezone.now():
+        raise APIError("Informe um fim de vigência futuro para o VIP")
+    reason = text(data.get("reason", ""), "Motivo", 240, optional=True)
+    subscription_row = Subscription.objects.filter(pk=uuid_value(pk)).first()
+    if subscription_row is None:
+        raise APIError("Assinatura não encontrada", 404)
+    pending_kinds = ("billing.subscribe", "billing.recover", "billing.recover_customer")
+    if ProviderJob.objects.filter(tenant_id=subscription_row.tenant_id, kind__in=pending_kinds,
+                                  status__in=("queued", "running", "needs_review")).exists():
+        raise APIError("Há uma contratação em processamento ou revisão; concilie antes de conceder VIP", 409)
+    # A company may become VIP after its recurring charge is paused at Asaas.
+    # Verify the provider state instead of trusting an administrative checkbox.
+    existing_binding = BillingBinding.objects.filter(tenant_id=subscription_row.tenant_id, active=True).first()
+    verified_binding_id = None
+    verified_status = None
+    if existing_binding:
+        try:
+            remote = account("asaas").get_subscription(existing_binding.external_id)
+        except (ProviderError, ValueError) as exc:
+            raise APIError("Não foi possível verificar a assinatura no Asaas; tente novamente", 503) from exc
+        if (remote.get("id") != existing_binding.external_id or
+                remote.get("customer") != existing_binding.customer_id or
+                remote.get("status") not in ("INACTIVE", "EXPIRED")):
+            raise APIError("Pause a cobrança recorrente no Asaas e tente novamente", 409)
+        verified_binding_id = existing_binding.pk
+        verified_status = remote["status"]
+    with transaction.atomic():
+        Tenant.objects.select_for_update().get(pk=subscription_row.tenant_id)
+        row = Subscription.objects.select_for_update().select_related("tenant", "plan").get(pk=subscription_row.pk)
+        if ProviderJob.objects.filter(tenant=row.tenant, kind__in=pending_kinds,
+                                      status__in=("queued", "running", "needs_review")).exists():
+            raise APIError("Há uma contratação em processamento ou revisão; concilie antes de conceder VIP", 409)
+        active_bindings = list(BillingBinding.objects.select_for_update().filter(tenant=row.tenant, active=True))
+        if active_bindings:
+            if len(active_bindings) != 1 or active_bindings[0].pk != verified_binding_id:
+                raise APIError("A cobrança mudou; verifique novamente antes de conceder VIP", 409)
+            active_bindings[0].active = False
+            active_bindings[0].save(update_fields=["active"])
+            audit(row.tenant, actor, "platform.billing_paused_verified", active_bindings[0],
+                  {"provider_status": verified_status})
+        if (Shop.objects.filter(tenant=row.tenant, active=True).count() > plan.shop_limit or
+                Terminal.objects.filter(tenant=row.tenant, revoked=False).count() > plan.terminal_limit):
+            raise APIError("Uso atual excede limites do plano VIP", 409)
+        changed = (row.plan_id != plan.id or row.status != "active" or
+                   row.current_period_end != end or row.license_source != "vip")
+        if changed:
+            row.plan = plan
+            row.status = "active"
+            row.current_period_end = end
+            row.license_source = "vip"
+            # An older processor subscription must not revoke the complimentary
+            # entitlement when a delayed payment or refund webhook arrives.
+            row.external_id = ""
+            row.save(update_fields=["plan", "status", "current_period_end",
+                                    "license_source", "external_id", "updated_at"])
+            audit(row.tenant, actor, "platform.vip_granted", row,
+                  {"plan_id": str(plan.id), "current_period_end": end.isoformat(),
+                   "reason": reason})
     return JsonResponse(_subscription(row))
 
 

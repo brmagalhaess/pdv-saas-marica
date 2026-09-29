@@ -52,6 +52,7 @@ urlpatterns = [
     path("api/v1/platform/plans/<uuid:pk>", platform.platform_plan_detail),
     path("api/v1/platform/subscriptions", platform.subscriptions),
     path("api/v1/platform/subscriptions/<uuid:pk>", platform.subscription_detail),
+    path("api/v1/platform/subscriptions/<uuid:pk>/vip", platform.subscription_vip),
     path("api/v1/platform/terminals", platform.platform_terminals),
     path("api/v1/platform/terminals/<uuid:pk>", platform.platform_terminal_detail),
     path("api/v1/platform/audit", platform.platform_audit),
