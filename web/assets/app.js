@@ -249,17 +249,10 @@ function terminalAccessBox(license) {
     : "Informe este endereço no terminal instalado na empresa."));
   if(localDocker())grid.append(copyableValue("Servidor fora do Docker, no mesmo computador",location.origin,"Use apenas se o terminal estiver instalado fora do Docker nesta máquina."));
   grid.append(copyableValue("Link para abrir o terminal neste computador",terminalLink(),"O aplicativo local precisa estar em execução neste computador."));
-  if(localDocker())grid.append(copyableValue("Segundo terminal local, se iniciado", "http://127.0.0.1:8011/",
-    "Cada instalação local tem dados próprios. Confira a empresa mostrada no caixa antes de operar."));
   box.append(grid);
   const actions=el("div","connection-actions"),open=el("a","button secondary","Abrir terminal local");
   open.href=terminalLink();open.target="_blank";open.rel="noopener noreferrer";
   actions.append(open);box.append(actions);
-  if(localDocker()){
-    const second=el("a","button secondary","Abrir segundo terminal local");
-    second.href="http://127.0.0.1:8011/";second.target="_blank";second.rel="noopener noreferrer";
-    actions.append(second);
-  }
   return box;
 }
 

@@ -50,7 +50,7 @@ A chave empresarial não autoriza um dispositivo sozinha: o servidor também con
 
 Se um caixa foi conectado à empresa errada e ainda não contém operações nem backups, a opção **Corrigir conexão deste caixa** limpa os dados baixados e permite novo pareamento. Depois de registrar operações ou backups, preserve o banco local e use uma instalação ou diretório de dados separado para outra empresa.
 
-Para testar duas empresas no mesmo Docker Desktop sem misturar históricos, inicie também `docker compose --env-file .runtime/local.env -f compose.local.yaml --profile multi-terminal up -d terminal_second`. O segundo caixa usa volume próprio e abre em `http://127.0.0.1:8011/`; o primeiro continua em `http://127.0.0.1:8010/`.
+Em uma loja, cada computador de caixa executa seu próprio terminal e pode usar a mesma porta local `8010`. A licença, o código de pareamento, o `device_id` e o banco SQLite identificam o caixa; a porta não participa dessa identificação. A porta `8011` existe somente para testar duas instâncias no mesmo Docker Desktop, onde dois processos não conseguem escutar a mesma porta do mesmo computador. Para esse teste, use o perfil `multi-terminal`; em computadores diferentes, não é necessário mudar a porta.
 
 ## Testes
 
