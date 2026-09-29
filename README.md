@@ -12,6 +12,8 @@ sh scripts/start-local.sh
 - Administração SaaS: http://127.0.0.1:8000/platform/
 - Gestão da empresa: http://127.0.0.1:8000/app/
 - Terminal: http://127.0.0.1:8010/
+
+O login é único em `/login/`. Contas que também possuem papel na plataforma veem **Administração SaaS** no menu do avatar do painel da empresa; não é necessário manter uma senha ou login diferente para trocar entre as áreas.
 - Credenciais únicas desta instalação: `.runtime/access.txt`.
 
 O script gera segredos, migra o PostgreSQL e cria uma demonstração no Avançado. Cadastros públicos recebem avaliação do Essencial. A política de senha aceita 8 a 128 caracteres com maiúscula, minúscula, número e símbolo; a senha fornecida na conversa não foi gravada no código.

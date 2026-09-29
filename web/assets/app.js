@@ -327,6 +327,44 @@ function setSidebar(open) {
 $("#menu-button").addEventListener("click", () => setSidebar(true));
 $("#sidebar-close").addEventListener("click", () => setSidebar(false));
 $("#mobile-scrim").addEventListener("click", () => setSidebar(false));
+function canOpenPlatform() { return !!state.user?.is_staff && platformCan("platform_support", "platform_billing", "platform_ops"); }
+function closeProfileMenu() {
+  const menu = $("#profile-menu"), trigger = $("#avatar");
+  if (!menu || !trigger) return;
+  menu.hidden = true;
+  trigger.setAttribute("aria-expanded", "false");
+}
+function renderProfileMenu() {
+  const menu = $("#profile-menu");
+  if (!menu) return;
+  menu.replaceChildren();
+  menu.append(el("strong", "profile-menu-name", state.user?.name || "Conta"));
+  menu.append(el("small", "profile-menu-email", state.user?.email || ""));
+  const links = [];
+  if (canOpenPlatform()) links.push(["Administração SaaS", "/platform/"]);
+  if (state.memberships?.length) links.push(["Painel da empresa", "/app/"]);
+  if (links.length) {
+    menu.append(el("div", "profile-menu-divider"));
+    links.forEach(([label, href]) => {
+      const link = el("a", "profile-menu-link", label); link.href = href; menu.append(link);
+    });
+  }
+  menu.append(el("div", "profile-menu-divider"));
+  const logout = button("Sair da conta", () => $("#logout").click(), "profile-menu-logout");
+  menu.append(logout);
+}
+$("#avatar").addEventListener("click", event => {
+  event.stopPropagation();
+  const menu = $("#profile-menu"), trigger = $("#avatar");
+  const open = menu.hidden;
+  if (open) renderProfileMenu();
+  menu.hidden = !open;
+  trigger.setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", event => {
+  if (!event.target.closest(".profile-menu-wrap")) closeProfileMenu();
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape") closeProfileMenu(); });
 $("#logout").addEventListener("click", async () => {
   $("#logout").disabled = true;
   try { await api.post("/auth/logout", {}, { tenant: false }); location.assign("/login/"); }
@@ -2107,6 +2145,7 @@ async function init() {
     if(!state.user)throw new Error("Faça login para continuar.");
     $("#sidebar-user").textContent=state.user.name||state.user.email||"Conta";
     $("#avatar").textContent=(state.user.name||state.user.email||"P").trim()[0].toUpperCase();
+    renderProfileMenu();
     $("#today").textContent=new Intl.DateTimeFormat("pt-BR",{dateStyle:"full"}).format(new Date());
     if(platform) {
       if(!state.user.is_staff || !platformCan("platform_support","platform_billing","platform_ops")) {
