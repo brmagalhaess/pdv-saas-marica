@@ -17,7 +17,7 @@ const featureNames = {
 let plans = starterPlans;
 let billing = "month";
 function currency(cents) {
-  return new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL",maximumFractionDigits:0}).format(Number(cents)/100);
+  return new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL",minimumFractionDigits:2,maximumFractionDigits:2}).format(Number(cents)/100);
 }
 function renderPrices() {
   const annualNote=$("#billing-year span");

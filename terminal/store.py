@@ -88,6 +88,7 @@ class Store:
                     id TEXT PRIMARY KEY,sku TEXT,barcode TEXT UNIQUE,name TEXT NOT NULL,
                     unit TEXT NOT NULL CHECK(unit IN ('UN','KG','L')),category TEXT,
                     price_cents INTEGER NOT NULL CHECK(price_cents>=0),
+                    cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents>=0),
                     stock_milli INTEGER NOT NULL CHECK(stock_milli>=0),
                     active INTEGER NOT NULL CHECK(active IN (0,1)),updated_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS operators(
@@ -130,6 +131,9 @@ class Store:
             """)
             if self._meta(conn, "device_id") is None:
                 self._set_meta(conn, "device_id", _uuid())
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(products)")}
+            if "cost_cents" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN cost_cents INTEGER NOT NULL DEFAULT 0")
             conn.commit()
         try:
             self.path.chmod(0o600)
@@ -392,13 +396,17 @@ class Store:
                 category = product.get("category")
                 if isinstance(category, dict):
                     category = category.get("name")
-                conn.execute("""INSERT INTO products VALUES (?,?,?,?,?,?,?,?,?,?)
+                conn.execute("""INSERT INTO products
+                    (id,sku,barcode,name,unit,category,price_cents,cost_cents,stock_milli,active,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
                     name=excluded.name,unit=excluded.unit,category=excluded.category,
-                    price_cents=excluded.price_cents,active=excluded.active,updated_at=excluded.updated_at""",
+                    price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
+                    active=excluded.active,updated_at=excluded.updated_at""",
                     (product_id, product.get("sku"), product.get("barcode") or None,
                      _str(product.get("name"), "Nome do produto"), unit, category or "Geral",
-                     price, stock if existing is None else existing["stock_milli"],
+                     price, _positive_int(product.get("cost_cents", 0), "Custo", zero=True),
+                     stock if existing is None else existing["stock_milli"],
                      int(bool(product.get("active", True))), timestamp))
             operator_ids = []
             for operator in operators:

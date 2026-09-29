@@ -106,11 +106,26 @@ def receipts(request):
             rows = rows.filter(shop=scoped(Shop, tenant, shop_id))
         return page(request, rows.order_by("-created_at", "-id"), receipt_data)
     data = payload(request)
-    fields(data, ("shop_id", "supplier_id", "reference", "idempotency_key", "items"),
+    fields(data, ("shop_id", "supplier_id", "reference", "idempotency_key", "items", "source_file"),
            ("shop_id", "idempotency_key", "items"))
     shop = scoped(Shop, tenant, data["shop_id"])
     supplier = scoped(Supplier, tenant, data["supplier_id"]) if data.get("supplier_id") else None
     reference = text(data.get("reference", ""), "Referência", 160, optional=True)
+    source_file = data.get("source_file")
+    source_name = source_mime = source_hash = ""
+    source_size = 0
+    if source_file is not None:
+        if not isinstance(source_file, dict):
+            raise APIError("Arquivo de compra inválido")
+        fields(source_file, ("name", "mime", "size", "sha256"), ("name", "size", "sha256"))
+        source_name = text(source_file["name"], "Arquivo", 180)
+        source_mime = text(source_file.get("mime", ""), "Tipo do arquivo", 100, optional=True)
+        source_size = source_file["size"]
+        if type(source_size) is not int or not 0 <= source_size <= 10 * 1024 * 1024:
+            raise APIError("Tamanho do arquivo inválido")
+        source_hash = text(source_file["sha256"], "Hash do arquivo", 64)
+        if len(source_hash) != 64 or any(char not in "0123456789abcdefABCDEF" for char in source_hash):
+            raise APIError("Hash do arquivo inválido")
     key = text(data["idempotency_key"], "Chave de repetição", 160)
     items = data["items"]
     if not isinstance(items, list) or not 1 <= len(items) <= 200:
@@ -127,7 +142,8 @@ def receipts(request):
         prepared.append((product, product_quantity(product, item["quantity_milli"]),
                          money(item.get("unit_cost_cents", product.cost_cents), "Custo")))
     content_hash = digest({"shop_id": str(shop.id), "supplier_id": str(supplier.id) if supplier else None,
-                           "reference": reference,
+                           "reference": reference, "source_file": {"name": source_name, "mime": source_mime,
+                                                                      "size": source_size, "sha256": source_hash},
                            "items": sorted([(str(p.id), qty, cost) for p, qty, cost in prepared])})
     with transaction.atomic():
         type(tenant).objects.select_for_update().get(pk=tenant.pk)
@@ -137,7 +153,9 @@ def receipts(request):
                 raise APIError("Chave já usada com outros dados", 409)
             return JsonResponse(receipt_data(previous))
         row = StockReceipt.objects.create(tenant=tenant, shop=shop, supplier=supplier,
-                                          reference=reference, idempotency_key=key,
+                                          reference=reference, source_file_name=source_name,
+                                          source_file_mime=source_mime, source_file_sha256=source_hash,
+                                          source_file_size=source_size, idempotency_key=key,
                                           content_hash=content_hash, created_by=member.user)
         for product, qty, cost in prepared:
             StockReceiptItem.objects.create(receipt=row, product=product,
@@ -146,5 +164,9 @@ def receipts(request):
                                          delta_milli=qty, source="receipt", reason="Entrada de mercadoria",
                                          reference=reference or str(row.id), actor=member.user,
                                          idempotency_key=f"receipt:{row.id}:{product.id}")
+            # Keep the most recent purchase cost on the catalog so the sales
+            # price and expected gross profit remain visible in the product list.
+            product.cost_cents = cost
+            product.save(update_fields=["cost_cents", "updated_at"])
         audit(tenant, member.user, "stock.received", row)
     return JsonResponse(receipt_data(row), status=201)

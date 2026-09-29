@@ -368,6 +368,22 @@ class CloudAPITests(TestCase):
                            client=client, HTTP_X_CSRFTOKEN=token)
         self.assertEqual(allowed.status_code, 201, allowed.content)
 
+    def test_stock_receipt_tracks_purchase_file_and_updates_cost(self):
+        self.client.force_login(self.owner)
+        body = {
+            "shop_id": str(self.shop.id), "reference": "compra-mercado.csv",
+            "idempotency_key": "purchase-file-1",
+            "source_file": {"name": "compra-mercado.csv", "mime": "text/csv",
+                            "size": 128, "sha256": "a" * 64},
+            "items": [{"product_id": str(self.product.id), "quantity_milli": 3000,
+                       "unit_cost_cents": 725}],
+        }
+        response = self.api("POST", "/api/v1/stock/receipts", body)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["source_file"]["name"], "compra-mercado.csv")
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.cost_cents, 725)
+
 
 class LicenseBackfillMigrationTests(TransactionTestCase):
     def test_existing_subscriptions_keep_individual_keys_and_sources(self):

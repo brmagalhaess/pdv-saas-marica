@@ -17,6 +17,18 @@ const tenantOption = platform ? { tenant: false } : {};
 const roleNames = { owner: "Proprietário", admin: "Administrador", manager: "Gerente", cashier: "Operador de caixa", inventory: "Estoque", finance: "Financeiro", viewer: "Consulta" };
 const cancellationAccess = role => ["owner","admin","manager"].includes(role) ? "Autorizado" : role==="cashier" ? "Com PIN de gerente" : "Sem permissão";
 const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
+function editableMoney(cents) {
+  const value = Number(cents);
+  return Number.isFinite(value) ? (value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+}
+function parseMoneyInput(raw) {
+  let value = String(raw ?? "").trim().replace(/R\$|\s/g, "");
+  if (!value) return NaN;
+  if (value.includes(",")) value = value.replace(/\./g, "").replace(",", ".");
+  else if (!/^\d+\.\d{1,2}$/.test(value)) value = value.replace(/\./g, "");
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) : NaN;
+}
 
 const tenantNav = [
   { group: "Acompanhar", id: "dashboard", label: "Visão geral", icon: "◫", feature:"cloud_dashboard", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
@@ -420,6 +432,9 @@ const resourceSpecs = {
       { label: "Variação", render: row => row.variant },
       { label: "Unidade", render: row => row.unit },
       { label: "Preço", render: row => money(row.price_cents) },
+      { label: "Custo", render: row => row.cost_cents == null ? "—" : money(row.cost_cents) },
+      { label: "Lucro bruto", render: row => row.cost_cents == null ? "—" : money(Number(row.price_cents || 0) - Number(row.cost_cents || 0)) },
+      { label: "Margem", render: row => row.cost_cents == null || !Number(row.price_cents) ? "—" : `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` },
       { label: "Estado", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
     ]
   },
@@ -461,6 +476,30 @@ const resourceSpecs = {
   }
 };
 
+const eanLeftOdd = ["0001101","0011001","0010011","0111101","0100011","0110001","0101111","0111011","0110111","0001011"];
+const eanLeftEven = ["0100111","0110011","0011011","0100001","0011101","0111001","0000101","0010001","0001001","0010111"];
+const eanRight = ["1110010","1100110","1101100","1000010","1011100","1001110","1010000","1000100","1001000","1110100"];
+const eanParity = ["LLLLLL","LLGLGG","LLGGLG","LLGGGL","LGLLGG","LGGLLG","LGGGLL","LGLGLG","LGLGGL","LGGLGL"];
+function ean13Svg(value) {
+  const code = String(value || "").replace(/\D/g, "");
+  if (code.length !== 13) return "<p class=invalid>Produto sem EAN-13 válido.</p>";
+  let bits = "101";
+  const parity = eanParity[Number(code[0])] || eanParity[0];
+  for (let index = 1; index <= 6; index++) bits += parity[index - 1] === "L" ? eanLeftOdd[Number(code[index])] : eanLeftEven[Number(code[index])];
+  bits += "01010";
+  for (let index = 7; index <= 12; index++) bits += eanRight[Number(code[index])];
+  bits += "101";
+  const bars = [...bits].map((bit, index) => bit === "1" ? `<rect x="${index}" y="0" width="1" height="52"/>` : "").join("");
+  return `<svg viewBox="0 0 95 67" role="img" aria-label="Código de barras ${code}" shape-rendering="crispEdges"><g fill="#111">${bars}</g><text x="47.5" y="65" text-anchor="middle" font-family="Arial,sans-serif" font-size="8" letter-spacing="1">${code}</text></svg>`;
+}
+function printProductBarcode(product) {
+  const popup = window.open("", "_blank", "width=440,height=620");
+  if (!popup) { toast("Permita pop-ups para imprimir a etiqueta.", "error"); return; }
+  const safe = value => String(value ?? "").replace(/[&<>\"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[character]));
+  popup.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiqueta ${safe(product.name)}</title><style>body{font-family:Arial,sans-serif;margin:0;padding:18px;text-align:center;color:#111}.label{width:72mm;min-height:38mm;margin:0 auto;display:grid;align-content:center;gap:5px}.name{font-weight:700;font-size:14px;line-height:1.2}.price{font-size:15px;font-weight:700}.barcode svg{width:100%;height:auto}.invalid{color:#a33}@media print{@page{size:80mm 50mm;margin:3mm}body{padding:0}.label{width:100%}}</style></head><body><main class="label"><div class="name">${safe(product.name)}</div><div class="price">${money(product.price_cents)}</div><div class="barcode">${ean13Svg(product.barcode)}</div></main><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),150));</script></body></html>`);
+  popup.document.close(); popup.focus();
+}
+
 async function fieldNode(field, value, creating = false) {
   const wrap = el("div", "field" + (field.full ? " full" : ""));
   const id = "field-" + field.key;
@@ -490,8 +529,8 @@ async function fieldNode(field, value, creating = false) {
     input.value = field.type === "json" && initial && typeof initial === "object" ? JSON.stringify(initial, null, 2) : initial;
   } else {
     input = el("input");
-    input.type = field.type === "money" || field.type === "milli" ? "number" : field.type === "checkbox" ? "checkbox" : field.type || "text";
-    if (field.type === "money") { input.step = "0.01"; input.value = value == null ? (field.default == null ? "" : String(field.default / 100)) : String(value / 100); }
+    input.type = field.type === "money" ? "text" : field.type === "milli" ? "number" : field.type === "checkbox" ? "checkbox" : field.type || "text";
+    if (field.type === "money") { input.inputMode = "decimal"; input.placeholder = "0,00"; input.value = value == null ? (field.default == null ? "" : editableMoney(field.default)) : editableMoney(value); input.addEventListener("blur", () => { const cents = parseMoneyInput(input.value); if (Number.isSafeInteger(cents) && cents >= 0) input.value = editableMoney(cents); }); }
     else if (field.type === "milli") { input.step = "0.001"; input.value = value == null ? (field.default == null ? "" : String(field.default / 1000)) : String(value / 1000); }
     else if (field.type === "checkbox") input.checked = value == null ? !!field.default : !!value;
     else input.value = value ?? field.default ?? "";
@@ -531,7 +570,7 @@ function formPayload(form, fields) {
     if (!input) continue;
     let value;
     if (field.type === "checkbox") value = input.checked;
-    else if (field.type === "money") value = Math.round(Number(input.value) * 100);
+    else if (field.type === "money") value = parseMoneyInput(input.value);
     else if (field.type === "milli") value = Math.round(Number(input.value) * 1000);
     else if (field.type === "json") {
       try { value = JSON.parse(input.value || "{}"); }
@@ -619,6 +658,7 @@ async function resourcePage(key) {
       const draw = list => table(spec.columns, list, spec.edit() || (spec.remove && spec.edit()) ? row => {
         const actions = [];
         if (spec.edit()) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
+        if (key === "products" && row.barcode) actions.push({ label: "Imprimir código", onClick: () => printProductBarcode(row) });
         if (spec.remove && spec.edit()) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria.", async () => {
           await api.delete(spec.endpoint + "/" + row.id);
           toast("Registro desativado.");
@@ -999,7 +1039,8 @@ async function stockReceipt(shopId) {
     const costField = el("div", "field");
     const costLabel = el("label", "", "Custo unitário (R$)");
     costLabel.htmlFor = "receipt-cost-" + number;
-    const cost = el("input"); cost.type = "number"; cost.step = "0.01"; cost.min = "0"; cost.id = costLabel.htmlFor;
+    const cost = el("input"); cost.type = "text"; cost.inputMode = "decimal"; cost.placeholder = "0,00"; cost.id = costLabel.htmlFor;
+    cost.addEventListener("blur", () => { const cents = parseMoneyInput(cost.value); if (Number.isSafeInteger(cents) && cents >= 0) cost.value = editableMoney(cents); });
     costField.append(costLabel, cost);
     grid.append(picker.wrap, qtyField, costField);
     item.append(grid);
@@ -1009,7 +1050,7 @@ async function stockReceipt(shopId) {
     item._getValue = () => ({
       product_id: picker.select.value,
       quantity_milli: Math.round(Number(qty.value) * 1000),
-      ...(cost.value === "" ? {} : { unit_cost_cents: Math.round(Number(cost.value) * 100) })
+      ...(cost.value.trim() === "" ? {} : { unit_cost_cents: parseMoneyInput(cost.value) })
     });
     rows.append(item);
   }
@@ -1026,7 +1067,7 @@ async function stockReceipt(shopId) {
     event.preventDefault();
     if (!form.reportValidity()) return;
     const items = [...rows.children].map(row => row._getValue());
-    if (!items.length || items.some(item => !Number.isSafeInteger(item.quantity_milli) || item.quantity_milli <= 0 || !item.product_id)) {
+    if (!items.length || items.some(item => !Number.isSafeInteger(item.quantity_milli) || item.quantity_milli <= 0 || (item.unit_cost_cents != null && (!Number.isSafeInteger(item.unit_cost_cents) || item.unit_cost_cents < 0)) || !item.product_id)) {
       handleError(new Error("Inclua pelo menos um item com quantidade válida."), message); return;
     }
     const payload = { shop_id: shopId, items };
@@ -1042,6 +1083,93 @@ async function stockReceipt(shopId) {
   body.append(form);
   openDialog("Entrada de mercadoria", "O saldo será atualizado após o registro da entrada.", body);
   await addRow();
+}
+function csvCells(line, delimiter) {
+  const cells = []; let cell = ""; let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '"' && line[index + 1] === '"') { cell += '"'; index++; continue; }
+    if (char === '"') { quoted = !quoted; continue; }
+    if (char === delimiter && !quoted) { cells.push(cell.trim()); cell = ""; continue; }
+    cell += char;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+function normalizedHeader(value) {
+  return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+function importMoney(raw) {
+  const cents = parseMoneyInput(raw);
+  if (!Number.isSafeInteger(cents) || cents < 0) throw new Error(`Valor de compra inválido: ${raw}`);
+  return cents;
+}
+async function stockReceiptImport(shopId) {
+  const body = el("div");
+  const form = el("form", "form-grid");
+  const fileField = el("div", "field full");
+  const label = el("label", "", "Arquivo de compra (CSV)");
+  const file = el("input"); file.type = "file"; file.accept = ".csv,.txt,text/csv"; file.required = true;
+  const hint = el("small", "", "Colunas aceitas: SKU ou código de barras, quantidade e custo unitário. Use ponto e vírgula ou vírgula.");
+  fileField.append(label, file, hint); form.append(fileField);
+  const summary = el("div", "info-strip"); summary.textContent = "Escolha o arquivo para conferir os itens antes de registrar."; form.append(summary);
+  const message = el("p", "feedback error full"); message.hidden = true;
+  const actions = el("div", "form-actions full"); actions.append(button("Cancelar", closeDialog, "ghost"));
+  const submit = el("button", "button", "Registrar compra"); submit.type = "submit"; submit.disabled = true; actions.append(submit); form.append(message, actions); body.append(form);
+  let parsed = null;
+  file.addEventListener("change", async () => {
+    parsed = null; submit.disabled = true; message.hidden = true;
+    try {
+      const selected = file.files?.[0];
+      if (!selected) return;
+      if (selected.size > 10 * 1024 * 1024) throw new Error("O arquivo deve ter no máximo 10 MB.");
+      const text = await selected.text();
+      const lines = text.split(/\r?\n/).filter(line => line.trim());
+      if (lines.length < 2) throw new Error("O CSV precisa ter cabeçalho e pelo menos um item.");
+      const delimiter = lines[0].includes(";") ? ";" : ",";
+      const headers = csvCells(lines[0], delimiter).map(normalizedHeader);
+      const find = names => names.map(normalizedHeader).map(name => headers.indexOf(name)).find(index => index >= 0);
+      const identityIndex = find(["sku", "codigo", "codigo interno", "barcode", "codigo de barras", "ean", "gtin"]);
+      const quantityIndex = find(["quantidade", "qtd", "quant", "quantity"]);
+      const costIndex = find(["custo", "custo unitario", "valor compra", "preco compra", "unit cost"]);
+      if (identityIndex === undefined || quantityIndex === undefined) throw new Error("O cabeçalho precisa conter SKU ou código de barras e quantidade.");
+      const products = []; let cursor = "";
+      do {
+        const response = await api.get("/products?limit=100" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
+        products.push(...records(response)); cursor = response.next_cursor || "";
+      } while (cursor);
+      const byCode = new Map(products.flatMap(product => [[String(product.sku).toUpperCase(), product], [String(product.barcode), product]]));
+      const items = []; const unknown = [];
+      for (let rowIndex = 1; rowIndex < lines.length; rowIndex++) {
+        const cells = csvCells(lines[rowIndex], delimiter); const code = String(cells[identityIndex] || "").trim();
+        if (!code) continue;
+        const product = byCode.get(code.toUpperCase());
+        if (!product) { unknown.push(code); continue; }
+        const rawQuantity = String(cells[quantityIndex] || "").trim().replace(/\s/g, "").includes(",")
+          ? String(cells[quantityIndex] || "").trim().replace(/\./g, "").replace(",", ".")
+          : String(cells[quantityIndex] || "").trim();
+        const quantityMilli = Math.round(Number(rawQuantity) * 1000);
+        if (!Number.isSafeInteger(quantityMilli) || quantityMilli <= 0) throw new Error(`Quantidade inválida na linha ${rowIndex + 1}.`);
+        const item = { product_id: product.id, quantity_milli: quantityMilli };
+        if (costIndex !== undefined && String(cells[costIndex] || "").trim()) item.unit_cost_cents = importMoney(cells[costIndex]);
+        items.push(item);
+      }
+      if (unknown.length) throw new Error(`Produtos não encontrados: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? "…" : ""}`);
+      if (!items.length) throw new Error("Nenhum item válido foi encontrado no arquivo.");
+      const buffer = await selected.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      parsed = { items, source_file: { name: selected.name, mime: selected.type || "text/csv", size: selected.size, sha256: hash }, reference: selected.name };
+      summary.className = "info-strip"; summary.textContent = `${items.length} item(ns) prontos para entrada. O arquivo ${selected.name} ficará vinculado ao registro.`; submit.disabled = false;
+    } catch (error) { message.textContent = errorText(error); message.hidden = false; }
+  });
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!parsed) return;
+    submit.disabled = true; message.hidden = true;
+    try { await api.post("/stock/receipts", { shop_id: shopId, ...parsed, idempotency_key: idempotency(form, parsed) }); closeDialog(); toast("Compra importada e estoque atualizado."); renderRoute(); }
+    catch (error) { handleError(error, message); submit.disabled = false; }
+  });
+  openDialog("Importar compra para o estoque", "O arquivo é conferido antes de lançar quantidade e custo dos produtos.", body);
 }
 async function stockPage() {
   const current = ++state.renderId;
@@ -1065,6 +1193,7 @@ async function stockPage() {
   if (canStock()) {
     view.actions.append(button("Ajustar estoque", () => stockAdjustment(shop.select.value).catch(handleError), "ghost"));
     view.actions.append(button("+ Registrar entrada", () => stockReceipt(shop.select.value).catch(handleError)));
+    view.actions.append(button("Importar compra CSV", () => stockReceiptImport(shop.select.value).catch(handleError), "secondary"));
   }
   async function load() {
     const token = ++state.renderId;
@@ -1119,7 +1248,7 @@ async function stockPage() {
       const receiptBox = surface("Entradas recentes", "Mercadorias recebidas e aplicadas ao saldo.");
       const receipts = records(receiptResult);
       receiptBox.append(receipts.length
-        ? table([{ label: "Referência", render: row => row.reference || String(row.id).slice(0, 8) }, { label: "Fornecedor", render: row => row.supplier_name || row.supplier_id }, { label: "Data", render: row => dateTime(row.created_at) }], receipts.slice(0, 20))
+        ? table([{ label: "Referência", render: row => row.source_file?.name || row.reference || String(row.id).slice(0, 8) }, { label: "Fornecedor", render: row => row.supplier_name || row.supplier_id }, { label: "Data", render: row => dateTime(row.created_at) }], receipts.slice(0, 20))
         : empty("Sem entradas", "Registre a primeira entrada de mercadoria."));
       grid.append(movementBox, receiptBox);
       results.append(grid);

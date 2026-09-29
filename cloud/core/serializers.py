@@ -57,6 +57,9 @@ def receipt(row):
     return {"id": str(row.id), "shop_id": str(row.shop_id),
             "supplier_id": str(row.supplier_id) if row.supplier_id else None,
             "reference": row.reference, "idempotency_key": row.idempotency_key,
+            "source_file": {"name": row.source_file_name, "mime": row.source_file_mime,
+                            "size": row.source_file_size, "sha256": row.source_file_sha256}
+            if row.source_file_name else None,
             "created_at": iso(row.created_at),
             "items": [{"product_id": str(item.product_id), "quantity_milli": item.quantity_milli,
                        "unit_cost_cents": item.unit_cost_cents} for item in row.items.all()]}
