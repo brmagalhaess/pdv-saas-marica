@@ -422,7 +422,7 @@ const resourceSpecs = {
       { key: "unit", label: "Unidade", type: "select", required: true, choices: [["UN","Unidade"],["KG","Quilo"],["L","Litro"]], default: "UN" },
       { key: "price_cents", label: "Preço de venda (R$)", type: "money", required: true, min: 0 },
       { key: "cost_cents", label: "Custo (R$)", type: "money", min: 0, default: 0 },
-      { key: "stock_minimum_milli", label: "Estoque mínimo", type: "milli", min: 0, default: 0 },
+      { key: "stock_minimum_milli", label: "Estoque mínimo (alerta)", type: "milli", min: 0, default: 0, help: "Apenas sinaliza reposição. Para adicionar unidades, use Operação > Estoque > Registrar entrada ou Ajustar estoque." },
       { key: "image_url", label: "Imagem do produto (URL opcional)", placeholder: "https://... ou /assets/product-images/...", max: 500, full: true, help: "Se ficar vazio, o PDV escolhe automaticamente uma imagem da categoria." },
       { key: "active", label: "Produto ativo", type: "checkbox", default: true }
     ],
@@ -627,7 +627,10 @@ async function resourcePage(key) {
   if (spec.create()) view.actions.append(button("+ Novo " + spec.singular, async () => {
     try { await resourceForm(spec); } catch (error) { handleError(error); }
   }));
-  if (key === "products") view.outer.append(info("A emissão fiscal depende de configuração tributária e homologação próprias. Este catálogo ainda não torna o PDV apto a emitir NFC-e.", true));
+  if (key === "products") {
+    view.outer.append(info("O estoque mínimo é apenas um alerta. O saldo disponível do terminal é lançado por loja em Operação > Estoque, usando Registrar entrada, Importar compra CSV ou Ajustar estoque."));
+    view.outer.append(info("A emissão fiscal depende de configuração tributária e homologação próprias. Este catálogo ainda não torna o PDV apto a emitir NFC-e.", true));
+  }
   const box = el("section", "surface");
   view.outer.append(box);
   const toolbar = el("div", "toolbar");
