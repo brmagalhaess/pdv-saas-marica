@@ -613,13 +613,63 @@ class Store:
 
     @staticmethod
     def _cash_expected(conn, cash):
-        received = 0
-        for row in conn.execute("SELECT snapshot FROM sales WHERE session_id=? AND status='completed'", (cash["id"],)):
+        return Store._cash_summary(conn, cash)["expected_cents"]
+
+    @staticmethod
+    def _cash_summary(conn, cash):
+        categories = {"cash_sales_net_cents": 0, "pix_cents": 0,
+                      "card_credit_cents": 0, "card_debit_cents": 0,
+                      "card_legacy_cents": 0, "supplied_cents": 0,
+                      "withdrawn_cents": 0}
+        sales_total = received_total = changes = 0
+        sales_count = 0
+        for row in conn.execute("SELECT snapshot FROM sales WHERE session_id=? AND status='completed'",
+                                (cash["id"],)):
             sale = json.loads(row["snapshot"])
-            received += sum(p["amount_cents"] for p in sale["payments"] if p["method"] == "cash") - sale["change_cents"]
-        movements = conn.execute("SELECT kind,COALESCE(SUM(amount_cents),0) amount FROM cash_movements WHERE session_id=? GROUP BY kind", (cash["id"],))
-        totals = {row["kind"]: row["amount"] for row in movements}
-        return cash["opening_cents"] + received + totals.get("supplied", 0) - totals.get("withdrawn", 0)
+            sales_count += 1
+            sales_total += int(sale.get("total_cents") or 0)
+            changes += int(sale.get("change_cents") or 0)
+            payment_total = 0
+            for payment in sale.get("payments", []):
+                method = payment.get("method")
+                amount = int(payment.get("amount_cents") or 0)
+                payment_total += amount
+                if method == "cash":
+                    categories["cash_sales_net_cents"] += amount
+                elif method == "pix":
+                    categories["pix_cents"] += amount
+                elif method == "card_credit":
+                    categories["card_credit_cents"] += amount
+                elif method == "card_debit":
+                    categories["card_debit_cents"] += amount
+                elif method == "card":
+                    categories["card_legacy_cents"] += amount
+            received_total += payment_total
+        categories["cash_sales_net_cents"] -= changes
+        movements = conn.execute(
+            "SELECT kind,COALESCE(SUM(amount_cents),0) amount FROM cash_movements "
+            "WHERE session_id=? GROUP BY kind", (cash["id"],))
+        for row in movements:
+            if row["kind"] == "supplied":
+                categories["supplied_cents"] = row["amount"]
+            elif row["kind"] == "withdrawn":
+                categories["withdrawn_cents"] = row["amount"]
+        expected = (cash["opening_cents"] + categories["cash_sales_net_cents"] +
+                    categories["supplied_cents"] - categories["withdrawn_cents"])
+        return {
+            "id": cash["id"], "opened_at": cash["opened_at"],
+            "opening_cents": cash["opening_cents"], "sales_count": sales_count,
+            "sales_total_cents": sales_total,
+            "received_total_cents": received_total - changes,
+            "categories": categories, "expected_cents": expected,
+            "total_channels_cents": (categories["cash_sales_net_cents"] +
+                                      categories["pix_cents"] + categories["card_credit_cents"] +
+                                      categories["card_debit_cents"] + categories["card_legacy_cents"]),
+        }
+
+    def cash_summary(self):
+        with self.connection() as conn:
+            return self._cash_summary(conn, self._open_cash(conn))
 
     def open_cash(self, operator_id, opening_cents):
         self.ensure_sale_allowed()
@@ -658,7 +708,8 @@ class Store:
         counted_cents = _positive_int(counted_cents, "Valor contado", zero=True)
         with self.transaction() as conn:
             cash = self._open_cash(conn)
-            expected = self._cash_expected(conn, cash)
+            summary = self._cash_summary(conn, cash)
+            expected = summary["expected_cents"]
             timestamp = _now_ms()
             conn.execute("UPDATE cash_sessions SET closed_at=?,counted_cents=?,expected_cents=? WHERE id=?",
                          (timestamp, counted_cents, expected, cash["id"]))
@@ -666,8 +717,10 @@ class Store:
                         {"counted_cents": counted_cents, "expected_cents": expected,
                          "difference_cents": counted_cents - expected, "created_at": timestamp})
             self._audit(conn, operator_id, "cash.closed", cash["id"])
-            return {"id": cash["id"], "expected_cents": expected, "counted_cents": counted_cents,
-                    "difference_cents": counted_cents - expected}
+            summary.update({"closed_at": timestamp, "expected_cents": expected,
+                            "counted_cents": counted_cents,
+                            "difference_cents": counted_cents - expected})
+            return summary
 
     def suspend_cart(self, operator_id, label, cart):
         if not isinstance(cart, dict) or not isinstance(cart.get("items"), list) or not cart["items"]:
@@ -761,7 +814,8 @@ class Store:
             total = gross_total - discount
             normalized_payments = []
             for payment in payments:
-                if not isinstance(payment, dict) or payment.get("method") not in ("cash", "pix", "card"):
+                if not isinstance(payment, dict) or payment.get("method") not in (
+                        "cash", "pix", "card", "card_credit", "card_debit"):
                     raise TerminalError("Forma de pagamento inválida")
                 normalized_payments.append({"method": payment["method"],
                                             "amount_cents": _positive_int(payment.get("amount_cents"), "Pagamento")})

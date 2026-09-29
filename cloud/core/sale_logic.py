@@ -74,7 +74,7 @@ def validate_sale(data, tenant):
         if not isinstance(payment, dict):
             raise APIError("Pagamento inválido")
         fields(payment, ("method", "amount_cents"), ("method", "amount_cents"))
-        if payment["method"] not in ("cash", "pix", "card"):
+        if payment["method"] not in ("cash", "pix", "card", "card_credit", "card_debit"):
             raise APIError("Forma de pagamento inválida")
         amount = money(payment["amount_cents"], "Pagamento", allow_zero=False)
         normalized_payments.append((payment["method"], amount))

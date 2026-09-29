@@ -256,6 +256,11 @@ def create_app(config=None):
     def cash(_operator):
         return jsonify({"cash": store.cash_state()})
 
+    @app.get("/api/cash/summary")
+    @authenticated(*SELL_ROLES)
+    def cash_summary(_operator):
+        return jsonify(store.cash_summary())
+
     @app.post("/api/cash/open")
     @authenticated(*SELL_ROLES)
     def cash_open(operator):

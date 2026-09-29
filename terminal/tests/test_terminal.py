@@ -261,6 +261,25 @@ class TerminalTests(unittest.TestCase):
         close = reopened.close_cash(self.cashier_id, 10400)
         self.assertEqual(close["expected_cents"], 10400)
 
+    def test_cash_summary_separates_channels_and_reports_shortage(self):
+        self.store.open_cash(self.cashier_id, 10000)
+        self.store.sale(self.cashier, {"request_id": "channels-one",
+            "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+            "payments": [{"method": "cash", "amount_cents": 200},
+                          {"method": "pix", "amount_cents": 100},
+                          {"method": "card_credit", "amount_cents": 200},
+                          {"method": "card_debit", "amount_cents": 200}]})
+        summary = self.store.cash_summary()
+        self.assertEqual(summary["categories"]["cash_sales_net_cents"], 200)
+        self.assertEqual(summary["categories"]["pix_cents"], 100)
+        self.assertEqual(summary["categories"]["card_credit_cents"], 200)
+        self.assertEqual(summary["categories"]["card_debit_cents"], 200)
+        self.assertEqual(summary["expected_cents"], 10200)
+        self.assertEqual(summary["total_channels_cents"], 700)
+        closed = self.store.close_cash(self.cashier_id, 10150)
+        self.assertEqual(closed["difference_cents"], -50)
+        self.assertEqual(closed["counted_cents"], 10150)
+
     def test_backup_preserves_committed_sale_and_pending_outbox(self):
         self.store.open_cash(self.cashier_id, 0)
         sale = self.store.sale(self.cashier, {"request_id": "backup-sale",
