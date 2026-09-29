@@ -2047,7 +2047,10 @@ async function platformUserForm(record) {
   activeInput.type="checkbox";activeInput.checked=record?!!record.active:true;
   active.append(activeInput,el("span","","Acesso ativo"));
   form.append(active);
-  const message=formMessage(form),submit=formButtons(form,editing?"Salvar acesso":"Adicionar pessoa");
+  form.append(info(editing && !record.platform_access
+    ? "Este usuário já pertence a uma empresa. Marque um ou mais papéis para promovê-lo também à administração SaaS."
+    : "Os papéis selecionados dão acesso administrativo a todas as empresas da plataforma.", true));
+  const message=formMessage(form),submit=formButtons(form,editing?"Salvar permissões":"Adicionar pessoa");
   form.addEventListener("submit",async event=>{
     event.preventDefault();if(!form.reportValidity())return;
     submit.disabled=true;
@@ -2055,7 +2058,7 @@ async function platformUserForm(record) {
       const payload=formPayload(form,fields);
       payload.roles=choices.filter(([key])=>checked.get(key).checked).map(([key])=>key);
       payload.active=activeInput.checked;
-      if(!payload.roles.length)throw new Error("Selecione pelo menos um papel.");
+      if(!editing&&!payload.roles.length)throw new Error("Selecione pelo menos um papel para criar o acesso SaaS.");
       if(payload.password&&!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,128}$/.test(payload.password))
         throw new Error("A senha precisa ter 8 a 128 caracteres, com maiúscula, minúscula, número e símbolo.");
       if(editing)await api.patch("/platform/users/"+record.id,payload,{tenant:false});
@@ -2063,28 +2066,34 @@ async function platformUserForm(record) {
       closeDialog();toast("Acesso da plataforma salvo.");renderRoute();
     }catch(error){handleError(error,message);submit.disabled=false;}
   });
-  openDialog(editing?"Editar equipe da plataforma":"Adicionar equipe da plataforma",
-    "Estes papéis dão acesso administrativo a todas as empresas da plataforma.",form);
+  openDialog(editing
+    ? (record.platform_access ? "Editar permissões SaaS" : "Promover usuário para o SaaS")
+    : "Adicionar usuário do SaaS",
+    editing ? "Você pode conceder, trocar ou remover o acesso administrativo sem apagar o usuário da empresa."
+      : "Crie um login administrativo separado para a plataforma.", form);
 }
 async function platformUsersPage() {
   const token=++state.renderId;
   const view=page("Usuários e permissões","Crie acessos administrativos e defina exatamente o que cada pessoa pode fazer.","Plataforma");
   view.actions.append(button("+ Adicionar pessoa",()=>platformUserForm().catch(handleError)));
-  view.outer.append(info("Estes acessos são administrativos. Conceda apenas os papéis necessários para cada pessoa.",true));
-  const box=surface("Contas com acesso ao SaaS","A conta principal aparece protegida; as demais podem ser criadas, editadas e desativadas.");view.outer.append(box);box.append(loadingSurface());
+  view.outer.append(info("A lista inclui usuários de empresas. Use ‘Conceder acesso SaaS’ para promover um usuário existente sem criar outro login.",true));
+  const box=surface("Usuários e acessos","A conta principal aparece protegida; os demais usuários podem receber, trocar ou remover permissões SaaS.");view.outer.append(box);box.append(loadingSurface());
   try {
     const result=await platformApi("/users");
     if(token!==state.renderId)return;
     box.lastChild.remove();const rows=records(result);
     box.append(pagedContent(result,"/platform/users",[
       {label:"Pessoa",render:row=>row.name},{label:"E-mail",render:row=>row.email},
-      {label:"Tipo",render:row=>row.superuser?"Conta principal":"Equipe"},
+      {label:"Empresa",render:row=>(row.memberships||[]).map(member=>`${member.tenant_name} · ${roleNames[member.role]||member.role}`).join(", ")},
       {label:"Papéis",render:row=>(row.roles||[]).map(role=>({
         platform_support:"Atendimento",platform_billing:"Cobrança",platform_ops:"Operação"
       })[role]||role).join(", ")},
-      {label:"Acesso",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
-    ],row=>row.protected?[{label:"Protegida",onClick:()=>toast("A conta principal não pode ser alterada por esta tela.","error")}]:[{label:"Editar",onClick:()=>platformUserForm(row).catch(handleError)}],
-      empty("Nenhuma conta","Adicione a primeira pessoa da equipe."),{tenant:false}));
+      {label:"SaaS",render:row=>statusBadge(row.platform_access?"Ativo":"Inativo")},
+      {label:"Conta",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
+    ],row=>row.protected
+      ? [{label:"Protegida",onClick:()=>toast("A conta principal não pode ser alterada por esta tela.","error")}]
+      : [{label:row.platform_access?"Editar permissões":"Conceder acesso SaaS",onClick:()=>platformUserForm(row).catch(handleError)}],
+      empty("Nenhum usuário","Cadastre uma empresa ou adicione um usuário para começar."),{tenant:false}));
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
 

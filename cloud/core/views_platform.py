@@ -4,13 +4,13 @@ from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from .api_common import APIError, PLATFORM_GROUPS, audit, endpoint, fields, method, money, page, password_policy, payload, platform_user, subscription_window, text, uuid_value
-from .models import AuditEvent, BillingInvoice, Plan, Shop, Subscription, Tenant, Terminal
+from .models import AuditEvent, BillingInvoice, Membership, Plan, Shop, Subscription, Tenant, Terminal
 from .serializers import plan as plan_data, terminal as terminal_data
 from integrations.base import ProviderError
 from operations.models import BillingBinding, ProviderJob
@@ -18,12 +18,17 @@ from operations.services import account
 
 
 def _platform_staff(row):
+    memberships = [{"tenant_id": str(member.tenant_id), "tenant_name": member.tenant.name,
+                    "role": member.role, "active": member.active}
+                   for member in row.pdv_memberships.all()]
+    roles = sorted(PLATFORM_GROUPS) if row.is_superuser else sorted(
+        row.groups.filter(name__in=PLATFORM_GROUPS).values_list("name", flat=True))
     return {"id": row.pk, "name": row.get_full_name() or row.username,
             "email": row.email,
-            "roles": sorted(PLATFORM_GROUPS) if row.is_superuser else
-                     sorted(row.groups.filter(name__in=PLATFORM_GROUPS)
-                                  .values_list("name", flat=True)),
+            "roles": roles,
             "active": row.is_active,
+            "platform_access": row.is_superuser or bool(roles),
+            "memberships": memberships,
             "superuser": row.is_superuser,
             "protected": row.is_superuser}
 
@@ -50,10 +55,12 @@ def _staff_values(data, *, creating=False):
         values["password"] = password
     if "roles" in data:
         roles = data["roles"]
-        if (not isinstance(roles, list) or not roles or len(roles) > len(PLATFORM_GROUPS) or
+        if (not isinstance(roles, list) or len(roles) > len(PLATFORM_GROUPS) or
                 any(not isinstance(role, str) or role not in PLATFORM_GROUPS for role in roles) or
                 len(set(roles)) != len(roles)):
             raise APIError("Papéis de plataforma inválidos")
+        if creating and not roles:
+            raise APIError("Selecione pelo menos um papel de plataforma")
         values["roles"] = roles
     if "active" in data:
         if type(data["active"]) is not bool:
@@ -71,7 +78,8 @@ def platform_users(request):
         # Include the protected root account so the administrator can see every
         # platform login. It is returned as read-only in the UI and cannot be
         # changed through the staff endpoint.
-        rows = User.objects.filter(is_staff=True).prefetch_related("groups").order_by("email", "pk")
+        rows = (User.objects.filter(Q(is_staff=True) | Q(pdv_memberships__isnull=False)).distinct()
+                .prefetch_related("groups", "pdv_memberships__tenant").order_by("email", "pk"))
         return page(request, rows, _platform_staff)
     data = payload(request)
     fields(data, ("name", "email", "password", "roles", "active"),
@@ -96,9 +104,11 @@ def platform_user_detail(request, pk):
     method(request, "GET", "PATCH")
     actor = platform_user(request, superuser=True)
     User = get_user_model()
-    row = User.objects.filter(pk=pk, is_staff=True, is_superuser=False).first()
+    row = User.objects.filter(pk=pk, is_superuser=False).prefetch_related(
+        "groups", "pdv_memberships__tenant").first()
     if row is None:
-        protected = User.objects.filter(pk=pk, is_staff=True, is_superuser=True).first()
+        protected = User.objects.filter(pk=pk, is_superuser=True).prefetch_related(
+            "groups", "pdv_memberships__tenant").first()
         if protected is not None and request.method == "GET":
             return JsonResponse(_platform_staff(protected))
         if protected is not None:
@@ -125,6 +135,8 @@ def platform_user_detail(request, pk):
                 row.set_password(values["password"])
             if "active" in values:
                 row.is_active = values["active"]
+            if "roles" in values:
+                row.is_staff = bool(values["roles"])
             row.save()
             if "roles" in values:
                 row.groups.set(Group.objects.filter(name__in=values["roles"]))
