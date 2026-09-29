@@ -128,8 +128,18 @@ def create_app(config=None):
         identity = store.identity()
         return jsonify({"csrf": session["csrf"], "operator": operator,
                         "operators": store.operators(), "paired": bool(identity["terminal_id"]),
-                        "device_id": identity["device_id"], "license": store.lease_status(),
+                        "device_id": identity["device_id"], "connection": store.connection_info(),
+                        "license": store.lease_status(),
                         "cash": store.cash_state(), "sync": store.sync_status()})
+
+    @app.post("/api/unpair")
+    def unpair():
+        data = body()
+        if data.get("confirm") is not True:
+            raise TerminalError("Confirme a troca de empresa", 409)
+        result = store.unpair()
+        session.clear()
+        return jsonify(result)
 
     @app.post("/api/pair")
     def pair():

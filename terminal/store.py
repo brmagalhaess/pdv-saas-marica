@@ -180,6 +180,21 @@ class Store:
         meta = self.meta()
         return {key: meta.get(key) for key in ("tenant_id", "shop_id", "terminal_id", "device_id")}
 
+    def connection_info(self):
+        """Human-readable identity of the company this local device is serving."""
+        meta = self.meta()
+        return {
+            "paired": bool(meta.get("terminal_id") and meta.get("token")),
+            "tenant_id": meta.get("tenant_id"),
+            "tenant_name": meta.get("tenant_name"),
+            "shop_id": meta.get("shop_id"),
+            "shop_name": meta.get("shop_name"),
+            "terminal_id": meta.get("terminal_id"),
+            "terminal_name": meta.get("terminal_name"),
+            "device_id": meta.get("device_id"),
+            "cloud_url": meta.get("cloud_url"),
+        }
+
     def _audit(self, conn, operator_id, action, subject_id=None, detail=None):
         conn.execute("INSERT INTO audit VALUES (?,?,?,?,?,?)",
                      (uuid.uuid4().hex, operator_id, action, subject_id, detail, _now_ms()))
@@ -284,6 +299,10 @@ class Store:
                 raise TerminalError("Licença do pareamento inválida", 403) from exc
             for key in ("token", "tenant_id", "shop_id", "terminal_id", "lease", "public_key"):
                 self._set_meta(conn, key, _json(response[key]) if key == "lease" else response[key])
+            for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
+                value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
+                if value:
+                    self._set_meta(conn, key, _str(value, key))
             self._set_meta(conn, "cloud_url", cloud_url)
             self._audit(conn, None, "terminal.paired", response["terminal_id"])
 
@@ -342,21 +361,54 @@ class Store:
                 op_id = _str(operator.get("id"), "Operador")
                 pin_hash = _str(operator.get("pin_hash"), "Hash do PIN", 400)
                 operator_ids.append(op_id)
+                previous = conn.execute("SELECT pin_hash FROM operators WHERE id=?", (op_id,)).fetchone()
                 conn.execute("""INSERT INTO operators VALUES (?,?,?,?,1)
                     ON CONFLICT(id) DO UPDATE SET name=excluded.name,role=excluded.role,
                     pin_hash=excluded.pin_hash,active=1""",
                     (op_id, _str(operator.get("name"), "Nome do operador"),
                      _str(operator.get("role"), "Papel"), pin_hash))
+                # A new or changed PIN must be usable immediately, even when this
+                # device had accumulated failed attempts for the same operator.
+                if previous is None or previous["pin_hash"] != pin_hash:
+                    conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (op_id,))
             if operator_ids:
                 conn.execute("UPDATE operators SET active=0 WHERE id NOT IN (" +
                              ",".join("?" for _ in operator_ids) + ")", operator_ids)
             else:
                 conn.execute("UPDATE operators SET active=0")
+            if operator_ids:
+                conn.execute("DELETE FROM login_attempts WHERE operator_id NOT IN (" +
+                             ",".join("?" for _ in operator_ids) + ")", operator_ids)
+            else:
+                conn.execute("DELETE FROM login_attempts")
+            for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
+                value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
+                if value:
+                    self._set_meta(conn, key, _str(value, key))
             self._set_meta(conn, "lease", _json(lease))
             self._set_meta(conn, "bootstrap_at", str(timestamp))
             self._audit(conn, None, "terminal.bootstrap", None,
                         f"{len(products)} produtos; {len(operators)} operadores")
             return {"products": len(products), "operators": len(operators)}
+
+    def unpair(self):
+        """Forget the cloud identity while retaining sales/audit history locally."""
+        with self.transaction() as conn:
+            pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0]
+            if pending:
+                raise TerminalError("Sincronize as vendas pendentes antes de trocar de empresa", 409)
+            if conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone():
+                raise TerminalError("Feche o caixa antes de trocar de empresa", 409)
+            old_terminal = self._meta(conn, "terminal_id")
+            for key in ("token", "tenant_id", "tenant_name", "shop_id", "shop_name",
+                        "terminal_id", "terminal_name", "lease", "public_key", "cloud_url",
+                        "bootstrap_at", "last_seen"):
+                conn.execute("DELETE FROM meta WHERE key=?", (key,))
+            conn.execute("UPDATE operators SET active=0")
+            conn.execute("UPDATE products SET active=0, barcode=NULL")
+            conn.execute("DELETE FROM login_attempts")
+            self._audit(conn, None, "terminal.unpaired", old_terminal)
+        return {"paired": False}
 
     def operators(self):
         with self.connection() as conn:

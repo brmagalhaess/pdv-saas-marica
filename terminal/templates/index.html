@@ -11,7 +11,7 @@
   <div id="toast" role="status" aria-live="polite"></div>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">▣</span><span><strong>PDV<span class="accent">2</span></strong><small>TERMINAL LOCAL</small></span></div>
-    <div class="top-status"><span id="networkBadge" class="badge">Verificando…</span><span id="leaseBadge" class="badge">Licença…</span><span id="pendingBadge" class="badge">Fila: —</span><span id="releaseBadge" class="badge hidden">Versão disponível</span></div>
+    <div class="top-status"><span id="connectionBadge" class="badge">Empresa não vinculada</span><span id="networkBadge" class="badge">Verificando…</span><span id="leaseBadge" class="badge">Licença…</span><span id="pendingBadge" class="badge">Fila: —</span><span id="releaseBadge" class="badge hidden">Versão disponível</span></div>
     <div class="operator"><span id="operatorName">Sem operador</span><button id="logoutBtn" class="text-button hidden">Sair</button></div>
   </header>
 
@@ -19,13 +19,13 @@
     <div class="gate-card">
       <span class="eyebrow">PRIMEIRO ACESSO</span>
       <h1>Conecte este caixa à sua loja</h1>
-      <p>O código de pareamento é criado no painel da empresa. Após conectar, este computador mantém vendas e estoque localmente.</p>
+      <p>Este computador ainda não está vinculado a uma empresa. O código de pareamento é criado no painel SaaS e conecta este caixa à loja correta.</p>
       <form id="pairForm">
         <label>Endereço do servidor <input id="cloudUrl" type="url" placeholder="https://suaempresa.com" required></label>
         <label>Código de pareamento <input id="pairCode" autocomplete="off" placeholder="Código do painel" required></label>
         <button class="primary" type="submit">Parear terminal</button>
       </form>
-      <p class="hint">ID deste dispositivo: <code id="deviceId"></code></p>
+      <p class="hint">No Docker local, use <code>http://host.docker.internal:8000</code>. ID deste dispositivo: <code id="deviceId"></code></p>
     </div>
   </section>
 
@@ -33,13 +33,17 @@
     <div class="gate-card narrow">
       <span class="eyebrow">ACESSO DO OPERADOR</span>
       <h1>Pronto para vender</h1>
-      <p>Selecione seu nome e digite o PIN cadastrado no painel de gestão.</p>
+      <div id="connectionIdentity" class="connection-card" aria-live="polite"></div>
+      <p>Selecione seu nome e digite o PIN cadastrado no painel de gestão. Se um operador novo não aparecer, atualize a lista.</p>
       <form id="loginForm">
         <label>Operador <select id="operatorSelect" required></select></label>
         <label>PIN <input id="operatorPin" type="password" inputmode="numeric" autocomplete="off" required></label>
         <button class="primary" type="submit">Entrar no caixa</button>
       </form>
       <button id="refreshBootstrap" class="text-button">Atualizar operadores</button>
+      <button id="changeConnection" class="text-button danger-link">Trocar empresa ou terminal</button>
+      <p id="operatorEmptyHint" class="hint hidden">Nenhum operador com PIN está disponível para este terminal. Cadastre um PIN no painel da empresa e clique em “Atualizar operadores”.</p>
+      <p class="hint">Se você criou um novo terminal no painel para este mesmo computador, revogue o terminal antigo antes de trocar a conexão.</p>
     </div>
   </section>
 

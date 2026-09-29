@@ -168,8 +168,20 @@ def pair(request):
             if not row:
                 raise APIError("Pareamento inválido ou expirado", 401)
             _subscription_can_issue(row.tenant)
-            if Terminal.objects.filter(tenant=row.tenant, device_id=device_id).exclude(pk=row.pk).exists():
-                raise APIError("Dispositivo já vinculado", 409)
+            previous = (Terminal.objects.select_for_update()
+                        .filter(tenant=row.tenant, device_id=device_id)
+                        .exclude(pk=row.pk).first())
+            if previous and not previous.revoked:
+                raise APIError("Dispositivo já vinculado; revogue o terminal antigo no painel", 409)
+            if previous:
+                # A revoked terminal no longer owns the local device. Release
+                # its identity so an administrator can transfer this machine
+                # to the newly-created terminal without touching sales history.
+                previous.device_id = ""
+                previous.token_hash = None
+                previous.version = ""
+                previous.last_seen_at = None
+                previous.save(update_fields=["device_id", "token_hash", "version", "last_seen_at"])
             token = secrets.token_urlsafe(48)
             row.device_id = device_id
             row.version = version
@@ -185,6 +197,9 @@ def pair(request):
     reset_rate(limit_key)
     return JsonResponse({"token": token, "terminal_id": str(row.id),
                          "tenant_id": str(row.tenant_id), "shop_id": str(row.shop_id),
+                         "tenant": {"id": str(row.tenant_id), "name": row.tenant.name},
+                         "shop": {"id": str(row.shop_id), "name": row.shop.name},
+                         "terminal": terminal_data(row),
                          "lease": lease, "public_key": public_key})
 
 
