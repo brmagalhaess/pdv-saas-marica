@@ -1,6 +1,10 @@
 # Prompt mestre atualizado — PDV2
 
-Este prompt foi fornecido pelo proprietário e atualizado com as decisões confirmadas. Use [STATUS.md](STATUS.md) como fonte do estado real da implementação. Não trate o protótipo atual como pronto para venda.
+Este prompt foi fornecido pelo proprietário e atualizado com as decisões confirmadas. Use [STATUS-V2.md](STATUS-V2.md) como fonte do estado real. A base V2 executa no Docker, mas homologação fiscal/hardware e liberação comercial permanecem etapas próprias.
+
+**Base executável atual (29/09/2026):** `cloud/` Django/PostgreSQL, `operations/` fila/integrações/versões, `web/` landing e painéis/PWA, `terminal/` Flask/SQLite, `shared/` licenças/PIN, Compose local/produção/terminal. Continue essa base; não reinicie a arquitetura. `app.py` e `local_pdv/` são histórico V1. A demonstração inclui SaaS/empresa/terminal separados. Veja README, API-V2 e OPERACOES-V2 para executar e ampliar.
+
+**Planos propostos:** Essencial R$149 (1 caixa/1 loja), Gestão R$229 (1/1), Avançado R$349 (3 caixas/2 lojas). Receita média hipotética R$179 com mix 70%/25%/5%; 500 clientes produzem R$89.500 MRR e R$1.074.000 ARR, antes de descontos/taxas. Isso não equivale ao faturamento de um ano em crescimento. A maioria pode usar só um terminal, independentemente da capacidade contratada.
 
 **Decisões atuais:** marca provisória PDV2; mercados e mercearias de Maricá; a maioria com uma loja e um terminal; preview no Docker Desktop; repositório Git privado; Dokploy/VPS em etapa posterior; hardware ainda não adquirido. A senha de exemplo informada pelo proprietário define apenas um padrão de complexidade, não uma credencial a gravar no código. Marca e domínio exigem validação antes do lançamento.
 

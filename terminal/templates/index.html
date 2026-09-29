@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#132434">
+  <title>PDV2 Terminal · Caixa local</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}">
+</head>
+<body>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">▣</span><span><strong>PDV<span class="accent">2</span></strong><small>TERMINAL LOCAL</small></span></div>
+    <div class="top-status"><span id="networkBadge" class="badge">Verificando…</span><span id="leaseBadge" class="badge">Licença…</span><span id="pendingBadge" class="badge">Fila: —</span><span id="releaseBadge" class="badge hidden">Versão disponível</span></div>
+    <div class="operator"><span id="operatorName">Sem operador</span><button id="logoutBtn" class="text-button hidden">Sair</button></div>
+  </header>
+
+  <section id="pairView" class="gate hidden">
+    <div class="gate-card">
+      <span class="eyebrow">PRIMEIRO ACESSO</span>
+      <h1>Conecte este caixa à sua loja</h1>
+      <p>O código de pareamento é criado no painel da empresa. Após conectar, este computador mantém vendas e estoque localmente.</p>
+      <form id="pairForm">
+        <label>Endereço do servidor <input id="cloudUrl" type="url" placeholder="https://suaempresa.com" required></label>
+        <label>Código de pareamento <input id="pairCode" autocomplete="off" placeholder="Código do painel" required></label>
+        <button class="primary" type="submit">Parear terminal</button>
+      </form>
+      <p class="hint">ID deste dispositivo: <code id="deviceId"></code></p>
+    </div>
+  </section>
+
+  <section id="loginView" class="gate hidden">
+    <div class="gate-card narrow">
+      <span class="eyebrow">ACESSO DO OPERADOR</span>
+      <h1>Pronto para vender</h1>
+      <p>Selecione seu nome e digite o PIN cadastrado no painel de gestão.</p>
+      <form id="loginForm">
+        <label>Operador <select id="operatorSelect" required></select></label>
+        <label>PIN <input id="operatorPin" type="password" inputmode="numeric" autocomplete="off" required></label>
+        <button class="primary" type="submit">Entrar no caixa</button>
+      </form>
+      <button id="refreshBootstrap" class="text-button">Atualizar operadores</button>
+    </div>
+  </section>
+
+  <div id="appView" class="shell hidden">
+    <aside class="sidebar">
+      <nav aria-label="Seções do terminal">
+        <button class="nav-item active" data-tab="checkout"><span>▣</span> Caixa</button>
+        <button class="nav-item" data-tab="sales"><span>▤</span> Vendas</button>
+        <button class="nav-item" data-tab="stock"><span>▦</span> Estoque</button>
+        <button class="nav-item" data-tab="printers"><span>▥</span> Impressoras</button>
+        <button class="nav-item" data-tab="system"><span>◉</span> Sistema</button>
+      </nav>
+      <div class="sidebar-bottom"><span class="online-dot"></span> Dados neste computador<br><small>Venda continua sem internet</small></div>
+    </aside>
+    <main class="workspace">
+      <section id="checkoutTab" class="tab-panel">
+        <div class="section-head"><div><span class="eyebrow">OPERAÇÃO</span><h1>Frente de caixa</h1></div><span id="cashChip" class="chip">Caixa fechado</span></div>
+        <div class="checkout-grid">
+          <div class="catalog card">
+            <div class="card-head"><div><h2>Produtos</h2><p>Busque por nome, SKU ou leia o código de barras</p></div></div>
+            <label class="search"><span>⌕</span><input id="productSearch" placeholder="Buscar produto ou escanear código" autocomplete="off" autofocus></label>
+            <div id="categories" class="categories"></div>
+            <div id="productsGrid" class="products-grid"></div>
+          </div>
+          <div class="cart card">
+            <div class="card-head"><div><h2>Venda atual</h2><p id="cartCount">Nenhum item</p></div><button id="suspendBtn" class="secondary small">Suspender</button></div>
+            <div id="cartItems" class="cart-items empty-state">Adicione produtos para iniciar a venda.</div>
+            <div class="cart-fields">
+              <label>Cliente (opcional) <input id="customerName" placeholder="Nome para identificação"></label>
+              <div class="field-row"><label>Desconto (R$) <input id="discountInput" inputmode="decimal" value="0,00"></label><label>PIN gerente <input id="managerPin" type="password" autocomplete="off" placeholder="Se necessário"></label></div>
+            </div>
+            <div class="total"><span>Total da venda</span><strong id="cartTotal">R$ 0,00</strong></div>
+            <div class="payment-grid"><label>Dinheiro (R$)<input id="payCash" inputmode="decimal" placeholder="0,00"></label><label>Pix declarado (R$)<input id="payPix" inputmode="decimal" placeholder="0,00"></label><label>Cartão declarado (R$)<input id="payCard" inputmode="decimal" placeholder="0,00"></label></div>
+            <div class="cart-foot"><span id="changeText">Troco: R$ 0,00</span><button id="sellBtn" class="primary">Finalizar venda</button></div>
+            <p class="legal-note">Pagamentos Pix e cartão são registros manuais. Este comprovante não é fiscal.</p>
+          </div>
+        </div>
+        <div class="bottom-grid">
+          <section class="card compact"><div class="card-head"><h2>Caixa e dinheiro</h2></div><div class="inline-controls"><input id="cashAmount" inputmode="decimal" placeholder="Valor em R$"><input id="cashReason" placeholder="Motivo para movimento"><button id="openCashBtn" class="secondary">Abrir</button><button id="supplyBtn" class="secondary">Suprimento</button><button id="withdrawBtn" class="secondary">Sangria</button><button id="closeCashBtn" class="secondary">Fechar</button></div><p id="cashInfo" class="hint"></p></section>
+          <section class="card compact"><div class="card-head"><h2>Vendas suspensas</h2></div><div id="suspendedList" class="mini-list">Nenhuma venda suspensa.</div></section>
+        </div>
+      </section>
+
+      <section id="salesTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">HISTÓRICO LOCAL</span><h1>Vendas</h1></div><button id="reloadSales" class="secondary">Atualizar</button></div><div id="salesList" class="card list-card"></div></section>
+      <section id="stockTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">CATÁLOGO LOCAL</span><h1>Estoque</h1></div></div><div class="card compact"><label class="search"><span>⌕</span><input id="stockSearch" placeholder="Buscar produto por nome, SKU ou código de barras" autocomplete="off"></label><div class="inline-controls"><select id="stockProduct"></select><input id="stockDelta" inputmode="decimal" placeholder="Ajuste (+/-)"><input id="stockReason" placeholder="Motivo do ajuste"><button id="adjustStockBtn" class="secondary">Registrar ajuste</button></div><p class="hint">Quantidades em unidade, kg ou litro conforme o produto. Ajustes ficam auditados e aguardam sincronização.</p></div><div id="stockList" class="card list-card"></div></section>
+      <section id="printersTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">PERIFÉRICOS</span><h1>Impressoras</h1></div></div><div class="card compact"><form id="printerForm" class="printer-form"><label>Tipo<select id="printerKind"><option value="receipt">Recibo térmico</option><option value="label">Etiqueta</option></select></label><label>Conexão<select id="printerDriver"><option value="file">Arquivo de teste</option><option value="tcp">TCP 9100</option><option value="windows_raw">Spool RAW Windows</option></select></label><label>Formato<select id="printerFormat"><option value="escpos58">ESC/POS 58 mm</option><option value="escpos80">ESC/POS 80 mm</option></select></label><label>Destino<input id="printerTarget" placeholder="Pasta, host:9100 ou nome da fila" required></label><button class="primary" type="submit">Salvar impressora</button></form><p class="hint">Recibos são não fiscais. Compatibilidade com modelos físicos depende de teste no equipamento.</p></div><div id="printerSettings" class="card list-card"></div><div class="section-head subhead"><h2>Fila de impressão</h2><button id="flushPrintBtn" class="secondary">Processar fila</button></div><div id="printJobs" class="card list-card"></div></section>
+      <section id="systemTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">DIAGNÓSTICO</span><h1>Sistema</h1></div></div><div class="metric-grid"><div class="metric card"><small>Eventos pendentes</small><strong id="systemPending">—</strong></div><div class="metric card"><small>Última sincronização</small><strong id="systemLastSync">—</strong></div><div class="metric card"><small>Licença offline</small><strong id="systemLease">—</strong></div></div><div class="card compact"><h2>Sincronização</h2><p id="systemError" class="hint"></p><div class="inline-controls"><button id="syncNowBtn" class="primary">Sincronizar agora</button><button id="bootstrapBtn" class="secondary">Atualizar catálogo e licença</button><a href="/api/export" class="secondary link-button">Exportar dados locais</a></div></div><div class="card compact"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="secondary">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div><div class="card compact"><h2>Versão publicada</h2><p id="releaseInfo" class="hint">Nenhuma versão consultada.</p><a id="releaseLink" class="secondary link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">O terminal apenas verifica o manifesto assinado. A instalação é manual.</p></div><div class="card compact"><h2>Identificação</h2><pre id="identityInfo" class="identity"></pre></div><div class="card compact"><h2>Auditoria recente</h2><div id="auditList" class="mini-list"></div></div></section>
+    </main>
+  </div>
+  <script src="{{ url_for('static', filename='terminal.js') }}" defer></script>
+</body>
+</html>

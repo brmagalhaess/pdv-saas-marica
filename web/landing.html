@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102630">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" href="/assets/icon-192.png">
+  <link rel="apple-touch-icon" href="/assets/icon-192.png">
+  <meta name="description" content="PDV2: gestão SaaS para mercados e mercearias. Produtos, estoque, equipe, terminais e acompanhamento em uma plataforma.">
+  <title>PDV2 · Gestão que acompanha o ritmo do seu comércio</title>
+  <link rel="stylesheet" href="/assets/ui.css">
+  <link rel="stylesheet" href="/assets/landing.css">
+  <script type="module" src="/assets/landing.js"></script>
+  <script type="module" src="/assets/pwa.js"></script>
+</head>
+<body>
+  <a class="skip" href="#conteudo">Pular para o conteúdo</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/" aria-label="PDV2, início">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M8 28V8h11a7 7 0 0 1 0 14H8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span>
+        <span>PDV<strong>2</strong></span>
+      </a>
+      <button class="menu-toggle" id="site-menu-button" type="button" aria-expanded="false" aria-controls="site-navigation" aria-label="Abrir menu">☰</button>
+      <nav class="site-nav" id="site-navigation" aria-label="Navegação principal">
+        <a href="#produto">Produto</a>
+        <a href="#como-funciona">Como funciona</a>
+        <a href="#planos">Planos</a>
+        <a href="#perguntas">Perguntas</a>
+      </nav>
+      <div class="header-actions">
+        <a href="/login/">Entrar</a>
+        <a class="button small" href="/login/?mode=register">Criar conta</a>
+      </div>
+    </div>
+  </header>
+  <main id="conteudo">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <span class="hero-kicker"><span class="pulse"></span> Começando em Maricá · para mercados e mercearias</span>
+          <h1>Seu comércio no ritmo de quem está <em>no balcão.</em></h1>
+          <p>Produtos, estoque, equipe e vendas sincronizadas em um só lugar. Uma plataforma de gestão pensada para a rotina de quem precisa vender e acompanhar o negócio com clareza.</p>
+          <div class="hero-actions">
+            <a class="button hero-primary" href="/login/?mode=register">Criar minha conta <span aria-hidden="true">↗</span></a>
+            <a class="hero-link" href="#produto">Conhecer a plataforma <span aria-hidden="true">↓</span></a>
+          </div>
+          <div class="hero-proof" aria-label="Destaques">
+            <span><b>01</b> Cadastro de produtos</span>
+            <span><b>02</b> Estoque por loja</span>
+            <span><b>03</b> Equipe com permissões</span>
+          </div>
+        </div>
+        <div class="hero-visual" aria-label="Exemplo ilustrativo da interface de gestão PDV2">
+          <div class="visual-glow"></div>
+          <div class="preview-shell">
+            <div class="preview-top"><span class="preview-dots"><i></i><i></i><i></i></span><span class="preview-url">Painel PDV2 · exemplo de interface</span><span class="preview-online">Acesso antecipado</span></div>
+            <div class="preview-content">
+              <div class="preview-sidebar">
+                <div class="preview-mini-brand"><span>2</span> PDV2</div>
+                <small>ACOMPANHAR</small>
+                <div class="preview-menu selected">▣ <span>Visão geral</span></div>
+                <div class="preview-menu">▤ <span>Vendas</span></div>
+                <small>OPERAÇÃO</small>
+                <div class="preview-menu">▦ <span>Produtos</span></div>
+                <div class="preview-menu">◈ <span>Estoque</span></div>
+                <div class="preview-menu">◎ <span>Financeiro</span></div>
+              </div>
+              <div class="preview-main">
+                <div class="preview-heading"><div><small>VISÃO GERAL</small><h2>Um dia mais organizado.</h2></div><span>☼</span></div>
+                <div class="preview-cards"><div><small>Vendas recebidas</small><strong>—</strong><i></i></div><div><small>Produtos ativos</small><strong>—</strong><i></i></div><div><small>Estoque por loja</small><strong>—</strong><i></i></div></div>
+                <div class="preview-list"><div class="preview-list-head"><strong>Sua operação, em um só lugar</strong><span>Ver no painel ↗</span></div>
+                  <div><span class="preview-icon">▦</span><span>Catálogo com SKU, unidade e preço</span><b>›</b></div>
+                  <div><span class="preview-icon">▣</span><span>Saldo e entradas de mercadoria</span><b>›</b></div>
+                  <div><span class="preview-icon">♙</span><span>Papéis e acessos da equipe</span><b>›</b></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="floating-card"><span class="floating-mark">✓</span><div><strong>Controle em primeiro lugar</strong><small>Dados e acessos organizados por empresa</small></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="intro-band" aria-label="Foco do produto"><div class="container intro-inner"><span>FEITO PARA A ROTINA DO VAREJO LOCAL</span><p>Uma base de gestão simples de usar, com espaço para sua operação crescer.</p></div></section>
+
+    <section class="section product-section" id="produto">
+      <div class="container">
+        <div class="section-heading"><div><span class="eyebrow">O produto</span><h2>Menos tempo procurando.<br><em>Mais tempo vendendo.</em></h2></div><p>Comece pelo essencial da operação e acompanhe cada loja sem perder o contexto do que aconteceu.</p></div>
+        <div class="feature-grid">
+          <article class="feature feature-featured"><span class="feature-number">01 / CATÁLOGO</span><div class="feature-art"><span class="art-tag">SKU 0001</span><span class="art-card">Arroz integral <b>UN</b></span><span class="art-card lower">Óleo de soja <b>UN</b></span><span class="art-plus">+</span></div><h3>Produtos fáceis de encontrar.</h3><p>Cadastre nome, preço, código de barras, categoria, variação e unidade. O catálogo pode ser consultado pelo time com acesso autorizado.</p></article>
+          <article class="feature"><span class="feature-number">02 / ESTOQUE</span><div class="feature-icon">▣</div><h3>Saldo por loja, com histórico.</h3><p>Veja o estoque recebido pela nuvem, registre ajustes e entradas de mercadoria e acompanhe itens abaixo do mínimo.</p><span class="feature-foot">A operação offline exige reconciliação.</span></article>
+          <article class="feature"><span class="feature-number">03 / EQUIPE</span><div class="feature-icon">♙</div><h3>Cada pessoa no seu papel.</h3><p>Permissões por função, PIN separado para o terminal local e trilha de auditoria para alterações importantes.</p><span class="feature-foot">Mais clareza para crescer com segurança.</span></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section flow-section" id="como-funciona">
+      <div class="container flow-grid">
+        <div class="flow-copy"><span class="eyebrow">Como funciona</span><h2>Uma empresa.<br>Suas lojas.<br><em>Um painel.</em></h2><p>O painel web organiza os dados de cada empresa. O terminal local envia eventos de venda quando conectado; a equipe acompanha tudo que já foi recebido pelo servidor.</p><a class="text-link" href="/login/?mode=register">Conhecer o acesso antecipado ↗</a></div>
+        <div class="flow-steps">
+          <div><span>01</span><section><h3>Crie a empresa</h3><p>Cadastre sua conta e defina quem pode acessar cada área do painel.</p></section></div>
+          <div><span>02</span><section><h3>Monte a operação</h3><p>Adicione lojas, produtos, fornecedores, estoque e terminais.</p></section></div>
+          <div><span>03</span><section><h3>Acompanhe os registros</h3><p>Consulte vendas sincronizadas, títulos financeiros e eventos de auditoria.</p></section></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section plans-section" id="planos">
+      <div class="container">
+        <div class="plans-heading"><div><span class="eyebrow">Planos</span><h2>Um ponto de partida<br><em>para cada momento.</em></h2></div><div class="billing-switch" role="group" aria-label="Período de cobrança"><button id="billing-month" type="button" aria-pressed="true">Mensal</button><button id="billing-year" type="button" aria-pressed="false">Anual <span>2 meses de referência</span></button></div></div>
+        <p class="plans-lead">Preços de referência do acesso antecipado. A contratação depende da configuração de cobrança e confirmação da assinatura.</p>
+        <div class="plan-grid" id="plan-grid">
+          <article class="plan-card" data-plan="essential"><div class="plan-top"><span>Para começar</span><h3>Essencial</h3><p>A base para organizar a primeira operação.</p></div><div class="plan-price"><strong data-price>R$ 149</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Catálogo de produtos</li><li>Visão geral da operação</li><li>Estoque por loja</li></ul><a class="button ghost" href="/login/?mode=register">Criar conta de teste</a></article>
+          <article class="plan-card featured-plan" data-plan="management"><div class="popular">Mais espaço para gerir</div><div class="plan-top"><span>Para acompanhar de perto</span><h3>Gestão</h3><p>Mais controle para a rotina da loja.</p></div><div class="plan-price"><strong data-price>R$ 229</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Tudo do Essencial</li><li>Financeiro e títulos</li><li>Relatórios em implantação</li></ul><a class="button" href="/login/?mode=register">Criar conta de teste</a></article>
+          <article class="plan-card" data-plan="advanced"><div class="plan-top"><span>Para expandir</span><h3>Avançado</h3><p>Uma estrutura maior para a sua operação.</p></div><div class="plan-price"><strong data-price>R$ 349</strong><small data-cycle>/mês</small></div><div class="plan-meta">Até 3 terminais · até 2 lojas</div><ul><li>Tudo do Gestão</li><li>Mais uma loja</li><li>Prioridade de suporte prevista</li></ul><a class="button ghost" href="/login/?mode=register">Criar conta de teste</a></article>
+        </div>
+        <p class="plan-footnote" id="price-source" role="status">Valores de referência da oferta inicial.</p>
+      </div>
+    </section>
+
+    <section class="section honesty-section">
+      <div class="container honesty-grid"><div><span class="eyebrow">Acesso antecipado</span><h2>Estamos construindo com os pés no chão.</h2></div><p>O painel de gestão já reúne os cadastros e os dados recebidos. O caixa local, impressoras, aplicativo móvel, cobrança automática e emissão fiscal ainda exigem validação de campo, infraestrutura e homologação antes de uma oferta de produção.</p></div>
+    </section>
+
+    <section class="section faq-section" id="perguntas"><div class="container faq-grid"><div><span class="eyebrow">Perguntas comuns</span><h2>Para começar com clareza.</h2></div><div class="faq-list"><details><summary>O PDV2 já está pronto para vender na loja?</summary><p>Esta é uma versão de acesso antecipado. O painel web já permite cadastros e acompanhamento. O terminal local e as integrações de hardware e fiscais ainda estão em validação.</p></details><details><summary>Posso ter mais de uma loja?</summary><p>O plano Avançado prevê até duas lojas. Limites de lojas e terminais são aplicados por plano e aparecem na assinatura.</p></details><details><summary>Como funciona a assinatura?</summary><p>Os valores acima são os preços cadastrados na plataforma. Uma solicitação de cobrança precisa ser processada por um provedor configurado e confirmada; o cadastro da conta não significa pagamento.</p></details></div></div></section>
+
+    <section class="closing"><div class="container closing-inner"><div><span class="eyebrow">PDV2 · Maricá</span><h2>Seu próximo passo começa aqui.</h2><p>Crie uma conta para conhecer a área de gestão e acompanhar o avanço do produto.</p></div><a class="button closing-button" href="/login/?mode=register">Criar conta de teste ↗</a></div></section>
+  </main>
+  <footer class="site-footer"><div class="container footer-inner"><a class="brand" href="/" aria-label="PDV2, início"><span class="brand-mark" aria-hidden="true">2</span><span>PDV<strong>2</strong></span></a><p>Gestão para o varejo local. Acesso antecipado.</p><a href="/login/">Acessar painel ↗</a></div></footer>
+</body>
+</html>

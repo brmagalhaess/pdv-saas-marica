@@ -1,0 +1,96 @@
+# Import in Dokploy as a Docker Compose project. Attach HTTPS domain to cloud:8080.
+name: pdv2
+x-env: &env
+  PDV_ENV: production
+  PDV_DEBUG: "0"
+  PDV_SECRET_KEY: ${PDV_SECRET_KEY:?Set a unique secret with at least 50 random characters}
+  DATABASE_URL: postgresql://pdv2:${POSTGRES_PASSWORD:?Set database password}@db:5432/pdv2
+  PDV_ALLOWED_HOSTS: ${PDV_DOMAIN:?Set the real domain},127.0.0.1,localhost
+  PDV_CSRF_TRUSTED_ORIGINS: https://${PDV_DOMAIN:?Set the real domain}
+  PDV_TRUST_PROXY: "1"
+  PDV_TRUSTED_PROXY_CIDRS: ${PDV_TRUSTED_PROXY_CIDRS:?Set trusted Dokploy proxy network CIDR}
+  PDV_LICENSE_PRIVATE_KEY_FILE: /run/secrets/license_private
+  PDV_LICENSE_PUBLIC_KEY_FILE: /run/secrets/license_public
+  PDV_ENCRYPTION_KEY: ${PDV_ENCRYPTION_KEY:?Set encryption key}
+  PDV_ASAAS_WEBHOOK_TOKEN: ${PDV_ASAAS_WEBHOOK_TOKEN:-}
+  PDV_ALLOW_LIVE_FISCAL: ${PDV_ALLOW_LIVE_FISCAL:-0}
+  PDV_BACKUP_OFFSITE: "1"
+  PDV_EMAIL_HOST: ${PDV_EMAIL_HOST:-}
+  PDV_EMAIL_PORT: ${PDV_EMAIL_PORT:-587}
+  PDV_EMAIL_USER: ${PDV_EMAIL_USER:-}
+  PDV_EMAIL_PASSWORD: ${PDV_EMAIL_PASSWORD:-}
+  PDV_DEFAULT_FROM_EMAIL: ${PDV_DEFAULT_FROM_EMAIL:-}
+x-service: &service
+  image: pdv2-cloud:${PDV_VERSION:-2.0.0}
+  build: {context: ., dockerfile: infra/Dockerfile.cloud}
+  environment: *env
+  secrets: [license_private,license_public]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: [/tmp]
+  logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pdv2
+      POSTGRES_USER: pdv2
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set database password}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U pdv2 -d pdv2"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    <<: *service
+    command: [python, manage.py, migrate, --noinput]
+    depends_on: {db: {condition: service_healthy}}
+    restart: "no"
+  cloud:
+    <<: *service
+    expose: ["8080"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    volumes: [backup_status:/backup-status:ro]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+  worker:
+    <<: *service
+    command: [python, -m, operations.worker]
+    depends_on: {cloud: {condition: service_healthy}}
+    healthcheck:
+      test: [CMD, python, -c, "import pathlib,time; assert time.time()-float(pathlib.Path('/tmp/pdv2-worker-health').read_text())<120"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+  backup:
+    image: pdv2-backup:${PDV_VERSION:-2.0.0}
+    build: {context: ., dockerfile: infra/Dockerfile.backup}
+    environment:
+      PGHOST: db
+      PGDATABASE: pdv2
+      PGUSER: pdv2
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set database password}
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:?Set an external encrypted backup destination}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:?Set backup encryption password}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      BACKUP_INTERVAL_SECONDS: "3600"
+      BACKUP_PRUNE: ${BACKUP_PRUNE:-0}
+    depends_on: {db: {condition: service_healthy}}
+    volumes: [backup_status:/status]
+    restart: unless-stopped
+secrets:
+  license_private: {file: "${PDV_LICENSE_PRIVATE_KEY_PATH:?Set private key path on host}"}
+  license_public: {file: "${PDV_LICENSE_PUBLIC_KEY_PATH:?Set public key path on host}"}
+volumes:
+  postgres_data:
+  backup_status:

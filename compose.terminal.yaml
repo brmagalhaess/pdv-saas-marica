@@ -1,0 +1,19 @@
+# Run on the store computer. It continues operating when cloud is unavailable.
+name: pdv2-terminal
+services:
+  terminal:
+    image: pdv2-terminal:${PDV_VERSION:-2.0.0}
+    build: {context: ., dockerfile: infra/Dockerfile.terminal}
+    environment:
+      PDV_ENV: production
+      PDV_TERMINAL_HOST: 0.0.0.0
+      PDV_TERMINAL_PORT: "8010"
+      PDV_TERMINAL_DB: /data/terminal.sqlite3
+      PDV_TERMINAL_DATA: /data
+    ports: ["127.0.0.1:8010:8010"]
+    volumes: [terminal_data:/data]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+volumes:
+  terminal_data:

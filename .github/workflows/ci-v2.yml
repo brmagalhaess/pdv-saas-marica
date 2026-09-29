@@ -1,0 +1,40 @@
+name: PDV2 V2 checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pdv2
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: pdv2
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pdv2"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+    env:
+      PDV_DEBUG: '1'
+      DATABASE_URL: postgresql://pdv2:ci-only-password@localhost:5432/pdv2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python cloud/manage.py makemigrations --check --dry-run
+      - run: python cloud/manage.py test core operations -v 2
+      - run: python -m unittest discover -s shared/tests -v
+      - run: python -m unittest discover -s integrations/tests -v
+      - run: python -m unittest discover -s terminal/tests -v
+        env:
+          DATABASE_URL: ''
+      - run: node --input-type=module --check < web/assets/app.js && node --check terminal/static/terminal.js
+      - run: docker build -f infra/Dockerfile.cloud -t pdv2-cloud:ci .
+      - run: docker build -f infra/Dockerfile.terminal -t pdv2-terminal:ci .

@@ -1,65 +1,85 @@
-# PDV2 — protótipo SaaS e caixa local
+# PDV2 — SaaS, gestão e terminal local
 
-Projeto em desenvolvimento para mercados e mercearias, começando em Maricá. **PDV2 é nome provisório.** O código contém uma landing com planos, painel de gestão, catálogo, estoque, backup local e um núcleo de caixa offline com sincronização experimental. **Não está apto para atender clientes reais:** faltam NFC-e, impressão física, pagamentos integrados, segurança de produção, cobrança, mobile e homologação.
+V2.0.0 para validação em mercados, mercearias e varejo de produtos. Django/PostgreSQL na nuvem e Flask/SQLite no terminal, com aplicações executáveis, containers e testes integrados. **A instalação local é demonstração; a liberação comercial depende de [STATUS-V2.md](docs/STATUS-V2.md).** PDV2 é nome provisório.
 
-## Prévia no Docker Desktop
-
-Na pasta do projeto:
+## Executar no Docker Desktop
 
 ```sh
-docker compose -f compose.preview.yaml up -d --build
+sh scripts/start-local.sh
 ```
 
-Abra `http://127.0.0.1:8000`. A prévia publica a porta apenas no computador local e guarda o banco em um volume Docker. Se a porta 8000 estiver ocupada, defina `PDV_PREVIEW_PORT=8001` antes do comando e abra `http://127.0.0.1:8001`.
+- Landing: http://127.0.0.1:8000/
+- Administração SaaS: http://127.0.0.1:8000/platform/
+- Gestão da empresa: http://127.0.0.1:8000/app/
+- Terminal: http://127.0.0.1:8010/
+- Credenciais únicas desta instalação: `.runtime/access.txt`.
 
-Para parar sem apagar o volume:
+O script gera segredos, migra o PostgreSQL e cria uma demonstração no Avançado. Cadastros públicos recebem avaliação do Essencial. A política de senha aceita 8 a 128 caracteres com maiúscula, minúscula, número e símbolo; a senha fornecida na conversa não foi gravada no código.
 
-```sh
-docker compose -f compose.preview.yaml down
-```
+Se a prévia antiga ocupar a porta 8000, pare apenas `pdv-saas-phase1-pdv-preview-1`. O volume antigo é preservado; a V2 usa outro banco e não migra dados V1 automaticamente.
 
-Também é possível executar sem Docker: `python3 app.py` (Python 3.9+). O banco padrão será `pdv.sqlite3` na pasta; altere com a variável `PDV_DB`. **Não abra `index.html` por `file://` para cadastrar contas**: o formulário precisa da API em `http://127.0.0.1:8000`.
+## Serviços
 
-## O que funciona
+- **cloud:** Django/Gunicorn/WhiteNoise, API de empresa/plataforma, sessões, CSRF, permissões e licenças assinadas.
+- **db:** PostgreSQL persistente.
+- **worker:** fila no banco para cobrança, conciliação, fiscal e arquivo XML.
+- **gateway:** Caddy local. Em Dokploy o HTTPS aponta ao cloud.
+- **terminal:** SQLite WAL, PIN, catálogo, caixa, vendas, sincronização e spool.
+- **backup:** pg_dump + Restic criptografado; localmente em outro volume, produção em destino externo.
+- **migrate:** tarefa de schema anterior ao início da aplicação.
 
-- Cadastro de empresas e loja principal; login, papéis e sessões.
-- Catálogo de produtos, busca, preços em centavos e estoque por loja com movimentações auditáveis.
-- Planos propostos na landing: R$ 149, R$ 229 e R$ 349/mês. A cobrança ainda não existe; contas novas ficam em teste no Essencial.
-- Registro de um terminal e ingestão idempotente de eventos locais; vendas recebidas aparecem no painel com itens e pagamentos. O saldo central reflete uma única baixa por venda; ainda falta um fluxo operacional para tratar divergências.
-- [Caixa local experimental](local_pdv/README.md): abertura/fechamento, venda, pagamentos informados pelo operador, baixa local e outbox. Não emite NFC-e nem imprime em hardware.
-- [Backup local](backup.py) consistente, com verificação de integridade e hash. Falta cópia externa criptografada.
+## Recursos implementados
+
+- Plataforma: empresas, planos/limites, assinaturas, cobranças, terminais, equipe de suporte/cobrança/operação, auditoria, integrações e versões assinadas.
+- Empresa: lojas, produtos/variações, categorias, clientes, fornecedores, estoque/entradas, contas a pagar/receber, equipe/PIN, vendas e auditoria.
+- Papéis: proprietário, administrador, gerente, caixa, estoque, financeiro e consulta; permissões separadas da equipe SaaS.
+- Terminal: código/nome, quantidade fracionária, desconto autorizado, pagamento dividido informado pelo operador, troco, abrir/fechar caixa, sangria/suprimento, suspensão, histórico, cancelamento e reimpressão.
+- Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque.
+- Comprovante não fiscal ESC/POS 58/80 mm; etiquetas ZPL/EPL via TCP, RAW Windows ou arquivo de diagnóstico. Hardware físico exige validação.
+- Conectores Focus NFe e Asaas com credenciais criptografadas, fila e confirmação pelo provedor. Não há credenciais reais configuradas.
+- Web responsiva e PWA instalável no Android/iPhone. A PWA é gestão web; o caixa offline exige o serviço local. Não há app nativo publicado nas lojas.
+
+## Pareamento
+
+1. Entre na empresa, configure o PIN na equipe e crie o terminal.
+2. No terminal, informe o código e `http://cloud:8080` se ambos estiverem no Compose local. O código expira em 10 minutos.
+3. Escolha operador/PIN e abra o caixa antes de vender.
+4. No terminal nativo em loja, use o endereço HTTPS real da nuvem.
+
+A chave pública fica fixada no pareamento. Revogações alcançam um terminal offline quando ele reconectar ou a licença vencer. O prazo da licença não é prazo de contingência fiscal.
 
 ## Testes
 
 ```sh
-python3 -m unittest discover -s tests -v
-python3 -m unittest discover -s local_pdv/tests -v
+PDV_DEBUG=1 python cloud/manage.py test core operations -v 2
+python -m unittest discover -s shared/tests -v
+python -m unittest discover -s integrations/tests -v
+python -m unittest discover -s terminal/tests -v
 ```
 
-Os testes incluem isolamento entre empresas, permissões, regra de senha, estoque, deduplicação de eventos, venda atômica e recuperação do caixa após reinício e queda abrupta. O exemplo de senha dado pelo proprietário é aceito pela regra de 8 a 128 caracteres com maiúscula, minúscula, número e símbolo; ele **não foi gravado no código**.
+Na demonstração local já iniciada:
 
-## API principal
+```sh
+python scripts/smoke_local.py --offline
+python scripts/verify_backup.py
+```
 
-- `GET /health`, `GET /api/plans`
-- `POST /api/register`, `POST /api/login`, `POST /api/logout`, `GET /api/me`
-- `GET/POST /api/shops`, `GET/POST /api/users`, `GET /api/audit`
-- `GET/POST /api/products`, `GET/PATCH/DELETE /api/products/{id}`
-- `GET /api/stock?shop_id=...`, `GET/POST /api/stock/movements`
-- `GET/POST /api/terminals` — proprietário registra um terminal e recebe um token uma vez
-- `POST /api/sync/events` — autenticação Bearer do terminal, lote idempotente
-- `GET /api/sales` — vendas recebidas do caixa local
+O primeiro interrompe apenas o cloud deste projeto, vende offline, religa, sincroniza e estorna a venda de teste. O segundo restaura o backup em um banco temporário separado e o remove após verificar. Relatórios em `.runtime/`.
 
-Os endpoints foram criados para prototipagem local. A página pública e o servidor HTTP padrão **não devem ser expostos à internet** nesta versão.
+## Instalação e atualização
 
-## Documentos
+Use `compose.production.yaml` para a nuvem Dokploy e `compose.terminal.yaml` para um terminal Docker na loja. Windows/Python e periféricos: [TERMINAL-V2.md](docs/TERMINAL-V2.md).
 
-- [Especificação e arquitetura inicial](docs/FASE-0.md)
-- [Estado real e critérios para piloto](docs/STATUS.md)
-- [Backlog](docs/BACKLOG.md)
-- [Pesquisa de periféricos](docs/HARDWARE.md)
-- [Sincronização de vendas e estoque](docs/SYNC-VENDAS.md)
-- [Preparação futura para Dokploy](docs/DEPLOY-DOKPLOY.md)
-- [Prompt mestre atualizado](docs/PROMPT-MESTRE.md)
-- [Plano comercial e conta para R$ 1 milhão/ano](docs/PLANO-COMERCIAL.md)
+`python scripts/package_terminal.py` gera ZIP sem segredos ou vendas. Hospede-o em HTTPS e cadastre versão, tamanho e SHA-256 na plataforma. O servidor assina o manifesto; o terminal avisa sobre versões verificadas. A atualização é manual. `scripts/verify_update.py` verifica o pacote baixado antes da instalação.
 
-O logo provisório está em `logo-pdv2.svg` e é um SVG editável. Consulte marca e domínio antes de adotá-lo comercialmente.
+## Documentação
+
+- [Estado e critérios de lançamento](docs/STATUS-V2.md)
+- [Dokploy](docs/DEPLOY-DOKPLOY.md)
+- [API](docs/API-V2.md)
+- [Cobrança, fiscal e versões](docs/OPERACOES-V2.md)
+- [Pesquisa de mercado e equipamentos](docs/PESQUISA-MERCADO-V2.md)
+- [Meta comercial de R$ 1 milhão/ano](docs/PLANO-COMERCIAL.md)
+- [Prompt mestre](docs/PROMPT-MESTRE.md)
+
+`app.py`, `local_pdv/` e `compose.preview.yaml` são o protótipo anterior preservado, não a implantação V2.

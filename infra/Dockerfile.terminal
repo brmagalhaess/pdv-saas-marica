@@ -1,0 +1,13 @@
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app \
+    PDV_TERMINAL_HOST=0.0.0.0 PDV_TERMINAL_PORT=8010 \
+    PDV_TERMINAL_DB=/data/terminal.sqlite3 PDV_TERMINAL_DATA=/data
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && groupadd -g 10001 app && useradd -u 10001 -g app -m app
+COPY terminal ./terminal
+COPY shared ./shared
+RUN mkdir -p /data && chown app:app /data
+USER app
+EXPOSE 8010
+CMD ["python", "-m", "terminal"]

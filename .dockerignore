@@ -6,3 +6,10 @@ __pycache__
 tests
 local_pdv/tests
 docs
+.venv
+.runtime
+staticfiles
+.git
+work
+build
+dist

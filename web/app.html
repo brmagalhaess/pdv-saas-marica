@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102630">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" href="/assets/icon-192.png">
+  <link rel="apple-touch-icon" href="/assets/icon-192.png">
+  <meta name="description" content="Painel de gestão PDV2.">
+  <title>Painel · PDV2</title>
+  <link rel="stylesheet" href="/assets/ui.css">
+  <script type="module" src="/assets/app.js"></script>
+  <script type="module" src="/assets/pwa.js"></script>
+</head>
+<body>
+  <a class="skip" href="#page-content">Pular para o conteúdo</a>
+  <div id="loading" class="app-loading" role="status"><div><strong>PDV2</strong>Preparando sua área de gestão…</div></div>
+  <div id="console" class="console" hidden>
+    <aside id="sidebar" class="sidebar" aria-label="Menu principal">
+      <div class="sidebar-top">
+        <a class="brand" href="/" aria-label="PDV2, voltar ao site">
+          <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M8 28V8h11a7 7 0 0 1 0 14H8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span>
+          <span>PDV<strong>2</strong></span>
+        </a>
+        <button id="sidebar-close" class="button icon ghost sidebar-close" type="button" aria-label="Fechar menu">×</button>
+      </div>
+      <div class="sidebar-tenant" id="tenant-selector-wrap">
+        <small>Empresa ativa</small>
+        <label class="sr-only" for="tenant-selector">Selecionar empresa</label>
+        <select id="tenant-selector"></select>
+      </div>
+      <nav id="sidebar-nav" class="sidebar-scroll" aria-label="Seções do painel"></nav>
+      <div class="sidebar-foot">
+        <div id="sidebar-user" class="user-name"></div>
+        <div id="sidebar-role" class="user-role"></div>
+        <button id="logout" class="button secondary small" type="button">Sair da conta</button>
+      </div>
+    </aside>
+    <div id="mobile-scrim" class="mobile-scrim" aria-hidden="true"></div>
+    <div class="console-main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="menu-button" class="button icon ghost menu-button" type="button" aria-label="Abrir menu" aria-controls="sidebar" aria-expanded="false">☰</button>
+          <div class="breadcrumb"><span id="breadcrumb-area">Painel</span> / <strong id="breadcrumb-current">Visão geral</strong></div>
+        </div>
+        <div class="topbar-right"><span class="topbar-date" id="today"></span><span class="environment">Acesso antecipado</span><span id="avatar" class="avatar" aria-label="Seu perfil">P</span></div>
+      </header>
+      <main id="page-content" tabindex="-1"></main>
+    </div>
+  </div>
+  <div id="toast-stack" class="toast-stack" role="status" aria-live="polite"></div>
+  <div id="dialog-root"></div>
+</body>
+</html>

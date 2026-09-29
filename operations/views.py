@@ -1,0 +1,249 @@
+import os
+from datetime import date
+from decimal import Decimal,InvalidOperation
+from pathlib import Path
+from django.db import transaction
+from django.db.models import Sum
+from django.http import JsonResponse,HttpResponse
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from core.api_common import endpoint,APIError,method,payload,fields,text,uuid_value,membership_context,platform_user,audit
+from core.models import Plan,Sale,BillingEvent,FiscalDocument,Tenant,Terminal,Subscription,BillingInvoice
+from shared.secrets import encrypt_secret
+from shared.licensing import payload_digest
+from integrations.billing import verify_webhook_token
+from .models import IntegrationAccount,ProviderJob,FiscalPayload,BillingBinding
+from .services import enqueue,JobConflict,capacity_fits
+
+OWNER=('owner','admin')
+
+@endpoint
+def company(request):
+    method(request,'GET','PATCH');member=membership_context(request,OWNER,write=request.method=='PATCH')
+    tenant=member.tenant
+    if request.method=='PATCH':
+        data=payload(request);fields(data,('name','document'))
+        if not data:raise APIError('Informe os dados a alterar')
+        if 'name' in data:tenant.name=text(data['name'],'Razão social',160)
+        if 'document' in data:
+            value=text(data['document'],'Documento',30,optional=True)
+            digits=''.join(c for c in value if c.isascii() and c.isdigit())
+            if value and (len(digits) not in (11,14) or any(c not in '0123456789./- ' for c in value)):
+                raise APIError('Informe CPF com 11 dígitos ou CNPJ com 14 dígitos')
+            tenant.document=digits
+        with transaction.atomic():
+            tenant.save(update_fields=list(data));audit(tenant,request.user,'company.updated',tenant,{'fields':list(data)})
+    return JsonResponse({'id':str(tenant.pk),'name':tenant.name,'document':tenant.document})
+
+@endpoint
+def integration(request,provider):
+    method(request,'GET','POST','PATCH')
+    if provider=='asaas':
+        user=platform_user(request,superuser=True);tenant=None
+    elif provider=='focusnfe':
+        member=membership_context(request,OWNER,write=request.method!='GET');user=request.user;tenant=member.tenant
+    else:raise APIError('Provedor desconhecido',404)
+    row=IntegrationAccount.objects.filter(provider=provider,tenant=tenant).first()
+    if request.method!='GET':
+        data=payload(request);fields(data,('token','environment','enabled'),('environment','enabled'))
+        environments=('sandbox','production') if provider=='asaas' else ('homologation','production')
+        if data['environment'] not in environments or type(data['enabled']) is not bool:raise APIError('Ambiente inválido')
+        if not row and not data.get('token'):raise APIError('Informe a credencial')
+        row=row or IntegrationAccount(provider=provider,tenant=tenant)
+        if data.get('token'):
+            token=text(data['token'],'Credencial',1000)
+            try:row.token_encrypted=encrypt_secret(token)
+            except ValueError:raise APIError('Chave de criptografia do servidor não configurada',503)
+        row.environment=data['environment'];row.enabled=data['enabled'];row.save()
+        audit(tenant,user,'integration.configured',row,{'provider':provider,'environment':row.environment,'enabled':row.enabled})
+    return JsonResponse({'provider':provider,'configured':bool(row),'enabled':row.enabled if row else False,
+                         'environment':row.environment if row else ('sandbox' if provider=='asaas' else 'homologation')})
+
+@endpoint
+def jobs(request):
+    method(request,'GET')
+    if request.headers.get('X-Tenant-ID'):
+        member=membership_context(request,('owner','admin','manager','finance'))
+        rows=ProviderJob.objects.filter(tenant=member.tenant)
+    else:
+        platform_user(request,roles=('platform_ops','platform_billing'));rows=ProviderJob.objects.all()
+    return JsonResponse({'results':[{'id':str(x.pk),'kind':x.kind,'status':x.status,'attempts':x.attempts,
+        'last_error':x.last_error,'created_at':x.created_at.isoformat(),'result':x.result} for x in rows.order_by('-created_at')[:100]]})
+
+@endpoint
+def subscribe(request):
+    method(request,'POST');member=membership_context(request,OWNER)
+    data=payload(request);fields(data,('plan_id','cycle','name','document','email','billing_type','idempotency_key'),
+                                ('plan_id','cycle','name','document','email','idempotency_key'))
+    plan=Plan.objects.filter(pk=uuid_value(data['plan_id']),active=True).first()
+    if not plan:raise APIError('Plano não encontrado',404)
+    cycle=data['cycle'];billing=data.get('billing_type','PIX')
+    if cycle not in ('MONTHLY','YEARLY') or billing not in ('PIX','BOLETO','UNDEFINED'):raise APIError('Ciclo ou cobrança inválidos')
+    if not IntegrationAccount.objects.filter(provider='asaas',tenant=None,enabled=True).exists():raise APIError('Cobrança ainda não configurada pela plataforma',503)
+    key='billing.subscribe:'+str(member.tenant_id)+':'+text(data['idempotency_key'],'Identificador',100)
+    body={'plan_id':str(plan.pk),'cycle':cycle,'amount_cents':plan.price_year_cents if cycle=='YEARLY' else plan.price_month_cents,
+          'name':text(data['name'],'Nome',160),'document':text(data['document'],'CPF/CNPJ',30),
+          'email':text(data['email'],'Email',254),'next_due_date':timezone.localdate().isoformat(),'billing_type':billing}
+    with transaction.atomic():
+        type(member.tenant).objects.select_for_update().get(pk=member.tenant_id)
+        if not capacity_fits(member.tenant,plan):raise APIError('Plano abaixo do uso atual: ajuste lojas/terminais antes de contratar',409)
+        pending=ProviderJob.objects.filter(tenant=member.tenant,kind='billing.subscribe',status__in=['queued','running','needs_review']).exclude(idempotency_key=key)
+        if pending.exists():raise APIError('Já há solicitação de assinatura pendente de conciliação',409)
+        if BillingBinding.objects.filter(tenant=member.tenant,active=True).exists() and not ProviderJob.objects.filter(idempotency_key=key).exists():
+            raise APIError('Já há assinatura no provedor; solicite alteração à plataforma para evitar cobrança duplicada',409)
+        try:job=enqueue('billing.subscribe',member.tenant,key,body)
+        except JobConflict as exc:raise APIError(str(exc),409)
+        audit(member.tenant,request.user,'billing.requested',job)
+    return JsonResponse({'job_id':str(job.pk),'status':job.status},status=202)
+
+@csrf_exempt
+@endpoint
+def asaas_webhook(request):
+    method(request,'POST')
+    if not verify_webhook_token(request.headers.get('asaas-access-token'),os.environ.get('PDV_ASAAS_WEBHOOK_TOKEN','')):
+        raise APIError('Webhook não autenticado',401)
+    data=payload(request)
+    event_id=text(data.get('id'),'Evento',160);event_type=text(data.get('event'),'Tipo',80)
+    payment=data.get('payment')
+    if not isinstance(payment,dict) or not payment.get('id'):
+        return JsonResponse({'accepted':False,'reason':'Evento sem cobrança ignorado'})
+    payment_id=text(payment['id'],'Cobrança',160)
+    minimal={'event':event_type,'payment_id':payment_id}
+    with transaction.atomic():
+        existing=BillingEvent.objects.filter(external_id=event_id).first()
+        if existing and existing.payload!=minimal:raise APIError('Evento repetido com conteúdo divergente',409)
+        if not existing:BillingEvent.objects.create(provider='asaas',external_id=event_id,event_type=event_type,payload=minimal)
+        try:job=enqueue('billing.reconcile',None,'asaas:'+event_id,{'payment_id':payment_id})
+        except JobConflict as exc:raise APIError(str(exc),409)
+    return JsonResponse({'accepted':True,'job_id':str(job.pk)})
+
+@endpoint
+def fiscal_submit(request):
+    method(request,'POST');member=membership_context(request,('owner','admin','manager'),write=True)
+    data=payload(request);fields(data,('sale_id','fiscal_payload'),('sale_id','fiscal_payload'))
+    body=data['fiscal_payload']
+    if not isinstance(body,dict):raise APIError('Payload fiscal inválido')
+    if body.get('tipo_emissao',1) not in (1,'1'):raise APIError('Contingência fiscal local ainda não habilitada')
+    if not IntegrationAccount.objects.filter(provider='focusnfe',tenant=member.tenant,enabled=True).exists():raise APIError('Configure a integração fiscal antes de emitir',503)
+    with transaction.atomic():
+        sale=Sale.objects.select_for_update().filter(pk=uuid_value(data['sale_id']),tenant=member.tenant,status='completed').first()
+        if not sale:raise APIError('Venda não encontrada',404)
+        try:total=Decimal(str(body.get('valor_total')))*100
+        except (InvalidOperation,TypeError):raise APIError('Total fiscal inválido')
+        if not total.is_finite() or total!=sale.total_cents:raise APIError('Total fiscal difere da venda')
+        issuer=''.join(x for x in str(body.get('cnpj_emitente',body.get('cpf_emitente',''))) if x.isdigit())
+        expected=''.join(x for x in member.tenant.document if x.isdigit())
+        if not expected or issuer!=expected:raise APIError('Emitente deve corresponder ao documento cadastrado na empresa')
+        items=body.get('items',[]);sale_items=list(sale.items.select_related('product'))
+        if not isinstance(items,list) or len(items)!=len(sale_items):raise APIError('Itens fiscais não correspondem à venda')
+        for item,line in zip(items,sale_items):
+            if not isinstance(item,dict) or str(item.get('codigo_produto')) not in (str(line.product_id),line.product.sku):raise APIError('Produto fiscal divergente')
+            try:quantity=Decimal(str(item.get('quantidade_comercial')))*1000
+            except InvalidOperation:raise APIError('Quantidade fiscal inválida')
+            if not quantity.is_finite() or quantity!=line.quantity_milli:raise APIError('Quantidade fiscal divergente')
+        record=FiscalDocument.objects.filter(sale=sale).first()
+        if record:
+            if FiscalPayload.objects.get(document=record).request_payload!=body:raise APIError('Venda já possui requisição fiscal com outros dados',409)
+        else:
+            record=FiscalDocument.objects.create(tenant=member.tenant,shop=sale.shop,sale=sale,external_id='pdv2-'+str(sale.pk),status='queued')
+            FiscalPayload.objects.create(document=record,request_payload=body)
+        job=enqueue('fiscal.submit',member.tenant,'fiscal.submit:'+str(record.pk),{'document_id':str(record.pk)})
+        audit(member.tenant,request.user,'fiscal.requested',record)
+    return JsonResponse({'document_id':str(record.pk),'job_id':str(job.pk),'status':record.status},status=202)
+
+@endpoint
+def fiscal_documents(request):
+    method(request,'GET');member=membership_context(request,('owner','admin','manager','finance','viewer'))
+    rows=FiscalDocument.objects.filter(tenant=member.tenant).order_by('-created_at')[:100]
+    return JsonResponse({'results':[{'id':str(x.pk),'sale_id':str(x.sale_id),'status':x.status,'reference':x.external_id,
+                                    'authorization':x.authorization,'error_message':x.error_message,'created_at':x.created_at.isoformat(),
+                                    'xml_archived':FiscalPayload.objects.filter(document=x).exclude(xml_sha256='').exists()} for x in rows]})
+
+@endpoint
+def fiscal_xml(request,pk):
+    method(request,'GET');member=membership_context(request,('owner','admin','manager','finance'))
+    row=FiscalPayload.objects.filter(document_id=uuid_value(pk),document__tenant=member.tenant).first()
+    if not row:raise APIError('Documento não encontrado',404)
+    if not row.xml_content:raise APIError('XML ainda não arquivado; consulte a fila de integração',409)
+    response=HttpResponse(bytes(row.xml_content),content_type='application/xml')
+    response['Content-Disposition']='attachment; filename="nfce-'+str(row.document_id)+'.xml"'
+    response['Cache-Control']='private, no-store'
+    response['X-Content-SHA256']=row.xml_sha256
+    audit(member.tenant,request.user,'fiscal.xml_downloaded',row.document)
+    return response
+
+@endpoint
+def fiscal_cancel(request,pk):
+    method(request,'POST');member=membership_context(request,('owner','admin','manager'),write=True)
+    data=payload(request);fields(data,('reason',),('reason',))
+    reason=text(data['reason'],'Justificativa',255)
+    if len(reason)<15:raise APIError('Justificativa deve ter pelo menos 15 caracteres')
+    with transaction.atomic():
+        row=FiscalDocument.objects.select_for_update().filter(pk=uuid_value(pk),tenant=member.tenant).first()
+        if not row:raise APIError('Documento não encontrado',404)
+        if row.status!='authorized':raise APIError('Somente notas autorizadas podem solicitar cancelamento',409)
+        try:job=enqueue('fiscal.cancel',member.tenant,'fiscal.cancel:'+str(row.pk),{'document_id':str(row.pk),'reason':reason})
+        except JobConflict as exc:raise APIError(str(exc),409)
+        audit(member.tenant,request.user,'fiscal.cancel_requested',row)
+    return JsonResponse({'job_id':str(job.pk),'status':job.status},status=202)
+
+@endpoint
+def reconcile_job(request,pk):
+    method(request,'POST')
+    data=payload(request);fields(data,('subscription_id','recover_customer'))
+    if 'recover_customer' in data and type(data['recover_customer']) is not bool:raise APIError('Opção de recuperação inválida')
+    if request.headers.get('X-Tenant-ID'):
+        member=membership_context(request,OWNER)
+        queryset=ProviderJob.objects.filter(tenant=member.tenant)
+    else:
+        platform_user(request,roles=('platform_ops','platform_billing'));queryset=ProviderJob.objects.all()
+    with transaction.atomic():
+        row=queryset.select_for_update().filter(pk=uuid_value(pk)).first()
+        if not row:raise APIError('Tarefa não encontrada',404)
+        if row.status!='needs_review':raise APIError('Tarefa não está aguardando revisão',409)
+        if row.kind in ('fiscal.submit','fiscal.cancel'):
+            # Recovery is a provider GET, never an automatic replay of a fiscal mutation.
+            recovered=enqueue('fiscal.poll',row.tenant,'reconcile:'+str(row.pk),{'document_id':row.payload['document_id']})
+        elif row.kind in ('fiscal.poll','fiscal.archive','billing.reconcile'):
+            row.status='queued';row.attempts=0;row.available_at=timezone.now();row.last_error='';row.save()
+            recovered=row
+        elif row.kind=='billing.subscribe' and data.get('subscription_id'):
+            platform_user(request,roles=('platform_billing',))
+            remote_id=text(data['subscription_id'],'Assinatura no provedor',160)
+            try:recovered=enqueue('billing.recover',row.tenant,'reconcile:'+str(row.pk),{'source_job_id':str(row.pk),'subscription_id':remote_id})
+            except JobConflict as exc:raise APIError(str(exc),409)
+        elif row.kind=='billing.subscribe' and data.get('recover_customer') is True:
+            platform_user(request,roles=('platform_billing',))
+            if row.result.get('customer_id'):raise APIError('Cliente já confirmado; informe a assinatura do provedor',409)
+            recovered=enqueue('billing.recover_customer',row.tenant,'recover_customer:'+str(row.pk),{'source_job_id':str(row.pk)})
+        else:raise APIError('Confirme a assinatura no provedor antes de realizar nova cobrança; reenvio automático bloqueado',409)
+        audit(row.tenant,request.user,'job.reconciliation_requested',row)
+    return JsonResponse({'job_id':str(recovered.pk),'status':recovered.status},status=202)
+
+@endpoint
+def health(request):
+    method(request,'GET');platform_user(request)
+    marker=Path('/backup-status/last-success')
+    try:backup_timestamp=int(marker.read_text().strip())
+    except (OSError,ValueError):backup_timestamp=None
+    return JsonResponse({'pending_jobs':ProviderJob.objects.filter(status='queued').count(),
+                         'jobs_needing_review':ProviderJob.objects.filter(status='needs_review').count(),
+                         'last_backup_at':backup_timestamp,'backup_offsite_configured':bool(os.environ.get('PDV_BACKUP_OFFSITE')=='1')})
+
+@endpoint
+def platform_metrics(request):
+    method(request,'GET');user=platform_user(request)
+    active=Subscription.objects.filter(status='active',current_period_end__gt=timezone.now(),tenant__active=True)
+    financial=user.is_superuser or user.groups.filter(name='platform_billing').exists()
+    mrr=None;paid=None
+    if financial:
+        contracted={x.external_id:((x.amount_cents+6)//12 if x.cycle=='YEARLY' else x.amount_cents) for x in BillingBinding.objects.filter(active=True)}
+        mrr=sum(contracted.get(sub.external_id,sub.plan.price_month_cents)
+                for sub in active.select_related('plan'))
+        paid=BillingInvoice.objects.filter(status='paid').aggregate(value=Sum('amount_cents'))['value'] or 0
+    return JsonResponse({'tenants_total':Tenant.objects.count(),'tenants_active':Tenant.objects.filter(active=True).count(),
+        'subscriptions_active':active.count(),'subscriptions_trial':Subscription.objects.filter(status='trial',trial_ends_at__gt=timezone.now()).count(),
+        'subscriptions_past_due':Subscription.objects.filter(status='past_due').count(),
+        'terminals_total':Terminal.objects.count(),'terminals_revoked':Terminal.objects.filter(revoked=True).count(),
+        'mrr_cents':mrr,'paid_invoices_cents':paid,'pending_jobs':ProviderJob.objects.filter(status='queued').count(),
+        'jobs_needing_review':ProviderJob.objects.filter(status='needs_review').count()})

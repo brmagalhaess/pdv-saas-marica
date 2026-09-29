@@ -1,0 +1,6 @@
+FROM restic/restic:0.19.1 AS restic
+FROM postgres:17-alpine
+COPY --from=restic /usr/bin/restic /usr/local/bin/restic
+COPY infra/backup.sh /usr/local/bin/pdv2-backup
+RUN chmod +x /usr/local/bin/pdv2-backup
+ENTRYPOINT ["/usr/local/bin/pdv2-backup"]

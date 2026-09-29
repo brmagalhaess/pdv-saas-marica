@@ -1,0 +1,62 @@
+# Estado real do PDV2 V2
+
+29/09/2026. Ambiente: Docker Desktop local. Nenhum domínio registrado, VPS alterada ou pagamento/documento fiscal real processado.
+
+## Implementado
+
+Três superfícies: SaaS, empresa e terminal. PostgreSQL, sessões/CSRF, papéis, limites por plano e consultas por empresa. Licenças assinadas vinculam dispositivo e resumo criptográfico dos operadores. SQLite mantém catálogo, caixa e fila persistente.
+
+O terminal executa venda, desconto autorizado, pagamento dividido, troco, caixa, sangria/suprimento, suspensão, cancelamento, consulta e spool. O painel administra catálogo/variações, lojas, contatos, estoque/entradas, financeiro, assinaturas, equipe, terminais e auditoria.
+
+Asaas e Focus NFe têm conectores executáveis, fila persistente e credenciais criptografadas. Seus testes usam respostas simuladas. XML só é arquivado se corresponde à chave e ao protocolo. Solicitação de cobrança/nota não significa pagamento/autorização concluídos.
+
+## Evidências
+
+- Contrato terminal→Django: pareamento, PIN, quantidade fracionária, perda de ACK, reenvio idempotente e estorno.
+- Testes de assinatura, adulteração, PIN, CSRF, host/origem local, spool, limites e isolamento.
+- Webhook autenticado/deduplicado, conciliação canônica e bloqueio de repetição de cobranças incertas.
+- Backup Restic restaurado em banco separado; relatório `.runtime/backup-restore-report.json`.
+- Teste HTTP com interrupção do container cloud: `scripts/smoke_local.py --offline`. O relatório `.runtime/http-smoke-report.json` só é gravado ao completar o fluxo.
+
+Essas evidências cobrem as condições dos testes, não homologação com hardware, bancos ou SEFAZ.
+
+## Necessário antes de atender uma loja real
+
+1. **Fiscal:** credenciar emitente, configurar certificado/CSC, validar cadastro/tributação com responsável fiscal e homologar emissão/cancelamento/XML. O payload fiscal ainda precisa ser fornecido à API. Não há motor tributário abrangente, emissão automática para cada venda nem contingência fiscal local.
+2. **Pagamento:** configurar Asaas/webhook real para assinaturas. O caixa registra pagamentos declarados pelo operador; não integra TEF, adquirentes, Pix dinâmico ou confirmação bancária.
+3. **Hardware:** validar encoding, corte/gaveta, etiqueta/gap, drivers e conexão nos equipamentos alvo. Protocolos implementados não garantem compatibilidade com todos os modelos.
+4. **Implantação:** domínio/HTTPS, VPS, backup externo, SMTP, monitoramento, incidentes e restauração no ambiente final. O backup local não cobre perda do computador.
+5. **Segurança operacional:** teste de carga/concorrência, revisão independente, rotação/guarda de chaves e política de acesso. MFA de plataforma ainda pendente. Não publicar DEBUG local na internet.
+6. **Mobilidade:** validar PWA em aparelhos reais. Apps nativos e publicação nas lojas ainda não existem; instalador Windows/Python ainda exige teste em máquina real.
+7. **Operação comercial:** migração dos dados antigos, treinamento, contrato, política de suporte e pilotos acompanhados.
+
+## Segmentos e módulos restantes
+
+O núcleo cobre varejo de produtos por unidade/quantidade fracionária e variações de catálogo: base para mercados, mercearias e varejo geral, sujeita às exigências de cada operação.
+
+Ainda faltam mesas/comandas/cozinha/delivery; agenda/ordens de serviço; farmácia/SNGPC; lotes/validade/rastreabilidade; balança serial; escrituração/importação completa de compras; promoções/fidelidade; conciliação bancária/TEF; motor fiscal abrangendo regimes/UFs. Não anunciar cobertura integral desses segmentos.
+
+## Limites offline
+
+- Licença normal até 72 horas, podendo ser encurtada por vencimentos; o terminal não adiciona prazo após `expires_at`.
+- Expiração preserva leitura/exportação e envio de registros pendentes; novas vendas exigem renovação.
+- Caixas desconectados podem vender o mesmo saldo. A nuvem recebe o histórico e sinaliza divergências; estoque global instantâneo exige comunicação.
+- Revogação de pessoa/dispositivo depende de reconexão ou vencimento da licença já emitida.
+- ESC/POS imprime comprovante **não fiscal**. Persistir venda offline não equivale a emitir NFC-e em contingência. Prazos fiscais são independentes dos prazos da licença.
+
+## Lançamento
+
+A V2 é uma base operacional para validação e pilotos supervisionados. Liberação comercial de produção depende das pendências acima. Containers e testes automatizados isoladamente não encerram essa validação.
+
+## Fechamento desta validação local
+
+- 18 testes Django de core/operations passaram com PostgreSQL em banco de teste separado.
+- 14 testes do terminal passaram, incluindo contrato com Django e persistência após reinício.
+- 4 testes de licença/versão e 4 testes de conectores/XML passaram: 40 testes V2 no total.
+- Roteiro HTTP executado com cloud desligado: venda local persistida, reenvio sem duplicação, reconexão, sincronização, estorno e fechamento.
+- Login, painel empresa, catálogo, painel SaaS e terminal inspecionados no navegador. Painel também conferido a 390 px de largura.
+- Backup SQLite manual criado. Restauração Restic/PostgreSQL validada em banco temporário, incluindo vendas de teste estornadas.
+- Conta/PIN temporários de validação foram desativados e removidos do catálogo de operadores do terminal.
+- Compose de produção validado sintaticamente. Django `check --deploy` passou sem erros, com aviso de HSTS preload ainda não habilitado; domínio definitivo não configurado.
+
+Estes resultados não incluem testes físicos de impressoras, emissão real de NFC-e, processamento real de pagamentos ou teste do instalador em Windows.
