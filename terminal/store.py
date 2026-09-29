@@ -232,7 +232,7 @@ class Store:
     def _clear_connection_meta(conn):
         for key in ("token", "tenant_id", "tenant_name", "shop_id", "shop_name",
                     "terminal_id", "terminal_name", "license_hint", "lease", "public_key", "cloud_url",
-                    "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
+                    "discount_max_bps", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at"):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
 
@@ -471,6 +471,10 @@ class Store:
             if response.get("license_hint"):
                 self._set_meta(conn, "license_hint", _str(response["license_hint"], "Licença", 16))
             self._set_meta(conn, "lease", _json(lease))
+            max_discount = claims.get("max_discount_bps", 10000)
+            if type(max_discount) is not int or not 0 <= max_discount <= 10000:
+                raise TerminalError("Limite de desconto da licença inválido", 403)
+            self._set_meta(conn, "discount_max_bps", str(max_discount))
             self._set_meta(conn, "bootstrap_at", str(timestamp))
             self._audit(conn, None, "terminal.bootstrap", None,
                         f"{len(products)} produtos; {len(operators)} operadores")
@@ -729,10 +733,14 @@ class Store:
             gross_total = sum(line["gross_cents"] for line in lines)
             if gross_total <= 0 or discount >= gross_total:
                 raise TerminalError("Desconto ou total inválido")
-            limit = DISCOUNT_BPS.get(operator["role"], 0)
-            if discount * 10000 > gross_total * limit:
-                if not override_id:
-                    raise TerminalError("PIN de gerente necessário para este desconto", 403)
+            configured_limit = int(self._meta(conn, "discount_max_bps") or 10000)
+            if not 0 <= configured_limit <= 10000:
+                configured_limit = 10000
+            if discount * 10000 > gross_total * configured_limit:
+                raise TerminalError("Desconto acima do limite configurado pela administração", 403)
+            role_limit = DISCOUNT_BPS.get(operator["role"], 0)
+            if discount * 10000 > gross_total * role_limit and not override_id:
+                raise TerminalError("PIN de gerente necessário para este desconto", 403)
             _allocate_discount(lines, discount, gross_total)
             total = gross_total - discount
             normalized_payments = []

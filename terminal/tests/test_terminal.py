@@ -282,6 +282,20 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(next(x for x in self.store.products() if x["id"] == self.unit_product_id)["stock_milli"], 3000)
         self.assertEqual(sum(e["type"] == "sale.voided" for e in self.store.pending_events()), 1)
 
+    def test_admin_discount_ceiling_applies_even_with_manager_pin(self):
+        self.store.open_cash(self.cashier_id, 0)
+        with self.store.transaction() as conn:
+            self.store._set_meta(conn, "discount_max_bps", "2000")
+        above_limit = {"request_id": "discount-over-limit", "items": [{"product_id": self.unit_product_id,
+                       "quantity_milli": 1000}], "discount_cents": 210,
+                       "payments": [{"method": "cash", "amount_cents": 490}], "manager_pin": "654321"}
+        with self.assertRaisesRegex(TerminalError, "limite configurado"):
+            self.store.sale(self.cashier, above_limit)
+        within_limit = dict(above_limit, request_id="discount-within-limit", discount_cents=140,
+                            payments=[{"method": "cash", "amount_cents": 560}])
+        sale = self.store.sale(self.cashier, within_limit)
+        self.assertEqual(sale["total_cents"], 560)
+
     def test_discount_allocation_never_creates_negative_line(self):
         cheap = [{"id": str(uuid.uuid4()), "sku": f"CENT-{i}", "barcode": f"789000000001{i}",
                   "name": f"Produto {i}", "unit": "UN", "category": "Teste",

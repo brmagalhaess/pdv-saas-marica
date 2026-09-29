@@ -22,7 +22,7 @@ def company(request):
     method(request,'GET','PATCH');member=membership_context(request,OWNER,write=request.method=='PATCH')
     tenant=member.tenant
     if request.method=='PATCH':
-        data=payload(request);fields(data,('name','document'))
+        data=payload(request);fields(data,('name','document','max_discount_bps'))
         if not data:raise APIError('Informe os dados a alterar')
         if 'name' in data:tenant.name=text(data['name'],'Razão social',160)
         if 'document' in data:
@@ -31,9 +31,15 @@ def company(request):
             if value and (len(digits) not in (11,14) or any(c not in '0123456789./- ' for c in value)):
                 raise APIError('Informe CPF com 11 dígitos ou CNPJ com 14 dígitos')
             tenant.document=digits
+        if 'max_discount_bps' in data:
+            value = data['max_discount_bps']
+            if type(value) is not int or not 0 <= value <= 10000:
+                raise APIError('Desconto máximo deve ficar entre 0% e 100%')
+            tenant.max_discount_bps = value
         with transaction.atomic():
             tenant.save(update_fields=list(data));audit(tenant,request.user,'company.updated',tenant,{'fields':list(data)})
-    return JsonResponse({'id':str(tenant.pk),'name':tenant.name,'document':tenant.document})
+    return JsonResponse({'id':str(tenant.pk),'name':tenant.name,'document':tenant.document,
+                         'max_discount_bps': tenant.max_discount_bps})
 
 @endpoint
 def integration(request,provider):

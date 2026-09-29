@@ -36,6 +36,9 @@ class Tenant(models.Model):
     name = models.CharField(max_length=160)
     document = models.CharField(max_length=30, blank=True)
     roles_version = models.PositiveIntegerField(default=1)
+    # Percentage in basis points: 10000 = 100%. This is the hard company
+    # ceiling for discounts, including manager approvals.
+    max_discount_bps = models.PositiveIntegerField(default=10000)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

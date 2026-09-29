@@ -63,6 +63,9 @@ def _validate_claims(claims):
     features = claims.get("features")
     if not isinstance(features, list) or len(features) > 100 or any(not isinstance(x, str) or len(x) > 80 for x in features):
         raise LicenseError("Recursos da licença inválidos")
+    max_discount = claims.get("max_discount_bps", 10000)
+    if type(max_discount) is not int or not 0 <= max_discount <= 10000:
+        raise LicenseError("Limite de desconto inválido")
     if len(canonical(claims)) > 256000:
         raise LicenseError("Licença excede o tamanho permitido")
 

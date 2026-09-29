@@ -66,6 +66,8 @@ def validate_sale(data, tenant):
     change = money(data["change_cents"], "Troco")
     if (gross_sale, discount_sale, total_sale) != (gross_sum, discount_sum, total_sum):
         raise APIError("Totais da venda não conferem")
+    if discount_sale * 10000 > gross_sale * tenant.max_discount_bps:
+        raise APIError("Desconto acima do limite configurado pela administração", 403)
     normalized_payments = []
     paid = cash_paid = 0
     for payment in payments:

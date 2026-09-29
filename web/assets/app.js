@@ -1562,7 +1562,11 @@ async function companyPage() {
     documentNumber.id="company-document";documentLabel.htmlFor=documentNumber.id;documentNumber.inputMode="numeric";
     documentNumber.maxLength=30;documentNumber.value=company.document||"";
     documentField.append(documentLabel,documentNumber,el("small","","Informe 11 ou 14 dígitos. A emissão fiscal também exige configuração do provedor."));
-    form.append(nameField,documentField);
+    const discountField=el("div","field"),discountLabel=el("label","","Desconto máximo autorizado (%)"),discount=el("input");
+    discount.id="company-discount";discountLabel.htmlFor=discount.id;discount.type="number";discount.min="0";discount.max="100";discount.step="0.01";
+    discount.value=(Number(company.max_discount_bps ?? 10000)/100).toFixed(2).replace(/\.00$/,"");
+    discountField.append(discountLabel,discount,el("small","","Limite para qualquer desconto, inclusive quando autorizado por um gerente. Ex.: 10 = até 10% do total."));
+    form.append(nameField,documentField,discountField);
     const message=formMessage(form);
     const actions=el("div","form-actions"),save=el("button","button","Salvar dados");save.type="submit";
     actions.append(save);form.append(actions);
@@ -1572,7 +1576,9 @@ async function companyPage() {
       try {
         const digits=documentNumber.value.replace(/\D/g,"");
         if(digits&&!([11,14].includes(digits.length)))throw new Error("Informe um CPF com 11 dígitos ou CNPJ com 14 dígitos.");
-        await api.patch("/ops/company",{name:name.value.trim(),document:digits});
+        const maxDiscount=Number(String(discount.value).replace(",","."));
+        if(!Number.isFinite(maxDiscount)||maxDiscount<0||maxDiscount>100)throw new Error("O desconto máximo deve ficar entre 0% e 100%.");
+        await api.patch("/ops/company",{name:name.value.trim(),document:digits,max_discount_bps:Math.round(maxDiscount*100)});
         toast("Dados da empresa atualizados.");renderRoute();
       }catch(error){handleError(error,message);save.disabled=false;}
     });

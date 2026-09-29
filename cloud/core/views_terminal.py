@@ -65,6 +65,7 @@ def _lease(terminal, operators=None):
               "shop_id": str(terminal.shop_id), "terminal_id": str(terminal.id),
               "device_id": terminal.device_id, "issued_at": now, "expires_at": expires,
               "features": sub.plan.features, "status": effective_status,
+              "max_discount_bps": terminal.tenant.max_discount_bps,
               "roles_version": terminal.tenant.roles_version,
               "operators_hash": payload_digest(operators)}
     try:
