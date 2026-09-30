@@ -161,7 +161,7 @@ class TerminalTests(unittest.TestCase):
             "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
             "payments": [{"method": "cash", "amount_cents": 700}],
             "customer_name": "Cliente antigo"})
-        self.store.close_cash(self.cashier_id, 700)
+        self.store.close_cash(self.cashier_id, 700, "654321")
         self.store.ack_events([event["event_id"] for event in self.store.pending_events()])
         response = self.client.post("/api/unpair", json={"confirm": True},
                                     headers={"X-CSRF-Token": self.csrf()})
@@ -258,8 +258,17 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(next(x for x in reopened.products() if x["id"] == self.product_id)["stock_milli"], 3750)
         self.assertEqual(len(reopened.sales()), 1)
         self.assertEqual(len(reopened.pending_events()), 2)
-        close = reopened.close_cash(self.cashier_id, 10400)
+        close = reopened.close_cash(self.cashier_id, 10400, "654321")
         self.assertEqual(close["expected_cents"], 10400)
+
+    def test_cash_close_requires_supervisor_pin_before_mutating_session(self):
+        self.store.open_cash(self.cashier_id, 10000)
+        with self.assertRaisesRegex(TerminalError, "PIN"):
+            self.store.close_cash(self.cashier_id, 10000, "000000")
+        self.assertIsNotNone(self.store.cash_state())
+        closed = self.store.close_cash(self.cashier_id, 10000, "654321")
+        self.assertEqual(closed["difference_cents"], 0)
+        self.assertIsNone(self.store.cash_state())
 
     def test_cash_summary_separates_channels_and_reports_shortage(self):
         self.store.open_cash(self.cashier_id, 10000)
@@ -276,7 +285,7 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(summary["categories"]["card_debit_cents"], 200)
         self.assertEqual(summary["expected_cents"], 10200)
         self.assertEqual(summary["total_channels_cents"], 700)
-        closed = self.store.close_cash(self.cashier_id, 10150)
+        closed = self.store.close_cash(self.cashier_id, 10150, "654321")
         self.assertEqual(closed["difference_cents"], -50)
         self.assertEqual(closed["counted_cents"], 10150)
 
@@ -389,7 +398,7 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(self.store.lease_status()["state"], "expired")
         with self.assertRaises(TerminalError):
             self.store.sale(self.cashier, {"request_id": "expired", "items": [], "payments": []})
-        self.assertEqual(self.store.close_cash(self.cashier_id, 0)["expected_cents"], 0)
+        self.assertEqual(self.store.close_cash(self.cashier_id, 0, "654321")["expected_cents"], 0)
         self.login()
         self.assertEqual(self.client.get("/api/export").status_code, 403)  # cashier is not manager
         self.login(self.manager_id, "654321")

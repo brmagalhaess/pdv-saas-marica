@@ -704,7 +704,11 @@ class Store:
             self._audit(conn, operator_id, "cash." + kind, movement_id, reason)
             return {"id": movement_id, "kind": kind, "amount_cents": amount_cents}
 
-    def close_cash(self, operator_id, counted_cents):
+    def close_cash(self, operator_id, counted_cents, manager_pin):
+        # Fechar o caixa é uma operação de supervisão. A validação acontece
+        # antes de alterar a sessão para que um PIN inválido nunca deixe o
+        # operador em um estado parcialmente fechado.
+        self.manager_override(manager_pin)
         counted_cents = _positive_int(counted_cents, "Valor contado", zero=True)
         with self.transaction() as conn:
             cash = self._open_cash(conn)

@@ -276,7 +276,8 @@ def create_app(config=None):
     @app.post("/api/cash/close")
     @authenticated(*SELL_ROLES)
     def cash_close(operator):
-        return jsonify(store.close_cash(operator["id"], body().get("counted_cents")))
+        data = body()
+        return jsonify(store.close_cash(operator["id"], data.get("counted_cents"), data.get("manager_pin")))
 
     @app.post("/api/sales")
     @authenticated(*SELL_ROLES)
