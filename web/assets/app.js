@@ -148,6 +148,26 @@ function productCodes(row) {
   if (row.scale_code) wrap.append(el("small", "", "PLU balança " + row.scale_code));
   return wrap;
 }
+function productFinancials(row) {
+  const wrap = el("div", "product-financial-stack");
+  const rows = [
+    ["Venda", money(row.price_cents), "highlight"],
+    ["Custo médio", Number(row.cost_cents) > 0 ? money(row.cost_cents) : "—", ""],
+    ["Lucro bruto", Number(row.cost_cents) > 0 ? money(Number(row.price_cents || 0) - Number(row.cost_cents || 0)) : "—", ""]
+  ];
+  rows.forEach(([label, value, tone]) => {
+    const line = el("div", "product-financial-line" + (tone ? " " + tone : ""));
+    line.append(el("span", "", label), el("strong", "", value));
+    wrap.append(line);
+  });
+  return wrap;
+}
+function productStatus(row) {
+  const wrap = el("div", "product-status-stack");
+  wrap.append(statusBadge(row.active ? "Ativo" : "Inativo"));
+  wrap.append(el("small", "", row.stock_minimum_milli ? `Estoque mínimo: ${quantity(row.stock_minimum_milli, row.unit)}` : "Estoque mínimo não definido"));
+  return wrap;
+}
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
   const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
@@ -188,40 +208,6 @@ function table(columns, rows, actionsFor) {
   node.append(thead, tbody);
   wrap.append(node);
   return wrap;
-}
-function productCards(rows, actionsFor) {
-  const grid = el("div", "product-catalog-grid");
-  rows.forEach(row => {
-    const card = el("article", "product-catalog-card");
-    const head = el("div", "product-card-head");
-    head.append(productIdentity(row), statusBadge(row.active ? "Ativo" : "Inativo"));
-    const codes = el("div", "product-card-codes");
-    codes.append(productCodes(row), el("span", "product-unit-pill", row.unit === "KG" ? "Quilo (KG)" : row.unit === "L" ? "Litro (L)" : "Unidade (UN)"));
-    const stats = el("div", "product-card-stats");
-    const values = [
-      ["Preço de venda", money(row.price_cents), "primary"],
-      ["Custo médio", Number(row.cost_cents) > 0 ? money(row.cost_cents) : "—", ""],
-      ["Lucro bruto", Number(row.cost_cents) > 0 ? money(Number(row.price_cents || 0) - Number(row.cost_cents || 0)) : "—", ""],
-      ["Margem", Number(row.cost_cents) > 0 && Number(row.price_cents) ? `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` : "—", ""]
-    ];
-    values.forEach(([label, value, tone]) => {
-      const item = el("div", "product-card-stat" + (tone ? " " + tone : ""));
-      item.append(el("span", "", label), el("strong", "", value));
-      stats.append(item);
-    });
-    const footer = el("div", "product-card-footer");
-    const actions = el("div", "product-card-actions");
-    (actionsFor ? actionsFor(row) : []).forEach(action => {
-      const control = el("button", "table-action" + (action.danger ? " danger" : ""), action.label);
-      control.type = "button";
-      control.addEventListener("click", action.onClick);
-      actions.append(control);
-    });
-    footer.append(el("small", "product-card-hint", row.stock_minimum_milli ? `Estoque mínimo: ${quantity(row.stock_minimum_milli, row.unit)}` : "Estoque mínimo não definido"), actions);
-    card.append(head, codes, stats, footer);
-    grid.append(card);
-  });
-  return grid;
 }
 function pagedContent(response, path, columns, actionsFor, emptyNode, options={}) {
   const host=el("div");
@@ -483,11 +469,9 @@ const resourceSpecs = {
       { label: "Produto", render: row => productIdentity(row) },
       { label: "Códigos", render: row => productCodes(row) },
       { label: "Unidade", render: row => row.unit === "KG" ? "Quilo (KG)" : row.unit === "L" ? "Litro (L)" : "Unidade (UN)" },
-      { label: "Preço de venda", render: row => money(row.price_cents) },
-      { label: "Custo médio", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 ? "—" : money(row.cost_cents) },
-      { label: "Lucro bruto", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 ? "—" : money(Number(row.price_cents || 0) - Number(row.cost_cents || 0)) },
+      { label: "Financeiro", render: row => productFinancials(row) },
       { label: "Margem", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 || !Number(row.price_cents) ? "—" : `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` },
-      { label: "Estado", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
+      { label: "Status", render: row => productStatus(row) }
     ]
   },
   customers: {
@@ -740,7 +724,7 @@ async function resourcePage(key) {
         }, "Desativar") });
         return actions;
       } : null;
-      const draw = list => key === "products" ? productCards(list, actionsFor) : table(spec.columns, list, actionsFor);
+      const draw = list => table(spec.columns, list, actionsFor);
       content.append(draw(rows));
       if (result?.next_cursor) {
         const footer = el("div", "table-footer");

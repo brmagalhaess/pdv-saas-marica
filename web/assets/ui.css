@@ -299,37 +299,34 @@ td.actions { white-space: nowrap; text-align: right; }
 .products-page .toolbar{padding:19px 22px;background:linear-gradient(180deg,#fff,#fbfdfb)}
 .products-page .toolbar .field{min-width:min(380px,100%)}
 .products-page .toolbar .field input{min-height:44px;font-size:13px}
-.products-content .table-wrap{overflow-x:auto}
-.products-content table{min-width:1120px}
-.products-content th{padding:15px 18px;background:#f7faf7}
-.products-content td{padding:16px 18px}
-.products-content td:first-child{min-width:300px}
-.products-content td:nth-child(2){min-width:150px}
-.products-content td:nth-child(4),.products-content td:nth-child(5),.products-content td:nth-child(6),.products-content td:nth-child(7){white-space:nowrap}
-.product-identity{display:flex;align-items:center;gap:13px;min-width:260px}
+.products-content .table-wrap{overflow-x:auto;padding:0 8px 8px}
+.products-content table{width:100%;min-width:0;table-layout:fixed;border-collapse:separate;border-spacing:0 8px}
+.products-content thead th{padding:11px 13px;border:0;background:transparent;color:#819287;font-size:10px;letter-spacing:.09em}
+.products-content tbody tr{background:#fff;box-shadow:0 3px 13px rgba(22,54,40,.045)}
+.products-content tbody tr:hover td{background:#fbfefb}
+.products-content tbody td{padding:13px;border-top:1px solid #e3ece5;border-bottom:1px solid #e3ece5;background:#fff;vertical-align:middle}
+.products-content tbody td:first-child{width:23%;border-left:1px solid #e3ece5;border-radius:12px 0 0 12px}
+.products-content tbody td:nth-child(2){width:13%}
+.products-content tbody td:nth-child(3){width:10%;color:#426556;font-size:11px;font-weight:750}
+.products-content tbody td:nth-child(4){width:22%}
+.products-content tbody td:nth-child(5){width:8%;font-size:14px;font-weight:850;color:#20734d;white-space:nowrap}
+.products-content tbody td:nth-child(6){width:9%}
+.products-content tbody td.actions{width:15%;border-right:1px solid #e3ece5;border-radius:0 12px 12px 0;white-space:normal;text-align:right}
+.products-content .table-action{margin:2px 0 2px 4px}
+.product-identity{display:flex;align-items:center;gap:12px;min-width:0}
 .product-thumb-large{--product-thumb-size:56px;width:56px;height:56px;border-radius:13px;box-shadow:0 5px 12px rgba(28,67,47,.09)}
 .product-identity-copy{display:grid;gap:5px;min-width:0}
 .product-identity-copy strong{color:var(--ink);font-size:13px;overflow-wrap:anywhere}
 .product-identity-copy small{color:var(--muted);font-size:11px;line-height:1.35;overflow-wrap:anywhere}
 .product-code-stack{display:grid;gap:4px;color:#365a4d;font-size:11px;line-height:1.35}
 .product-code-stack small{color:var(--green-dark);font-size:10px;font-weight:750}
-.product-catalog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:16px;padding:20px;background:#f8fbf8}
-.product-catalog-card{display:grid;gap:16px;min-width:0;padding:20px;border:1px solid #dce8df;border-radius:17px;background:#fff;box-shadow:0 8px 24px rgba(22,54,40,.055);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
-.product-catalog-card:hover{transform:translateY(-2px);border-color:#a8d8b7;box-shadow:0 14px 30px rgba(22,54,40,.1)}
-.product-card-head{display:flex;align-items:start;justify-content:space-between;gap:12px;min-width:0}
-.product-card-head .product-identity{min-width:0;flex:1}
-.product-card-head .badge{flex:none}
-.product-card-codes{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid #e2ece4;border-radius:11px;background:#f8fbf8}
-.product-card-codes .product-code-stack{min-width:0;overflow-wrap:anywhere}
-.product-unit-pill{flex:none;padding:6px 9px;border-radius:999px;background:#e2f5e8;color:#21724c;font-size:10px;font-weight:850;white-space:nowrap}
-.product-card-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
-.product-card-stat{display:grid;gap:5px;padding:11px 12px;border:1px solid #e8efea;border-radius:11px;background:#fbfdfb;min-width:0}
-.product-card-stat span{color:#74877b;font-size:10px;font-weight:750}
-.product-card-stat strong{color:var(--ink);font-size:14px;overflow-wrap:anywhere}
-.product-card-stat.primary{border-color:#bce5c8;background:#effaf1}
-.product-card-stat.primary strong{color:var(--green-dark);font-size:17px}
-.product-card-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:3px;border-top:1px solid #edf2ed}
-.product-card-hint{color:#82958a;font-size:10px;line-height:1.4}
-.product-card-actions{display:flex;justify-content:flex-end;gap:5px;flex-wrap:wrap}
+.product-financial-stack{display:grid;gap:5px}
+.product-financial-line{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#7a8b81;font-size:10px}
+.product-financial-line strong{color:#385c4c;font-size:11px;white-space:nowrap}
+.product-financial-line.highlight{padding-bottom:5px;border-bottom:1px solid #e5eee7}
+.product-financial-line.highlight strong{color:var(--green-dark);font-size:14px}
+.product-status-stack{display:grid;gap:6px;justify-items:start}
+.product-status-stack small{color:#83948a;font-size:10px;line-height:1.3}
 @media (max-width:900px){.products-overview{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:650px){.products-overview{grid-template-columns:1fr 1fr;gap:10px}.products-overview .metric{padding:15px}.products-overview .metric strong{font-size:22px}.product-identity{min-width:0}.products-page .toolbar{padding:16px}.product-catalog-grid{grid-template-columns:1fr;padding:12px}.product-catalog-card{padding:16px}.product-card-footer{align-items:flex-start;flex-direction:column}.product-card-actions{width:100%;justify-content:flex-start}}
+@media (max-width:1100px){.products-content tbody td{padding:11px 9px}.products-content .table-action{font-size:10px;padding:6px 8px}}
+@media (max-width:650px){.products-overview{grid-template-columns:1fr 1fr;gap:10px}.products-overview .metric{padding:15px}.products-overview .metric strong{font-size:22px}.products-page .toolbar{padding:16px}.products-content .table-wrap{padding-inline:3px}.products-content table{min-width:760px}.product-thumb-large{width:48px;height:48px;--product-thumb-size:48px}}
