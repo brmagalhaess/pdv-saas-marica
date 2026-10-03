@@ -41,6 +41,12 @@ function renderPrices() {
         list.append(row);
       });
     }
+    if(!card.querySelector("[data-system-support]")) {
+      const support=document.createElement("li");
+      support.setAttribute("data-system-support", "");
+      support.textContent="Suporte ao sistema incluso";
+      card.querySelector("ul").append(support);
+    }
   });
   $("#billing-month").setAttribute("aria-pressed",String(billing==="month"));
   $("#billing-year").setAttribute("aria-pressed",String(billing==="year"));
