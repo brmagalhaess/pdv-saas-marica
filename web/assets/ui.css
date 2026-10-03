@@ -288,7 +288,7 @@ td.actions { white-space: nowrap; text-align: right; }
 }
 :root{--product-thumb-size:42px}
 .product-thumb{display:block;width:var(--product-thumb-size);height:var(--product-thumb-size);object-fit:cover;border-radius:10px;border:1px solid #dce9e6;background:#f3faf7}
-.products-page{width:min(1680px,100%)}
+.products-page{width:100%;max-width:none;margin-inline:0}
 .products-page .page-head{margin-bottom:20px}
 .products-page .page-head h1{font-size:clamp(30px,3vw,42px)}
 .products-page .page-head p{max-width:820px;font-size:14px}
