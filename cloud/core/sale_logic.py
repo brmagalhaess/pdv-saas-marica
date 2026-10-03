@@ -43,7 +43,7 @@ def validate_sale(data, tenant):
             raise APIError("Item inválido")
         required_item = ("product_id", "name", "unit", "quantity_milli", "unit_price_cents",
                          "gross_cents", "discount_cents", "line_total_cents")
-        fields(item, required_item + ("ncm",), required_item)
+        fields(item, required_item + ("ncm", "sku"), required_item)
         product = scoped(Product, tenant, item["product_id"])
         name = text(item["name"], "Nome do item", 180)
         if item["unit"] != product.unit:

@@ -67,6 +67,8 @@ def receipt_bytes(sale, width=58):
     for item in sale["items"]:
         qty = f"{_quantity(item['quantity_milli'])} {item['unit']}"
         lines.append(_clean(item["name"], columns))
+        if item.get("sku"):
+            lines.append(f"Codigo: {_clean(item['sku'], columns - 8)}")
         if item.get("ncm"):
             lines.append(f"NCM: {_clean(item['ncm'], columns - 5)}")
         label = f"{qty} x {_money(item['unit_price_cents'])}"

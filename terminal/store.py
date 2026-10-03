@@ -818,7 +818,8 @@ class Store:
                 if row["stock_milli"] < qty:
                     raise TerminalError(f"Estoque insuficiente: {row['name']}", 409)
                 gross = _line_gross(row["price_cents"], qty)
-                lines.append({"product_id": product_id, "name": row["name"], "ncm": row["ncm"] or "", "unit": row["unit"],
+                lines.append({"product_id": product_id, "name": row["name"], "sku": row["sku"] or "",
+                              "ncm": row["ncm"] or "", "unit": row["unit"],
                               "quantity_milli": qty, "unit_price_cents": row["price_cents"],
                               "gross_cents": gross})
             gross_total = sum(line["gross_cents"] for line in lines)
