@@ -5,6 +5,12 @@ mesmo login do SaaS, mas o servidor só libera o endpoint de monitoramento para
 uma associação com papel `owner`. Usuários `admin`, `manager` ou `cashier` não
 conseguem abrir este painel.
 
+A interface usa uma identidade visual própria, componentes nativos SwiftUI,
+layout adaptável para iPhone/iPad, estados de erro e carregamento, ícone de
+aplicativo, acessibilidade básica e `PrivacyInfo.xcprivacy`. A aprovação final
+da App Store ainda depende da conta Apple Developer, certificados, URL HTTPS,
+política de privacidade publicada e revisão da Apple.
+
 ## Abrir e executar
 
 1. Abra `PDV2OwnerMonitor.xcodeproj` no Xcode 27 ou superior.
