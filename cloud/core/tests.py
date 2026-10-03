@@ -18,7 +18,8 @@ from shared.licensing import generate_keypair, verify_lease
 from operations.models import BillingBinding
 from operations.services import enqueue
 from .api_common import client_ip, password_policy
-from .models import AuditEvent, Membership, Plan, Product, RateLimit, Shop, Subscription, SyncEvent, Tenant, Terminal
+from .models import (AuditEvent, Membership, Plan, Product, RateLimit, Sale, SalePayment, Shop,
+                      Subscription, SyncEvent, Tenant, Terminal)
 
 
 class CloudAPITests(TestCase):
@@ -197,6 +198,35 @@ class CloudAPITests(TestCase):
         self.sub.current_period_end = timezone.now() - timedelta(days=4)
         self.sub.save(update_fields=["current_period_end"])
         self.assertEqual(self.api("GET", "/api/v1/subscription").json()["license"]["status"], "expired")
+
+    def test_owner_monitoring_snapshot_is_tenant_scoped_and_owner_only(self):
+        online = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa 1",
+                                         device_id="device-1", token_hash="a" * 64,
+                                         last_seen_at=timezone.now())
+        offline = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa 2",
+                                         device_id="device-2", last_seen_at=timezone.now() - timedelta(minutes=8))
+        sale = Sale.objects.create(id=uuid.uuid4(), tenant=self.tenant, shop=self.shop,
+                                   terminal=online, request_id="monitoring-sale-1",
+                                   content_hash="b" * 64, gross_cents=1250, total_cents=1200,
+                                   discount_cents=50, change_cents=0,
+                                   created_at=timezone.now())
+        SalePayment.objects.create(sale=sale, line_number=0, method="pix", amount_cents=1200)
+        self.client.force_login(self.owner)
+        response = self.api("GET", "/api/v1/owner/monitoring")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        data = response.json()
+        self.assertEqual(data["terminals_total"], 2)
+        self.assertEqual(data["terminals_online"], 1)
+        self.assertEqual(data["sales"]["count"], 1)
+        self.assertEqual(data["sales"]["revenue_cents"], 1200)
+        self.assertEqual(data["payments_cents"]["pix"], 1200)
+        self.assertEqual(len(data["sales_by_terminal"]), 1)
+        manager = get_user_model().objects.create_user(username="manager-monitoring@example.test",
+                                                       password="Manager-42!")
+        Membership.objects.create(tenant=self.tenant, user=manager, name="Gerente", role="manager")
+        self.client.force_login(manager)
+        self.assertEqual(self.api("GET", "/api/v1/owner/monitoring").status_code, 403)
 
     def test_pair_requires_matching_license_and_one_time_code(self):
         code = "pair-company-1"

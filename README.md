@@ -39,7 +39,7 @@ Se a prévia antiga ocupar a porta 8000, pare apenas `pdv-saas-phase1-pdv-previe
 - Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque.
 - Comprovante não fiscal ESC/POS 58/80 mm; etiquetas ZPL/EPL via TCP, RAW Windows ou arquivo de diagnóstico. Hardware físico exige validação.
 - Conectores Focus NFe e Asaas com credenciais criptografadas, fila e confirmação pelo provedor. Não há credenciais reais configuradas.
-- Web responsiva e PWA instalável no Android/iPhone. A PWA é gestão web; o caixa offline exige o serviço local. Não há app nativo publicado nas lojas.
+- Web responsiva e PWA instalável no Android/iPhone. A PWA é gestão web; o caixa offline exige o serviço local. O app nativo iOS de monitoramento do proprietário está em [ios/PDV2OwnerMonitor](ios/PDV2OwnerMonitor), com projeto Xcode compilável e painel somente leitura.
 
 ## Pareamento
 
