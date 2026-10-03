@@ -129,6 +129,25 @@ function info(text, warning = false) {
   node.append(el("span", "", warning ? "!" : "ⓘ"), el("span", "", text));
   return node;
 }
+function productIdentity(row) {
+  const wrap = el("div", "product-identity");
+  const image = el("img", "product-thumb product-thumb-large");
+  image.src = row.image_url || "/assets/product-images/grocery.svg";
+  image.alt = "Imagem de " + row.name;
+  image.loading = "lazy";
+  const copy = el("div", "product-identity-copy");
+  copy.append(el("strong", "", row.name));
+  const details = [row.variant, row.sku ? "SKU " + row.sku : ""].filter(Boolean).join(" · ");
+  copy.append(el("small", "", details || "Sem variação cadastrada"));
+  wrap.append(image, copy);
+  return wrap;
+}
+function productCodes(row) {
+  const wrap = el("div", "product-code-stack");
+  wrap.append(el("span", "", row.barcode ? "EAN " + row.barcode : "Sem EAN"));
+  if (row.scale_code) wrap.append(el("small", "", "PLU balança " + row.scale_code));
+  return wrap;
+}
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
   const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
@@ -427,13 +446,10 @@ const resourceSpecs = {
       { key: "active", label: "Produto ativo", type: "checkbox", default: true }
     ],
     columns: [
-      { label: "Produto", render: row => row.name },
-      { label: "Imagem", render: row => { const image = el("img", "product-thumb"); image.src = row.image_url || "/assets/product-images/grocery.svg"; image.alt = "Imagem de " + row.name; image.loading = "lazy"; return image; } },
-      { label: "SKU", render: row => row.sku },
-      { label: "Código de barras", render: row => row.barcode || "—" },
-      { label: "Variação", render: row => row.variant },
-      { label: "Unidade", render: row => row.unit },
-      { label: "Preço", render: row => money(row.price_cents) },
+      { label: "Produto", render: row => productIdentity(row) },
+      { label: "Códigos", render: row => productCodes(row) },
+      { label: "Unidade", render: row => row.unit === "KG" ? "Quilo (KG)" : row.unit === "L" ? "Litro (L)" : "Unidade (UN)" },
+      { label: "Preço de venda", render: row => money(row.price_cents) },
       { label: "Custo médio", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 ? "—" : money(row.cost_cents) },
       { label: "Lucro bruto", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 ? "—" : money(Number(row.price_cents || 0) - Number(row.cost_cents || 0)) },
       { label: "Margem", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 || !Number(row.price_cents) ? "—" : `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` },
@@ -626,6 +642,11 @@ async function resourcePage(key) {
   const spec = resourceSpecs[key];
   const current = ++state.renderId;
   const view = page(spec.title, spec.description, "Gestão");
+  const productOverview = key === "products" ? el("div", "products-overview") : null;
+  if (productOverview) {
+    view.outer.classList.add("products-page");
+    view.outer.append(productOverview);
+  }
   if (spec.create()) view.actions.append(button("+ Novo " + spec.singular, async () => {
     try { await resourceForm(spec); } catch (error) { handleError(error); }
   }));
@@ -634,6 +655,7 @@ async function resourcePage(key) {
     view.outer.append(info("A emissão fiscal depende de configuração tributária e homologação próprias. Este catálogo ainda não torna o PDV apto a emitir NFC-e.", true));
   }
   const box = el("section", "surface");
+  if (key === "products") box.classList.add("products-surface");
   view.outer.append(box);
   const toolbar = el("div", "toolbar");
   if (spec.search) {
@@ -647,7 +669,7 @@ async function resourcePage(key) {
     input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => load(input.value.trim()), 250); });
   } else toolbar.append(el("span", "toolbar-meta", "Dados cadastrados nesta empresa"));
   box.append(toolbar);
-  const content = el("div");
+  const content = el("div", key === "products" ? "products-content" : "");
   box.append(content);
   async function load(query = "") {
     const token = ++state.renderId;
@@ -658,6 +680,17 @@ async function resourcePage(key) {
       if (token !== state.renderId) return;
       const rows = records(result);
       content.replaceChildren();
+      if (productOverview) {
+        const active = rows.filter(row => row.active !== false).length;
+        const weighted = rows.filter(row => row.unit === "KG").length;
+        const withCost = rows.filter(row => Number(row.cost_cents) > 0).length;
+        productOverview.replaceChildren(
+          metric("Produtos encontrados", String(rows.length), query ? "Resultado da busca atual" : "Catálogo da empresa"),
+          metric("Produtos ativos", String(active), "Disponíveis para operação"),
+          metric("Vendidos por peso", String(weighted), "Unidade KG"),
+          metric("Com custo médio", String(withCost), "Prontos para margem e lucro")
+        );
+      }
       if (!rows.length) {
         content.append(empty(query ? "Nenhum resultado" : "Nada cadastrado ainda", query ? "Tente outro termo de busca." : "Use o botão acima para adicionar o primeiro registro."));
         return;
