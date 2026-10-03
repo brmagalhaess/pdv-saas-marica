@@ -456,6 +456,7 @@ const resourceSpecs = {
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
       { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
       { key: "barcode", label: "Código de barras", generated: true, max: 13, help: "Código interno EAN-13 gerado para esta empresa; bloqueado para edição." },
+      { key: "ncm", label: "NCM (opcional)", max: 8, inputMode: "numeric", pattern: "[0-9]{7,8}", help: "Informe o NCM do produto quando a empresa tiver a classificação fiscal definida." },
       { key: "scale_code", label: "Código PLU da balança (opcional)", max: 6, inputMode: "numeric", pattern: "[0-9]{1,6}", help: "Use o código numérico programado na balança para etiquetas EAN-13 com peso." },
       { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
       { key: "variant", label: "Variação", placeholder: "Ex.: Tamanho M ou sabor morango", max: 100 },
@@ -468,6 +469,7 @@ const resourceSpecs = {
     columns: [
       { label: "Produto", render: row => productIdentity(row) },
       { label: "Códigos", render: row => productCodes(row) },
+      { label: "NCM", render: row => row.ncm || "—" },
       { label: "Unidade", render: row => row.unit === "KG" ? "Quilo (KG)" : row.unit === "L" ? "Litro (L)" : "Unidade (UN)" },
       { label: "Financeiro", render: row => productFinancials(row) },
       { label: "Margem", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 || !Number(row.price_cents) ? "—" : `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` },
@@ -1622,7 +1624,7 @@ async function companyPage() {
   const token=++state.renderId;
   const view=page("Minha empresa","Dados usados para identificação e configuração fiscal.","Administração");
   view.outer.append(info("O documento deve corresponder ao emitente antes de solicitar qualquer emissão fiscal.",true));
-  const box=surface("Dados da empresa");view.outer.append(box);box.append(loadingSurface());
+    const box=surface("Dados da empresa");view.outer.append(box);box.append(loadingSurface());
   try {
     const company=await api.get("/ops/company");
     if(token!==state.renderId)return;
@@ -1639,7 +1641,22 @@ async function companyPage() {
     discount.id="company-discount";discountLabel.htmlFor=discount.id;discount.type="number";discount.min="0";discount.max="100";discount.step="0.01";
     discount.value=(Number(company.max_discount_bps ?? 10000)/100).toFixed(2).replace(/\.00$/,"");
     discountField.append(discountLabel,discount,el("small","","Limite para qualquer desconto, inclusive quando autorizado por um gerente. Ex.: 10 = até 10% do total."));
-    form.append(nameField,documentField,discountField);
+    const plainField=(id,labelText,value,max=160,placeholder="")=>{const field=el("div","field"),label=el("label","",labelText),input=el("input");input.id=id;label.htmlFor=id;input.maxLength=max;input.value=value||"";if(placeholder)input.placeholder=placeholder;field.append(label,input);return {field,input}};
+    const trade=plainField("company-trade-name","Nome fantasia",company.trade_name,160);
+    const stateRegistration=plainField("company-state-registration","Inscrição estadual",company.state_registration,30,"Não contribuinte, se aplicável");
+    const municipalRegistration=plainField("company-municipal-registration","Inscrição municipal",company.municipal_registration,30);
+    const addressLine=plainField("company-address-line","Logradouro",company.address_line,180);
+    const addressNumber=plainField("company-address-number","Número",company.address_number,20);
+    const addressComplement=plainField("company-address-complement","Complemento",company.address_complement,80);
+    const addressNeighborhood=plainField("company-address-neighborhood","Bairro",company.address_neighborhood,100);
+    const addressCity=plainField("company-address-city","Cidade",company.address_city,100);
+    const addressState=plainField("company-address-state","UF",company.address_state,2,"RJ");addressState.input.maxLength=2;addressState.input.style.textTransform="uppercase";
+    const addressZip=plainField("company-address-zip","CEP",company.address_zip,8,"00000000");addressZip.input.inputMode="numeric";
+    const taxField=el("div","field"),taxLabel=el("label","","Regime tributário"),tax=el("select");tax.id="company-tax-regime";taxLabel.htmlFor=tax.id;[["simples_nacional","Simples Nacional"],["simples_excesso","Simples Nacional · excesso de sublimite"],["regime_normal","Regime normal"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;tax.append(option)});tax.value=company.tax_regime||"simples_nacional";taxField.append(taxLabel,tax);
+    const environmentField=el("div","field"),environmentLabel=el("label","","Emissão fiscal"),environment=el("select");environment.id="company-fiscal-environment";environmentLabel.htmlFor=environment.id;[["non_fiscal","Comprovante não fiscal · atual"],["homologation","NFC-e em homologação"],["production","NFC-e em produção · requer provedor"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;environment.append(option)});environment.value=company.fiscal_environment||"non_fiscal";environmentField.append(environmentLabel,environment,el("small","","A chave de acesso, QR Code, protocolo e impostos só aparecem após autorização real da SEFAZ por um provedor configurado."));
+    const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(series);
+    const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumber);
+    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,taxField,environmentField,seriesField,nextNumberField,discountField);
     const message=formMessage(form);
     const actions=el("div","form-actions"),save=el("button","button","Salvar dados");save.type="submit";
     actions.append(save);form.append(actions);
@@ -1651,7 +1668,13 @@ async function companyPage() {
         if(digits&&!([11,14].includes(digits.length)))throw new Error("Informe um CPF com 11 dígitos ou CNPJ com 14 dígitos.");
         const maxDiscount=Number(String(discount.value).replace(",","."));
         if(!Number.isFinite(maxDiscount)||maxDiscount<0||maxDiscount>100)throw new Error("O desconto máximo deve ficar entre 0% e 100%.");
-        await api.patch("/ops/company",{name:name.value.trim(),document:digits,max_discount_bps:Math.round(maxDiscount*100)});
+        const companyPayload={name:name.value.trim(),trade_name:trade.input.value.trim(),document:digits,
+          state_registration:stateRegistration.input.value.trim(),municipal_registration:municipalRegistration.input.value.trim(),
+          address_line:addressLine.input.value.trim(),address_number:addressNumber.input.value.trim(),address_complement:addressComplement.input.value.trim(),
+          address_neighborhood:addressNeighborhood.input.value.trim(),address_city:addressCity.input.value.trim(),address_state:addressState.input.value.trim().toUpperCase(),
+          address_zip:addressZip.input.value.replace(/\D/g,""),tax_regime:tax.value,fiscal_environment:environment.value,
+          nfce_series:Number(series.value),nfce_next_number:Number(nextNumber.value),max_discount_bps:Math.round(maxDiscount*100)};
+        await api.patch("/ops/company",companyPayload);
         toast("Dados da empresa atualizados.");renderRoute();
       }catch(error){handleError(error,message);save.disabled=false;}
     });

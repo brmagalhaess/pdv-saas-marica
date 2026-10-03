@@ -22,8 +22,8 @@ class PlanAdmin(admin.ModelAdmin):
 
 @admin.register(models.Tenant)
 class TenantAdmin(admin.ModelAdmin):
-    list_display = ("name", "document", "active", "created_at")
-    search_fields = ("name", "document")
+    list_display = ("name", "trade_name", "document", "fiscal_environment", "active", "created_at")
+    search_fields = ("name", "trade_name", "document")
 
 
 @admin.register(models.Subscription)

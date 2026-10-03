@@ -18,7 +18,7 @@ def category(row):
 
 
 def product(row):
-    return {"id": str(row.id), "sku": row.sku, "barcode": row.barcode, "scale_code": row.scale_code,
+    return {"id": str(row.id), "sku": row.sku, "barcode": row.barcode, "ncm": row.ncm, "scale_code": row.scale_code,
             "name": row.name, "category_id": str(row.category_id) if row.category_id else None,
             "variant": row.variant, "unit": row.unit,
             "price_cents": row.price_cents, "cost_cents": row.cost_cents,
@@ -82,6 +82,8 @@ def sale(row, detail=False):
     result = {"id": str(row.id), "shop_id": str(row.shop_id),
               "terminal_id": str(row.terminal_id) if row.terminal_id else None,
               "customer_id": str(row.customer_id) if row.customer_id else None,
+              "customer_name": row.customer_name_snapshot,
+              "customer_document": row.customer_document_snapshot,
               "request_id": row.request_id, "gross_cents": row.gross_cents,
               "discount_cents": row.discount_cents, "total_cents": row.total_cents,
               "change_cents": row.change_cents, "status": row.status,
@@ -89,7 +91,8 @@ def sale(row, detail=False):
               "created_at": iso(row.created_at), "received_at": iso(row.received_at),
               "cancelled_at": iso(row.cancelled_at), "cancellation_reason": row.cancellation_reason}
     if detail:
-        result["items"] = [{"product_id": str(x.product_id), "name": x.name, "unit": x.unit,
+        result["items"] = [{"product_id": str(x.product_id), "name": x.name, "ncm": x.product.ncm,
+                            "unit": x.unit,
                             "quantity_milli": x.quantity_milli,
                             "unit_price_cents": x.unit_price_cents,
                             "gross_cents": x.gross_cents, "discount_cents": x.discount_cents,

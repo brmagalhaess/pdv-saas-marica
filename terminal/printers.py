@@ -26,18 +26,49 @@ def _quantity(milli):
 
 
 def receipt_bytes(sale, width=58):
-    """ESC/POS receipt; fiscal authorization is deliberately absent."""
+    """ESC/POS receipt with company identity and optional authorized NFC-e data.
+
+    The fiscal block is printed only when a provider supplies an authorization,
+    access key and protocol. Offline/local sales remain explicitly non-fiscal.
+    """
     columns = 32 if width == 58 else 48
     divider = "-" * columns
-    lines = ["COMPROVANTE NAO FISCAL", divider, f"Venda {str(sale['id'])[:16]}"]
+    issuer = sale.get("issuer") or {}
+    fiscal = sale.get("fiscal") or {}
+    authorized = bool(fiscal.get("authorized") and fiscal.get("access_key"))
+    title = "DANFE NFC-e" if authorized else "COMPROVANTE NAO FISCAL"
+    lines = [title]
+    trade_name = _clean(issuer.get("trade_name") or "", columns)
+    legal_name = _clean(issuer.get("legal_name") or "", columns)
+    if trade_name and trade_name != legal_name:
+        lines.append(trade_name)
+    if legal_name:
+        lines.append(legal_name)
+    document = _clean(issuer.get("document") or "", columns - 6)
+    if document:
+        lines.append(f"CNPJ/CPF: {document}")
+    if issuer.get("state_registration"):
+        lines.append(f"IE: {_clean(issuer['state_registration'], columns - 4)}")
+    address = issuer.get("address") or {}
+    address_line = " ".join(str(address.get(key) or "").strip() for key in
+                             ("line", "number", "complement", "neighborhood", "city", "state") if address.get(key))
+    if address_line:
+        lines.append(_clean(address_line, columns))
+    if address.get("zip"):
+        lines.append(f"CEP: {_clean(address['zip'], columns - 5)}")
+    lines.extend([divider, f"Venda {str(sale['id'])[:16]}"])
     if sale.get("status") == "voided":
         lines.append("VENDA CANCELADA")
     if sale.get("customer_name"):
         lines.append(f"Cliente: {_clean(sale['customer_name'], columns - 9)}")
+    if sale.get("customer_document"):
+        lines.append(f"CPF/CNPJ: {_clean(sale['customer_document'], columns - 9)}")
     lines.append(divider)
     for item in sale["items"]:
         qty = f"{_quantity(item['quantity_milli'])} {item['unit']}"
         lines.append(_clean(item["name"], columns))
+        if item.get("ncm"):
+            lines.append(f"NCM: {_clean(item['ncm'], columns - 5)}")
         label = f"{qty} x {_money(item['unit_price_cents'])}"
         total = _money(item["line_total_cents"])
         lines.append((label[:columns - len(total) - 1]).ljust(columns - len(total)) + total)
@@ -48,7 +79,20 @@ def receipt_bytes(sale, width=58):
         lines.append(f"{payment['method'].upper()}: {_money(payment['amount_cents'])}")
     if sale["change_cents"]:
         lines.append(f"Troco: {_money(sale['change_cents'])}")
-    lines.extend([divider, "Documento sem valor fiscal", "Obrigado pela preferencia", "", "", ""])
+    if authorized:
+        lines.extend([divider, f"NFC-e: {fiscal.get('number', '—')}  Serie: {fiscal.get('series', '—')}",
+                      f"Chave: {_clean(fiscal.get('access_key'), columns)}"])
+        if fiscal.get("protocol"):
+            lines.append(f"Protocolo: {_clean(fiscal['protocol'], columns - 10)}")
+        if fiscal.get("authorized_at"):
+            lines.append(f"Autorizada em: {_clean(fiscal['authorized_at'], columns - 14)}")
+        if fiscal.get("qr_url"):
+            lines.append(f"Consulta: {_clean(fiscal['qr_url'], columns)}")
+        if fiscal.get("taxes_cents") is not None:
+            lines.append(f"Tributos: {_money(int(fiscal['taxes_cents']))}")
+    else:
+        lines.extend([divider, "NFC-e nao emitida", "Documento sem valor fiscal"])
+    lines.extend(["Obrigado pela preferencia", "", "", ""])
     text = "\n".join(lines).encode("cp850", errors="replace")
     return b"\x1b@" + text + b"\n\x1dV\x00"
 

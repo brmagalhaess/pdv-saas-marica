@@ -24,11 +24,13 @@ def validate_sale(data, tenant):
         raise APIError("Venda inválida")
     required = ("request_id", "cash_session_id", "created_at", "gross_cents",
                 "discount_cents", "total_cents", "change_cents", "items", "payments")
-    fields(data, required + ("customer_id",), required)
+    fields(data, required + ("customer_id", "customer_name", "customer_document"), required)
     request_id = text(data["request_id"], "Identificador da venda", 160)
     cash_session_id = text(data["cash_session_id"], "Sessão de caixa", 160)
     created_at = event_time(data["created_at"])
     customer = scoped(Customer, tenant, data["customer_id"]) if data.get("customer_id") else None
+    customer_name = text(data.get("customer_name", ""), "Nome do consumidor", 180, optional=True)
+    customer_document = text(data.get("customer_document", ""), "Documento do consumidor", 30, optional=True)
     items, payments = data["items"], data["payments"]
     if not isinstance(items, list) or not 1 <= len(items) <= 200:
         raise APIError("Itens inválidos")
@@ -41,7 +43,7 @@ def validate_sale(data, tenant):
             raise APIError("Item inválido")
         required_item = ("product_id", "name", "unit", "quantity_milli", "unit_price_cents",
                          "gross_cents", "discount_cents", "line_total_cents")
-        fields(item, required_item, required_item)
+        fields(item, required_item + ("ncm",), required_item)
         product = scoped(Product, tenant, item["product_id"])
         name = text(item["name"], "Nome do item", 180)
         if item["unit"] != product.unit:
@@ -87,7 +89,8 @@ def validate_sale(data, tenant):
             "created_at": created_at, "customer": customer,
             "gross_cents": gross_sale, "discount_cents": discount_sale,
             "total_cents": total_sale, "change_cents": change,
-            "items": normalized_items, "payments": normalized_payments}
+            "items": normalized_items, "payments": normalized_payments,
+            "customer_name": customer_name, "customer_document": customer_document}
 
 
 def persist_sale(terminal, event):
@@ -109,7 +112,8 @@ def persist_sale(terminal, event):
     stock_status = "negative" if any(balance(tenant, shop, Product.objects.get(pk=pid)) - qty < 0
                                      for pid, qty in quantities.items()) else "ok"
     sale = Sale.objects.create(id=sale_id, tenant=tenant, shop=shop, terminal=terminal,
-                               customer=validated["customer"], request_id=validated["request_id"],
+                               customer=validated["customer"], customer_name_snapshot=validated["customer_name"],
+                               customer_document_snapshot=validated["customer_document"], request_id=validated["request_id"],
                                content_hash=content_hash, gross_cents=validated["gross_cents"],
                                discount_cents=validated["discount_cents"], total_cents=validated["total_cents"],
                                change_cents=validated["change_cents"], stock_status=stock_status,

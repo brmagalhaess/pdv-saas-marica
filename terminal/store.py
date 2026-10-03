@@ -86,7 +86,7 @@ class Store:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS products(
-                    id TEXT PRIMARY KEY,sku TEXT,barcode TEXT UNIQUE,scale_code TEXT,name TEXT NOT NULL,
+                    id TEXT PRIMARY KEY,sku TEXT,barcode TEXT UNIQUE,ncm TEXT,scale_code TEXT,name TEXT NOT NULL,
                     unit TEXT NOT NULL CHECK(unit IN ('UN','KG','L')),category TEXT,
                     price_cents INTEGER NOT NULL CHECK(price_cents>=0),
                     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents>=0),
@@ -140,6 +140,11 @@ class Store:
                 conn.execute("ALTER TABLE products ADD COLUMN scale_code TEXT")
             if "image_url" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
+            if "ncm" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN ncm TEXT")
+            sales_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sales)")}
+            if "customer_document" not in sales_columns:
+                conn.execute("ALTER TABLE sales ADD COLUMN customer_document TEXT")
             conn.commit()
         try:
             self.path.chmod(0o600)
@@ -201,6 +206,7 @@ class Store:
             "shop_name": meta.get("shop_name"),
             "terminal_id": meta.get("terminal_id"),
             "terminal_name": meta.get("terminal_name"),
+            "issuer": json.loads(meta["issuer_profile"]) if meta.get("issuer_profile") else {},
             "license_hint": meta.get("license_hint"),
             "device_id": meta.get("device_id"),
             "cloud_url": meta.get("cloud_url"),
@@ -234,7 +240,7 @@ class Store:
     def _clear_connection_meta(conn):
         for key in ("token", "tenant_id", "tenant_name", "shop_id", "shop_name",
                     "terminal_id", "terminal_name", "license_hint", "lease", "public_key", "cloud_url",
-                    "discount_max_bps", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
+                    "discount_max_bps", "issuer_profile", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at"):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
 
@@ -357,6 +363,8 @@ class Store:
                     self._set_meta(conn, key, _str(value, key))
             if response.get("license_hint"):
                 self._set_meta(conn, "license_hint", _str(response["license_hint"], "Licença", 16))
+            if response.get("issuer"):
+                self._set_meta(conn, "issuer_profile", _json(response["issuer"]))
             self._set_meta(conn, "cloud_url", cloud_url)
             self._audit(conn, None, "terminal.paired", response["terminal_id"])
 
@@ -428,16 +436,17 @@ class Store:
                 if not isinstance(image_url, str) or len(image_url) > 500:
                     raise TerminalError("Imagem do produto inválida")
                 conn.execute("""INSERT INTO products
-                    (id,sku,barcode,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_milli,active,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_milli,active,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
+                    ncm=excluded.ncm,
                     scale_code=excluded.scale_code,
                     name=excluded.name,unit=excluded.unit,category=excluded.category,
                     price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
                     image_url=excluded.image_url,stock_milli=excluded.stock_milli,
                     active=excluded.active,updated_at=excluded.updated_at""",
                     (product_id, product.get("sku"), product.get("barcode") or None,
-                     product.get("scale_code") or None,
+                     product.get("ncm") or None, product.get("scale_code") or None,
                      _str(product.get("name"), "Nome do produto"), unit, category or "Geral",
                      price, _positive_int(product.get("cost_cents", 0), "Custo", zero=True),
                      image_url,
@@ -474,6 +483,8 @@ class Store:
                     self._set_meta(conn, key, _str(value, key))
             if response.get("license_hint"):
                 self._set_meta(conn, "license_hint", _str(response["license_hint"], "Licença", 16))
+            if response.get("issuer"):
+                self._set_meta(conn, "issuer_profile", _json(response["issuer"]))
             self._set_meta(conn, "lease", _json(lease))
             max_discount = claims.get("max_discount_bps", 10000)
             if type(max_discount) is not int or not 0 <= max_discount <= 10000:
@@ -767,6 +778,7 @@ class Store:
             raise TerminalError("Itens e pagamentos obrigatórios")
         discount = _positive_int(request.get("discount_cents", 0), "Desconto", zero=True)
         customer_name = str(request.get("customer_name") or "").strip()[:160]
+        customer_document = str(request.get("customer_document") or "").strip()[:30]
         customer_id = request.get("customer_id") or None
         if customer_id is not None:
             customer_id = _str(customer_id, "Cliente")
@@ -780,9 +792,11 @@ class Store:
                               "payments": previous["payments"],
                               "discount_cents": previous["discount_cents"],
                               "customer_name": previous["customer_name"],
+                              "customer_document": previous.get("customer_document", ""),
                               "customer_id": previous["customer_id"]}
                 received = {"items": item_requests, "payments": payments, "discount_cents": discount,
-                            "customer_name": customer_name, "customer_id": customer_id}
+                            "customer_name": customer_name, "customer_document": customer_document,
+                            "customer_id": customer_id}
                 if _json(comparable) != _json(received):
                     raise TerminalError("Identificador já usado para outra venda", 409)
                 return previous
@@ -804,7 +818,7 @@ class Store:
                 if row["stock_milli"] < qty:
                     raise TerminalError(f"Estoque insuficiente: {row['name']}", 409)
                 gross = _line_gross(row["price_cents"], qty)
-                lines.append({"product_id": product_id, "name": row["name"], "unit": row["unit"],
+                lines.append({"product_id": product_id, "name": row["name"], "ncm": row["ncm"] or "", "unit": row["unit"],
                               "quantity_milli": qty, "unit_price_cents": row["price_cents"],
                               "gross_cents": gross})
             gross_total = sum(line["gross_cents"] for line in lines)
@@ -835,6 +849,7 @@ class Store:
             sale_id, timestamp = _uuid(), _now_ms()
             snapshot = {"id": sale_id, "request_id": request_id, "cash_session_id": cash["id"],
                         "operator_id": operator["id"], "customer_name": customer_name,
+                        "customer_document": customer_document,
                         "customer_id": customer_id, "gross_cents": gross_total,
                         "discount_cents": discount, "total_cents": total, "change_cents": change,
                         "items": lines, "payments": normalized_payments, "created_at": timestamp,
@@ -842,13 +857,17 @@ class Store:
             for line in lines:
                 conn.execute("UPDATE products SET stock_milli=stock_milli-? WHERE id=?",
                              (line["quantity_milli"], line["product_id"]))
-            conn.execute("INSERT INTO sales VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)",
+            conn.execute("""INSERT INTO sales
+                (id,request_id,session_id,operator_id,customer_name,customer_id,gross_cents,
+                 discount_cents,total_cents,change_cents,snapshot,status,created_at,voided_at,void_reason,customer_document)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?)""",
                          (sale_id, request_id, cash["id"], operator["id"], customer_name,
                           customer_id, gross_total, discount, total, change, _json(snapshot),
-                          "completed", timestamp))
+                          "completed", timestamp, customer_document))
             event_data = {key: snapshot[key] for key in ("request_id", "cash_session_id", "created_at",
                                                        "gross_cents", "discount_cents", "total_cents",
-                                                       "change_cents", "customer_id", "items", "payments")}
+                                                       "change_cents", "customer_id", "customer_name",
+                                                       "customer_document", "items", "payments")}
             self._event(conn, "sale.completed", sale_id, event_data)
             self._audit(conn, operator["id"], "sale.completed", sale_id,
                         f"manager_override={override_id}" if override_id else None)
@@ -1008,6 +1027,13 @@ class Store:
         setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
         if not setting:
             return None
+        if not snapshot.get("issuer"):
+            raw_issuer = self._meta(conn, "issuer_profile")
+            if raw_issuer:
+                try:
+                    snapshot = {**snapshot, "issuer": json.loads(raw_issuer)}
+                except (TypeError, ValueError):
+                    pass
         width = 58 if setting["format"] == "escpos58" else 80
         return self._queue_print(conn, "receipt", receipt_bytes(snapshot, width), setting)
 
@@ -1034,6 +1060,12 @@ class Store:
             setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
             if not setting:
                 raise TerminalError("Configure impressora de recibos antes", 409)
+            raw_issuer = self._meta(conn, "issuer_profile")
+            if raw_issuer and not snapshot.get("issuer"):
+                try:
+                    snapshot["issuer"] = json.loads(raw_issuer)
+                except (TypeError, ValueError):
+                    pass
             job_id = self._queue_print(conn, "receipt", receipt_bytes(snapshot,
                 58 if setting["format"] == "escpos58" else 80), setting)
             self._audit(conn, operator_id, "sale.reprint", sale_id)

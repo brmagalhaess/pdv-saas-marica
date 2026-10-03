@@ -53,6 +53,27 @@ def _operators(tenant):
             for m in Membership.objects.filter(tenant=tenant, active=True).exclude(pin_hash="").order_by("id")]
 
 
+def _issuer_profile(tenant):
+    """Only describe fiscal identity configured by the company.
+
+    Authorization fields are intentionally absent until a real NFC-e provider
+    returns them; a local sale must never manufacture a key or QR code.
+    """
+    return {
+        "legal_name": tenant.name,
+        "trade_name": tenant.trade_name,
+        "document": tenant.document,
+        "state_registration": tenant.state_registration,
+        "municipal_registration": tenant.municipal_registration,
+        "address": {"line": tenant.address_line, "number": tenant.address_number,
+                     "complement": tenant.address_complement, "neighborhood": tenant.address_neighborhood,
+                     "city": tenant.address_city, "state": tenant.address_state, "zip": tenant.address_zip},
+        "tax_regime": tenant.tax_regime,
+        "fiscal_environment": tenant.fiscal_environment,
+        "nfce_series": tenant.nfce_series,
+    }
+
+
 def _lease(terminal, operators=None):
     sub, effective_status, deadline = _subscription_can_issue(terminal.tenant)
     operators = _operators(terminal.tenant) if operators is None else operators
@@ -232,7 +253,7 @@ def pair(request):
                          "license_hint": row.tenant.subscription.license_key.replace("-", "")[-4:],
                          "tenant": {"id": str(row.tenant_id), "name": row.tenant.name},
                          "shop": {"id": str(row.shop_id), "name": row.shop.name},
-                         "terminal": terminal_data(row),
+                         "terminal": terminal_data(row), "issuer": _issuer_profile(row.tenant),
                          "lease": lease, "public_key": public_key})
 
 
@@ -257,15 +278,15 @@ def bootstrap(request):
                                              product_id__in=[p.id for p in shown])
                 .values("product_id").annotate(q=Sum("delta_milli")))
     by_product = {row["product_id"]: row["q"] for row in balances}
-    products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode, "scale_code": p.scale_code,
+    products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode, "ncm": p.ncm, "scale_code": p.scale_code,
                  "name": p.name, "unit": p.unit, "price_cents": p.price_cents,
                  "cost_cents": p.cost_cents, "image_url": p.image_url, "active": p.active,
                  "quantity_milli": by_product.get(p.id, 0),
                  "category": p.category.name if p.category else None}
-                for p in shown]
+            for p in shown]
     return JsonResponse({"tenant": {"id": str(terminal.tenant_id), "name": terminal.tenant.name},
                          "shop": {"id": str(terminal.shop_id), "name": terminal.shop.name},
-                         "terminal": terminal_data(terminal), "products": products,
+                         "terminal": terminal_data(terminal), "issuer": _issuer_profile(terminal.tenant), "products": products,
                          "next_cursor": str(offset + limit) if len(rows) > limit else None,
                          "operators": operators, "lease": lease, "public_key": public_key,
                          "license_hint": terminal.tenant.subscription.license_key.replace("-", "")[-4:]})

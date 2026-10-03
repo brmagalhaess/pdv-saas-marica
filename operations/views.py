@@ -22,15 +22,49 @@ def company(request):
     method(request,'GET','PATCH');member=membership_context(request,OWNER,write=request.method=='PATCH')
     tenant=member.tenant
     if request.method=='PATCH':
-        data=payload(request);fields(data,('name','document','max_discount_bps'))
+        data=payload(request);fields(data,('name','trade_name','document','state_registration',
+            'municipal_registration','address_line','address_number','address_complement',
+            'address_neighborhood','address_city','address_state','address_zip','tax_regime',
+            'fiscal_environment','nfce_series','nfce_next_number','max_discount_bps'))
         if not data:raise APIError('Informe os dados a alterar')
         if 'name' in data:tenant.name=text(data['name'],'Razão social',160)
+        if 'trade_name' in data:tenant.trade_name=text(data['trade_name'],'Nome fantasia',160,optional=True)
         if 'document' in data:
             value=text(data['document'],'Documento',30,optional=True)
             digits=''.join(c for c in value if c.isascii() and c.isdigit())
             if value and (len(digits) not in (11,14) or any(c not in '0123456789./- ' for c in value)):
                 raise APIError('Informe CPF com 11 dígitos ou CNPJ com 14 dígitos')
             tenant.document=digits
+        for field,label,limit in (('state_registration','Inscrição estadual',30),
+                                   ('municipal_registration','Inscrição municipal',30),
+                                   ('address_line','Logradouro',180),('address_number','Número',20),
+                                   ('address_complement','Complemento',80),('address_neighborhood','Bairro',100),
+                                   ('address_city','Cidade',100)):
+            if field in data:setattr(tenant,field,text(data[field],label,limit,optional=True))
+        if 'address_state' in data:
+            value=text(data['address_state'],'UF',2,optional=True).upper()
+            if value and (len(value)!=2 or not value.isalpha()):raise APIError('Informe a UF com duas letras')
+            tenant.address_state=value
+        if 'address_zip' in data:
+            value=text(data['address_zip'],'CEP',20,optional=True)
+            digits=''.join(c for c in value if c.isascii() and c.isdigit())
+            if value and len(digits)!=8:raise APIError('Informe o CEP com 8 dígitos')
+            tenant.address_zip=digits
+        if 'tax_regime' in data:
+            value=text(data['tax_regime'],'Regime tributário',30)
+            if value not in ('simples_nacional','simples_excesso','regime_normal'):
+                raise APIError('Regime tributário inválido')
+            tenant.tax_regime=value
+        if 'fiscal_environment' in data:
+            value=text(data['fiscal_environment'],'Ambiente fiscal',20)
+            if value not in ('non_fiscal','homologation','production'):
+                raise APIError('Ambiente fiscal inválido')
+            tenant.fiscal_environment=value
+        for field,label,minimum,maximum in (('nfce_series','Série NFC-e',1,999),('nfce_next_number','Próximo número NFC-e',1,10**12)):
+            if field in data:
+                value=data[field]
+                if type(value) is not int or not minimum<=value<=maximum:raise APIError(f'{label} inválida')
+                setattr(tenant,field,value)
         if 'max_discount_bps' in data:
             value = data['max_discount_bps']
             if type(value) is not int or not 0 <= value <= 10000:
@@ -38,7 +72,15 @@ def company(request):
             tenant.max_discount_bps = value
         with transaction.atomic():
             tenant.save(update_fields=list(data));audit(tenant,request.user,'company.updated',tenant,{'fields':list(data)})
-    return JsonResponse({'id':str(tenant.pk),'name':tenant.name,'document':tenant.document,
+    return JsonResponse({'id':str(tenant.pk),'name':tenant.name,'trade_name':tenant.trade_name,
+                         'document':tenant.document,'state_registration':tenant.state_registration,
+                         'municipal_registration':tenant.municipal_registration,
+                         'address_line':tenant.address_line,'address_number':tenant.address_number,
+                         'address_complement':tenant.address_complement,
+                         'address_neighborhood':tenant.address_neighborhood,'address_city':tenant.address_city,
+                         'address_state':tenant.address_state,'address_zip':tenant.address_zip,
+                         'tax_regime':tenant.tax_regime,'fiscal_environment':tenant.fiscal_environment,
+                         'nfce_series':tenant.nfce_series,'nfce_next_number':tenant.nfce_next_number,
                          'max_discount_bps': tenant.max_discount_bps})
 
 @endpoint

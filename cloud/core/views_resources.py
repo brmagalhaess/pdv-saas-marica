@@ -81,7 +81,7 @@ def form_values(kind, data, tenant, creating):
     elif kind == "categories":
         allowed, required = {"name", "active"}, {"name"}
     elif kind == "products":
-        allowed = {"name", "category_id", "variant", "unit", "scale_code",
+        allowed = {"name", "category_id", "variant", "unit", "scale_code", "ncm",
                    "price_cents", "stock_minimum_milli", "image_url", "tax_fields", "active"}
         required = {"name", "price_cents"}
     else:
@@ -125,6 +125,11 @@ def form_values(kind, data, tenant, creating):
             if not isinstance(value, str) or value.strip() and (not value.strip().isdigit() or not 1 <= len(value.strip()) <= 6):
                 raise APIError("Código PLU da balança inválido")
             result[key] = value.strip()
+        elif key == "ncm":
+            value = text(value, "NCM", 8, optional=True)
+            if value and (not value.isdigit() or len(value) not in (7, 8)):
+                raise APIError("NCM deve conter 7 ou 8 dígitos")
+            result[key] = value
         elif key == "email":
             value = text(value, "E-mail", 254, optional=True).lower()
             if value:
