@@ -1,9 +1,14 @@
 """Non-fiscal thermal receipt and label rendering plus local spool transports."""
 
+import base64
+import json
+import os
 import socket
 import shutil
 import subprocess
 import time
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from pathlib import Path
 
 
@@ -99,11 +104,27 @@ def send_bytes(driver, target, payload, job_id):
         # CUPS is the native print queue on macOS and Linux.  The local
         # terminal must run on the host so it can see a USB printer; a Docker
         # container cannot see the host USB device automatically.
-        if not shutil.which("lp"):
-            raise RuntimeError("CUPS não está disponível; execute o terminal nativo neste computador")
         queue = str(target).strip()
         if not queue or any(ch in queue for ch in "\r\n"):
             raise ValueError("Fila CUPS inválida")
+        bridge_url = os.environ.get("PDV_PRINT_BRIDGE_URL", "").rstrip("/")
+        if bridge_url:
+            token = os.environ.get("PDV_PRINT_BRIDGE_TOKEN", "")
+            if not token:
+                raise RuntimeError("Ponte local de impressão sem token configurado")
+            try:
+                result = _bridge_request("POST", "/print", {
+                    "queue": queue,
+                    "job_id": str(job_id),
+                    "payload": base64.b64encode(payload).decode("ascii"),
+                })
+            except (OSError, HTTPError, URLError, ValueError) as exc:
+                raise RuntimeError("Ponte local de impressão indisponível") from exc
+            if not isinstance(result, dict) or not result.get("ok"):
+                raise RuntimeError(str(result.get("error") if isinstance(result, dict) else "Fila CUPS recusou o trabalho"))
+            return str(result.get("destination") or queue)
+        if not shutil.which("lp"):
+            raise RuntimeError("CUPS não está disponível; execute o terminal nativo neste computador")
         result = subprocess.run(
             ["lp", "-d", queue, "-o", "raw"],
             input=payload,
@@ -128,6 +149,16 @@ def send_bytes(driver, target, payload, job_id):
 
 def cups_queues():
     """Return local CUPS queue names for the native terminal setup screen."""
+    bridge_url = os.environ.get("PDV_PRINT_BRIDGE_URL", "").rstrip("/")
+    bridge_token = os.environ.get("PDV_PRINT_BRIDGE_TOKEN", "")
+    if bridge_url and bridge_token:
+        try:
+            result = _bridge_request("GET", "/queues")
+            queues = result.get("queues") if isinstance(result, dict) else None
+            if isinstance(queues, list):
+                return [str(queue) for queue in queues if queue]
+        except (OSError, HTTPError, URLError, ValueError):
+            pass
     if not shutil.which("lpstat"):
         return []
     try:
@@ -138,8 +169,26 @@ def cups_queues():
     queues = []
     for line in result.stdout.splitlines():
         fields = line.split()
-        if len(fields) >= 2 and fields[0].lower() == "printer":
+        if len(fields) >= 2 and fields[0].lower() in ("printer", "impressora"):
             queue = fields[1].strip()
             if queue and queue not in queues:
                 queues.append(queue)
     return queues
+
+
+def _bridge_request(method, path, body=None):
+    """Call the authenticated host bridge over Unix socket or HTTP."""
+    token = os.environ.get("PDV_PRINT_BRIDGE_TOKEN", "")
+    encoded = json.dumps(body).encode("utf-8") if body is not None else b""
+    headers = {"X-PDV-Bridge-Token": token}
+    if encoded:
+        headers["Content-Type"] = "application/json"
+    request = Request(
+        os.environ.get("PDV_PRINT_BRIDGE_URL", "").rstrip("/") + path,
+        data=encoded or None,
+        headers={**headers, "Content-Type": "application/json"} if encoded else headers,
+        method=method,
+    )
+    with urlopen(request, timeout=20) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    return result

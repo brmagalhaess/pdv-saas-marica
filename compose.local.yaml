@@ -79,6 +79,8 @@ services:
       PDV_TERMINAL_ALLOWED_CLOUD_HOSTS: cloud,host.docker.internal,localhost,127.0.0.1
       # Docker Desktop routes this hostname to the macOS host CUPS service.
       CUPS_SERVER: host.docker.internal:631
+      PDV_PRINT_BRIDGE_URL: http://host.docker.internal:8020
+      PDV_PRINT_BRIDGE_TOKEN: ${PDV_PRINT_BRIDGE_TOKEN:-}
     extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["127.0.0.1:8010:8010"]
     volumes: [terminal_data:/data]
@@ -97,6 +99,8 @@ services:
       PDV_TERMINAL_DATA: /data
       PDV_TERMINAL_ALLOWED_CLOUD_HOSTS: cloud,host.docker.internal,localhost,127.0.0.1
       CUPS_SERVER: host.docker.internal:631
+      PDV_PRINT_BRIDGE_URL: http://host.docker.internal:8020
+      PDV_PRINT_BRIDGE_TOKEN: ${PDV_PRINT_BRIDGE_TOKEN:-}
     extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["127.0.0.1:8011:8010"]
     volumes: [terminal_second_data:/data]

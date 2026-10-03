@@ -23,6 +23,7 @@ values={
     'PDV_ADMIN_PASSWORD':'Aa7!'+secrets.token_urlsafe(18),
     'PDV_DEMO_PASSWORD':'Bb8!'+secrets.token_urlsafe(18),
     'PDV_DEMO_PIN':str(100000+secrets.randbelow(900000)),
+    'PDV_PRINT_BRIDGE_TOKEN':secrets.token_urlsafe(32),
     'RESTIC_PASSWORD':secrets.token_urlsafe(48),
 }
 for name,contents in [('license-private.pem',private),('license-public.pem',public),

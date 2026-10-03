@@ -13,6 +13,8 @@ services:
       # Docker Desktop routes this hostname to the macOS host, where CUPS
       # owns the USB printer queue. Native Linux deployments can override it.
       CUPS_SERVER: host.docker.internal:631
+      PDV_PRINT_BRIDGE_URL: http://host.docker.internal:8020
+      PDV_PRINT_BRIDGE_TOKEN: ${PDV_PRINT_BRIDGE_TOKEN:-}
     ports: ["127.0.0.1:8010:8010"]
     volumes: [terminal_data:/data]
     extra_hosts: ["host.docker.internal:host-gateway"]

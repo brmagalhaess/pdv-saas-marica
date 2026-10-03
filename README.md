@@ -13,6 +13,16 @@ sh scripts/start-local.sh
 - Gestão da empresa: http://127.0.0.1:8000/app/
 - Terminal: http://127.0.0.1:8010/
 
+### Impressão automática no Docker Desktop (macOS)
+
+A TM-T20 conectada por USB fica na fila CUPS do macOS, enquanto o terminal roda no contêiner. O terminal usa a ponte local autenticada `infra/print_bridge.py` para enviar o ESC/POS diretamente à fila, sem abrir “Salvar como PDF”. Depois de instalar a fila como `EPSON_TM_T20`, instale a ponte uma vez:
+
+```sh
+sh scripts/install-print-bridge-macos.sh
+```
+
+Ela mantém a ponte local disponível na porta `8020`, protegida pelo token criado em `.runtime/local.env`. Se a ponte não estiver instalada, o comprovante continua disponível na tela e pela fila de reimpressão.
+
 O login é único em `/login/`. Contas que também possuem papel na plataforma veem **Administração SaaS** no menu do avatar do painel da empresa; não é necessário manter uma senha ou login diferente para trocar entre as áreas.
 - Credenciais únicas desta instalação: `.runtime/access.txt`.
 
