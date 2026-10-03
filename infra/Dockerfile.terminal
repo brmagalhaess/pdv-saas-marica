@@ -3,6 +3,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app \
     PDV_TERMINAL_HOST=0.0.0.0 PDV_TERMINAL_PORT=8010 \
     PDV_TERMINAL_DB=/data/terminal.sqlite3 PDV_TERMINAL_DATA=/data
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cups-client \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && groupadd -g 10001 app && useradd -u 10001 -g app -m app
 COPY terminal ./terminal
