@@ -7,7 +7,7 @@ const starterPlans = [
   { slug:"advanced", name:"Avançado", price_month_cents:34900, price_year_cents:349000, terminal_limit:3, shop_limit:2 }
 ];
 const featureNames = {
-  pdv_local:"Terminal local (em validação)",
+  pdv_local:"Frente de caixa local",
   cloud_dashboard:"Painel de gestão",
   stock:"Estoque por loja",
   finance:"Financeiro",
