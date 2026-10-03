@@ -17,3 +17,5 @@ coverage/
 build/
 dist/
 *.egg-info/
+ios/PDV2OwnerMonitor/PDV2OwnerMonitor.xcodeproj/xcuserdata/
+ios/PDV2OwnerMonitor/PDV2OwnerMonitor.xcodeproj/project.xcworkspace/
