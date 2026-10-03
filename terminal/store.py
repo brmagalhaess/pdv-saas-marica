@@ -991,7 +991,7 @@ class Store:
             return [dict(row) for row in conn.execute("SELECT * FROM print_settings ORDER BY kind")]
 
     def save_printer(self, kind, driver, target, fmt, operator_id=None):
-        if kind not in ("receipt", "label") or driver not in ("tcp", "windows_raw", "file"):
+        if kind not in ("receipt", "label") or driver not in ("tcp", "windows_raw", "cups", "file"):
             raise TerminalError("Configuração de impressora inválida")
         if (kind == "receipt" and fmt not in ("escpos58", "escpos80")) or (
                 kind == "label" and fmt not in ("zpl", "epl")):

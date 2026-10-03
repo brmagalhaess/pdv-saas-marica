@@ -1,6 +1,8 @@
 """Non-fiscal thermal receipt and label rendering plus local spool transports."""
 
 import socket
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -93,6 +95,27 @@ def send_bytes(driver, target, payload, job_id):
         finally:
             win32print.ClosePrinter(handle)
         return target
+    if driver == "cups":
+        # CUPS is the native print queue on macOS and Linux.  The local
+        # terminal must run on the host so it can see a USB printer; a Docker
+        # container cannot see the host USB device automatically.
+        if not shutil.which("lp"):
+            raise RuntimeError("CUPS não está disponível; execute o terminal nativo neste computador")
+        queue = str(target).strip()
+        if not queue or any(ch in queue for ch in "\r\n"):
+            raise ValueError("Fila CUPS inválida")
+        result = subprocess.run(
+            ["lp", "-d", queue, "-o", "raw"],
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+        if result.returncode:
+            message = result.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(message or "A fila CUPS recusou o trabalho")
+        return queue
     if driver == "file":
         directory = Path(target).expanduser().resolve()
         directory.mkdir(parents=True, exist_ok=True)
@@ -101,3 +124,22 @@ def send_bytes(driver, target, payload, job_id):
             output.write(payload)
         return str(destination)
     raise ValueError("Driver de impressora inválido")
+
+
+def cups_queues():
+    """Return local CUPS queue names for the native terminal setup screen."""
+    if not shutil.which("lpstat"):
+        return []
+    try:
+        result = subprocess.run(["lpstat", "-p"], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, timeout=4, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    queues = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0].lower() == "printer":
+            queue = fields[1].strip()
+            if queue and queue not in queues:
+                queues.append(queue)
+    return queues

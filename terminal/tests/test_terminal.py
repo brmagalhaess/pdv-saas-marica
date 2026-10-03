@@ -6,13 +6,13 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from shared.licensing import generate_keypair, payload_digest, sign_lease
 from shared.releases import sign_release
 from shared.security import hash_pin
 from terminal.app import create_app
-from terminal.printers import label_bytes, receipt_bytes
+from terminal.printers import label_bytes, receipt_bytes, send_bytes
 from terminal.store import Store, TerminalError
 from terminal.sync import check_release, pair, print_once, refresh_bootstrap, sync_once
 
@@ -423,6 +423,7 @@ class TerminalTests(unittest.TestCase):
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "epl").startswith(b"N\n"))
         self.assertIn(b'"ArrozP4"', label_bytes({"id": "x", "name": 'Arroz"\\\nP4',
                                                 "barcode": "789", "price_cents": 700}, "epl"))
+        self.assertEqual(self.store.save_printer("receipt", "cups", "TM-T20", "escpos80")["driver"], "cups")
         directory = Path(self.temp.name) / "print-output"
         self.store.save_printer("receipt", "file", str(directory), "escpos58")
         self.store.open_cash(self.cashier_id, 0)
@@ -438,6 +439,15 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(print_once(self.store), None)
         self.store.retry_print(self.manager_id, job["id"])
         self.assertEqual(self.store.print_jobs()[0]["status"], "queued")
+
+    @patch("terminal.printers.shutil.which", return_value="/usr/bin/lp")
+    @patch("terminal.printers.subprocess.run")
+    def test_cups_transport_sends_raw_escpos_to_native_queue(self, run, _which):
+        run.return_value.returncode = 0
+        self.assertEqual(send_bytes("cups", "TM-T20", b"ESC/POS", "job-1"), "TM-T20")
+        run.assert_called_once_with(["lp", "-d", "TM-T20", "-o", "raw"], input=b"ESC/POS",
+                                    stdout=ANY, stderr=ANY,
+                                    timeout=20, check=False)
 
     def test_cloud_ack_order_retry_and_bootstrap_pagination(self):
         self.store.open_cash(self.cashier_id, 0)

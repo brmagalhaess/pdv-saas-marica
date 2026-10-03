@@ -40,7 +40,7 @@ Um banco local não pode ser reaproveitado por outra empresa depois que existem 
 
 ## Impressão
 
-Configurações locais suportam recibo **não fiscal** ESC/POS de 58 ou 80 mm e etiqueta ZPL/EPL. Cada trabalho é persistido no SQLite antes do envio. Transportes: TCP para `host:porta`, spool RAW Windows via [`pywin32` 312](https://pypi.org/project/pywin32/312/) incluído apenas na instalação Windows, ou arquivo binário em uma pasta para teste. O worker marca um trabalho como `sending` antes de transmitir; se falhar ou o processo reiniciar nesse ponto, fica `uncertain`. O operador precisa confirmar explicitamente o risco de duplicidade para reenviar. Reimpressão da venda cria outro trabalho e fica auditada. Compatibilidade física por modelo ainda não foi verificada.
+Configurações locais suportam recibo **não fiscal** ESC/POS de 58 ou 80 mm e etiqueta ZPL/EPL. Cada trabalho é persistido no SQLite antes do envio. Transportes: CUPS (`lp -d FILA -o raw`) para USB no macOS/Linux quando o terminal roda nativamente no computador da impressora, TCP para `host:porta`, spool RAW Windows via [`pywin32` 312](https://pypi.org/project/pywin32/312/) incluído apenas na instalação Windows, ou arquivo binário em uma pasta para teste. O terminal em Docker não acessa automaticamente USB do host; nesse cenário use o terminal nativo com CUPS ou uma impressora de rede. O worker marca um trabalho como `sending` antes de transmitir; se falhar ou o processo reiniciar nesse ponto, fica `uncertain`. O operador precisa confirmar explicitamente o risco de duplicidade para reenviar. Reimpressão da venda cria outro trabalho e fica auditada. Compatibilidade física por modelo ainda não foi verificada.
 
 ## Testes
 

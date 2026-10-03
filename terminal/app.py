@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, render_template, request, session
 
 from . import sync
+from .printers import cups_queues
 from .store import MANAGER_ROLES, SELL_ROLES, Store, TerminalError
 
 
@@ -337,6 +338,11 @@ def create_app(config=None):
     @authenticated()
     def printer_settings(_operator):
         return jsonify({"settings": store.printer_settings(), "jobs": store.print_jobs()})
+
+    @app.get("/api/print/discover")
+    @authenticated(*MANAGER_ROLES)
+    def discover_printers(_operator):
+        return jsonify({"driver": "cups", "queues": cups_queues()})
 
     @app.post("/api/print/settings")
     @authenticated(*MANAGER_ROLES)
