@@ -26,7 +26,7 @@
       <nav class="site-nav" id="site-navigation" aria-label="Navegação principal">
         <a href="#segmentos">Para quem é</a>
         <a href="#produto">Recursos</a>
-        <a href="#como-funciona">Como funciona</a>
+        <a href="#aplicativo">App do gestor</a>
         <a href="#planos">Planos</a>
         <a href="#perguntas">Perguntas</a>
       </nav>
@@ -42,7 +42,7 @@
         <div class="hero-copy">
           <span class="hero-kicker"><span class="pulse"></span> Começando em Maricá · feito para o varejo local</span>
           <h1>Seu comércio no ritmo de quem está <em>no balcão.</em></h1>
-          <p>Do mercado à papelaria: venda no balcão, controle o estoque e feche o caixa com clareza. Uma gestão para o dono da loja e um terminal para quem atende o cliente.</p>
+          <p>Do mercado à papelaria: venda no balcão, controle o estoque e feche o caixa com clareza. Uma gestão para o dono da loja, um terminal para quem atende e a opção de contratar o sistema com os equipamentos.</p>
           <div class="hero-actions">
             <a class="button hero-primary" href="/login/?mode=register">Criar minha conta <span aria-hidden="true">↗</span></a>
             <a class="hero-link" href="#segmentos">Encontrar meu tipo de negócio <span aria-hidden="true">↓</span></a>
@@ -130,16 +130,58 @@
       </div>
     </section>
 
-    <section class="section plans-section" id="planos">
+    <section class="section owner-app-section" id="aplicativo" aria-labelledby="owner-app-title">
+      <div class="container owner-app-grid">
+        <div class="owner-app-copy">
+          <span class="eyebrow">PDV2 Monitor</span>
+          <h2 id="owner-app-title">Perto do seu negócio.<br><em>Mesmo fora da loja.</em></h2>
+          <p>Acompanhe a empresa pelo iPhone com o mesmo login do proprietário. Vendas, recebimentos e terminais em uma visão feita para quem precisa tomar decisões.</p>
+          <ul class="owner-app-benefits"><li><strong>O movimento do dia</strong><span>Faturamento, quantidade de vendas e ticket médio.</span></li><li><strong>Os resultados de cada terminal</strong><span>Vendas por caixa, status de conexão e último contato.</span></li><li><strong>Uma visão dos recebimentos</strong><span>Dinheiro, Pix, crédito e débito. Contas a pagar e receber nos planos com financeiro.</span></li></ul>
+          <div class="app-platforms" aria-label="Disponibilidade dos aplicativos">
+            <div class="app-platform app-platform-ios"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4m-3 14h2"/></svg><span><small>App Store</small><strong>Aplicativo para iPhone</strong></span></div>
+            <div class="app-platform app-platform-android"><span class="development-dot" aria-hidden="true"></span><span><small>Android</small><strong>Em desenvolvimento</strong></span></div>
+          </div>
+          <p class="owner-app-note">Acesso de consulta para o proprietário. Os dados são atualizados conforme as vendas chegam dos terminais ao servidor.</p>
+        </div>
+        <div class="owner-app-visual" aria-label="Representação ilustrativa do aplicativo PDV2 Monitor">
+          <div class="monitor-phone"><div class="monitor-phone-speaker" aria-hidden="true"></div><div class="monitor-phone-body">
+            <div class="monitor-brand"><span>2</span> PDV2 Monitor <small>HOJE</small></div>
+            <p class="monitor-eyebrow">VISÃO DO PROPRIETÁRIO</p><h3>Sua loja, por perto.</h3>
+            <div class="monitor-revenue"><span>Vendas recebidas no dia</span><strong>R$ —</strong><small>Resumo da sua empresa</small><div class="monitor-chart" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+            <div class="monitor-metrics"><div><span>Vendas</span><strong>—</strong></div><div><span>Ticket médio</span><strong>R$ —</strong></div></div>
+            <div class="monitor-terminals"><strong>Por terminal <span>Ver todos ↗</span></strong><div><span class="monitor-terminal-icon" aria-hidden="true">01</span><span>Caixa 01<small>Vendas recebidas</small></span><b>R$ —</b></div><div><span class="monitor-terminal-icon" aria-hidden="true">02</span><span>Caixa 02<small>Vendas recebidas</small></span><b>R$ —</b></div></div>
+            <div class="monitor-nav" aria-hidden="true"><span>Visão geral</span><span>Terminais</span><span>Financeiro</span></div>
+          </div></div>
+          <p class="monitor-illustration-note">Visual ilustrativo · dados demonstrativos</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section plans-section" id="planos" aria-labelledby="plans-title">
       <div class="container">
-        <div class="plans-heading"><div><span class="eyebrow">Planos</span><h2>Um ponto de partida<br><em>para cada momento.</em></h2></div><div class="billing-switch" role="group" aria-label="Período de cobrança"><button id="billing-month" type="button" aria-pressed="true">Mensal</button><button id="billing-year" type="button" aria-pressed="false">Anual <span>2 meses de referência</span></button></div></div>
-        <p class="plans-lead">Preços de referência do acesso antecipado. A contratação depende da configuração de cobrança e confirmação da assinatura.</p>
+        <div class="plans-heading"><div><span class="eyebrow">Planos para a sua operação</span><h2 id="plans-title">O sistema. Ou o caixa completo.<br><em>Você escolhe como começar.</em></h2></div></div>
+        <div class="offer-switch" role="group" aria-label="Tipo de plano"><button type="button" id="offer-software" aria-pressed="true" aria-controls="software-offer">Somente sistema</button><button type="button" id="offer-equipment" aria-pressed="false" aria-controls="equipamentos">Sistema + equipamentos</button></div>
+        <div id="software-offer">
+          <div class="software-billing"><p>Assinatura do sistema para usar nos equipamentos da sua loja.</p><div class="billing-switch" role="group" aria-label="Período de cobrança do sistema"><button id="billing-month" type="button" aria-pressed="true">Mensal</button><button id="billing-year" type="button" aria-pressed="false">Anual <span>2 meses de referência</span></button></div></div>
+          <p class="plans-lead">Preços de referência do acesso antecipado. A contratação depende da configuração de cobrança e confirmação da assinatura.</p>
         <div class="plan-grid" id="plan-grid">
           <article class="plan-card" data-plan="essential"><div class="plan-top"><span>Para começar</span><h3>Essencial</h3><p>A base para organizar a primeira operação.</p></div><div class="plan-price"><strong data-price>R$ 149</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Catálogo de produtos</li><li>Visão geral da operação</li><li>Estoque por loja</li></ul><a class="button ghost" href="/login/?mode=register">Criar conta de teste</a></article>
           <article class="plan-card featured-plan" data-plan="management"><div class="popular">Mais espaço para gerir</div><div class="plan-top"><span>Para acompanhar de perto</span><h3>Gestão</h3><p>Mais controle para a rotina da loja.</p></div><div class="plan-price"><strong data-price>R$ 229</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Tudo do Essencial</li><li>Financeiro e títulos</li><li>Relatórios em implantação</li></ul><a class="button" href="/login/?mode=register">Criar conta de teste</a></article>
           <article class="plan-card" data-plan="advanced"><div class="plan-top"><span>Para expandir</span><h3>Avançado</h3><p>Uma estrutura maior para a sua operação.</p></div><div class="plan-price"><strong data-price>R$ 349</strong><small data-cycle>/mês</small></div><div class="plan-meta">Até 3 terminais · até 2 lojas</div><ul><li>Tudo do Gestão</li><li>Mais uma loja</li><li>Prioridade de suporte prevista</li></ul><a class="button ghost" href="/login/?mode=register">Criar conta de teste</a></article>
         </div>
-        <p class="plan-footnote" id="price-source" role="status">Valores de referência da oferta inicial.</p>
+        <p class="plan-footnote" id="price-source" role="status">Valores de referência para a assinatura do sistema.</p>
+
+        </div>
+        <div id="equipamentos" hidden>
+          <div class="equipment-intro"><div><span class="equipment-badge">Mensalidade com equipamentos</span><h3>Tudo para montar seu caixa.</h3><p>Sistema, computador, impressora térmica, leitor de código de barras e nobreak. A reposição de bobinas da impressora de cupons também faz parte do pacote.</p></div><div class="equipment-terminal-rule"><strong>1 computador de caixa<br><span>= 1 terminal</span></strong><p>A quantidade de terminais acompanha os computadores contratados.</p></div></div>
+          <div class="equipment-grid">
+              <article class="equipment-plan"><span class="equipment-plan-kicker">Para o primeiro caixa</span><h3>1 caixa completo</h3><div class="equipment-price"><strong>R$ 699</strong><span>/mês</span></div><p>1 computador · 1 terminal</p><ul><li>Sistema PDV2</li><li>1 computador com monitor</li><li>1 impressora térmica</li><li>1 leitor de código de barras</li><li>1 nobreak</li><li>Reposição de bobinas inclusa</li></ul></article>
+              <article class="equipment-plan"><span class="equipment-plan-kicker">Para dividir o atendimento</span><h3>2 caixas completos</h3><div class="equipment-price"><strong>R$ 1.299</strong><span>/mês</span></div><p>2 computadores · 2 terminais</p><ul><li>Sistema PDV2</li><li>2 computadores com monitor</li><li>2 impressoras térmicas</li><li>2 leitores de código de barras</li><li>2 nobreaks</li><li>Reposição de bobinas inclusa</li></ul></article>
+              <article class="equipment-plan"><span class="equipment-plan-kicker">Para uma operação maior</span><h3>3 caixas completos</h3><div class="equipment-price"><strong>R$ 1.899</strong><span>/mês</span></div><p>3 computadores · 3 terminais</p><ul><li>Sistema PDV2</li><li>3 computadores com monitor</li><li>3 impressoras térmicas</li><li>3 leitores de código de barras</li><li>3 nobreaks</li><li>Reposição de bobinas inclusa</li></ul></article>
+          </div>
+          <div class="equipment-bottom"><div><strong>Mensalidades sugeridas para os pacotes completos.</strong><p>Modelos, prazo de contratação e volume de reposição de bobinas são definidos na proposta. Os valores desta modalidade incluem o sistema e os equipamentos indicados.</p></div><a class="button" href="/login/?mode=register">Conhecer o sistema ↗</a></div>
+          <p class="plan-footnote">A conta de teste permite conhecer o sistema. O pacote com equipamentos é contratado mediante proposta.</p>
+        </div>
       </div>
     </section>
 
@@ -154,12 +196,15 @@
     </section>
 
     <section class="section faq-section" id="perguntas"><div class="container faq-grid"><div><span class="eyebrow">Perguntas comuns</span><h2>Para começar com clareza.</h2></div><div class="faq-list">
+      <details><summary>O que está incluído no plano com equipamentos?</summary><p>Sistema PDV2, computadores com monitor, impressoras térmicas de cupons, leitores de código de barras, nobreaks e reposição de bobinas. A quantidade de kits acompanha os caixas contratados; a proposta detalha os equipamentos, o prazo e a reposição.</p></details>
+      <details><summary>Como os computadores influenciam a quantidade de terminais?</summary><p>Cada computador de caixa fornecido corresponde a um terminal no pacote: um computador para um caixa, dois para dois caixas e assim por diante. A quantidade aparece na proposta e na licença contratada.</p></details>
+      <details><summary>Posso acompanhar a empresa pelo celular?</summary><p>Sim. O PDV2 Monitor para iPhone permite ao proprietário acompanhar vendas, recebimentos e terminais com o mesmo login. O app usa os dados sincronizados pela empresa. A versão para Android está em desenvolvimento.</p></details>
       <details><summary>Quais tipos de empresa podem usar o PDV2 hoje?</summary><p>O foco é o varejo de produtos no balcão: mercados, mercearias, conveniências, bebidas, hortifrútis, granel, padarias de balcão, papelarias, variedades, moda, acessórios, limpeza e utilidades. Os exemplos acima representam rotinas atendidas pelos recursos atuais, com implantação conforme a necessidade de cada loja.</p></details>
       <details><summary>E se minha empresa precisar de funções específicas?</summary><p>Mesas, comandas, cozinha, delivery, agendamento, ordens de serviço, produção e controle de lote ou validade ainda precisam de módulos próprios. Farmácias e outras operações com processos especializados também exigem desenvolvimento específico.</p></details>
       <details><summary>Já posso escolher meu segmento na contratação?</summary><p>Essa é uma evolução planejada: escolher o tipo de empresa e receber uma configuração adequada à sua rotina. Hoje, você cria a conta e configura o catálogo, a equipe e os terminais nas funções disponíveis.</p></details>
       <details><summary>O caixa funciona sem internet?</summary><p>O terminal instalado e conectado previamente à empresa pode registrar vendas localmente enquanto a licença offline estiver válida. Os registros são enviados quando a conexão volta; o painel e o aplicativo mostram os dados já sincronizados.</p></details>
-      <details><summary>Posso ter mais de uma loja ou terminal?</summary><p>Os limites dependem do plano e aparecem na assinatura. O painel organiza as lojas e os terminais vinculados à empresa, com acesso separado por operador.</p></details>
-      <details><summary>Como funciona a assinatura?</summary><p>Os valores acima são os preços cadastrados na plataforma. Uma solicitação de cobrança precisa ser processada por um provedor configurado e confirmada; o cadastro da conta não significa pagamento.</p></details>
+      <details><summary>Posso ter mais de uma loja ou terminal?</summary><p>Os limites dependem do plano e aparecem na assinatura. O painel organiza as lojas e os terminais vinculados à empresa, com acesso separado por operador. Nos pacotes com equipamentos, a quantidade de computadores de caixa define os terminais contratados.</p></details>
+      <details><summary>Como funciona a assinatura?</summary><p>Os planos de sistema mostram os valores cadastrados na plataforma. Os pacotes com equipamentos têm mensalidades de referência e contratação por proposta. A cobrança depende da confirmação da assinatura; criar uma conta de teste não realiza um pagamento.</p></details>
     </div></div></section>
 
     <section class="closing"><div class="container closing-inner"><div><span class="eyebrow">PDV2 · Maricá</span><h2>Seu próximo passo começa aqui.</h2><p>Conheça o caixa e a gestão com os produtos e a rotina da sua loja.</p></div><a class="button closing-button" href="/login/?mode=register">Criar conta de teste ↗</a></div></section>

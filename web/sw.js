@@ -1,4 +1,4 @@
-const CACHE = "pdv2-shell-v2-segmentos";
+const CACHE = "pdv2-shell-v3-app-equipamentos";
 const SHELL = [
   "/", "/login/", "/app/", "/platform/", "/offline/",
   "/assets/ui.css", "/assets/landing.css", "/assets/core.js",

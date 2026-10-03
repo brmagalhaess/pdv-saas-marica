@@ -48,6 +48,21 @@ function renderPrices() {
 $("#billing-month").addEventListener("click",()=>{billing="month";renderPrices();});
 $("#billing-year").addEventListener("click",()=>{billing="year";renderPrices();});
 
+function showOffer(kind) {
+  const equipment=kind==="equipment";
+  $("#software-offer").hidden=equipment;
+  $("#equipamentos").hidden=!equipment;
+  $("#offer-software").setAttribute("aria-pressed",String(!equipment));
+  $("#offer-equipment").setAttribute("aria-pressed",String(equipment));
+}
+$("#offer-software").addEventListener("click",()=>showOffer("software"));
+$("#offer-equipment").addEventListener("click",()=>showOffer("equipment"));
+function offerFromHash() {
+  if(location.hash==="#equipamentos")showOffer("equipment");
+}
+window.addEventListener("hashchange",offerFromHash);
+offerFromHash();
+
 const menuButton=$("#site-menu-button"),siteNav=$("#site-navigation");
 function setMenu(open) {
   siteNav.classList.toggle("open",open);
