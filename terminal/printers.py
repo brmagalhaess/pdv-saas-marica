@@ -163,21 +163,24 @@ def receipt_layout(sale, width=80):
     if sale.get("operator_name"):
         text(f"Operador: {sale['operator_name']}")
     rule()
-    pair("ITEM / DESCRICAO", "TOTAL", bold=True)
+    text("ITENS DA COMPRA", bold=True)
     for index, item in enumerate(sale.get("items", []), 1):
-        if index > 1:
-            text("")
-        text(f"{index:02d}  {item['name']}", bold=True)
-        metadata = []
-        if item.get("sku"):
-            metadata.append(f"Cod: {item['sku']}")
+        code = f"{item['sku']} - " if item.get("sku") else ""
+        description = f"{index:02d} {code}{item['name']}"
         if item.get("ncm"):
-            metadata.append(f"NCM: {item['ncm']}")
-        if metadata:
-            text("  |  ".join(metadata))
+            description += f" | NCM: {item['ncm']}"
+        text(description, bold=True)
         qty = (_quantity(item['quantity_milli']) if item['unit'] == "UN"
                else f"{item['quantity_milli'] // 1000},{item['quantity_milli'] % 1000:03d}")
-        pair(f"{qty} {item['unit']} x {_money(item['unit_price_cents'])}", _money(item['line_total_cents']))
+        unit_label = f"{qty} {item['unit']} | Unit:"
+        unit_price = _money(item['unit_price_cents'])
+        item_total = f"Total item: {_money(item['line_total_cents'])}"
+        if len(unit_label) + len(unit_price) + len(item_total) + 2 <= columns:
+            pair(f"{unit_label} {unit_price}", item_total)
+        else:
+            # Narrow paper and large amounts keep each price with its label.
+            pair(unit_label, unit_price)
+            pair("Total item:", _money(item['line_total_cents']))
         if item.get("discount_cents"):
             pair("Desconto no item", _money(item['discount_cents']))
     rule()
