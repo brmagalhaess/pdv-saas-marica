@@ -397,6 +397,21 @@ class CloudAPITests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.cost_cents, 725)
 
+    def test_stock_receipt_uses_catalog_cost_when_item_cost_is_omitted(self):
+        self.client.force_login(self.owner)
+        self.product.cost_cents = 725
+        self.product.save(update_fields=["cost_cents"])
+        response = self.api("POST", "/api/v1/stock/receipts", {
+            "shop_id": str(self.shop.id), "reference": "NF-omitted-cost",
+            "idempotency_key": "purchase-catalog-cost",
+            "items": [{"product_id": str(self.product.id), "quantity_milli": 3000}],
+        })
+        self.assertEqual(response.status_code, 201, response.content)
+        item = response.json()["items"][0]
+        self.assertEqual(item["unit_cost_cents"], 725)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.cost_cents, 725)
+
 
 class LicenseBackfillMigrationTests(TransactionTestCase):
     def test_existing_subscriptions_keep_individual_keys_and_sources(self):

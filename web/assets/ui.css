@@ -52,6 +52,8 @@ svg { display: block; }
 .eyebrow:before { content: ""; width: 7px; height: 7px; background: #20ad73; border-radius: 50%; box-shadow: 0 0 0 4px #e0f5e8; }
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .field label { color: #33544b; font-size: 12px; font-weight: 800; }
+.field-label { color: #33544b; font-size: 12px; font-weight: 800; }
+.receipt-cost { display: flex; align-items: center; min-height: 43px; color: var(--ink); font-size: 15px; }
 .field input, .field select, .field textarea { width: 100%; min-height: 43px; border: 1px solid #cbdad1; border-radius: 9px; background: #fff; color: var(--ink); outline: none; padding: 10px 12px; }
 .field textarea { min-height: 92px; resize: vertical; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px #d9f1e3; }

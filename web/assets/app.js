@@ -940,14 +940,14 @@ async function productPicker(idPrefix) {
   select.required = true;
   const helper = el("small", "", "Digite para encontrar itens em catálogos maiores.");
   wrap.append(label, search, select, helper);
-  let serial = 0, timer;
+  let serial = 0, timer, products = [];
   async function load(query = "") {
     const requestId = ++serial;
     const result = await api.get("/products" + (query ? "?q=" + encodeURIComponent(query) : ""));
     if (requestId !== serial) return;
     const current = select.value;
     select.replaceChildren();
-    const products = records(result).filter(item => item.active !== false);
+    products = records(result).filter(item => item.active !== false);
     products.forEach(product => {
       const option = el("option", "", product.name + " · " + product.sku);
       option.value = product.id;
@@ -965,7 +965,7 @@ async function productPicker(idPrefix) {
     timer = setTimeout(() => load(search.value.trim()).catch(error => { helper.textContent = errorText(error); }), 230);
   });
   await load();
-  return { wrap, select };
+  return { wrap, select, getSelected: () => products.find(item => String(item.id) === String(select.value)) || null };
 }
 async function stockAdjustment(shopId) {
   const body = el("div");
@@ -1042,11 +1042,15 @@ async function stockReceipt(shopId) {
     const qty = el("input"); qty.type = "number"; qty.step = "0.001"; qty.min = "0.001"; qty.required = true; qty.id = qtyLabel.htmlFor;
     qtyField.append(qtyLabel, qty);
     const costField = el("div", "field");
-    const costLabel = el("label", "", "Custo unitário (R$)");
-    costLabel.htmlFor = "receipt-cost-" + number;
-    const cost = el("input"); cost.type = "text"; cost.inputMode = "decimal"; cost.placeholder = "0,00"; cost.id = costLabel.htmlFor;
-    cost.addEventListener("blur", () => { const cents = parseMoneyInput(cost.value); if (Number.isSafeInteger(cents) && cents >= 0) cost.value = editableMoney(cents); });
-    costField.append(costLabel, cost);
+    const costLabel = el("span", "field-label", "Custo aplicado");
+    const cost = el("strong", "receipt-cost");
+    const costHelp = el("small", "", "Usa o custo salvo no cadastro do produto.");
+    costField.append(costLabel, cost, costHelp);
+    const updateCost = () => {
+      const selected = picker.getSelected();
+      cost.textContent = selected && Number.isFinite(Number(selected.cost_cents)) ? money(selected.cost_cents) : "Custo não informado";
+    };
+    picker.select.addEventListener("change", updateCost);
     grid.append(picker.wrap, qtyField, costField);
     item.append(grid);
     const remove = button("Remover item", () => item.remove(), "ghost", "small");
@@ -1055,9 +1059,10 @@ async function stockReceipt(shopId) {
     item._getValue = () => ({
       product_id: picker.select.value,
       quantity_milli: Math.round(Number(qty.value) * 1000),
-      ...(cost.value.trim() === "" ? {} : { unit_cost_cents: parseMoneyInput(cost.value) })
+      // The API uses Product.cost_cents when unit_cost_cents is omitted.
     });
     rows.append(item);
+    updateCost();
   }
   const add = button("+ Adicionar item", () => addRow().catch(handleError), "secondary", "small");
   add.style.marginTop = "12px";
@@ -1086,7 +1091,7 @@ async function stockReceipt(shopId) {
     } catch (error) { handleError(error, message); submit.disabled = false; }
   });
   body.append(form);
-  openDialog("Entrada de mercadoria", "O saldo será atualizado após o registro da entrada.", body);
+  openDialog("Entrada de mercadoria", "O saldo será atualizado após o registro. O custo de cada item vem automaticamente do cadastro do produto.", body);
   await addRow();
 }
 function csvCells(line, delimiter) {
