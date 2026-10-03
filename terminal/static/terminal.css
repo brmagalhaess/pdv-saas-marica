@@ -33,6 +33,9 @@ body{background:var(--canvas);color:var(--ink)}.topbar{height:72px;background:li
 .payment-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .payment-grid label>span{white-space:normal;overflow-wrap:break-word;word-break:normal;min-width:0}
 .payment-grid input,.cart-fields input,.inline-controls input,.inline-controls select{min-width:0;max-width:100%;width:100%}
+
+/* The preview follows the thermal print order and keeps the paper readable. */
+.receipt-header{text-align:left}.receipt-meta{justify-content:flex-start;border-bottom:1px dashed #bdb5a5}.receipt-paper{width:100%;max-width:100%;text-align:left}.receipt-qr{border-top:1px dashed #bdb5a5;margin-top:12px;padding-top:12px;display:grid;justify-items:center;gap:6px;text-align:center}.receipt-qr img{width:148px;height:148px;image-rendering:pixelated}.receipt-qr small{font-size:10px;color:#6f716e}
 .inline-controls{width:100%;flex-wrap:wrap}
 .inline-controls input,.inline-controls select{flex:1 1 180px}
 .cart-actions{flex-wrap:wrap}

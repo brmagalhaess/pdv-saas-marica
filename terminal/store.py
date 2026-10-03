@@ -11,7 +11,7 @@ from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-from .printers import label_bytes, receipt_bytes
+from .printers import label_bytes, qr_svg_data_uri, receipt_bytes
 
 
 OFFLINE_LEASE_SECONDS = 7 * 24 * 60 * 60
@@ -261,6 +261,16 @@ class Store:
         conn.execute("INSERT INTO outbox VALUES (?,?,?,?,?,NULL)",
                      (event_id, event_type, aggregate_id, _json(event), _now_ms()))
         return event_id
+
+    @staticmethod
+    def _receipt_data(snapshot):
+        """Attach a self-contained QR image only for an authorized fiscal URL."""
+        fiscal = snapshot.get("fiscal")
+        if not isinstance(fiscal, dict) or not fiscal.get("qr_url") or fiscal.get("qr_data_uri"):
+            return snapshot
+        copy = dict(snapshot); copy["fiscal"] = dict(fiscal)
+        copy["fiscal"]["qr_data_uri"] = qr_svg_data_uri(fiscal["qr_url"])
+        return copy
 
     def pending_events(self, limit=50):
         with self.connection() as conn:
@@ -799,7 +809,7 @@ class Store:
                             "customer_id": customer_id}
                 if _json(comparable) != _json(received):
                     raise TerminalError("Identificador já usado para outra venda", 409)
-                return previous
+                return self._receipt_data(previous)
             cash = self._open_cash(conn)
             lines, seen = [], set()
             for item in item_requests:
@@ -873,7 +883,7 @@ class Store:
             self._audit(conn, operator["id"], "sale.completed", sale_id,
                         f"manager_override={override_id}" if override_id else None)
             self._queue_receipt(conn, snapshot)
-            return snapshot
+            return self._receipt_data(snapshot)
 
     def sales(self, limit=50):
         with self.connection() as conn:
@@ -885,7 +895,7 @@ class Store:
             row = conn.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
             if not row:
                 raise TerminalError("Venda não encontrada", 404)
-            result = json.loads(row["snapshot"])
+            result = self._receipt_data(json.loads(row["snapshot"]))
             result["status"] = row["status"]
             result["void_reason"] = row["void_reason"]
             return result

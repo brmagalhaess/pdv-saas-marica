@@ -12,12 +12,61 @@ from urllib.request import Request, urlopen
 from pathlib import Path
 
 
+def qr_svg_data_uri(value, scale=4):
+    """Create a self-contained QR image for the on-screen receipt."""
+    if not value:
+        return ""
+    try:
+        import qrcode
+    except ImportError:
+        return ""
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
+                       box_size=scale, border=2)
+    qr.add_data(str(value)); qr.make(fit=True)
+    matrix = qr.get_matrix()
+    size = len(matrix); modules = []
+    for y, row in enumerate(matrix):
+        for x, dark in enumerate(row):
+            if dark:
+                modules.append(f"<rect x='{x}' y='{y}' width='1' height='1'/>")
+    svg = (f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {size} {size}' "
+           f"shape-rendering='crispEdges'><rect width='100%' height='100%' fill='white'/><g fill='black'>"
+           + "".join(modules) + "</g></svg>")
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode("ascii")
+
+
+def _qr_escpos(value, size=5):
+    """Epson ESC/POS QR command (model 2, error correction M)."""
+    if not value:
+        return b""
+    data = str(value).encode("utf-8")
+    if len(data) > 700:
+        return b""
+    size = max(1, min(int(size), 16))
+    store_len = len(data) + 3
+    p_l, p_h = store_len & 0xFF, (store_len >> 8) & 0xFF
+    return (b"\x1d\x28\x6b\x04\x00\x31\x41\x32\x00"  # model 2
+            + b"\x1d\x28\x6b\x03\x00\x31\x43" + bytes([size])
+            + b"\x1d\x28\x6b\x03\x00\x31\x45\x31"
+            + b"\x1d\x28\x6b" + bytes([p_l, p_h]) + b"\x31\x50\x30" + data
+            + b"\x1d\x28\x6b\x03\x00\x31\x51\x30")
+
+
 def _money(cents):
     return f"R$ {cents // 100},{cents % 100:02d}"
 
 
 def _clean(value, length=80):
     return "".join(ch for ch in str(value) if ch.isprintable() and ch not in "^~\r\n").strip()[:length]
+
+
+def _document(value):
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) == 14:
+        return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
+    if len(digits) == 11:
+        return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
+    return _clean(value, 30)
 
 
 def _quantity(milli):
@@ -44,7 +93,7 @@ def receipt_bytes(sale, width=58):
         lines.append(trade_name)
     if legal_name:
         lines.append(legal_name)
-    document = _clean(issuer.get("document") or "", columns - 6)
+    document = _document(issuer.get("document") or "")
     if document:
         lines.append(f"CNPJ/CPF: {document}")
     if issuer.get("state_registration"):
@@ -59,10 +108,6 @@ def receipt_bytes(sale, width=58):
     lines.extend([divider, f"Venda {str(sale['id'])[:16]}"])
     if sale.get("status") == "voided":
         lines.append("VENDA CANCELADA")
-    if sale.get("customer_name"):
-        lines.append(f"Cliente: {_clean(sale['customer_name'], columns - 9)}")
-    if sale.get("customer_document"):
-        lines.append(f"CPF/CNPJ: {_clean(sale['customer_document'], columns - 9)}")
     lines.append(divider)
     for item in sale["items"]:
         qty = f"{_quantity(item['quantity_milli'])} {item['unit']}"
@@ -81,6 +126,13 @@ def receipt_bytes(sale, width=58):
         lines.append(f"{payment['method'].upper()}: {_money(payment['amount_cents'])}")
     if sale["change_cents"]:
         lines.append(f"Troco: {_money(sale['change_cents'])}")
+    if sale.get("customer_name") or sale.get("customer_document"):
+        lines.append(divider)
+        if sale.get("customer_name"):
+            lines.append(f"Cliente: {_clean(sale['customer_name'], columns - 9)}")
+        if sale.get("customer_document"):
+            lines.append(f"CPF/CNPJ: {_document(sale['customer_document'])}")
+    qr_url = fiscal.get("qr_url") if authorized else ""
     if authorized:
         lines.extend([divider, f"NFC-e: {fiscal.get('number', '—')}  Serie: {fiscal.get('series', '—')}",
                       f"Chave: {_clean(fiscal.get('access_key'), columns)}"])
@@ -88,15 +140,20 @@ def receipt_bytes(sale, width=58):
             lines.append(f"Protocolo: {_clean(fiscal['protocol'], columns - 10)}")
         if fiscal.get("authorized_at"):
             lines.append(f"Autorizada em: {_clean(fiscal['authorized_at'], columns - 14)}")
-        if fiscal.get("qr_url"):
-            lines.append(f"Consulta: {_clean(fiscal['qr_url'], columns)}")
+        if qr_url:
+            lines.append("Leia o QR Code para consultar")
         if fiscal.get("taxes_cents") is not None:
             lines.append(f"Tributos: {_money(int(fiscal['taxes_cents']))}")
     else:
         lines.extend([divider, "NFC-e nao emitida", "Documento sem valor fiscal"])
-    lines.extend(["Obrigado pela preferencia", "", "", ""])
+    lines.extend(["Obrigado pela preferencia", "", "", "", "", "", "", ""])
     text = "\n".join(lines).encode("cp850", errors="replace")
-    return b"\x1b@" + text + b"\n\x1dV\x00"
+    qr = _qr_escpos(qr_url)
+    if qr:
+        marker = "Leia o QR Code para consultar".encode("cp850")
+        before, after = text.split(marker, 1)
+        return b"\x1b@\x1ba\x00" + before + marker + b"\n\x1ba\x01" + qr + b"\n\x1ba\x00" + after + b"\n\x1dV\x00"
+    return b"\x1b@\x1ba\x00" + text + b"\n\x1dV\x00"
 
 
 def label_bytes(product, fmt="zpl"):
