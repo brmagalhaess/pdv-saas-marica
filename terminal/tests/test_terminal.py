@@ -36,7 +36,8 @@ class TerminalTests(unittest.TestCase):
         ]
         self.products = [
             {"id": self.product_id, "sku": "QUEIJO", "barcode": "7890000000001", "name": "Queijo",
-             "unit": "KG", "category": "Frios", "price_cents": 1299, "quantity_milli": 5000, "active": True},
+             "unit": "KG", "scale_code": "12345", "category": "Frios", "price_cents": 1299,
+             "quantity_milli": 5000, "active": True},
             {"id": self.unit_product_id, "sku": "ARROZ", "barcode": "7890000000002", "name": "Arroz",
              "unit": "UN", "category": "Mercearia", "price_cents": 700, "quantity_milli": 3000, "active": True},
         ]
@@ -207,6 +208,11 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual({o["name"] for o in reopened.operators()}, {"Ana", "Bruno"})
         self.assertEqual(reopened.login(self.cashier_id, "123987")["role"], "cashier")
         self.assertEqual(reopened.login(self.manager_id, "654321")["role"], "manager")
+
+    def test_weight_product_keeps_scale_plu_in_local_catalog(self):
+        product = next(row for row in self.store.products() if row["id"] == self.product_id)
+        self.assertEqual(product["unit"], "KG")
+        self.assertEqual(product["scale_code"], "12345")
 
     def test_read_only_operator_can_enter_without_cash_permissions(self):
         viewer_id = str(uuid.uuid4())

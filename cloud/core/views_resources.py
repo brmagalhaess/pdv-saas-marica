@@ -81,7 +81,7 @@ def form_values(kind, data, tenant, creating):
     elif kind == "categories":
         allowed, required = {"name", "active"}, {"name"}
     elif kind == "products":
-        allowed = {"name", "category_id", "variant", "unit",
+        allowed = {"name", "category_id", "variant", "unit", "scale_code",
                    "price_cents", "stock_minimum_milli", "image_url", "tax_fields", "active"}
         required = {"name", "price_cents"}
     else:
@@ -119,6 +119,12 @@ def form_values(kind, data, tenant, creating):
             if value not in ("UN", "KG", "L"):
                 raise APIError("Unidade inválida")
             result[key] = value
+        elif key == "scale_code":
+            if value is None:
+                value = ""
+            if not isinstance(value, str) or value.strip() and (not value.strip().isdigit() or not 1 <= len(value.strip()) <= 6):
+                raise APIError("Código PLU da balança inválido")
+            result[key] = value.strip()
         elif key == "email":
             value = text(value, "E-mail", 254, optional=True).lower()
             if value:

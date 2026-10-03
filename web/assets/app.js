@@ -417,6 +417,7 @@ const resourceSpecs = {
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
       { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
       { key: "barcode", label: "Código de barras", generated: true, max: 13, help: "Código interno EAN-13 gerado para esta empresa; bloqueado para edição." },
+      { key: "scale_code", label: "Código PLU da balança (opcional)", max: 6, inputMode: "numeric", pattern: "[0-9]{1,6}", help: "Use o código numérico programado na balança para etiquetas EAN-13 com peso." },
       { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
       { key: "variant", label: "Variação", placeholder: "Ex.: Tamanho M ou sabor morango", max: 100 },
       { key: "unit", label: "Unidade", type: "select", required: true, choices: [["UN","Unidade"],["KG","Quilo"],["L","Litro"]], default: "UN" },
@@ -547,6 +548,8 @@ async function fieldNode(field, value, creating = false) {
   input.required = !!field.required;
   if (field.max) input.maxLength = field.max;
   if (field.minLength) input.minLength = field.minLength;
+  if (field.inputMode) input.inputMode = field.inputMode;
+  if (field.pattern) input.pattern = field.pattern;
   if (field.min !== undefined) input.min = String(field.min);
   if (field.placeholder) input.placeholder = field.placeholder;
   if (field.type === "checkbox") {

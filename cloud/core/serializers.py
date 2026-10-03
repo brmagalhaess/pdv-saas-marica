@@ -18,7 +18,7 @@ def category(row):
 
 
 def product(row):
-    return {"id": str(row.id), "sku": row.sku, "barcode": row.barcode,
+    return {"id": str(row.id), "sku": row.sku, "barcode": row.barcode, "scale_code": row.scale_code,
             "name": row.name, "category_id": str(row.category_id) if row.category_id else None,
             "variant": row.variant, "unit": row.unit,
             "price_cents": row.price_cents, "cost_cents": row.cost_cents,

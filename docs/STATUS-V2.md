@@ -34,7 +34,7 @@ Essas evidências cobrem as condições dos testes, não homologação com hardw
 
 O núcleo cobre varejo de produtos por unidade/quantidade fracionária e variações de catálogo: base para mercados, mercearias e varejo geral, sujeita às exigências de cada operação.
 
-Ainda faltam mesas/comandas/cozinha/delivery; agenda/ordens de serviço; farmácia/SNGPC; lotes/validade/rastreabilidade; balança serial; escrituração/importação completa de compras; promoções/fidelidade; conciliação bancária/TEF; motor fiscal abrangendo regimes/UFs. Não anunciar cobertura integral desses segmentos.
+Ainda faltam mesas/comandas/cozinha/delivery; agenda/ordens de serviço; farmácia/SNGPC; lotes/validade/rastreabilidade; protocolo específico de cada fabricante de balança e teste físico do piloto; escrituração/importação completa de compras; promoções/fidelidade; conciliação bancária/TEF; motor fiscal abrangendo regimes/UFs. Não anunciar cobertura integral desses segmentos.
 
 ## Limites offline
 

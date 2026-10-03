@@ -102,6 +102,7 @@ class Product(models.Model):
     category = models.ForeignKey(Category, on_delete=models.PROTECT, null=True, blank=True)
     sku = models.CharField(max_length=80)
     barcode = models.CharField(max_length=40, blank=True)
+    scale_code = models.CharField(max_length=6, blank=True)
     name = models.CharField(max_length=180)
     variant = models.CharField(max_length=120, blank=True)
     unit = models.CharField(max_length=2, choices=UNITS, default="UN")
@@ -118,6 +119,7 @@ class Product(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["tenant", "sku"], name="product_tenant_sku_unique"),
             models.UniqueConstraint(fields=["tenant", "barcode"], condition=~Q(barcode=""), name="product_tenant_barcode_unique"),
+            models.UniqueConstraint(fields=["tenant", "scale_code"], condition=~Q(scale_code=""), name="product_tenant_scale_code_unique"),
         ]
         indexes = [models.Index(fields=["tenant", "name"])]
 

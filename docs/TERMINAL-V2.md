@@ -28,6 +28,8 @@ Um banco local não pode ser reaproveitado por outra empresa depois que existem 
 
 - PIN local e papéis vindos do cloud; sessão HttpOnly/SameSite Strict, token CSRF em mutações, validação de Host e Origin.
 - Busca por nome, SKU e código de barras; preço, categoria, estoque local e carrinho em UN/KG/L com milésimos. `UN` exige quantidade inteira. Cada linha arredonda `preço_cents × quantidade_milli ÷ 1000` com `ROUND_HALF_UP`.
+- Venda por peso: produtos `KG` pedem o peso em quilogramas com até três casas decimais e calculam o valor proporcional ao preço por kg. O cadastro aceita um `scale_code`/PLU opcional para etiquetas de balança.
+- Balanças: o terminal pode receber peso automaticamente pelo Web Serial em Chrome/Edge (USB/COM, 9600/4800/19200 bps, protocolo textual com peso em kg ou g). Também interpreta etiquetas EAN-13 de balanças com prefixo `2`, PLU de cinco dígitos e payload configurável como peso em gramas ou preço total. O botão **Conectar balança** fica no caixa; sem equipamento conectado, o peso pode ser digitado.
 - Desconto por venda: operador de caixa até 10%, gerente até 50%, proprietário/admin até 100%; acima do limite do operador requer PIN de gerente. Os limites são constantes desta prévia.
 - Pagamento dividido entre dinheiro, Pix e cartão, com troco apenas sobre dinheiro. Pix/cartão são **declarações manuais**, sem TEF, captura, confirmação ou estorno automático.
 - Abertura/fechamento de caixa, sangria e suprimento, suspensão/retomada de carrinho, histórico local, reimpressão e cancelamento comercial com motivo e autorização de gerente. Ajustes de estoque exigem papel autorizado. Todos geram auditoria local relevante.

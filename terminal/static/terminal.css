@@ -40,3 +40,4 @@ body{background:var(--canvas);color:var(--ink)}.topbar{height:72px;background:li
 .cash-count-field{min-width:0}
 @media(max-width:1300px){.checkout-grid{grid-template-columns:1fr}.cart{position:static;min-height:unset}.catalog{min-height:unset}}
 @media(max-width:760px){.payment-grid{grid-template-columns:1fr}.field-row,.discount-controls{grid-template-columns:1fr}.cash-opening{display:grid}.cart-foot{flex-wrap:wrap}.cart-foot #sellBtn{width:100%;order:-1}.cash-summary-grid{grid-template-columns:1fr}}
+.scale-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin:2px 0 3px}.scale-controls label{display:grid;gap:4px;color:#71878d;font-size:10px;font-weight:800}.scale-controls select{height:31px;border:1px solid #d5e2e3;border-radius:8px;padding:4px 8px;color:#315b67;background:#fff;font-size:11px}.scale-controls button{height:31px}.cart-row input::placeholder{color:#a2b1b4;font-size:10px}.cart-row:has(input[value="0,000"]){background:#fffaf1}

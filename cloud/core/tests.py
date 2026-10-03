@@ -107,9 +107,10 @@ class CloudAPITests(TestCase):
         self.assertEqual(rejected_cost.status_code, 400)
         created = self.api("POST", "/api/v1/products",
                            {"name": "Leite integral", "price_cents": 499,
-                            "category_id": None})
+                            "category_id": None, "unit": "KG", "scale_code": "54321"})
         self.assertEqual(created.status_code, 201, created.content)
         self.assertTrue(created.json()["image_url"].endswith("/beverages.svg"))
+        self.assertEqual(created.json()["scale_code"], "54321")
         product_id = created.json()["id"]
         updated = self.api("PATCH", f"/api/v1/products/{product_id}",
                            {"image_url": "https://cdn.example.test/leite.png"})

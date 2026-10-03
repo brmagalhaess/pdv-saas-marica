@@ -257,7 +257,7 @@ def bootstrap(request):
                                              product_id__in=[p.id for p in shown])
                 .values("product_id").annotate(q=Sum("delta_milli")))
     by_product = {row["product_id"]: row["q"] for row in balances}
-    products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode,
+    products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode, "scale_code": p.scale_code,
                  "name": p.name, "unit": p.unit, "price_cents": p.price_cents,
                  "cost_cents": p.cost_cents, "image_url": p.image_url, "active": p.active,
                  "quantity_milli": by_product.get(p.id, 0),

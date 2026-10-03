@@ -86,7 +86,7 @@ class Store:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS products(
-                    id TEXT PRIMARY KEY,sku TEXT,barcode TEXT UNIQUE,name TEXT NOT NULL,
+                    id TEXT PRIMARY KEY,sku TEXT,barcode TEXT UNIQUE,scale_code TEXT,name TEXT NOT NULL,
                     unit TEXT NOT NULL CHECK(unit IN ('UN','KG','L')),category TEXT,
                     price_cents INTEGER NOT NULL CHECK(price_cents>=0),
                     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents>=0),
@@ -136,6 +136,8 @@ class Store:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(products)")}
             if "cost_cents" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN cost_cents INTEGER NOT NULL DEFAULT 0")
+            if "scale_code" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN scale_code TEXT")
             if "image_url" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
             conn.commit()
@@ -426,14 +428,16 @@ class Store:
                 if not isinstance(image_url, str) or len(image_url) > 500:
                     raise TerminalError("Imagem do produto inválida")
                 conn.execute("""INSERT INTO products
-                    (id,sku,barcode,name,unit,category,price_cents,cost_cents,image_url,stock_milli,active,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    (id,sku,barcode,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_milli,active,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
+                    scale_code=excluded.scale_code,
                     name=excluded.name,unit=excluded.unit,category=excluded.category,
                     price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
                     image_url=excluded.image_url,stock_milli=excluded.stock_milli,
                     active=excluded.active,updated_at=excluded.updated_at""",
                     (product_id, product.get("sku"), product.get("barcode") or None,
+                     product.get("scale_code") or None,
                      _str(product.get("name"), "Nome do produto"), unit, category or "Geral",
                      price, _positive_int(product.get("cost_cents", 0), "Custo", zero=True),
                      image_url,
