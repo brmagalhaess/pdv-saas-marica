@@ -20,12 +20,12 @@ Listagens devolvem `{results:[...],next_cursor:null|"..."}`. Recursos em `GET/PO
 
 - `shops`: `{id,name,active,address}`.
 - `categories`: `{id,name,active}`.
-- `products`: `{id,sku,barcode,name,category_id,variant,unit,price_cents,cost_cents,stock_minimum_milli,tax_fields,active}`; `unit` em `UN|KG|L`. O servidor gera SKU e código de barras EAN-13 interno ao criar; ambos são somente leitura e únicos por empresa. O prefixo `2` identifica código de circulação interna, não um GTIN GS1. Filtro `?q=`.
+- `products`: `{id,sku,barcode,name,category_id,variant,unit,price_cents,cost_cents,stock_minimum_milli,tax_fields,active}`; o cadastro recebe preço de venda, nunca custo de compra. `cost_cents` é o custo médio ponderado calculado pelo servidor a partir das entradas. `unit` em `UN|KG|L`. O servidor gera SKU e código de barras EAN-13 interno ao criar; ambos são somente leitura e únicos por empresa. O prefixo `2` identifica código de circulação interna, não um GTIN GS1. Filtro `?q=`.
 - `customers`: `{id,name,document,email,phone,active}`.
 - `suppliers`: `{id,name,document,email,phone,active}`.
 - `stock?shop_id=<uuid>`: `{results:[{product_id,sku,name,unit,quantity_milli,stock_minimum_milli,below_minimum}]}`.
 - `stock/movements`: GET `?shop_id=`; POST `{shop_id,product_id,delta_milli,reason,idempotency_key}` → movimento e saldo. Ajustes manuais só por gerente/estoque/administrador.
-- `stock/receipts`: GET; POST `{shop_id,supplier_id?,reference?,idempotency_key,items:[{product_id,quantity_milli,unit_cost_cents?}]}` → entrada e movimentos atômicos.
+- `stock/receipts`: GET; POST `{shop_id,supplier_id?,reference?,idempotency_key,items:[{product_id,quantity_milli,unit_cost_cents}]}` → entrada e movimentos atômicos. O custo da entrada é obrigatório; cada item preserva o custo pago e o custo médio após o lançamento.
 - `finance`: GET/POST `{kind:'payable'|'receivable',description,amount_cents,due_date,customer_id?,supplier_id?}`; `POST finance/<id>/settle` `{paid_at?,amount_cents?}`. A primeira versão liquida o título integralmente. Exige recurso `finance` no plano.
 - `users`: membros da empresa `{id,user_id,name,email,role,active,has_pin}`. POST `{name,email,password,role,pin?}`; PATCH `{name?,role?,active?}`; `POST users/<id>/pin` `{pin}`. O último proprietário ativo não pode ser desativado, removido ou rebaixado.
 - `terminals`: GET; POST `{shop_id,name}` → terminal mais `pairing_code` utilizável uma vez por 10 minutos. PATCH `{name?,revoked?,reissue_pairing?}`. Criação e reativação obedecem ao limite do plano.

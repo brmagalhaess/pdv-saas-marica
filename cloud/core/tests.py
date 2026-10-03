@@ -102,6 +102,9 @@ class CloudAPITests(TestCase):
 
     def test_product_gets_local_image_default_and_accepts_custom_image(self):
         self.client.force_login(self.owner)
+        rejected_cost = self.api("POST", "/api/v1/products",
+                                 {"name": "Custo no cadastro", "price_cents": 499, "cost_cents": 300})
+        self.assertEqual(rejected_cost.status_code, 400)
         created = self.api("POST", "/api/v1/products",
                            {"name": "Leite integral", "price_cents": 499,
                             "category_id": None})
@@ -397,20 +400,32 @@ class CloudAPITests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.cost_cents, 725)
 
-    def test_stock_receipt_uses_catalog_cost_when_item_cost_is_omitted(self):
+    def test_stock_receipt_requires_cost_and_builds_weighted_average_history(self):
         self.client.force_login(self.owner)
-        self.product.cost_cents = 725
-        self.product.save(update_fields=["cost_cents"])
-        response = self.api("POST", "/api/v1/stock/receipts", {
+        missing_cost = self.api("POST", "/api/v1/stock/receipts", {
             "shop_id": str(self.shop.id), "reference": "NF-omitted-cost",
             "idempotency_key": "purchase-catalog-cost",
             "items": [{"product_id": str(self.product.id), "quantity_milli": 3000}],
         })
-        self.assertEqual(response.status_code, 201, response.content)
-        item = response.json()["items"][0]
-        self.assertEqual(item["unit_cost_cents"], 725)
+        self.assertEqual(missing_cost.status_code, 400)
+        first = self.api("POST", "/api/v1/stock/receipts", {
+            "shop_id": str(self.shop.id), "reference": "NF-725",
+            "idempotency_key": "purchase-average-1",
+            "items": [{"product_id": str(self.product.id), "quantity_milli": 3000,
+                       "unit_cost_cents": 725}],
+        })
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(first.json()["items"][0]["average_cost_cents"], 725)
+        second = self.api("POST", "/api/v1/stock/receipts", {
+            "shop_id": str(self.shop.id), "reference": "NF-900",
+            "idempotency_key": "purchase-average-2",
+            "items": [{"product_id": str(self.product.id), "quantity_milli": 1000,
+                       "unit_cost_cents": 900}],
+        })
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(second.json()["items"][0]["average_cost_cents"], 769)
         self.product.refresh_from_db()
-        self.assertEqual(self.product.cost_cents, 725)
+        self.assertEqual(self.product.cost_cents, 769)
 
 
 class LicenseBackfillMigrationTests(TransactionTestCase):

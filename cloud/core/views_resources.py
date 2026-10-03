@@ -82,7 +82,7 @@ def form_values(kind, data, tenant, creating):
         allowed, required = {"name", "active"}, {"name"}
     elif kind == "products":
         allowed = {"name", "category_id", "variant", "unit",
-                   "price_cents", "cost_cents", "stock_minimum_milli", "image_url", "tax_fields", "active"}
+                   "price_cents", "stock_minimum_milli", "image_url", "tax_fields", "active"}
         required = {"name", "price_cents"}
     else:
         allowed, required = {"name", "document", "email", "phone", "active"}, {"name"}
@@ -104,7 +104,7 @@ def form_values(kind, data, tenant, creating):
                 result["category"] = None
             else:
                 result["category"] = scoped(Category, tenant, value)
-        elif key in ("price_cents", "cost_cents", "stock_minimum_milli"):
+        elif key in ("price_cents", "stock_minimum_milli"):
             result[key] = money(value, key)
         elif key == "tax_fields":
             if not isinstance(value, dict) or len(str(value)) > 16000:

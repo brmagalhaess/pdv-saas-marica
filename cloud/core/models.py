@@ -265,6 +265,9 @@ class StockReceiptItem(models.Model):
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity_milli = models.PositiveBigIntegerField()
     unit_cost_cents = models.PositiveBigIntegerField(default=0)
+    # Snapshot of the moving weighted average immediately after this receipt.
+    # Keeping it on the immutable receipt item makes the cost history auditable.
+    average_cost_cents = models.PositiveBigIntegerField(null=True, blank=True)
 
 
 class FinanceEntry(models.Model):

@@ -421,7 +421,6 @@ const resourceSpecs = {
       { key: "variant", label: "Variação", placeholder: "Ex.: Tamanho M ou sabor morango", max: 100 },
       { key: "unit", label: "Unidade", type: "select", required: true, choices: [["UN","Unidade"],["KG","Quilo"],["L","Litro"]], default: "UN" },
       { key: "price_cents", label: "Preço de venda (R$)", type: "money", required: true, min: 0 },
-      { key: "cost_cents", label: "Custo (R$)", type: "money", min: 0, default: 0 },
       { key: "stock_minimum_milli", label: "Estoque mínimo (alerta)", type: "milli", min: 0, default: 0, help: "Apenas sinaliza reposição. Para adicionar unidades, use Operação > Estoque > Registrar entrada ou Ajustar estoque." },
       { key: "image_url", label: "Imagem do produto (URL opcional)", placeholder: "https://... ou /assets/product-images/...", max: 500, full: true, help: "Se ficar vazio, o PDV escolhe automaticamente uma imagem da categoria." },
       { key: "active", label: "Produto ativo", type: "checkbox", default: true }
@@ -434,9 +433,9 @@ const resourceSpecs = {
       { label: "Variação", render: row => row.variant },
       { label: "Unidade", render: row => row.unit },
       { label: "Preço", render: row => money(row.price_cents) },
-      { label: "Custo", render: row => row.cost_cents == null ? "—" : money(row.cost_cents) },
-      { label: "Lucro bruto", render: row => row.cost_cents == null ? "—" : money(Number(row.price_cents || 0) - Number(row.cost_cents || 0)) },
-      { label: "Margem", render: row => row.cost_cents == null || !Number(row.price_cents) ? "—" : `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` },
+      { label: "Custo médio", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 ? "—" : money(row.cost_cents) },
+      { label: "Lucro bruto", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 ? "—" : money(Number(row.price_cents || 0) - Number(row.cost_cents || 0)) },
+      { label: "Margem", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 || !Number(row.price_cents) ? "—" : `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` },
       { label: "Estado", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
     ]
   },
@@ -1042,15 +1041,11 @@ async function stockReceipt(shopId) {
     const qty = el("input"); qty.type = "number"; qty.step = "0.001"; qty.min = "0.001"; qty.required = true; qty.id = qtyLabel.htmlFor;
     qtyField.append(qtyLabel, qty);
     const costField = el("div", "field");
-    const costLabel = el("span", "field-label", "Custo aplicado");
-    const cost = el("strong", "receipt-cost");
-    const costHelp = el("small", "", "Usa o custo salvo no cadastro do produto.");
-    costField.append(costLabel, cost, costHelp);
-    const updateCost = () => {
-      const selected = picker.getSelected();
-      cost.textContent = selected && Number.isFinite(Number(selected.cost_cents)) ? money(selected.cost_cents) : "Custo não informado";
-    };
-    picker.select.addEventListener("change", updateCost);
+    const costLabel = el("label", "", "Custo desta entrada (R$)");
+    costLabel.htmlFor = "receipt-cost-" + number;
+    const cost = el("input"); cost.type = "text"; cost.inputMode = "decimal"; cost.placeholder = "0,00"; cost.required = true; cost.id = costLabel.htmlFor;
+    cost.addEventListener("blur", () => { const cents = parseMoneyInput(cost.value); if (Number.isSafeInteger(cents) && cents >= 0) cost.value = editableMoney(cents); });
+    costField.append(costLabel, cost, el("small", "", "Informe o valor pago nesta entrada. O sistema calcula o custo médio automaticamente."));
     grid.append(picker.wrap, qtyField, costField);
     item.append(grid);
     const remove = button("Remover item", () => item.remove(), "ghost", "small");
@@ -1059,10 +1054,9 @@ async function stockReceipt(shopId) {
     item._getValue = () => ({
       product_id: picker.select.value,
       quantity_milli: Math.round(Number(qty.value) * 1000),
-      // The API uses Product.cost_cents when unit_cost_cents is omitted.
+      unit_cost_cents: parseMoneyInput(cost.value),
     });
     rows.append(item);
-    updateCost();
   }
   const add = button("+ Adicionar item", () => addRow().catch(handleError), "secondary", "small");
   add.style.marginTop = "12px";
@@ -1077,8 +1071,8 @@ async function stockReceipt(shopId) {
     event.preventDefault();
     if (!form.reportValidity()) return;
     const items = [...rows.children].map(row => row._getValue());
-    if (!items.length || items.some(item => !Number.isSafeInteger(item.quantity_milli) || item.quantity_milli <= 0 || (item.unit_cost_cents != null && (!Number.isSafeInteger(item.unit_cost_cents) || item.unit_cost_cents < 0)) || !item.product_id)) {
-      handleError(new Error("Inclua pelo menos um item com quantidade válida."), message); return;
+    if (!items.length || items.some(item => !Number.isSafeInteger(item.quantity_milli) || item.quantity_milli <= 0 || !Number.isSafeInteger(item.unit_cost_cents) || item.unit_cost_cents < 0 || !item.product_id)) {
+      handleError(new Error("Inclua pelo menos um item com quantidade e custo válidos."), message); return;
     }
     const payload = { shop_id: shopId, items };
     if (supplier.value) payload.supplier_id = supplier.value;
@@ -1091,7 +1085,7 @@ async function stockReceipt(shopId) {
     } catch (error) { handleError(error, message); submit.disabled = false; }
   });
   body.append(form);
-  openDialog("Entrada de mercadoria", "O saldo será atualizado após o registro. O custo de cada item vem automaticamente do cadastro do produto.", body);
+  openDialog("Entrada de mercadoria", "Informe o custo pago nesta entrada. O histórico fica registrado e o custo médio é recalculado automaticamente.", body);
   await addRow();
 }
 function csvCells(line, delimiter) {
@@ -1142,7 +1136,7 @@ async function stockReceiptImport(shopId) {
       const identityIndex = find(["sku", "codigo", "codigo interno", "barcode", "codigo de barras", "ean", "gtin"]);
       const quantityIndex = find(["quantidade", "qtd", "quant", "quantity"]);
       const costIndex = find(["custo", "custo unitario", "valor compra", "preco compra", "unit cost"]);
-      if (identityIndex === undefined || quantityIndex === undefined) throw new Error("O cabeçalho precisa conter SKU ou código de barras e quantidade.");
+      if (identityIndex === undefined || quantityIndex === undefined || costIndex === undefined) throw new Error("O cabeçalho precisa conter SKU ou código de barras, quantidade e custo unitário.");
       const products = []; let cursor = "";
       do {
         const response = await api.get("/products?limit=100" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
@@ -1161,7 +1155,8 @@ async function stockReceiptImport(shopId) {
         const quantityMilli = Math.round(Number(rawQuantity) * 1000);
         if (!Number.isSafeInteger(quantityMilli) || quantityMilli <= 0) throw new Error(`Quantidade inválida na linha ${rowIndex + 1}.`);
         const item = { product_id: product.id, quantity_milli: quantityMilli };
-        if (costIndex !== undefined && String(cells[costIndex] || "").trim()) item.unit_cost_cents = importMoney(cells[costIndex]);
+        if (!String(cells[costIndex] || "").trim()) throw new Error(`Custo ausente na linha ${rowIndex + 1}.`);
+        item.unit_cost_cents = importMoney(cells[costIndex]);
         items.push(item);
       }
       if (unknown.length) throw new Error(`Produtos não encontrados: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? "…" : ""}`);
@@ -1262,6 +1257,24 @@ async function stockPage() {
         : empty("Sem entradas", "Registre a primeira entrada de mercadoria."));
       grid.append(movementBox, receiptBox);
       results.append(grid);
+      const costHistory = receipts.flatMap(receipt => (receipt.items || []).map(item => ({
+        ...item,
+        reference: receipt.source_file?.name || receipt.reference || String(receipt.id).slice(0, 8),
+        created_at: receipt.created_at
+      })));
+      const costHistoryBox = surface("Histórico de custos", "Cada entrada preserva o custo pago e o custo médio após o lançamento.");
+      costHistoryBox.append(costHistory.length
+        ? table([
+          { label: "Produto", render: row => row.product_name || row.product_id },
+          { label: "Quantidade", render: row => quantity(row.quantity_milli, row.unit || "UN") },
+          { label: "Custo da entrada", render: row => money(row.unit_cost_cents) },
+          { label: "Custo médio após entrada", render: row => row.average_cost_cents == null ? "—" : money(row.average_cost_cents) },
+          { label: "Referência", render: row => row.reference },
+          { label: "Data", render: row => dateTime(row.created_at) }
+        ], costHistory.slice(0, 40))
+        : empty("Sem histórico de custos", "Os custos informados nas entradas aparecerão aqui."));
+      costHistoryBox.style.marginTop = "16px";
+      results.append(costHistoryBox);
     } catch (error) {
       if (token !== state.renderId) return;
       results.replaceChildren(empty("Não foi possível carregar o estoque", errorText(error), "!"));

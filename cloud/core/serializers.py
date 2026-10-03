@@ -63,7 +63,10 @@ def receipt(row):
             if row.source_file_name else None,
             "created_at": iso(row.created_at),
             "items": [{"product_id": str(item.product_id), "quantity_milli": item.quantity_milli,
-                       "unit_cost_cents": item.unit_cost_cents} for item in row.items.all()]}
+                       "unit_cost_cents": item.unit_cost_cents,
+                       "average_cost_cents": item.average_cost_cents,
+                       "product_name": item.product.name, "unit": item.product.unit}
+                      for item in row.items.all()]}
 
 
 def finance(row):

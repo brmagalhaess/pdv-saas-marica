@@ -100,7 +100,7 @@ def receipts(request):
                                 write=request.method == "POST")
     tenant = member.tenant
     if request.method == "GET":
-        rows = StockReceipt.objects.filter(tenant=tenant).prefetch_related("items")
+        rows = StockReceipt.objects.filter(tenant=tenant).prefetch_related("items__product")
         shop_id = request.GET.get("shop_id")
         if shop_id:
             rows = rows.filter(shop=scoped(Shop, tenant, shop_id))
@@ -134,13 +134,14 @@ def receipts(request):
     for item in items:
         if not isinstance(item, dict):
             raise APIError("Item inválido")
-        fields(item, ("product_id", "quantity_milli", "unit_cost_cents"), ("product_id", "quantity_milli"))
+        fields(item, ("product_id", "quantity_milli", "unit_cost_cents"),
+               ("product_id", "quantity_milli", "unit_cost_cents"))
         product = scoped(Product, tenant, item["product_id"])
         if product.id in seen or not product.active:
             raise APIError("Produto repetido ou inativo")
         seen.add(product.id)
         prepared.append((product, product_quantity(product, item["quantity_milli"]),
-                         money(item.get("unit_cost_cents", product.cost_cents), "Custo")))
+                         money(item["unit_cost_cents"], "Custo da entrada")))
     content_hash = digest({"shop_id": str(shop.id), "supplier_id": str(supplier.id) if supplier else None,
                            "reference": reference, "source_file": {"name": source_name, "mime": source_mime,
                                                                       "size": source_size, "sha256": source_hash},
@@ -158,15 +159,25 @@ def receipts(request):
                                           source_file_size=source_size, idempotency_key=key,
                                           content_hash=content_hash, created_by=member.user)
         for product, qty, cost in prepared:
+            # Receipts are the only source of purchase cost.  Product.cost_cents
+            # stores the weighted moving average used by margin reports.
+            product = Product.objects.select_for_update().get(pk=product.pk)
+            previous_quantity = (StockMovement.objects.filter(tenant=tenant, product=product)
+                                 .aggregate(value=Sum("delta_milli"))["value"] or 0)
+            if previous_quantity > 0 and product.cost_cents not in (None, 0):
+                total_quantity = previous_quantity + qty
+                average = ((previous_quantity * product.cost_cents) + (qty * cost)
+                           + total_quantity // 2) // total_quantity
+            else:
+                average = cost
             StockReceiptItem.objects.create(receipt=row, product=product,
-                                            quantity_milli=qty, unit_cost_cents=cost)
+                                            quantity_milli=qty, unit_cost_cents=cost,
+                                            average_cost_cents=average)
             StockMovement.objects.create(tenant=tenant, shop=shop, product=product,
                                          delta_milli=qty, source="receipt", reason="Entrada de mercadoria",
                                          reference=reference or str(row.id), actor=member.user,
                                          idempotency_key=f"receipt:{row.id}:{product.id}")
-            # Keep the most recent purchase cost on the catalog so the sales
-            # price and expected gross profit remain visible in the product list.
-            product.cost_cents = cost
+            product.cost_cents = average
             product.save(update_fields=["cost_cents", "updated_at"])
         audit(tenant, member.user, "stock.received", row)
     return JsonResponse(receipt_data(row), status=201)
