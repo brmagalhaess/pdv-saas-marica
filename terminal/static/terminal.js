@@ -90,7 +90,7 @@ function textDialog(title,description,placeholder='Digite um nome',inputType='te
   });
 }
 function paymentName(method){return ({cash:'Dinheiro',pix:'PIX',card:'Cartão',card_credit:'Crédito',card_debit:'Débito'})[method]||method||'Pagamento'}
-function receiptMarkup(sale){
+function legacyReceiptMarkup(sale){
   const connection=state.session?.connection||{};
   const issuer=connection.issuer||{};
   const company=issuer.trade_name||issuer.legal_name||connection.tenant_name||'PDV2';
@@ -108,29 +108,71 @@ function receiptMarkup(sale){
   const qrImage=authorized&&fiscal.qr_data_uri?`<div class="receipt-qr"><img src="${esc(fiscal.qr_data_uri)}" alt="QR Code para consulta da NFC-e"><small>Leia o QR Code para consultar</small></div>`:'';
   return `<div class="receipt-paper"><header class="receipt-header"><strong>${esc(company)}</strong>${legalName?`<span>${esc(legalName)}</span>`:''}${issuer.document?`<span>CNPJ/CPF: ${esc(documentText(issuer.document))}</span>`:''}${issuer.state_registration?`<span>IE: ${esc(issuer.state_registration)}</span>`:''}${addressText?`<span>${esc(addressText)}</span>`:''}${address.zip?`<span>CEP: ${esc(address.zip)}</span>`:''}${shop?`<span>${esc(shop)}</span>`:''}<small>${authorized?'DANFE NFC-e':'Comprovante de venda · não fiscal'}</small></header><div class="receipt-meta"><span>${esc(date)}</span><span>${terminal?`Caixa ${esc(terminal)}`:''}</span></div><div class="receipt-items">${items}</div><div class="receipt-totals"><div class="receipt-summary-row"><span>Subtotal</span><strong>${money(sale.gross_cents)}</strong></div>${Number(sale.discount_cents)>0?`<div class="receipt-summary-row discount"><span>Desconto</span><strong>− ${money(sale.discount_cents)}</strong></div>`:''}<div class="receipt-summary-row receipt-total"><span>Total</span><strong>${money(sale.total_cents)}</strong></div>${payments}${Number(sale.change_cents)>0?`<div class="receipt-summary-row change"><span>Troco</span><strong>${money(sale.change_cents)}</strong></div>`:''}</div>${sale.customer_name||sale.customer_document?`<div class="receipt-customer">${sale.customer_name?`Cliente: ${esc(sale.customer_name)}<br>`:''}${sale.customer_document?`CPF/CNPJ: ${esc(documentText(sale.customer_document))}`:''}</div>`:''}${fiscalBlock}${qrImage}<footer>Obrigado pela preferência!</footer></div>`
 }
-function receiptDialog(sale,printStatus='',options={}){
+function receiptDimensions(sale){
+  const model=sale.receipt||{};
+  const width=Number(model.paper_width_mm)===58?58:80;
+  return {width,printable:width===58?48:72,columns:width===58?32:48,feed:Math.max(20,Math.min(40,Number(model.bottom_feed_mm)||20))};
+}
+function receiptMarkup(sale){
+  const model=sale.receipt;
+  if(!model||!Array.isArray(model.blocks))return legacyReceiptMarkup(sale);
+  const dimensions=receiptDimensions(sale);
+  const blocks=model.blocks.map(block=>{
+    if(block.kind==='rule')return '<div class="receipt-rule" aria-hidden="true"></div>';
+    if(block.kind==='qr'){
+      const uri=String(block.data_uri||'');
+      if(!/^data:image\/(?:svg\+xml|png);base64,[a-zA-Z0-9+/=]+$/.test(uri))return '';
+      const qrWidth=Number(block.width_mm)>0?Math.min(100,Number(block.width_mm)/dimensions.printable*100):45;
+      return `<div class="receipt-qr" style="--receipt-qr-width:${qrWidth}%"><img src="${esc(uri)}" alt="QR Code para consulta do comprovante">${block.label?`<small>${esc(block.label)}</small>`:''}</div>`;
+    }
+    if(block.kind!=='text'||!Array.isArray(block.lines))return '';
+    const classes=['receipt-text',block.align==='center'?'receipt-text-center':block.align==='right'?'receipt-text-right':'receipt-text-left',block.bold?'receipt-text-bold':'',block.tall?'receipt-text-tall':'',block.wide?'receipt-text-wide':''].filter(Boolean).join(' ');
+    return `<div class="${classes}">${block.lines.map(line=>`<div class="receipt-text-line"><span>${esc(line)||'&nbsp;'}</span></div>`).join('')}</div>`;
+  }).join('');
+  return `<article class="receipt-paper receipt-paper-canonical" aria-label="Comprovante em bobina de ${dimensions.width} milímetros" style="--receipt-paper-mm:${dimensions.width}mm;--receipt-printable-mm:${dimensions.printable}mm;--receipt-columns:${dimensions.columns};--receipt-feed-mm:${dimensions.feed}mm;--receipt-screen-inset:${(dimensions.width-dimensions.printable)*50/dimensions.width}%;--receipt-feed-ratio:${dimensions.feed/dimensions.printable}"><div class="receipt-content">${blocks}</div><div class="receipt-bottom-feed" aria-hidden="true"></div></article>`;
+}
+async function receiptDialog(sale,printStatus='',options={}){
+  if(!sale.receipt&&sale.id){
+    try{const detail=await api('/api/sales/'+encodeURIComponent(sale.id));sale=detail.sale||sale}catch{}
+  }
   if(activeConfirm)activeConfirm(false);
   return new Promise(resolve=>{
+    const dimensions=receiptDimensions(sale);
     const previous=document.activeElement;
-    const backdrop=document.createElement('div');backdrop.className='confirm-backdrop';
+    const backdrop=document.createElement('div');backdrop.className='confirm-backdrop receipt-backdrop';
     const dialog=document.createElement('section');dialog.className='confirm-dialog receipt-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
+    dialog.style.setProperty('--receipt-paper-mm',dimensions.width+'mm');
     const titleId='receipt-title-'+Math.random().toString(36).slice(2);dialog.setAttribute('aria-labelledby',titleId);
-    const icon=document.createElement('div');icon.className='confirm-icon receipt-icon';icon.setAttribute('aria-hidden','true');icon.textContent='▤';
+    const header=document.createElement('header');header.className='receipt-dialog-heading';
+    const icon=document.createElement('div');icon.className='confirm-icon receipt-icon';icon.setAttribute('aria-hidden','true');icon.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2V3Z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>';
     const copy=document.createElement('div');copy.className='confirm-copy';
-    const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent='Venda concluída';
+    const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent=sale.status==='voided'?'Venda cancelada':'Venda registrada';
     const heading=document.createElement('h2');heading.id=titleId;heading.textContent='Comprovante da venda';
-    const paper=document.createElement('div');paper.innerHTML=receiptMarkup(sale);copy.append(eyebrow,heading,paper);
-    const status=document.createElement('p');status.className='receipt-print-status '+(printStatus.toLowerCase().includes('configure')?'warning':'');status.textContent=printStatus||'O comprovante está pronto para impressão.';copy.append(status);
+    const description=document.createElement('p');description.className='receipt-dialog-description';description.textContent='Confira a via do cliente antes de entregar.';copy.append(eyebrow,heading,description);
+    header.append(icon,copy);
+    const stage=document.createElement('div');stage.className='receipt-preview-stage';stage.tabIndex=0;stage.setAttribute('role','region');stage.setAttribute('aria-label','Prévia do comprovante. Role para conferir todos os itens.');
+    const previewLabel=document.createElement('div');previewLabel.className='receipt-preview-label';previewLabel.innerHTML=`<span>Prévia de impressão</span><span>Bobina ${dimensions.width} mm</span>`;
+    const paper=document.createElement('div');paper.className='receipt-preview-paper';paper.innerHTML=receiptMarkup(sale);stage.append(previewLabel,paper);
+    const footer=document.createElement('div');footer.className='receipt-dialog-footer';
+    const status=document.createElement('p');status.className='receipt-print-status '+(/configure|não|erro|falha/i.test(printStatus)?'warning':'success');status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.textContent=printStatus||'O comprovante está pronto para impressão.';
     const actions=document.createElement('div');actions.className='confirm-actions';
     const close=document.createElement('button');close.type='button';close.className='secondary';close.textContent='Fechar';
     const browserPrint=document.createElement('button');browserPrint.type='button';browserPrint.className='secondary';browserPrint.textContent='Imprimir no sistema';
-    const print=document.createElement('button');print.type='button';print.className='primary';print.textContent='Reenviar para fila';
-    actions.append(close,browserPrint,print);dialog.append(icon,copy,actions);backdrop.append(dialog);document.body.append(backdrop);
-    let settled=false;
-    const openBrowserPrint=()=>{status.textContent='Enviando comprovante para a impressora do sistema…';status.className='receipt-print-status success';window.setTimeout(()=>window.print(),120)};
-    const finish=()=>{if(settled)return;settled=true;document.removeEventListener('keydown',onKey);backdrop.remove();activeConfirm=null;previous?.focus?.();resolve()};
-    const onKey=event=>{if(event.key==='Escape'){event.preventDefault();finish();return}if(event.key!=='Tab')return;const focusables=[close,browserPrint,print];if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}};
-    activeConfirm=finish;document.addEventListener('keydown',onKey);backdrop.addEventListener('click',event=>{if(event.target===backdrop)finish()});close.addEventListener('click',finish);browserPrint.addEventListener('click',openBrowserPrint);print.addEventListener('click',async()=>{print.disabled=true;try{await api('/api/sales/'+encodeURIComponent(sale.id)+'/reprint','POST',{});status.textContent='Recibo colocado na fila da impressora térmica.';status.className='receipt-print-status success';toast('Recibo colocado na fila')}catch(error){status.textContent=error.status===409?'Configure uma impressora de recibos antes de reenviar para a fila.':error.message;status.className='receipt-print-status warning';toast(status.textContent,true)}finally{print.disabled=false}});browserPrint.focus();if(options.autoPrint)window.setTimeout(openBrowserPrint,180);
+    const print=document.createElement('button');print.type='button';print.className='primary';print.textContent='Reimprimir na térmica';
+    actions.append(close,browserPrint,print);footer.append(status,actions);dialog.append(header,stage,footer);backdrop.append(dialog);document.body.append(backdrop);
+    let settled=false,printTimer;
+    const printPageStyle=document.createElement('style');
+    const prepareBrowserPrint=()=>{
+      const paperNode=paper.querySelector('.receipt-paper');
+      const contentNode=paperNode?.querySelector('.receipt-content')||paperNode;
+      const paperHeightMm=Math.ceil((contentNode?.scrollHeight||900)*dimensions.printable/(contentNode?.offsetWidth||396)+dimensions.feed+4);
+      printPageStyle.textContent=`@media print{@page{size:${dimensions.width}mm ${Math.max(100,paperHeightMm+5)}mm;margin:0;}}`;
+      if(!printPageStyle.isConnected)document.head.append(printPageStyle);
+    };
+    const openBrowserPrint=()=>{if(settled)return;status.textContent='Abrindo a impressão do sistema…';status.className='receipt-print-status success';prepareBrowserPrint();printTimer=window.setTimeout(()=>{if(!settled)window.print()},120)};
+    const finish=()=>{if(settled)return;settled=true;window.clearTimeout(printTimer);document.removeEventListener('keydown',onKey);window.removeEventListener('beforeprint',prepareBrowserPrint);printPageStyle.remove();backdrop.remove();activeConfirm=null;previous?.focus?.();resolve()};
+    const onKey=event=>{if(event.key==='Escape'){event.preventDefault();finish();return}if(event.key!=='Tab')return;const focusables=[stage,close,browserPrint,print].filter(node=>!node.disabled);if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}};
+    activeConfirm=finish;document.addEventListener('keydown',onKey);window.addEventListener('beforeprint',prepareBrowserPrint);backdrop.addEventListener('click',event=>{if(event.target===backdrop)finish()});close.addEventListener('click',finish);browserPrint.addEventListener('click',openBrowserPrint);print.addEventListener('click',async()=>{print.disabled=true;try{await api('/api/sales/'+encodeURIComponent(sale.id)+'/reprint','POST',{});status.textContent='Recibo colocado na fila da impressora térmica.';status.className='receipt-print-status success';toast('Recibo colocado na fila')}catch(error){status.textContent=error.status===409?'Configure uma impressora de recibos antes de reenviar para a fila.':error.message;status.className='receipt-print-status warning';toast(status.textContent,true)}finally{print.disabled=false}});browserPrint.focus();if(options.autoPrint)printTimer=window.setTimeout(openBrowserPrint,180);
   });
 }
 async function autoPrintReceipt(sale){

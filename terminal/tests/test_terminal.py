@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import sqlite3
 import tempfile
 import time
@@ -440,6 +441,35 @@ class TerminalTests(unittest.TestCase):
         self.store.retry_print(self.manager_id, job["id"])
         self.assertEqual(self.store.print_jobs()[0]["status"], "queued")
 
+    def test_sale_preview_auto_print_and_reprint_keep_the_same_issuer(self):
+        issuer = {"trade_name": "Mercado Maricá", "document": "12345678000199"}
+        self.store.apply_bootstrap(dict(self.bootstrap, issuer=issuer))
+        self.store.save_printer("receipt", "file", str(Path(self.temp.name) / "print"), "escpos80")
+        self.store.open_cash(self.cashier_id, 0)
+        request = {"request_id": "receipt-identity", "items": [{"product_id": self.unit_product_id,
+                   "quantity_milli": 1000}], "payments": [{"method": "cash", "amount_cents": 1000}]}
+        sale = self.store.sale(self.cashier, request)
+        self.assertEqual(sale["receipt"]["columns"], 48)
+        self.assertEqual(sale["issuer"], issuer)
+        self.assertEqual(sale["operator_name"], "Ana")
+        auto_job = self.store.begin_print()
+        self.assertEqual(auto_job["payload"], receipt_bytes(sale, 80))
+        self.store.finish_print(auto_job["id"])
+        self.store.apply_bootstrap(dict(self.bootstrap, issuer={"trade_name": "Nome alterado"}))
+        detail = self.store.sale_detail(sale["id"])
+        self.assertEqual(detail["issuer"], issuer)
+        self.assertEqual(detail["receipt"], sale["receipt"])
+        retry = self.store.sale(self.cashier, request)
+        self.assertEqual(retry["receipt"], sale["receipt"])
+        self.assertEqual(len(self.store.print_jobs()), 1)  # request retry cannot print twice
+        self.store.reprint(sale["id"], self.cashier_id)
+        reprint = self.store.begin_print()
+        self.assertEqual(reprint["payload"], auto_job["payload"])
+        cancelled = self.store.void_sale(self.manager, sale["id"], "Teste de cancelamento")
+        self.assertIn(b"VENDA CANCELADA", receipt_bytes(cancelled))
+        self.assertEqual(self.store.sale_detail(sale["id"])["receipt"], cancelled["receipt"])
+
+    @patch.dict(os.environ, {"PDV_PRINT_BRIDGE_URL": ""})
     @patch("terminal.printers.shutil.which", return_value="/usr/bin/lp")
     @patch("terminal.printers.subprocess.run")
     def test_cups_transport_sends_raw_escpos_to_native_queue(self, run, _which):

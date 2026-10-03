@@ -11,7 +11,7 @@ from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-from .printers import label_bytes, qr_svg_data_uri, receipt_bytes
+from .printers import label_bytes, receipt_bytes, receipt_layout
 
 
 OFFLINE_LEASE_SECONDS = 7 * 24 * 60 * 60
@@ -262,15 +262,26 @@ class Store:
                      (event_id, event_type, aggregate_id, _json(event), _now_ms()))
         return event_id
 
-    @staticmethod
-    def _receipt_data(snapshot):
-        """Attach a self-contained QR image only for an authorized fiscal URL."""
-        fiscal = snapshot.get("fiscal")
-        if not isinstance(fiscal, dict) or not fiscal.get("qr_url") or fiscal.get("qr_data_uri"):
-            return snapshot
-        copy = dict(snapshot); copy["fiscal"] = dict(fiscal)
-        copy["fiscal"]["qr_data_uri"] = qr_svg_data_uri(fiscal["qr_url"])
-        return copy
+    def _receipt_context(self, conn, snapshot):
+        """Keep issuer identity on new sales; enrich receipts from older versions."""
+        result = dict(snapshot)
+        if "issuer" not in result:
+            raw = self._meta(conn, "issuer_profile")
+            result["issuer"] = json.loads(raw) if raw else {"legal_name": self._meta(conn, "tenant_name") or ""}
+        for key in ("terminal_name", "shop_name"):
+            if key not in result:
+                result[key] = self._meta(conn, key) or ""
+        if "operator_name" not in result:
+            operator = conn.execute("SELECT name FROM operators WHERE id=?", (snapshot.get("operator_id"),)).fetchone()
+            result["operator_name"] = operator["name"] if operator else ""
+        return result
+
+    def _receipt_data(self, conn, snapshot):
+        result = self._receipt_context(conn, snapshot)
+        setting = conn.execute("SELECT format FROM print_settings WHERE kind='receipt'").fetchone()
+        width = 58 if setting and setting["format"] == "escpos58" else 80
+        result["receipt"] = receipt_layout(result, width)
+        return result
 
     def pending_events(self, limit=50):
         with self.connection() as conn:
@@ -809,7 +820,7 @@ class Store:
                             "customer_id": customer_id}
                 if _json(comparable) != _json(received):
                     raise TerminalError("Identificador já usado para outra venda", 409)
-                return self._receipt_data(previous)
+                return self._receipt_data(conn, previous)
             cash = self._open_cash(conn)
             lines, seen = [], set()
             for item in item_requests:
@@ -865,6 +876,7 @@ class Store:
                         "discount_cents": discount, "total_cents": total, "change_cents": change,
                         "items": lines, "payments": normalized_payments, "created_at": timestamp,
                         "status": "completed"}
+            snapshot = self._receipt_context(conn, snapshot)
             for line in lines:
                 conn.execute("UPDATE products SET stock_milli=stock_milli-? WHERE id=?",
                              (line["quantity_milli"], line["product_id"]))
@@ -883,7 +895,7 @@ class Store:
             self._audit(conn, operator["id"], "sale.completed", sale_id,
                         f"manager_override={override_id}" if override_id else None)
             self._queue_receipt(conn, snapshot)
-            return self._receipt_data(snapshot)
+            return self._receipt_data(conn, snapshot)
 
     def sales(self, limit=50):
         with self.connection() as conn:
@@ -895,10 +907,10 @@ class Store:
             row = conn.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
             if not row:
                 raise TerminalError("Venda não encontrada", 404)
-            result = self._receipt_data(json.loads(row["snapshot"]))
+            result = json.loads(row["snapshot"])
             result["status"] = row["status"]
             result["void_reason"] = row["void_reason"]
-            return result
+            return self._receipt_data(conn, result)
 
     def void_sale(self, operator, sale_id, reason, manager_pin=None):
         reason = _str(reason, "Motivo do cancelamento", 240)
@@ -925,7 +937,7 @@ class Store:
             self._audit(conn, operator["id"], "sale.voided", sale_id, f"authorizer={authorizer}; {reason}")
             snapshot["status"] = "voided"
             snapshot["void_reason"] = reason
-            return snapshot
+            return self._receipt_data(conn, snapshot)
 
     def adjust_stock(self, operator, product_id, delta_milli, reason):
         self.ensure_sale_allowed()
@@ -1038,13 +1050,7 @@ class Store:
         setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
         if not setting:
             return None
-        if not snapshot.get("issuer"):
-            raw_issuer = self._meta(conn, "issuer_profile")
-            if raw_issuer:
-                try:
-                    snapshot = {**snapshot, "issuer": json.loads(raw_issuer)}
-                except (TypeError, ValueError):
-                    pass
+        snapshot = self._receipt_context(conn, snapshot)
         width = 58 if setting["format"] == "escpos58" else 80
         return self._queue_print(conn, "receipt", receipt_bytes(snapshot, width), setting)
 
@@ -1071,12 +1077,6 @@ class Store:
             setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
             if not setting:
                 raise TerminalError("Configure impressora de recibos antes", 409)
-            raw_issuer = self._meta(conn, "issuer_profile")
-            if raw_issuer and not snapshot.get("issuer"):
-                try:
-                    snapshot["issuer"] = json.loads(raw_issuer)
-                except (TypeError, ValueError):
-                    pass
             job_id = self._queue_print(conn, "receipt", receipt_bytes(snapshot,
                 58 if setting["format"] == "escpos58" else 80), setting)
             self._audit(conn, operator_id, "sale.reprint", sale_id)

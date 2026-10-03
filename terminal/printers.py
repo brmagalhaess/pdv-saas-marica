@@ -7,6 +7,9 @@ import socket
 import shutil
 import subprocess
 import time
+import textwrap
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pathlib import Path
@@ -21,8 +24,8 @@ def qr_svg_data_uri(value, scale=4):
     except ImportError:
         return ""
     qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
-                       box_size=scale, border=2)
-    qr.add_data(str(value)); qr.make(fit=True)
+                       box_size=scale, border=4)
+    qr.add_data(str(value), optimize=0); qr.make(fit=True)
     matrix = qr.get_matrix()
     size = len(matrix); modules = []
     for y, row in enumerate(matrix):
@@ -53,7 +56,10 @@ def _qr_escpos(value, size=5):
 
 
 def _money(cents):
-    return f"R$ {cents // 100},{cents % 100:02d}"
+    cents = int(cents)
+    whole, fraction = divmod(abs(cents), 100)
+    amount = f"{whole:,}".replace(",", ".")
+    return f"R$ {'-' if cents < 0 else ''}{amount},{fraction:02d}"
 
 
 def _clean(value, length=80):
@@ -66,7 +72,7 @@ def _document(value):
         return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
     if len(digits) == 11:
         return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
-    return _clean(value, 30)
+    return _clean(value or "", 30)
 
 
 def _quantity(milli):
@@ -74,86 +80,192 @@ def _quantity(milli):
     return f"{whole},{str(fraction).zfill(3).rstrip('0')}" if fraction else str(whole)
 
 
-def receipt_bytes(sale, width=58):
-    """ESC/POS receipt with company identity and optional authorized NFC-e data.
+def _receipt_text(value):
+    # Keep receipt text to single-byte printable glyphs, so column counts match
+    # Epson font A. Never allow data to become ESC/POS commands.
+    return " ".join(str(value or "").split()).encode("cp850", "replace").decode("cp850").translate(
+        {code: None for code in range(32)})
 
-    The fiscal block is printed only when a provider supplies an authorization,
-    access key and protocol. Offline/local sales remain explicitly non-fiscal.
+
+def _receipt_date(value):
+    try:
+        date = (datetime.fromtimestamp(value / 1000, ZoneInfo("America/Sao_Paulo"))
+                if isinstance(value, (int, float)) else datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+        if date.tzinfo:
+            date = date.astimezone(ZoneInfo("America/Sao_Paulo"))
+        return date.strftime("%d/%m/%Y %H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return _receipt_text(value)
+
+
+def receipt_layout(sale, width=80):
+    """One layout shared by the browser and the raw ESC/POS spool.
+
+    Width is paper width; font A uses 12 dots per character at 203 dpi.
+    The 80 mm TM-T20 has a 576-dot (72 mm) printable area / 48 columns.
+    58 mm uses a conservative 384-dot area / 32 columns across printers.
     """
+    width = 58 if width == 58 else 80
     columns = 32 if width == 58 else 48
-    divider = "-" * columns
+    blocks = []
+
+    def text(value, align="left", bold=False, tall=False, wide=False):
+        lines = textwrap.wrap(_receipt_text(value), columns // 2 if wide else columns, break_long_words=True,
+                              break_on_hyphens=False) or [""]
+        blocks.append({"kind": "text", "align": align, "bold": bold, "tall": tall, "wide": wide, "lines": lines})
+
+    def pair(label, value, bold=False, tall=False):
+        label, value = _receipt_text(label), _receipt_text(value)
+        # Long labels/large totals wrap rather than cutting a value or column.
+        if len(label) + len(value) + 1 > columns:
+            text(label, bold=bold)
+            text(value, align="right", bold=bold, tall=tall)
+        else:
+            blocks.append({"kind": "text", "align": "left", "bold": bold, "tall": tall,
+                           "lines": [label.ljust(columns - len(value)) + value]})
+
+    def rule():
+        blocks.append({"kind": "rule"})
+
     issuer = sale.get("issuer") or {}
     fiscal = sale.get("fiscal") or {}
-    authorized = bool(fiscal.get("authorized") and fiscal.get("access_key"))
-    title = "DANFE NFC-e" if authorized else "COMPROVANTE NAO FISCAL"
-    lines = [title]
-    trade_name = _clean(issuer.get("trade_name") or "", columns)
-    legal_name = _clean(issuer.get("legal_name") or "", columns)
-    if trade_name and trade_name != legal_name:
-        lines.append(trade_name)
-    if legal_name:
-        lines.append(legal_name)
-    document = _document(issuer.get("document") or "")
+    authorized = bool(fiscal.get("authorized") and fiscal.get("access_key") and fiscal.get("protocol"))
+    trade_name, legal_name = issuer.get("trade_name"), issuer.get("legal_name")
+    text(trade_name or legal_name or "COMPROVANTE DE VENDA", "center", bold=True, tall=True, wide=True)
+    if trade_name and legal_name and trade_name != legal_name:
+        text(legal_name, "center")
+    document = _document(issuer.get("document"))
     if document:
-        lines.append(f"CNPJ/CPF: {document}")
+        text(f"CNPJ/CPF: {document}", "center")
     if issuer.get("state_registration"):
-        lines.append(f"IE: {_clean(issuer['state_registration'], columns - 4)}")
+        text(f"IE: {issuer['state_registration']}", "center")
     address = issuer.get("address") or {}
-    address_line = " ".join(str(address.get(key) or "").strip() for key in
-                             ("line", "number", "complement", "neighborhood", "city", "state") if address.get(key))
-    if address_line:
-        lines.append(_clean(address_line, columns))
+    street = ", ".join(str(address[key]) for key in ("line", "number") if address.get(key))
+    if address.get("complement"):
+        street += f" - {address['complement']}"
+    if street:
+        text(street, "center")
+    place = " - ".join(str(address[key]) for key in ("neighborhood", "city", "state") if address.get(key))
+    if place:
+        text(place, "center")
     if address.get("zip"):
-        lines.append(f"CEP: {_clean(address['zip'], columns - 5)}")
-    lines.extend([divider, f"Venda {str(sale['id'])[:16]}"])
+        zipcode = "".join(ch for ch in str(address['zip']) if ch.isdigit())
+        text("CEP: " + (zipcode[:5] + "-" + zipcode[5:] if len(zipcode) == 8 else str(address['zip'])), "center")
+    rule()
+    text("DANFE NFC-e" if authorized else "COMPROVANTE NAO FISCAL", "center", bold=True)
     if sale.get("status") == "voided":
-        lines.append("VENDA CANCELADA")
-    lines.append(divider)
-    for item in sale["items"]:
-        qty = f"{_quantity(item['quantity_milli'])} {item['unit']}"
-        lines.append(_clean(item["name"], columns))
+        text("*** VENDA CANCELADA ***", "center", bold=True, tall=True)
+    if sale.get("created_at"):
+        text(_receipt_date(sale['created_at']), "center")
+    text(f"Venda: {str(sale.get('id', ''))[:16]}")
+    if sale.get("terminal_name"):
+        text(f"Caixa: {sale['terminal_name']}")
+    if sale.get("operator_name"):
+        text(f"Operador: {sale['operator_name']}")
+    rule()
+    pair("ITEM / DESCRICAO", "TOTAL", bold=True)
+    for index, item in enumerate(sale.get("items", []), 1):
+        if index > 1:
+            text("")
+        text(f"{index:02d}  {item['name']}", bold=True)
+        metadata = []
         if item.get("sku"):
-            lines.append(f"Codigo: {_clean(item['sku'], columns - 8)}")
+            metadata.append(f"Cod: {item['sku']}")
         if item.get("ncm"):
-            lines.append(f"NCM: {_clean(item['ncm'], columns - 5)}")
-        label = f"{qty} x {_money(item['unit_price_cents'])}"
-        total = _money(item["line_total_cents"])
-        lines.append((label[:columns - len(total) - 1]).ljust(columns - len(total)) + total)
-    lines.extend([divider, f"Bruto: {_money(sale['gross_cents'])}",
-                  f"Desconto: {_money(sale['discount_cents'])}",
-                  f"TOTAL: {_money(sale['total_cents'])}"])
-    for payment in sale["payments"]:
-        lines.append(f"{payment['method'].upper()}: {_money(payment['amount_cents'])}")
-    if sale["change_cents"]:
-        lines.append(f"Troco: {_money(sale['change_cents'])}")
+            metadata.append(f"NCM: {item['ncm']}")
+        if metadata:
+            text("  |  ".join(metadata))
+        qty = (_quantity(item['quantity_milli']) if item['unit'] == "UN"
+               else f"{item['quantity_milli'] // 1000},{item['quantity_milli'] % 1000:03d}")
+        pair(f"{qty} {item['unit']} x {_money(item['unit_price_cents'])}", _money(item['line_total_cents']))
+        if item.get("discount_cents"):
+            pair("Desconto no item", _money(item['discount_cents']))
+    rule()
+    pair("Quantidade de itens", str(len(sale.get("items", []))))
+    pair("Subtotal", _money(sale['gross_cents']))
+    pair("Descontos", _money(sale['discount_cents']))
+    text("")
+    pair("TOTAL A PAGAR", _money(sale['total_cents']), bold=True, tall=True)
+    rule()
+    pair("FORMA DE PAGAMENTO", "VALOR PAGO", bold=True)
+    methods = {"cash": "Dinheiro", "pix": "Pix", "card": "Cartao", "card_credit": "Cartao de credito",
+               "card_debit": "Cartao de debito"}
+    for payment in sale.get("payments", []):
+        pair(methods.get(payment['method'], payment['method']), _money(payment['amount_cents']))
+    if len(sale.get("payments", [])) > 1:
+        pair("Total recebido", _money(sum(p['amount_cents'] for p in sale['payments'])))
+    if any(p['method'] == "cash" for p in sale.get("payments", [])):
+        pair("Troco", _money(sale.get('change_cents', 0)), bold=True)
+    rule()
     if sale.get("customer_name") or sale.get("customer_document"):
-        lines.append(divider)
+        text("CONSUMIDOR", "center", bold=True)
         if sale.get("customer_name"):
-            lines.append(f"Cliente: {_clean(sale['customer_name'], columns - 9)}")
+            text(sale['customer_name'], "center")
         if sale.get("customer_document"):
-            lines.append(f"CPF/CNPJ: {_document(sale['customer_document'])}")
-    qr_url = fiscal.get("qr_url") if authorized else ""
-    if authorized:
-        lines.extend([divider, f"NFC-e: {fiscal.get('number', '—')}  Serie: {fiscal.get('series', '—')}",
-                      f"Chave: {_clean(fiscal.get('access_key'), columns)}"])
-        if fiscal.get("protocol"):
-            lines.append(f"Protocolo: {_clean(fiscal['protocol'], columns - 10)}")
-        if fiscal.get("authorized_at"):
-            lines.append(f"Autorizada em: {_clean(fiscal['authorized_at'], columns - 14)}")
-        if qr_url:
-            lines.append("Leia o QR Code para consultar")
-        if fiscal.get("taxes_cents") is not None:
-            lines.append(f"Tributos: {_money(int(fiscal['taxes_cents']))}")
+            text(f"CPF/CNPJ: {_document(sale['customer_document'])}", "center")
     else:
-        lines.extend([divider, "NFC-e nao emitida", "Documento sem valor fiscal"])
-    lines.extend(["Obrigado pela preferencia", "", "", "", "", "", "", ""])
-    text = "\n".join(lines).encode("cp850", errors="replace")
-    qr = _qr_escpos(qr_url)
-    if qr:
-        marker = "Leia o QR Code para consultar".encode("cp850")
-        before, after = text.split(marker, 1)
-        return b"\x1b@\x1ba\x00" + before + marker + b"\n\x1ba\x01" + qr + b"\n\x1ba\x00" + after + b"\n\x1dV\x00"
-    return b"\x1b@\x1ba\x00" + text + b"\n\x1dV\x00"
+        text("CONSUMIDOR NAO IDENTIFICADO", "center")
+    if authorized:
+        rule()
+        text(f"NFC-e: {fiscal.get('number', '')}  Serie: {fiscal.get('series', '')}", "center", bold=True)
+        text("CHAVE DE ACESSO", "center")
+        key = str(fiscal['access_key']).replace(" ", "")
+        text(" ".join(key[i:i + 4] for i in range(0, len(key), 4)), "center")
+        text(f"Protocolo: {fiscal['protocol']}", "center")
+        if fiscal.get("authorized_at"):
+            text(_receipt_date(fiscal['authorized_at']), "center")
+        qr_url = fiscal.get("qr_url")
+        if qr_url and len(str(qr_url).encode('utf-8')) <= 700:
+            # Include a four-module quiet zone when sizing the symbol. Epson
+            # silently skips QR codes whose modules exceed its print area.
+            try:
+                import qrcode
+                qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=4)
+                qr.add_data(str(qr_url), optimize=0); qr.make(fit=True)
+                modules = len(qr.get_matrix())
+            except ImportError:
+                modules = 117  # conservative upper bound for the accepted payload
+            module_size = min(5 if width == 58 else 6, (columns * 12) // modules)
+            blocks.append({"kind": "qr", "value": qr_url, "data_uri": qr_svg_data_uri(qr_url),
+                           "module_size": module_size, "width_mm": round(modules * module_size * 25.4 / 203, 2),
+                           "label": "Consulte pelo QR Code"})
+        if fiscal.get("taxes_cents") is not None:
+            pair("Tributos informados", _money(fiscal['taxes_cents']))
+    else:
+        rule()
+        text("NFC-e nao emitida", "center")
+        text("Documento sem valor fiscal", "center")
+    text("")
+    text("OBRIGADO PELA PREFERENCIA!", "center", bold=True)
+    text("Volte sempre", "center")
+    return {"paper_width_mm": width, "printable_width_mm": 48 if width == 58 else 72,
+            "columns": columns, "bottom_feed_mm": 20, "blocks": blocks}
+
+
+def receipt_bytes(sale, width=80):
+    """Render the shared receipt with explicit Epson width, font and alignment."""
+    layout = receipt_layout(sale, width)
+    dots = layout['columns'] * 12
+    output = bytearray(b"\x1b@")  # initialize before selecting the area/font
+    output.extend(b"\x1dP\xcb\xcb")  # 203 dpi motion units
+    output.extend(b"\x1dL\x00\x00\x1dW" + dots.to_bytes(2, 'little'))
+    output.extend(b"\x1bM\x00\x1b \x00\x1bt\x02\x1b3\x20")  # font A, no spacing, CP850, 32-dot lines
+    for block in layout['blocks']:
+        kind = block['kind']
+        alignment = {'left': 0, 'center': 1, 'right': 2}.get(block.get('align'), 0)
+        output.extend(b"\x1ba" + bytes([alignment]))
+        output.extend(b"\x1bE" + bytes([int(block.get('bold', False))]))
+        output.extend(b"\x1d!" + bytes([(1 if block.get('tall') else 0) | (16 if block.get('wide') else 0)]))
+        if kind == 'qr':
+            output.extend(b"\x1ba\x01" + _qr_escpos(block['value'], size=block['module_size']) + b"\n")
+            output.extend(_receipt_text(block['label']).encode('cp850') + b"\n")
+        else:
+            lines = ['-' * layout['columns']] if kind == 'rule' else block['lines']
+            output.extend(('\n'.join(lines) + '\n').encode('cp850', 'replace'))
+    # Function B advances to the cutter plus 20 mm, compensating the
+    # TM-T20 printhead-to-cutter gap before the partial cut.
+    output.extend(b"\x1d!\x00\x1bE\x00\x1ba\x00\x1dVB\xa0")
+    return bytes(output)
 
 
 def label_bytes(product, fmt="zpl"):
