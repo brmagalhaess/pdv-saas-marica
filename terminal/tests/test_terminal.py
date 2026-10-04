@@ -422,6 +422,11 @@ class TerminalTests(unittest.TestCase):
         self.assertIn(b"COMPROVANTE NAO FISCAL", receipt_bytes(sale, 58))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "zpl").startswith(b"^XA"))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "epl").startswith(b"N\n"))
+        escpos_label = label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "escpos50x30")
+        self.assertTrue(escpos_label.startswith(b"\x1b@"))
+        self.assertIn(b"\x1dW\x90\x01", escpos_label)  # 400-dot / about 50 mm print area
+        self.assertIn(b"\x1dkI", escpos_label)  # CODE128 barcode command
+        self.assertTrue(escpos_label.endswith(b"\x1dV\x00"))
         self.assertIn(b'"ArrozP4"', label_bytes({"id": "x", "name": 'Arroz"\\\nP4',
                                                 "barcode": "789", "price_cents": 700}, "epl"))
         self.assertEqual(self.store.save_printer("receipt", "cups", "TM-T20", "escpos80")["driver"], "cups")
@@ -433,6 +438,12 @@ class TerminalTests(unittest.TestCase):
         result = print_once(self.store)
         self.assertEqual(result["status"], "printed")
         self.assertEqual(len(list(directory.glob("*.bin"))), 1)
+        label_job = self.store.queue_label(self.unit_product_id)
+        label_work = self.store.begin_print()
+        self.assertEqual(label_work["id"], label_job["id"])
+        self.assertEqual(label_work["kind"], "label")
+        self.assertIn(b"\x1dkI", label_work["payload"])
+        self.store.finish_print(label_work["id"])
         self.store.save_printer("label", "tcp", "127.0.0.1:1", "zpl")
         job = self.store.queue_label(self.unit_product_id)
         result = print_once(self.store)

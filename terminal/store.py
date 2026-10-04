@@ -1036,7 +1036,7 @@ class Store:
         if kind not in ("receipt", "label") or driver not in ("tcp", "windows_raw", "cups", "file"):
             raise TerminalError("Configuração de impressora inválida")
         if (kind == "receipt" and fmt not in ("escpos58", "escpos80")) or (
-                kind == "label" and fmt not in ("zpl", "epl")):
+                kind == "label" and fmt not in ("zpl", "epl", "escpos50x30")):
             raise TerminalError("Formato de impressão inválido")
         target = _str(target, "Destino", 260)
         with self.transaction() as conn:
@@ -1067,7 +1067,18 @@ class Store:
             if not product:
                 raise TerminalError("Produto não encontrado", 404)
             if not setting:
-                raise TerminalError("Configure impressora de etiquetas antes", 409)
+                # A TM-T20 is commonly the only printer in a small shop. If
+                # no dedicated label profile exists, reuse its receipt queue
+                # and render the 50 x 30 mm ESC/POS layout automatically.
+                receipt_setting = conn.execute(
+                    "SELECT * FROM print_settings WHERE kind='receipt'"
+                ).fetchone()
+                if receipt_setting:
+                    setting = dict(receipt_setting)
+                    setting["kind"] = "label"
+                    setting["format"] = "escpos50x30"
+                else:
+                    raise TerminalError("Configure a impressora de recibos antes", 409)
             job_id = self._queue_print(conn, "label", label_bytes(dict(product), setting["format"]), setting)
             return {"id": job_id, "status": "queued"}
 

@@ -47,7 +47,7 @@ Se a prévia antiga ocupar a porta 8000, pare apenas `pdv-saas-phase1-pdv-previe
 - Papéis: proprietário, administrador, gerente, caixa, estoque, financeiro e consulta; permissões separadas da equipe SaaS.
 - Terminal: código/nome, quantidade fracionária, desconto autorizado, pagamento dividido informado pelo operador, troco, abrir/fechar caixa, sangria/suprimento, suspensão, histórico, cancelamento e reimpressão.
 - Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque.
-- Comprovante não fiscal ESC/POS 58/80 mm; etiquetas ZPL/EPL via TCP, RAW Windows ou arquivo de diagnóstico. Hardware físico exige validação.
+- Comprovante não fiscal ESC/POS 58/80 mm; etiquetas ESC/POS 50×30 mm, ZPL ou EPL via CUPS, TCP, RAW Windows ou arquivo de diagnóstico. A etiqueta ESC/POS pode reutilizar a mesma fila da TM-T20 configurada para o recibo. A TM-T20 não detecta intervalos de etiquetas pré-cortadas; para esse material, use uma impressora de etiquetas com sensor. Hardware físico exige validação.
 - Conectores Focus NFe e Asaas com credenciais criptografadas, fila e confirmação pelo provedor. Não há credenciais reais configuradas.
 - Web responsiva e PWA instalável no Android/iPhone. A PWA é gestão web; o caixa offline exige o serviço local. O app nativo iOS de monitoramento do proprietário está em [ios/PDV2OwnerMonitor](ios/PDV2OwnerMonitor), com projeto Xcode compilável e painel somente leitura.
 
