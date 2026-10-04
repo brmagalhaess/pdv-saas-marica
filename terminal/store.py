@@ -1060,7 +1060,10 @@ class Store:
                      (job_id, kind, payload, setting["driver"], setting["target"], timestamp, timestamp))
         return job_id
 
-    def queue_label(self, product_id):
+    def queue_label(self, product_id, quantity=1):
+        quantity = _positive_int(quantity, "Quantidade de etiquetas")
+        if quantity > 999:
+            raise TerminalError("A quantidade de etiquetas deve ficar entre 1 e 999")
         with self.transaction() as conn:
             product = conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
             setting = conn.execute("SELECT * FROM print_settings WHERE kind='label'").fetchone()
@@ -1079,8 +1082,9 @@ class Store:
                     setting["format"] = "escpos50x30"
                 else:
                     raise TerminalError("Configure a impressora de recibos antes", 409)
-            job_id = self._queue_print(conn, "label", label_bytes(dict(product), setting["format"]), setting)
-            return {"id": job_id, "status": "queued"}
+            single_label = label_bytes(dict(product), setting["format"])
+            job_id = self._queue_print(conn, "label", single_label * quantity, setting)
+            return {"id": job_id, "status": "queued", "quantity": quantity}
 
     def reprint(self, sale_id, operator_id=None):
         snapshot = self.sale_detail(sale_id)
