@@ -422,11 +422,8 @@ class TerminalTests(unittest.TestCase):
         self.assertIn(b"COMPROVANTE NAO FISCAL", receipt_bytes(sale, 58))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "zpl").startswith(b"^XA"))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "epl").startswith(b"N\n"))
-        escpos_label = label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "escpos50x30")
-        self.assertTrue(escpos_label.startswith(b"\x1b@"))
-        self.assertIn(b"\x1dW\x90\x01", escpos_label)  # 400-dot / about 50 mm print area
-        self.assertIn(b"\x1dkI", escpos_label)  # CODE128 barcode command
-        self.assertTrue(escpos_label.endswith(b"\x1dV\x00"))
+        with self.assertRaisesRegex(ValueError, "TM-T20"):
+            label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "escpos50x30")
         self.assertIn(b'"ArrozP4"', label_bytes({"id": "x", "name": 'Arroz"\\\nP4',
                                                 "barcode": "789", "price_cents": 700}, "epl"))
         self.assertEqual(self.store.save_printer("receipt", "cups", "TM-T20", "escpos80")["driver"], "cups")
@@ -438,13 +435,17 @@ class TerminalTests(unittest.TestCase):
         result = print_once(self.store)
         self.assertEqual(result["status"], "printed")
         self.assertEqual(len(list(directory.glob("*.bin"))), 1)
+        # Receipt configuration alone must never direct labels to the TM-T20.
+        with self.assertRaisesRegex(TerminalError, "impressora de etiquetas"):
+            self.store.queue_label(self.unit_product_id, 3)
+        self.store.save_printer("label", "file", str(directory), "zpl")
         label_job = self.store.queue_label(self.unit_product_id, 3)
         self.assertEqual(label_job["quantity"], 3)
         label_work = self.store.begin_print()
         self.assertEqual(label_work["id"], label_job["id"])
         self.assertEqual(label_work["kind"], "label")
-        self.assertIn(b"\x1dkI", label_work["payload"])
-        self.assertEqual(label_work["payload"].count(b"\x1dV\x00"), 3)
+        self.assertEqual(label_work["payload"].count(b"^XA"), 3)
+        self.assertNotIn(b"\x1dV", label_work["payload"])
         self.store.finish_print(label_work["id"])
         self.store.save_printer("label", "tcp", "127.0.0.1:1", "zpl")
         job = self.store.queue_label(self.unit_product_id)
@@ -453,6 +454,42 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(print_once(self.store), None)
         self.store.retry_print(self.manager_id, job["id"])
         self.assertEqual(self.store.print_jobs()[0]["status"], "queued")
+
+    def test_legacy_escpos_label_settings_and_jobs_are_blocked_but_receipts_continue(self):
+        with self.assertRaisesRegex(TerminalError, "TM-T20"):
+            self.store.save_printer("label", "cups", "EPSON_TM_T20", "escpos50x30")
+        with self.store.transaction() as conn:
+            # Simulate an installation that saved this setting before the fix.
+            conn.execute("INSERT INTO print_settings VALUES (?,?,?,?)",
+                         ("label", "cups", "EPSON_TM_T20", "escpos50x30"))
+            setting = {"driver": "file", "target": str(Path(self.temp.name) / "print")}
+            blocked = self.store._queue_print(conn, "label", b"\x1b@old-label\x1dV\x00", setting)
+            receipt = self.store._queue_print(conn, "receipt", b"\x1b@receipt\x1dV\x00", setting)
+        with self.assertRaisesRegex(TerminalError, "TM-T20"):
+            self.store.queue_label(self.unit_product_id)
+        self.login()
+        response = self.client.post("/api/print/labels", json={"product_id": self.unit_product_id, "quantity": 2},
+                                    headers={"X-CSRF-Token": self.csrf()})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("TM-T20", response.json["error"])
+        work = self.store.begin_print()
+        self.assertEqual(work["id"], receipt)
+        preserved = next(job for job in self.store.print_jobs() if job["id"] == blocked)
+        self.assertEqual(preserved["status"], "blocked")
+        self.assertEqual(preserved["attempts"], 0)
+        with self.assertRaisesRegex(TerminalError, "TM-T20"):
+            self.store.retry_print(self.manager_id, blocked)
+        self.assertEqual(len(self.store.print_jobs()), 2)
+
+    def test_label_quantity_rejects_invalid_input_without_queueing(self):
+        self.store.save_printer("label", "file", str(Path(self.temp.name) / "print"), "zpl")
+        csrf = self.login()
+        for quantity in (0, -1, 1000, 1.5, True, "3", None):
+            with self.subTest(quantity=quantity):
+                response = self.client.post("/api/print/labels", json={"product_id": self.unit_product_id,
+                                            "quantity": quantity}, headers={"X-CSRF-Token": csrf})
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.store.print_jobs(), [])
 
     def test_sale_preview_auto_print_and_reprint_keep_the_same_issuer(self):
         issuer = {"trade_name": "Mercado Maricá", "document": "12345678000199"}

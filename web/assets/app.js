@@ -518,24 +518,96 @@ const eanLeftOdd = ["0001101","0011001","0010011","0111101","0100011","0110001",
 const eanLeftEven = ["0100111","0110011","0011011","0100001","0011101","0111001","0000101","0010001","0001001","0010111"];
 const eanRight = ["1110010","1100110","1101100","1000010","1011100","1001110","1010000","1000100","1001000","1110100"];
 const eanParity = ["LLLLLL","LLGLGG","LLGGLG","LLGGGL","LGLLGG","LGGLLG","LGGGLL","LGLGLG","LGLGGL","LGGLGL"];
+function validEan13(value) {
+  const code = String(value ?? "");
+  if (!/^\d{13}$/.test(code)) return false;
+  const sum = [...code.slice(0, 12)].reduce((total, digit, index) => total + Number(digit) * (index % 2 ? 3 : 1), 0);
+  return (10 - sum % 10) % 10 === Number(code[12]);
+}
 function ean13Svg(value) {
-  const code = String(value || "").replace(/\D/g, "");
-  if (code.length !== 13) return "<p class=invalid>Produto sem EAN-13 válido.</p>";
+  const code = String(value ?? "");
+  if (!validEan13(code)) return "";
   let bits = "101";
-  const parity = eanParity[Number(code[0])] || eanParity[0];
+  const parity = eanParity[Number(code[0])];
   for (let index = 1; index <= 6; index++) bits += parity[index - 1] === "L" ? eanLeftOdd[Number(code[index])] : eanLeftEven[Number(code[index])];
   bits += "01010";
   for (let index = 7; index <= 12; index++) bits += eanRight[Number(code[index])];
   bits += "101";
-  const bars = [...bits].map((bit, index) => bit === "1" ? `<rect x="${index}" y="0" width="1" height="52"/>` : "").join("");
-  return `<svg viewBox="0 0 95 67" role="img" aria-label="Código de barras ${code}" shape-rendering="crispEdges"><g fill="#111">${bars}</g><text x="47.5" y="65" text-anchor="middle" font-family="Arial,sans-serif" font-size="8" letter-spacing="1">${code}</text></svg>`;
+  // 95 encoded modules plus 11 left / 7 right quiet modules, each fixed at 0.33 mm.
+  const bars = [...bits].map((bit, index) => bit === "1" ? `<rect x="${11 + index}" y="0" width="1" height="${index < 3 || (index >= 45 && index < 50) || index >= 92 ? 39 : 36}"/>` : "").join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="37.29mm" height="15.18mm" viewBox="0 0 113 46" role="img" aria-label="Código de barras ${code}" shape-rendering="crispEdges"><rect width="113" height="46" fill="#fff"/><g fill="#000">${bars}</g><text x="56.5" y="45" text-anchor="middle" fill="#000" font-family="Arial,sans-serif" font-size="8" letter-spacing="1">${code}</text></svg>`;
 }
-function printProductBarcode(product) {
+const productLabelStyles = `
+  .product-print-label{box-sizing:border-box;width:50mm;height:30mm;margin:0;padding:1.5mm;background:#fff;color:#000;font-family:Arial,sans-serif;display:grid;grid-template-rows:6.2mm 4.4mm 15.18mm;row-gap:.4mm;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
+  .product-print-label *{box-sizing:border-box}
+  .product-print-label-name{margin:0;font-size:8pt;font-weight:700;line-height:3.1mm;letter-spacing:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+  .product-print-label-price{display:flex;align-items:baseline;gap:1mm;white-space:nowrap;font-size:11pt;font-weight:700;line-height:4.4mm;letter-spacing:0}
+  .product-print-label-unit{font-size:8pt;font-weight:400}
+  .product-print-label-barcode{width:37.29mm;height:15.18mm;justify-self:center}
+  .product-print-label-barcode svg{display:block;width:37.29mm;height:15.18mm;max-width:none}
+`;
+function labelHtmlEscape(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
+}
+function productLabelMarkup(product) {
+  return `<article class="product-print-label"><div class="product-print-label-name" title="${labelHtmlEscape(product.name)}">${labelHtmlEscape(product.name)}</div><div class="product-print-label-price"><span>${labelHtmlEscape(money(product.price_cents))}</span><span class="product-print-label-unit">/ ${labelHtmlEscape(product.unit || "UN")}</span></div><div class="product-print-label-barcode">${ean13Svg(product.barcode)}</div></article>`;
+}
+function productLabelPrintDocument(product, quantity) {
+  if (!validEan13(product.barcode)) throw new Error("O produto precisa ter um EAN-13 válido para imprimir etiquetas.");
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) throw new Error("Informe uma quantidade entre 1 e 999 etiquetas.");
+  const labels = Array.from({ length: quantity }, () => productLabelMarkup(product)).join("");
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiquetas · ${labelHtmlEscape(product.name)}</title><style>
+    html,body{margin:0;padding:0;background:#fff}body{width:50mm}
+    ${productLabelStyles}
+    @page{size:50mm 30mm;margin:0}
+    @media print{.product-print-label{break-after:page;page-break-after:always}.product-print-label:last-child{break-after:auto;page-break-after:auto}}
+  </style></head><body>${labels}</body></html>`;
+}
+function printProductBarcode(product, quantity) {
+  const markup = productLabelPrintDocument(product, quantity);
   const popup = window.open("", "_blank", "width=440,height=620");
   if (!popup) { toast("Permita pop-ups para imprimir a etiqueta.", "error"); return; }
-  const safe = value => String(value ?? "").replace(/[&<>\"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[character]));
-  popup.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiqueta ${safe(product.name)}</title><style>*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,sans-serif}.label{width:80mm;height:50mm;padding:3mm 4mm;margin:0 auto;display:grid;grid-template-rows:auto auto 1fr;align-content:center;gap:1.5mm;overflow:hidden}.name{font-weight:700;font-size:13pt;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.price{font-size:13pt;font-weight:700;line-height:1}.barcode{width:100%;height:29mm;display:grid;place-items:center}.barcode svg{display:block;width:100%;height:100%;max-height:29mm}.invalid{color:#a33;font-size:10pt}.print-help{font:10px Arial;color:#65747a;text-align:center;margin:5mm auto;max-width:80mm}@media print{@page{size:80mm 50mm;margin:0}body{width:80mm;height:50mm}.label{margin:0}.print-help{display:none}}</style></head><body><main class="label"><div class="name">${safe(product.name)}</div><div class="price">${money(product.price_cents)}</div><div class="barcode">${ean13Svg(product.barcode)}</div></main><p class="print-help">Etiqueta 80 × 50 mm · selecione a impressora de etiquetas e mantenha a escala em 100%.</p><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));</script></body></html>`);
-  popup.document.close(); popup.focus();
+  popup.document.open();
+  popup.document.write(markup);
+  popup.document.close();
+  popup.focus();
+  // This function runs only after the user submits the label dialog.
+  popup.print();
+}
+function productLabelDialog(product) {
+  const form = el("form", "label-print-form");
+  const style = el("style"); style.textContent = productLabelStyles; form.append(style);
+  form.append(info("Use impressora de etiquetas com sensor de intervalo. A Epson TM-T20 utiliza bobinas de recibo de 58 ou 80 mm e não alinha etiquetas com espaços.", true));
+  const controls = el("div", "form-grid");
+  const quantityField = el("div", "field"), quantityLabel = el("label", "", "Quantidade de etiquetas"), quantityInput = el("input");
+  quantityInput.id = "label-print-quantity"; quantityInput.name = "quantity"; quantityInput.type = "number";
+  quantityInput.min = "1"; quantityInput.max = "999"; quantityInput.step = "1"; quantityInput.value = "1"; quantityInput.required = true;
+  quantityLabel.htmlFor = quantityInput.id;
+  quantityField.append(quantityLabel, quantityInput, el("small", "", "De 1 a 999 cópias deste produto."));
+  const sizeField = el("div", "field");
+  sizeField.append(el("span", "field-label", "Tamanho da etiqueta"), el("strong", "label-print-size", "50 × 30 mm"), el("small", "", "Uma etiqueta por página."));
+  controls.append(quantityField, sizeField); form.append(controls);
+  const preview = el("figure", "label-print-preview"), caption = el("figcaption", "", "Prévia · 50 × 30 mm");
+  preview.append(caption);
+  const barcodeValid = validEan13(product.barcode);
+  if (barcodeValid) {
+    const sheet = el("div", "label-print-sheet"); sheet.innerHTML = productLabelMarkup(product); preview.append(sheet);
+  } else {
+    preview.append(el("p", "feedback error", "O código de barras deste produto não é um EAN-13 válido. Corrija o cadastro antes de imprimir."));
+  }
+  form.append(preview);
+  form.append(el("p", "label-print-help", "Na impressão do navegador, selecione papel 50 × 30 mm, escala 100%, margens zero e desative cabeçalhos e rodapés. Nas preferências da impressora, desative o corte automático."));
+  const message = el("p", "feedback error"); message.hidden = true; message.setAttribute("role", "alert"); form.append(message);
+  const actions = el("div", "form-actions"), print = button("Imprimir etiquetas", null);
+  print.type = "submit"; print.disabled = !barcodeValid;
+  actions.append(button("Fechar", closeDialog, "ghost"), print); form.append(actions);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
+    try { printProductBarcode(product, Number(quantityInput.value)); message.hidden = true; }
+    catch (error) { handleError(error, message); }
+  });
+  openDialog("Imprimir etiquetas", product.name, form);
 }
 
 async function fieldNode(field, value, creating = false) {
@@ -718,7 +790,7 @@ async function resourcePage(key) {
       const actionsFor = spec.edit() || (spec.remove && spec.edit()) ? row => {
         const actions = [];
         if (spec.edit()) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
-        if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiqueta", onClick: () => printProductBarcode(row) });
+        if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row) });
         if (spec.remove && spec.edit()) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria.", async () => {
           await api.delete(spec.endpoint + "/" + row.id);
           toast("Registro desativado.");

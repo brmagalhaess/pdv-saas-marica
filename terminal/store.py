@@ -11,7 +11,7 @@ from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-from .printers import label_bytes, receipt_bytes, receipt_layout
+from .printers import LABEL_PRINTER_REQUIRED, label_bytes, receipt_bytes, receipt_layout
 
 
 OFFLINE_LEASE_SECONDS = 7 * 24 * 60 * 60
@@ -1035,8 +1035,10 @@ class Store:
     def save_printer(self, kind, driver, target, fmt, operator_id=None):
         if kind not in ("receipt", "label") or driver not in ("tcp", "windows_raw", "cups", "file"):
             raise TerminalError("Configuração de impressora inválida")
+        if kind == "label" and fmt == "escpos50x30":
+            raise TerminalError(LABEL_PRINTER_REQUIRED, 409)
         if (kind == "receipt" and fmt not in ("escpos58", "escpos80")) or (
-                kind == "label" and fmt not in ("zpl", "epl", "escpos50x30")):
+                kind == "label" and fmt not in ("zpl", "epl")):
             raise TerminalError("Formato de impressão inválido")
         target = _str(target, "Destino", 260)
         with self.transaction() as conn:
@@ -1069,19 +1071,8 @@ class Store:
             setting = conn.execute("SELECT * FROM print_settings WHERE kind='label'").fetchone()
             if not product:
                 raise TerminalError("Produto não encontrado", 404)
-            if not setting:
-                # A TM-T20 is commonly the only printer in a small shop. If
-                # no dedicated label profile exists, reuse its receipt queue
-                # and render the 50 x 30 mm ESC/POS layout automatically.
-                receipt_setting = conn.execute(
-                    "SELECT * FROM print_settings WHERE kind='receipt'"
-                ).fetchone()
-                if receipt_setting:
-                    setting = dict(receipt_setting)
-                    setting["kind"] = "label"
-                    setting["format"] = "escpos50x30"
-                else:
-                    raise TerminalError("Configure a impressora de recibos antes", 409)
+            if not setting or setting["format"] == "escpos50x30":
+                raise TerminalError(LABEL_PRINTER_REQUIRED, 409)
             single_label = label_bytes(dict(product), setting["format"])
             job_id = self._queue_print(conn, "label", single_label * quantity, setting)
             return {"id": job_id, "status": "queued", "quantity": quantity}
@@ -1104,9 +1095,17 @@ class Store:
 
     def begin_print(self):
         with self.transaction() as conn:
-            row = conn.execute("SELECT * FROM print_jobs WHERE status='queued' ORDER BY created_at,rowid LIMIT 1").fetchone()
-            if not row:
-                return None
+            while True:
+                row = conn.execute("SELECT * FROM print_jobs WHERE status='queued' ORDER BY created_at,rowid LIMIT 1").fetchone()
+                if not row:
+                    return None
+                # Preserve old jobs for inspection, but never send the retired
+                # ESC/POS label payload (which cuts through die-cut labels).
+                if row["kind"] == "label" and row["payload"].startswith(b"\x1b@"):
+                    conn.execute("UPDATE print_jobs SET status='blocked',error=?,updated_at=? WHERE id=?",
+                                 (LABEL_PRINTER_REQUIRED, _now_ms(), row["id"]))
+                    continue
+                break
             conn.execute("UPDATE print_jobs SET status='sending',attempts=attempts+1,updated_at=? WHERE id=?",
                          (_now_ms(), row["id"]))
             return dict(row)
@@ -1119,9 +1118,11 @@ class Store:
 
     def retry_print(self, operator_id, job_id):
         with self.transaction() as conn:
-            row = conn.execute("SELECT status FROM print_jobs WHERE id=?", (job_id,)).fetchone()
+            row = conn.execute("SELECT status,kind,payload FROM print_jobs WHERE id=?", (job_id,)).fetchone()
             if not row:
                 raise TerminalError("Impressão não encontrada", 404)
+            if row["kind"] == "label" and row["payload"].startswith(b"\x1b@"):
+                raise TerminalError(LABEL_PRINTER_REQUIRED, 409)
             if row["status"] not in ("uncertain", "printed"):
                 raise TerminalError("Impressão já está na fila", 409)
             conn.execute("UPDATE print_jobs SET status='queued',error=NULL,updated_at=? WHERE id=?",

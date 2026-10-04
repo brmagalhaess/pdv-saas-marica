@@ -271,42 +271,17 @@ def receipt_bytes(sale, width=80):
     return bytes(output)
 
 
-def _escpos_label_barcode(value, height=72, width=2):
-    """Render a CODE128 barcode using Epson ESC/POS commands."""
-    data = ("{B" + str(value)).encode("ascii", "replace")
-    if not data or len(data) > 254:
-        return b""
-    return (b"\x1dH\x02"
-            + b"\x1dw" + bytes([max(2, min(int(width), 6))])
-            + b"\x1dh" + bytes([max(1, min(int(height), 255))])
-            + b"\x1dkI" + bytes([len(data)]) + data + b"\n")
-
-
-def _escpos_label_50x30(product):
-    """Compact 50 x 30 mm label for an ESC/POS thermal printer."""
-    name = _clean(product["name"], 60)
-    barcode = "".join(ch for ch in str(product.get("barcode") or product["id"])
-                      if ch.isascii() and ch.isalnum())[:80]
-    price = _money(product["price_cents"])
-    name_lines = textwrap.wrap(name, width=30, break_long_words=True,
-                               break_on_hyphens=False)[:2] or ["Produto"]
-    output = bytearray(b"\x1b@")
-    output.extend(b"\x1dP\xcb\xcb")
-    output.extend(b"\x1dL\x00\x00\x1dW" + (400).to_bytes(2, "little"))
-    output.extend(b"\x1bM\x00\x1bt\x02\x1b3\x18\x1ba\x01\x1bE\x01")
-    output.extend(("\n".join(name_lines) + "\n").encode("cp850", "replace"))
-    output.extend(b"\x1bE\x00\x1d!\x11")
-    output.extend((price + "\n").encode("cp850", "replace"))
-    output.extend(b"\x1d!\x00")
-    output.extend(_escpos_label_barcode(barcode))
-    output.extend(b"\x1b3\x18\x1b\x64\x03\x1dV\x00")
-    return bytes(output)
+LABEL_PRINTER_REQUIRED = (
+    "Etiquetas com intervalo exigem impressora de etiquetas compatível. "
+    "A TM-T20 utiliza bobinas de recibo de 58 ou 80 mm. "
+    "Prepare as etiquetas 50×30 mm no painel da empresa, em Produtos > Imprimir etiquetas."
+)
 
 
 def label_bytes(product, fmt="zpl"):
-    """Render ZPL, EPL or a compact ESC/POS 50 x 30 mm label."""
+    """Render labels for a separately configured ZPL/EPL printer."""
     if fmt == "escpos50x30":
-        return _escpos_label_50x30(product)
+        raise ValueError(LABEL_PRINTER_REQUIRED)
     name = _clean(product["name"], 38)
     barcode = "".join(ch for ch in str(product.get("barcode") or product["id"])
                       if ch.isascii() and ch.isalnum())[:32]
