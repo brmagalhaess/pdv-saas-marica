@@ -354,8 +354,7 @@ def create_app(config=None):
     @app.post("/api/print/labels")
     @authenticated(*SELL_ROLES)
     def print_label(_operator):
-        data = body()
-        return jsonify(store.queue_label(data.get("product_id"), data.get("quantity", 1)))
+        return jsonify({"error": "A impressão de etiquetas é feita no painel da empresa, em Produtos > Imprimir etiquetas."}), 410
 
     @app.post("/api/discount/authorize")
     @authenticated(*SELL_ROLES)

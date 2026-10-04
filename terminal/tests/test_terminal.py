@@ -470,8 +470,8 @@ class TerminalTests(unittest.TestCase):
         self.login()
         response = self.client.post("/api/print/labels", json={"product_id": self.unit_product_id, "quantity": 2},
                                     headers={"X-CSRF-Token": self.csrf()})
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("TM-T20", response.json["error"])
+        self.assertEqual(response.status_code, 410)
+        self.assertIn("painel da empresa", response.json["error"])
         work = self.store.begin_print()
         self.assertEqual(work["id"], receipt)
         preserved = next(job for job in self.store.print_jobs() if job["id"] == blocked)
@@ -483,12 +483,10 @@ class TerminalTests(unittest.TestCase):
 
     def test_label_quantity_rejects_invalid_input_without_queueing(self):
         self.store.save_printer("label", "file", str(Path(self.temp.name) / "print"), "zpl")
-        csrf = self.login()
         for quantity in (0, -1, 1000, 1.5, True, "3", None):
             with self.subTest(quantity=quantity):
-                response = self.client.post("/api/print/labels", json={"product_id": self.unit_product_id,
-                                            "quantity": quantity}, headers={"X-CSRF-Token": csrf})
-                self.assertEqual(response.status_code, 400)
+                with self.assertRaisesRegex(TerminalError, "quantidade|Quantidade"):
+                    self.store.queue_label(self.unit_product_id, quantity)
         self.assertEqual(self.store.print_jobs(), [])
 
     def test_sale_preview_auto_print_and_reprint_keep_the_same_issuer(self):

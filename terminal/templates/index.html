@@ -68,18 +68,17 @@
     </aside>
     <main class="workspace">
       <section id="checkoutTab" class="tab-panel">
-        <div class="section-head"><div><span class="eyebrow">OPERAÇÃO · CAIXA</span><h1>Frente de caixa</h1><p class="section-subtitle">Venda rápida com catálogo local e continuidade offline.</p></div><div class="register-head-actions"><span id="cashChip" class="chip">Caixa fechado</span><span class="shortcut-hint"><kbd>F2</kbd> buscar <kbd>Enter</kbd> adicionar</span></div></div>
+        <div class="section-head"><div><span class="eyebrow">OPERAÇÃO · CAIXA</span><h1>Frente de caixa</h1><p class="section-subtitle">Leia o código, confira o pedido e finalize em poucos toques.</p></div><div class="register-head-actions"><span id="cashChip" class="chip">Caixa fechado</span><span class="shortcut-hint"><kbd>F2</kbd> buscar <kbd>Enter</kbd> adicionar</span></div></div>
         <div class="checkout-grid">
           <div class="catalog card">
-            <div class="card-head"><div><h2>Produtos</h2><p>Busque por nome, SKU ou leia o código de barras</p></div><button id="refreshCatalogBtn" class="secondary small" type="button">Atualizar catálogo</button></div>
-            <div class="search-row"><label class="search"><span>⌕</span><input id="productSearch" placeholder="Buscar produto ou escanear código" autocomplete="off" autofocus></label><button id="focusScannerBtn" class="secondary scanner-focus" type="button" title="Focar o leitor de código de barras">Leitor</button></div>
+            <div class="card-head"><div><span class="card-kicker">CATÁLOGO LOCAL</span><h2>Produtos</h2><p>Busque por nome, SKU ou leia o código de barras</p></div><button id="refreshCatalogBtn" class="secondary small" type="button">Atualizar</button></div>
+            <div class="search-row"><label class="search"><span>⌕</span><input id="productSearch" placeholder="Leia ou digite o código do produto" autocomplete="off" autofocus></label><button id="focusScannerBtn" class="secondary scanner-focus" type="button" title="Focar o leitor de código de barras">Focar leitor</button></div>
             <div id="scannerStatus" class="scanner-status" aria-live="polite"><span class="scanner-dot"></span> Leitor USB pronto · aponte para o código e aguarde Enter ou Tab</div>
-            <div class="scale-controls" aria-label="Integração com balança">
+            <details class="optional-tools"><summary>Pesagem e etiqueta de balança</summary><div class="scale-controls" aria-label="Integração com balança">
               <button id="scaleConnectBtn" class="secondary small" type="button">Conectar balança</button>
               <label>Etiqueta EAN<select id="scaleBarcodeMode"><option value="weight">Peso em gramas</option><option value="price">Preço total</option></select></label>
               <label>Serial<select id="scaleBaud"><option value="9600">9600 bps</option><option value="4800">4800 bps</option><option value="19200">19200 bps</option></select></label>
-            </div>
-            <div id="scaleStatus" class="scanner-status" aria-live="polite"><span class="scanner-dot"></span> Balança manual · use o peso digitado ou uma etiqueta EAN-13</div>
+            </div><div id="scaleStatus" class="scanner-status" aria-live="polite"><span class="scanner-dot"></span> Balança manual · use o peso digitado ou uma etiqueta EAN-13</div></details>
             <div id="categories" class="categories"></div>
             <div id="productsGrid" class="products-grid"></div>
           </div>
@@ -119,10 +118,10 @@
       <section id="printersTab" class="tab-panel hidden">
         <div class="section-head"><div><span class="eyebrow">PERIFÉRICOS</span><h1>Impressoras</h1></div></div>
         <div class="card compact">
-          <h2>Etiquetas de produtos</h2>
-          <p class="hint">No painel da empresa, abra Produtos → Imprimir etiquetas para escolher a quantidade e conferir a prévia de 50×30 mm. Use uma impressora de etiquetas com sensor de intervalo. A Epson TM-T20 utiliza bobinas de recibo de 58 ou 80 mm e não alinha etiquetas com espaços.</p>
+          <h2>Impressora de recibos</h2>
+          <p class="hint">Configure aqui somente a impressora térmica do caixa. A impressão de etiquetas fica no painel da empresa, em Produtos → Imprimir etiquetas.</p>
           <form id="printerForm" class="printer-form">
-            <label>Tipo<select id="printerKind"><option value="receipt">Recibo térmico</option><option value="label">Etiqueta</option></select></label>
+            <input id="printerKind" type="hidden" value="receipt">
             <label>Conexão<select id="printerDriver"><option value="file">Arquivo de teste</option><option value="cups">CUPS · macOS/Linux</option><option value="tcp">TCP 9100</option><option value="windows_raw">Spool RAW Windows</option></select></label>
             <label>Formato<select id="printerFormat"><option value="escpos58">ESC/POS 58 mm</option><option value="escpos80">ESC/POS 80 mm</option></select></label>
             <label class="printer-target-field">Fila ou destino<input id="printerTarget" placeholder="Ex.: TM-T20 ou host:9100" required></label>
