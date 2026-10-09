@@ -68,6 +68,10 @@
             <button class="button" type="button" id="mfa-continue" hidden>Continuar para o painel <span aria-hidden="true">→</span></button>
           </div>
         </section>
+        <section id="panel-account-choice" role="region" aria-labelledby="auth-title" hidden>
+          <div class="account-choice-copy">Este login tem mais de um tipo de acesso. Escolha onde deseja continuar.</div>
+          <div id="account-choice-list" class="account-choice-list"></div>
+        </section>
         <section id="panel-register" role="tabpanel" aria-labelledby="tab-register" hidden>
           <form class="auth-form" id="register-form">
             <div class="field"><label for="company">Nome da empresa</label><input id="company" name="company" autocomplete="organization" maxlength="120" placeholder="Ex.: Mercado da Praça" required></div>

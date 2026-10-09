@@ -398,11 +398,25 @@ function renderProfileMenu() {
   menu.append(el("strong", "profile-menu-name", state.user?.name || "Conta"));
   menu.append(el("small", "profile-menu-email", state.user?.email || ""));
   const links = [];
-  if (canOpenPlatform()) {
-    links.push(["Administração SaaS", "/platform/"]);
-    links.push(["Segurança e MFA", "/platform/#security"]);
+  const switches = [];
+  if (canOpenPlatform()) switches.push(["Administração SaaS", "/platform/", "Planos, licenças e operação da plataforma"]);
+  if (state.memberships?.length) {
+    state.memberships.forEach(membership => switches.push([
+      membership.tenant_name || "Painel da empresa",
+      "/app/?tenant=" + encodeURIComponent(membership.tenant_id),
+      `Empresa · ${roleNames[membership.role] || membership.role}`
+    ]));
   }
-  if (state.memberships?.length) links.push(["Painel da empresa", "/app/"]);
+  if (switches.length > 1 || (platform && state.memberships?.length)) {
+    menu.append(el("small", "profile-menu-section-title", "Trocar área de acesso"));
+    switches.forEach(([label, href, description]) => {
+      const link = el("a", "profile-menu-link profile-menu-switch", label); link.href = href;
+      link.append(el("small", "profile-menu-link-note", description));
+      menu.append(link);
+    });
+    menu.append(el("div", "profile-menu-divider"));
+  }
+  if (canOpenPlatform()) links.push(["Segurança e MFA", "/platform/#security"]);
   if (links.length) {
     menu.append(el("div", "profile-menu-divider"));
     links.forEach(([label, href]) => {
@@ -2687,7 +2701,7 @@ async function init() {
         return;
       }
       let saved;
-      try {saved=localStorage.getItem("pdv2-tenant");}catch{}
+      try {saved=new URLSearchParams(location.search).get("tenant") || localStorage.getItem("pdv2-tenant");}catch{}
       const current=state.memberships.find(row=>String(row.tenant_id)===String(saved))||state.memberships[0];
       state.tenantId=current.tenant_id;state.role=current.role;setTenant(state.tenantId);
       const select=$("#tenant-selector");

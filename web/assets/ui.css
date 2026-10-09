@@ -130,6 +130,18 @@ svg { display: block; }
 .auth-footnote { padding-top: 18px; margin-top: 22px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .auth-footnote a { color: var(--green-dark); font-weight: 800; }
 .auth-message { margin: 16px 0 0; }
+.account-choice-copy { margin-bottom: 16px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.account-choice-list { display: grid; gap: 11px; }
+.account-choice-card { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: white; text-decoration: none; box-shadow: 0 8px 24px #163a250b; transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease; }
+.account-choice-card:hover { border-color: #7ab58f; box-shadow: 0 12px 28px #163a2514; transform: translateY(-1px); }
+.account-choice-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: #176344; background: #e7f5e9; font-size: 18px; }
+.account-choice-card strong, .account-choice-card small { display: block; }
+.account-choice-card strong { font-size: 13px; }
+.account-choice-card small { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.account-choice-arrow { color: var(--green-dark); font-size: 18px; font-weight: 800; }
+.profile-menu-section-title { display: block; margin-bottom: 7px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.profile-menu-switch { padding: 8px 10px; }
+.profile-menu-link-note { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 500; }
 .auth-secret { display: block; margin-top: 10px; padding: 10px 12px; overflow-wrap: anywhere; border-radius: 8px; background: #fff; color: #173f48; font-size: 14px; letter-spacing: .08em; }
 .auth-secret-uri { display: block; margin-top: 8px; overflow-wrap: anywhere; color: #56747a; }
 .auth-recovery-codes { display: block; margin-top: 9px; color: #124e38; white-space: pre-line; line-height: 1.6; letter-spacing: .06em; }
