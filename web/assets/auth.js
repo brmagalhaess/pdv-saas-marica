@@ -5,6 +5,8 @@ const message = $("#auth-message");
 const params = new URLSearchParams(location.search);
 let mode = params.get("mode") === "register" ? "register" : "login";
 const safeNext = params.get("next");
+let mfaMode = "";
+let mfaCompletedResult = null;
 
 function showMessage(text, type = "error") {
   message.textContent = text;
@@ -23,6 +25,8 @@ function setMode(next, focus = false) {
   $("#tab-register").tabIndex = login ? -1 : 0;
   $("#panel-login").hidden = !login;
   $("#panel-register").hidden = login;
+  $("#panel-mfa").hidden = true;
+  $(".auth-tabs").hidden = false;
   $("#auth-title").textContent = login ? "Boas-vindas ao PDV2" : "Seu espaço começa aqui";
   $("#auth-description").textContent = login
     ? "Acesse seu espaço de gestão ou crie uma conta para testar as funções disponíveis."
@@ -33,6 +37,30 @@ function setMode(next, focus = false) {
   if (login) url.searchParams.delete("mode");
   else url.searchParams.set("mode", "register");
   history.replaceState({}, "", url);
+}
+
+async function showMfa(setupRequired) {
+  mfaMode = setupRequired ? "setup" : "verify";
+  $(".auth-tabs").hidden = true;
+  $("#panel-login").hidden = true;
+  $("#panel-register").hidden = true;
+  $("#panel-mfa").hidden = false;
+  $("#auth-title").textContent = setupRequired ? "Ative a MFA da administração" : "Confirme sua identidade";
+  $("#auth-description").textContent = setupRequired
+    ? "Use um aplicativo autenticador para proteger o acesso ao painel SaaS."
+    : "Informe o código de seis dígitos do seu aplicativo autenticador.";
+  $("#mfa-setup-copy").hidden = !setupRequired;
+  $("#mfa-recovery-list").hidden = true;
+  $("#mfa-continue").hidden = true;
+  $("#mfa-form").hidden = false;
+  $("#mfa-code").value = "";
+  $("#mfa-recovery").value = "";
+  if (setupRequired) {
+    const setup = await api.get("/auth/mfa/setup", { tenant: false });
+    $("#mfa-secret").textContent = setup.secret;
+    $("#mfa-uri").textContent = setup.otpauth_uri;
+  }
+  $("#mfa-code").focus();
 }
 
 function passwordIsValid(value) {
@@ -87,11 +115,57 @@ $("#login-form").addEventListener("submit", async event => {
   try {
     const data = Object.fromEntries(new FormData(form));
     const result = await api.post("/auth/login", { email: data.email.trim(), password: data.password }, { tenant: false });
+    if (result?.mfa_setup_required || result?.mfa_required) {
+      busy(form, false);
+      await showMfa(Boolean(result.mfa_setup_required));
+      return;
+    }
     location.assign(destination(result));
   } catch (error) {
     showMessage(errorText(error));
     busy(form, false);
   }
+});
+
+$("#mfa-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  showMessage("");
+  busy(form, true);
+  try {
+    const data = Object.fromEntries(new FormData(form));
+    if (mfaMode === "setup" && !data.code.trim()) {
+      showMessage("Informe o código exibido no aplicativo autenticador.");
+      busy(form, false);
+      return;
+    }
+    if (mfaMode === "verify" && !data.code.trim() && !data.recovery_code.trim()) {
+      showMessage("Informe o código do autenticador ou um código de recuperação.");
+      busy(form, false);
+      return;
+    }
+    const result = mfaMode === "setup"
+      ? await api.post("/auth/mfa/setup/confirm", { code: data.code }, { tenant: false })
+      : await api.post("/auth/mfa/verify", { code: data.code, recovery_code: data.recovery_code.trim() }, { tenant: false });
+    if (mfaMode === "setup" && Array.isArray(result.recovery_codes)) {
+      mfaCompletedResult = result;
+      $("#mfa-recovery-codes").textContent = result.recovery_codes.join("\n");
+      $("#mfa-recovery-list").hidden = false;
+      $("#mfa-continue").hidden = false;
+      $("#mfa-form").hidden = true;
+      showMessage("MFA ativada. Guarde os códigos de recuperação antes de continuar.", "success");
+      return;
+    }
+    location.assign(destination(result));
+  } catch (error) {
+    showMessage(errorText(error));
+    busy(form, false);
+  }
+});
+
+$("#mfa-continue").addEventListener("click", () => {
+  if (mfaCompletedResult) location.assign(destination(mfaCompletedResult));
 });
 
 $("#register-form").addEventListener("submit", async event => {

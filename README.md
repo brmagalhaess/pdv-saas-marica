@@ -81,7 +81,7 @@ python scripts/smoke_local.py --offline
 python scripts/verify_backup.py
 ```
 
-O primeiro interrompe apenas o cloud deste projeto, vende offline, religa, sincroniza e estorna a venda de teste. O segundo restaura o backup em um banco temporário separado e o remove após verificar. Relatórios em `.runtime/`.
+O primeiro interrompe apenas o cloud deste projeto, vende offline, religa, sincroniza e estorna a venda de teste. O segundo cria um snapshot Restic e restaura o backup em um banco temporário separado, removendo-o após verificar. Para validar o bucket externo da produção, use `python scripts/verify_backup.py --compose compose.production.yaml --env-file .env.production --require-external`. Relatórios em `.runtime/`. A configuração e a operação da MFA SaaS estão em [SEGURANCA-MFA-BACKUP.md](docs/SEGURANCA-MFA-BACKUP.md).
 
 ## Instalação e atualização
 

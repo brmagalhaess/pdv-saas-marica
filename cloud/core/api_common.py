@@ -170,6 +170,8 @@ PLATFORM_GROUPS = {"platform_support", "platform_billing", "platform_ops"}
 
 def platform_user(request, roles=None, superuser=False):
     user = require_user(request)
+    if settings.PLATFORM_MFA_REQUIRED and not request.session.get("platform_mfa_verified"):
+        raise APIError("Conclua a autenticação multifator para acessar a administração SaaS", 403)
     if user.is_superuser:
         return user
     if superuser or not user.is_staff:

@@ -407,3 +407,25 @@ class RateLimit(models.Model):
     key = models.CharField(primary_key=True, max_length=64)
     attempts = models.PositiveIntegerField(default=0)
     expires_at = models.DateTimeField()
+
+
+class PlatformMFA(models.Model):
+    """TOTP enrollment for users who can access the SaaS control plane.
+
+    The TOTP seed is encrypted with the same Fernet key used for provider
+    credentials. Recovery codes are stored as one-way Django password hashes
+    and are removed after a successful use.
+    """
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                related_name="platform_mfa")
+    secret_encrypted = models.TextField(blank=True)
+    enabled = models.BooleanField(default=False)
+    recovery_codes = models.JSONField(default=list, blank=True)
+    failed_attempts = models.PositiveIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"MFA {self.user_id}"

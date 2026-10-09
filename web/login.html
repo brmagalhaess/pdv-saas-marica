@@ -49,6 +49,25 @@
             <button class="button" type="submit">Entrar no painel <span aria-hidden="true">→</span></button>
           </form>
         </section>
+        <section id="panel-mfa" role="tabpanel" aria-labelledby="tab-login" hidden>
+          <div class="feedback info" id="mfa-setup-copy" hidden>
+            <strong>Proteja a administração SaaS</strong>
+            <p>Adicione esta conta ao seu aplicativo autenticador usando a chave abaixo. A chave aparece somente durante esta configuração.</p>
+            <code id="mfa-secret" class="auth-secret"></code>
+            <small id="mfa-uri" class="auth-secret-uri"></small>
+          </div>
+          <form class="auth-form" id="mfa-form">
+            <div class="field"><label for="mfa-code">Código do autenticador</label><input id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,8}" maxlength="8" placeholder="000000"></div>
+            <div class="field"><label for="mfa-recovery">Código de recuperação <span>(opcional)</span></label><input id="mfa-recovery" name="recovery_code" autocomplete="off" maxlength="16" placeholder="PDV2-XXXX-XXXX"></div>
+            <button class="button" type="submit">Validar e entrar <span aria-hidden="true">→</span></button>
+          </form>
+          <div id="mfa-recovery-list" class="feedback success" hidden>
+            <strong>Guarde seus códigos de recuperação</strong>
+            <p>Cada código pode ser usado uma única vez.</p>
+            <code id="mfa-recovery-codes" class="auth-recovery-codes"></code>
+            <button class="button" type="button" id="mfa-continue" hidden>Continuar para o painel <span aria-hidden="true">→</span></button>
+          </div>
+        </section>
         <section id="panel-register" role="tabpanel" aria-labelledby="tab-register" hidden>
           <form class="auth-form" id="register-form">
             <div class="field"><label for="company">Nome da empresa</label><input id="company" name="company" autocomplete="organization" maxlength="120" placeholder="Ex.: Mercado da Praça" required></div>

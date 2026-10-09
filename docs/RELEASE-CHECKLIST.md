@@ -12,6 +12,9 @@ docker compose -f compose.local.yaml run --rm cloud python manage.py migrate --n
 docker compose -f compose.local.yaml run --rm cloud python manage.py test core operations -v 1
 docker compose -f compose.local.yaml run --rm terminal python -m unittest terminal.tests.test_terminal terminal.tests.test_receipts -q
 docker compose -f compose.local.yaml run --rm cloud python -m unittest discover -s /app/shared/tests -q
+# backup criptografado + restauração isolada; para produção acrescente
+# --compose compose.production.yaml --env-file .env.production --require-external
+python3 scripts/verify_backup.py
 ```
 
 Critérios: migração sem erro; testes verdes; `http://127.0.0.1:8000/health/` responde; `http://127.0.0.1:8010/` abre; o terminal pareia, abre caixa, vende sem rede, reimprime e sincroniza ao reconectar.
@@ -31,9 +34,9 @@ Critérios: migração sem erro; testes verdes; `http://127.0.0.1:8000/health/` 
 
 - [ ] domínio, DNS, HTTPS, SMTP e segredos externos configurados;
 - [ ] migrações executadas em banco PostgreSQL de produção;
-- [ ] backup Restic externo e restauração em ambiente limpo comprovados;
+- [ ] backup Restic externo e restauração em ambiente limpo comprovados (o procedimento está automatizado em `scripts/verify_backup.py`; execute com o `.env.production` depois de configurar o bucket externo);
 - [ ] alerta de saúde cloud/worker/backup/sincronização configurado;
-- [ ] MFA dos administradores da plataforma concluído;
+- [x] MFA TOTP dos administradores da plataforma implementado; o primeiro acesso de cada administrador exige cadastro e guarda dos códigos de recuperação;
 - [ ] NFC-e RJ homologada, autorizada, cancelada e contingência testada com contador;
 - [ ] TEF ou Pix dinâmico escolhido, homologado, conciliado e estornado;
 - [ ] matriz de hardware aprovada por modelo e procedimento de suporte escrito;

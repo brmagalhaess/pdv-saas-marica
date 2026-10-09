@@ -8,6 +8,7 @@ from datetime import timedelta
 from ipaddress import ip_network
 from unittest.mock import Mock, patch
 
+import pyotp
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
@@ -19,7 +20,7 @@ from operations.models import BillingBinding
 from operations.services import enqueue
 from .api_common import client_ip, password_policy
 from .models import (AuditEvent, Membership, Plan, Product, RateLimit, Sale, SalePayment, Shop,
-                      Subscription, SyncConflict, SyncEvent, Tenant, Terminal)
+                      PlatformMFA, Subscription, SyncConflict, SyncEvent, Tenant, Terminal)
 
 
 class CloudAPITests(TestCase):
@@ -64,6 +65,34 @@ class CloudAPITests(TestCase):
         self.assertEqual(self.api("POST", "/api/v1/auth/login",
                                   {"email": "owner@example.test", "password": "wrong"}, tenant=False).status_code, 429)
         self.assertEqual(RateLimit.objects.count(), 1)
+
+    @override_settings(PLATFORM_MFA_REQUIRED=True)
+    def test_platform_login_requires_totp_enrollment_and_second_factor(self):
+        User = get_user_model()
+        root = User.objects.create_superuser(username="root-mfa@example.test",
+                                              email="root-mfa@example.test",
+                                              password="Root-Mfa-42!")
+        first = self.api("POST", "/api/v1/auth/login",
+                         {"email": root.email, "password": "Root-Mfa-42!"}, tenant=False)
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertTrue(first.json()["mfa_setup_required"])
+        setup = self.api("GET", "/api/v1/auth/mfa/setup", tenant=False)
+        self.assertEqual(setup.status_code, 200, setup.content)
+        code = pyotp.TOTP(setup.json()["secret"]).now()
+        confirmed = self.api("POST", "/api/v1/auth/mfa/setup/confirm", {"code": code}, tenant=False)
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(len(confirmed.json()["recovery_codes"]), 10)
+        self.assertTrue(PlatformMFA.objects.get(user=root).enabled)
+        self.assertEqual(self.api("GET", "/api/v1/platform/tenants", tenant=False).status_code, 200)
+        self.api("POST", "/api/v1/auth/logout", tenant=False)
+        second = self.api("POST", "/api/v1/auth/login",
+                          {"email": root.email, "password": "Root-Mfa-42!"}, tenant=False)
+        self.assertTrue(second.json()["mfa_required"])
+        self.assertEqual(self.api("GET", "/api/v1/platform/tenants", tenant=False).status_code, 401)
+        verified = self.api("POST", "/api/v1/auth/mfa/verify",
+                            {"code": pyotp.TOTP(setup.json()["secret"]).now()}, tenant=False)
+        self.assertEqual(verified.status_code, 200, verified.content)
+        self.assertEqual(self.api("GET", "/api/v1/platform/tenants", tenant=False).status_code, 200)
 
     def test_proxy_throttle_uses_last_forwarded_ip_only_from_trusted_peer(self):
         trust = (ip_network("172.16.0.0/12"),)

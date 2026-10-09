@@ -26,7 +26,7 @@ Essas evidências cobrem as condições dos testes, não homologação com hardw
 2. **Pagamento:** configurar Asaas/webhook real para assinaturas. O caixa registra pagamentos declarados pelo operador; não integra TEF, adquirentes, Pix dinâmico ou confirmação bancária.
 3. **Hardware:** validar encoding, corte/gaveta, etiqueta/gap, drivers e conexão nos equipamentos alvo. Protocolos implementados não garantem compatibilidade com todos os modelos.
 4. **Implantação:** domínio/HTTPS, VPS, backup externo, SMTP, monitoramento, incidentes e restauração no ambiente final. O backup local não cobre perda do computador.
-5. **Segurança operacional:** teste de carga/concorrência, revisão independente, rotação/guarda de chaves e política de acesso. MFA de plataforma ainda pendente. Não publicar DEBUG local na internet.
+5. **Segurança operacional:** teste de carga/concorrência, revisão independente, rotação/guarda de chaves e política de acesso. MFA TOTP da plataforma está implementada e fica obrigatória em produção. Não publicar DEBUG local na internet.
 6. **Mobilidade:** validar PWA em aparelhos reais. Apps nativos e publicação nas lojas ainda não existem; instalador Windows/Python ainda exige teste em máquina real.
 7. **Operação comercial:** migração dos dados antigos, treinamento, contrato, política de suporte e pilotos acompanhados.
 

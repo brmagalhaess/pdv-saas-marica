@@ -21,13 +21,13 @@
 
 - [ ] PostgreSQL central, migrações versionadas e configuração por ambiente.
 - [ ] Servidor HTTP de produção, HTTPS e política de proxy confiável.
-- [ ] Verificação de e-mail, redefinição de senha, MFA para administração e limite de tentativas de login.
+- [ ] Verificação de e-mail e redefinição de senha; MFA da administração SaaS e limite de tentativas de login já implementados.
 - [ ] Convite seguro para novos usuários em vez de senha definida pelo proprietário.
 - [ ] Console interno de suporte e administração de planos, com auditoria forte.
 - [ ] Fluxos de assinatura, cobrança e webhooks idempotentes.
 - [ ] Testes de permissões e isolamento para todas as rotas futuras.
 - [ ] Testes de carga e monitoramento.
-- [ ] Backup externo criptografado, retenção, alertas e restauração automatizada.
+- [ ] Configurar o destino externo e alertas no ambiente final; backup Restic criptografado, retenção opcional e restauração automatizada já implementados.
 - [ ] Pipeline de build/teste/deploy e ambiente de homologação implantado.
 - [x] Baixa idempotente no saldo central após sincronização de vendas.
 - [ ] Tratamento guiado de divergências de estoque e conflitos entre terminais.
