@@ -222,7 +222,80 @@ function renderCart(){const area=$('cartItems');$('cartCount').textContent=`${st
 function renderChange(){let paid=0;try{if(state.paymentMethod==='split')syncSplitValues();paid=parseMoney($('payCash').value)+parseMoney($('payPix').value)+parseMoney($('payCredit').value)+parseMoney($('payDebit').value)}catch{}const total=cartTotal(),difference=paid-total,change=$('changeText');if(!change)return;if(difference>0){change.textContent='Troco: '+money(difference);change.className='change-positive'}else if(difference<0&&paid>0){change.textContent='Falta: '+money(Math.abs(difference));change.className='change-negative'}else{change.textContent='Troco: '+money(0);change.className=''} }
 function resetCart(){state.cart=[];state.scale.targetId=null;state.saleRequest=null;state.discountApproval=null;state.paymentMethod=null;state.cardMethod=null;for(const id of ['customerName','customerDocument','payCash','payPix','payCredit','payDebit','paySplitCash','paySplitPix','paySplitCredit','paySplitDebit']){const input=$(id);if(input)input.value=''}$('discountInput').value='0';renderCart()}
 async function startNewSale(){if(!state.cart.length){$('productSearch').focus();return}if(!(await confirmDialog('Começar uma nova venda?','Os itens e pagamentos digitados no pedido atual serão removidos.','Nova venda')))return;resetCart();$('productSearch').focus();toast('Nova venda iniciada')}
-async function checkout(){if(!state.cart.length)throw Error('Adicione um produto');if(state.cart.some(item=>item.quantity_milli<=0))throw Error('Aguarde ou informe o peso dos produtos em KG');if(!state.session.cash)throw Error('Informe o saldo inicial e abra o caixa antes da primeira venda');const requestedPercent=requestedDiscount(),discount=appliedDiscount();if((requestedPercent>0&&!discount)||(requestedPercent===0&&discount))throw Error('Clique em “Aplicar desconto” e autorize com o PIN do gerente');if(!state.paymentMethod)throw Error('Escolha uma forma de pagamento');if(state.paymentMethod==='card')throw Error('Escolha Crédito ou Débito');if(state.paymentMethod==='split')syncSplitValues();const payments=[];for(const [id,method] of [['payCash','cash'],['payPix','pix'],['payCredit','card_credit'],['payDebit','card_debit']]){const amount=parseMoney($(id).value);if(amount)payments.push({method,amount_cents:amount})}if(!payments.length)throw Error('Informe o pagamento');state.saleRequest??=crypto.randomUUID();const sale=await api('/api/sales','POST',{request_id:state.saleRequest,items:state.cart.map(p=>({product_id:p.id,quantity_milli:p.quantity_milli})),discount_cents:discount,customer_name:$('customerName').value.trim(),customer_document:$('customerDocument').value.trim(),payments,manager_pin:state.discountApproval?.managerPin||''});const printPlan=await autoPrintReceipt(sale);toast(`Venda concluída: ${money(sale.total_cents)} · Troco ${money(sale.change_cents)}`);resetCart();await loadSession();await receiptDialog(sale,printPlan.status,printPlan)}
+function salePayments(){
+  if(state.paymentMethod==='card')throw Error('Escolha Crédito ou Débito');
+  if(state.paymentMethod==='split')syncSplitValues();
+  const payments=[];
+  for(const [id,method] of [['payCash','cash'],['payPix','pix'],['payCredit','card_credit'],['payDebit','card_debit']]){
+    const amount=parseMoney($(id)?.value||'');
+    if(amount)payments.push({method,amount_cents:amount});
+  }
+  if(!payments.length)throw Error('Escolha uma forma de pagamento e informe o valor quando necessário');
+  return payments;
+}
+async function submitSale(){
+  const discount=appliedDiscount();
+  const payments=salePayments();
+  state.saleRequest??=crypto.randomUUID();
+  const sale=await api('/api/sales','POST',{request_id:state.saleRequest,items:state.cart.map(p=>({product_id:p.id,quantity_milli:p.quantity_milli})),discount_cents:discount,customer_name:$('customerName').value.trim(),customer_document:$('customerDocument').value.trim(),payments,manager_pin:state.discountApproval?.managerPin||''});
+  const printPlan=await autoPrintReceipt(sale);
+  toast(`Venda concluída: ${money(sale.total_cents)} · Troco ${money(sale.change_cents)}`);
+  resetCart();
+  await loadSession();
+  return {sale,printPlan};
+}
+function checkoutConfirmDialog(){
+  if(activeConfirm)activeConfirm(false);
+  return new Promise(resolve=>{
+    const previous=document.activeElement;
+    const home=$('checkoutDetailsHome');
+    const backdrop=document.createElement('div');backdrop.className='confirm-backdrop checkout-confirm-backdrop';
+    const dialog=document.createElement('section');dialog.className='confirm-dialog checkout-confirm-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
+    const headingBlock=document.createElement('div');headingBlock.className='checkout-confirm-heading';
+    const icon=document.createElement('div');icon.className='confirm-icon checkout-confirm-icon';icon.setAttribute('aria-hidden','true');icon.textContent='✓';
+    const copy=document.createElement('div');copy.className='confirm-copy';
+    const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent='Conferência da venda';
+    const heading=document.createElement('h2');heading.textContent='Confira antes de confirmar';
+    const message=document.createElement('p');message.textContent='Revise o cliente, o documento e a forma de pagamento. A venda só será registrada depois da confirmação.';
+    copy.append(eyebrow,heading,message);headingBlock.append(icon,copy);
+    const total=document.createElement('div');total.className='checkout-confirm-total';total.innerHTML=`<span>Total da venda</span><strong>${money(cartTotal())}</strong>`;
+    const body=document.createElement('div');body.className='checkout-modal-body';
+    const error=document.createElement('small');error.className='confirm-error';error.setAttribute('role','alert');
+    const actions=document.createElement('div');actions.className='confirm-actions checkout-confirm-actions';
+    const cancel=document.createElement('button');cancel.type='button';cancel.className='secondary';cancel.textContent='Voltar e editar';
+    const accept=document.createElement('button');accept.type='button';accept.className='primary confirm-accept';accept.textContent='Confirmar venda';
+    actions.append(cancel,accept);dialog.append(headingBlock,total,body,error,actions);backdrop.append(dialog);document.body.append(backdrop);
+    if(home)while(home.firstChild)body.append(home.firstChild);
+    let settled=false,submitting=false;
+    const moveBack=()=>{if(home)while(body.firstChild)home.append(body.firstChild)};
+    const finish=value=>{if(settled)return;settled=true;document.removeEventListener('keydown',onKey);moveBack();backdrop.remove();activeConfirm=null;previous?.focus?.();resolve(value)};
+    const onKey=event=>{
+      if(event.key==='Escape'){event.preventDefault();if(!submitting)finish(null);return}
+      if(event.key!=='Tab')return;
+      const focusables=[...dialog.querySelectorAll('button,input,textarea,select')].filter(node=>!node.disabled&&!node.hidden&&node.offsetParent!==null);
+      if(!focusables.length)return;
+      if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}
+      else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}
+    };
+    const submit=async()=>{
+      if(submitting)return;
+      submitting=true;accept.disabled=true;cancel.disabled=true;
+      error.textContent='';error.classList.remove('show');
+      try{const result=await submitSale();finish(result)}catch(errorValue){submitting=false;accept.disabled=false;cancel.disabled=false;error.textContent=errorValue?.message||'Não foi possível concluir a venda';error.classList.add('show');const first=dialog.querySelector('[data-payment-method],#payCash');first?.focus()}
+    };
+    activeConfirm=finish;document.addEventListener('keydown',onKey);backdrop.addEventListener('click',event=>{if(event.target===backdrop&&!submitting)finish(null)});cancel.addEventListener('click',()=>finish(null));accept.addEventListener('click',submit);
+    dialog.querySelector('[data-payment-method]')?.focus();
+  });
+}
+async function checkout(){
+  if(!state.cart.length)throw Error('Adicione um produto');
+  if(state.cart.some(item=>item.quantity_milli<=0))throw Error('Aguarde ou informe o peso dos produtos em KG');
+  if(!state.session.cash)throw Error('Informe o saldo inicial e abra o caixa antes da primeira venda');
+  const requestedPercent=requestedDiscount(),discount=appliedDiscount();
+  if((requestedPercent>0&&!discount)||(requestedPercent===0&&discount))throw Error('Clique em “Aplicar desconto” e autorize com o PIN do gerente');
+  const result=await checkoutConfirmDialog();
+  if(result)await receiptDialog(result.sale,result.printPlan.status,result.printPlan);
+}
 function cashSummaryMarkup(summary,result=null){const c=summary.categories||{};const difference=result?.difference_cents??null;const differenceClass=difference===null?'':difference===0?'exact':difference>0?'positive':'negative';const differenceLabel=difference===null?'Dinheiro esperado':difference===0?'Fechamento exato':difference>0?'Sobra no caixa':'Falta no caixa';const differenceValue=difference===null?summary.expected_cents:difference;const signed=difference===null?money(differenceValue):(difference>0?'+ ':'− ')+money(Math.abs(differenceValue));return `<div class="cash-summary-grid"><div class="cash-summary-item"><span>Saldo inicial</span><strong>${money(summary.opening_cents)}</strong></div><div class="cash-summary-item emphasis"><span>${differenceLabel}</span><strong>${signed}</strong></div><div class="cash-summary-item"><span>Dinheiro das vendas</span><strong>${money(c.cash_sales_net_cents||0)}</strong></div><div class="cash-summary-item"><span>PIX</span><strong>${money(c.pix_cents||0)}</strong></div><div class="cash-summary-item"><span>Crédito</span><strong>${money(c.card_credit_cents||0)}</strong></div><div class="cash-summary-item"><span>Débito</span><strong>${money(c.card_debit_cents||0)}</strong></div><div class="cash-summary-item"><span>Suprimentos</span><strong>${money(c.supplied_cents||0)}</strong></div><div class="cash-summary-item"><span>Sangrias</span><strong>− ${money(c.withdrawn_cents||0)}</strong></div><div class="cash-summary-total"><span>Total geral das vendas</span><strong>${money(summary.total_channels_cents||summary.sales_total_cents||0)}</strong></div>${result?`<div class="cash-difference ${differenceClass}"><span>Valor contado: ${money(result.counted_cents)} · Esperado: ${money(result.expected_cents)}</span><strong>${difference===0?'Conferido':difference>0?'Caixa positivo':'Caixa negativo'}</strong></div>`:''}</div>`}
 async function cashCloseDialog(){const summary=await api('/api/cash/summary');return new Promise(resolve=>{if(activeConfirm)activeConfirm(false);const previous=document.activeElement;const backdrop=document.createElement('div');backdrop.className='confirm-backdrop';const dialog=document.createElement('section');dialog.className='confirm-dialog cash-close-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');const icon=document.createElement('div');icon.className='confirm-icon cash-icon';icon.textContent='▣';const copy=document.createElement('div');copy.className='confirm-copy';const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent='Conferência obrigatória';const heading=document.createElement('h2');heading.textContent='Fechar caixa';const message=document.createElement('p');message.textContent=`Confira os recebimentos do turno (${summary.sales_count||0} venda(s)) e conte somente o dinheiro físico.`;const report=document.createElement('div');report.className='cash-report';report.innerHTML=cashSummaryMarkup(summary);const field=document.createElement('label');field.className='cash-count-field';field.innerHTML='<span>Dinheiro contado no caixa (R$)</span>';const input=document.createElement('input');input.className='confirm-input';input.inputMode='decimal';input.placeholder='Informe o valor contado';input.value=(summary.expected_cents/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});field.append(input);const managerField=document.createElement('label');managerField.className='cash-count-field';managerField.innerHTML='<span>PIN do superior</span>';const managerPin=document.createElement('input');managerPin.className='confirm-input';managerPin.type='password';managerPin.inputMode='numeric';managerPin.autocomplete='off';managerPin.placeholder='Digite o PIN do gerente';managerField.append(managerPin);const error=document.createElement('small');error.className='confirm-error';error.setAttribute('role','alert');copy.append(eyebrow,heading,message,report,field,managerField,error);const actions=document.createElement('div');actions.className='confirm-actions';const cancel=document.createElement('button');cancel.type='button';cancel.className='secondary';cancel.textContent='Cancelar';const accept=document.createElement('button');accept.type='button';accept.className='primary confirm-accept';accept.textContent='Fechar caixa';actions.append(cancel,accept);dialog.append(icon,copy,actions);backdrop.append(dialog);document.body.append(backdrop);let settled=false,completed=false,result=null;const finish=value=>{if(settled)return;settled=true;document.removeEventListener('keydown',onKey);backdrop.remove();activeConfirm=null;previous?.focus?.();resolve(value)};const onKey=event=>{if(event.key==='Escape'){event.preventDefault();finish(completed?result:null);return}if(event.key==='Enter'&&(document.activeElement===input||document.activeElement===managerPin)&&!accept.disabled){event.preventDefault();submit();return}if(event.key!=='Tab')return;const focusables=[input,managerPin,cancel,accept].filter(node=>!node.disabled&&!node.classList.contains('hidden'));if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}};const submit=async()=>{if(completed){finish(result);return}error.textContent='';error.classList.remove('show');let counted;try{if(!input.value.trim())throw Error('Informe o dinheiro contado');counted=parseMoney(input.value);if(!managerPin.value.trim())throw Error('Informe o PIN do superior')}catch(errorValue){error.textContent=errorValue.message;error.classList.add('show');if(errorValue.message.toLowerCase().includes('pin'))managerPin.focus();else input.focus();return}accept.disabled=true;input.disabled=true;managerPin.disabled=true;try{result=await api('/api/cash/close','POST',{counted_cents:counted,manager_pin:managerPin.value.trim()});completed=true;heading.textContent='Caixa fechado';message.textContent=result.difference_cents===0?'Fechamento exato. O valor contado confere com o esperado.':result.difference_cents>0?'Caixa positivo: existe uma sobra no valor contado.':'Caixa negativo: existe uma falta no valor contado.';report.innerHTML=cashSummaryMarkup(summary,result);field.classList.add('hidden');managerField.classList.add('hidden');cancel.textContent='Concluir';accept.disabled=false;accept.textContent='Concluir fechamento'}catch(errorValue){input.disabled=false;managerPin.disabled=false;accept.disabled=false;error.textContent=errorValue.message;error.classList.add('show');if(errorValue.message.toLowerCase().includes('pin'))managerPin.focus();else input.focus()}};activeConfirm=finish;document.addEventListener('keydown',onKey);backdrop.addEventListener('click',event=>{if(event.target===backdrop)finish(completed?result:null)});cancel.addEventListener('click',()=>finish(completed?result:null));accept.addEventListener('click',submit);input.focus()})}
 async function cashOpenDialog(){const raw=await textDialog('Abrir caixa','Informe quanto existe em dinheiro físico antes da primeira venda. Use 0,00 se o caixa começar sem espécie.','Ex.: 150,00','text',{eyebrow:'Início do turno',fieldLabel:'Dinheiro inicial (R$)',acceptLabel:'Abrir caixa',icon:'▣',validate:async value=>{const amount=parseMoney(value);if(amount<0)throw Error('Informe um valor igual ou maior que zero')}});if(!raw)return null;return parseMoney(raw)}
