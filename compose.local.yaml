@@ -2,6 +2,8 @@ name: pdv2-local
 x-cloud-env: &cloud-env
   PDV_ENV: development
   PDV_DEBUG: "1"
+  PDV_VERSION: ${PDV_VERSION:-2.0.0}
+  PDV_PLATFORM_MFA_REQUIRED: ${PDV_PLATFORM_MFA_REQUIRED:-0}
   PDV_SECRET_KEY: ${PDV_SECRET_KEY:?Run scripts/init_local.py}
   DATABASE_URL: postgresql://pdv2:${POSTGRES_PASSWORD:?Run scripts/init_local.py}@db:5432/pdv2
   PDV_ALLOWED_HOSTS: localhost,127.0.0.1,cloud,testserver
@@ -72,6 +74,7 @@ services:
     build: {context: ., dockerfile: infra/Dockerfile.terminal}
     environment:
       PDV_ENV: development
+      PDV_VERSION: ${PDV_VERSION:-2.0.0}
       PDV_TERMINAL_HOST: 0.0.0.0
       PDV_TERMINAL_PORT: "8010"
       PDV_TERMINAL_DB: /data/terminal.sqlite3
@@ -93,6 +96,7 @@ services:
     build: {context: ., dockerfile: infra/Dockerfile.terminal}
     environment:
       PDV_ENV: development
+      PDV_VERSION: ${PDV_VERSION:-2.0.0}
       PDV_TERMINAL_HOST: 0.0.0.0
       PDV_TERMINAL_PORT: "8010"
       PDV_TERMINAL_DB: /data/terminal.sqlite3

@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase,Client
 from django.utils import timezone
 from core.models import Plan,Tenant,Subscription,Membership,BillingInvoice,BillingEvent,Shop
+from .models import ProductRelease
 from integrations.base import ProviderError
 from integrations.billing import Asaas
 from shared.secrets import encrypt_secret
@@ -155,6 +156,17 @@ class OperationsTests(TestCase):
         metrics=self.client.get('/api/v1/ops/platform/metrics').json()
         self.assertEqual(metrics['subscriptions_vip'],1)
         self.assertEqual(metrics['mrr_cents'],0)
+
+    def test_release_status_reports_running_cloud_and_published_terminal(self):
+        from django.contrib.auth.models import Group
+        self.user.is_staff=True;self.user.save();self.user.groups.add(Group.objects.get(name='platform_ops'))
+        ProductRelease.objects.create(component='terminal',channel='stable',version='2.0.1',
+            url='https://updates.example.test/terminal.zip',sha256='a'*64,size_bytes=10)
+        response=self.client.get('/api/v1/ops/releases/status')
+        self.assertEqual(response.status_code,200,response.content)
+        self.assertEqual(response.json()['terminal']['published_version'],'2.0.1')
+        self.assertTrue(response.json()['terminal']['manifest_available'])
+        self.assertIn('running_version',response.json()['cloud'])
 
     def test_ambiguous_mutation_is_never_automatically_repeated(self):
         job=enqueue('billing.subscribe',self.tenant,'ambiguous',{})

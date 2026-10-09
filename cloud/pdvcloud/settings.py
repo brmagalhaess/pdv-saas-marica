@@ -13,6 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 
 DEBUG = os.environ.get("PDV_DEBUG", "0") == "1" and os.environ.get("PDV_ENV") != "production"
 PLATFORM_MFA_REQUIRED = os.environ.get("PDV_PLATFORM_MFA_REQUIRED", "1" if not DEBUG else "0") == "1"
+PDV_VERSION = os.environ.get("PDV_VERSION", "2.0.0")
 SECRET_KEY = os.environ.get("PDV_SECRET_KEY")
 if not SECRET_KEY:
     if DEBUG:

@@ -20,6 +20,7 @@ from shared.secrets import decrypt_secret, encrypt_secret
 
 MFA_PENDING_USER = "platform_mfa_pending_user"
 MFA_PENDING_AT = "platform_mfa_pending_at"
+MFA_ENROLL_USER = "platform_mfa_enroll_user"
 MFA_VERIFIED = "platform_mfa_verified"
 MFA_PENDING_TTL = 10 * 60
 PLATFORM_GROUPS = {"platform_support", "platform_billing", "platform_ops"}
@@ -54,6 +55,34 @@ def _pending_platform_user(request):
         request.session.pop(MFA_PENDING_AT, None)
         raise APIError("Conta de administração indisponível", 403)
     return user
+
+
+def _authenticated_platform_user(request):
+    user = require_user(request)
+    if not _is_platform_account(user):
+        raise APIError("Sem permissão de plataforma", 403)
+    return user
+
+
+def _mfa_setup_user(request):
+    if request.session.get(MFA_PENDING_USER):
+        return _pending_platform_user(request), True
+    user_id = request.session.get(MFA_ENROLL_USER)
+    user = _authenticated_platform_user(request)
+    if user_id and str(user_id) == str(user.pk):
+        return user, False
+    request.session.pop(MFA_ENROLL_USER, None)
+    raise APIError("Inicie a ativação da MFA nesta sessão", 401)
+
+
+def _mfa_setup_response(user, mfa):
+    if not mfa.secret_encrypted:
+        mfa.secret_encrypted = encrypt_secret(pyotp.random_base32())
+        mfa.save(update_fields=["secret_encrypted"])
+    secret = decrypt_secret(mfa.secret_encrypted)
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="PDV2 SaaS")
+    return {"enabled": False, "account": user.email, "issuer": "PDV2 SaaS",
+            "secret": secret, "otpauth_uri": uri}
 
 
 def _recovery_codes(count=10):
@@ -152,17 +181,35 @@ def login_view(request):
 def mfa_setup(request):
     """Create or return the pending administrator's TOTP provisioning data."""
     method(request, "GET")
-    user = _pending_platform_user(request)
+    user, _ = _mfa_setup_user(request)
     mfa, _ = PlatformMFA.objects.get_or_create(user=user)
     if mfa.enabled:
         raise APIError("A MFA desta conta já está ativa", 409)
-    if not mfa.secret_encrypted:
-        mfa.secret_encrypted = encrypt_secret(pyotp.random_base32())
-        mfa.save(update_fields=["secret_encrypted"])
-    secret = decrypt_secret(mfa.secret_encrypted)
-    uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="PDV2 SaaS")
-    return JsonResponse({"enabled": False, "account": user.email, "issuer": "PDV2 SaaS",
-                         "secret": secret, "otpauth_uri": uri})
+    return JsonResponse(_mfa_setup_response(user, mfa))
+
+
+@endpoint
+def mfa_status(request):
+    method(request, "GET")
+    user = _authenticated_platform_user(request)
+    mfa = PlatformMFA.objects.filter(user=user).first()
+    return JsonResponse({"required": settings.PLATFORM_MFA_REQUIRED, "enabled": bool(mfa and mfa.enabled),
+                         "confirmed_at": mfa.confirmed_at.isoformat() if mfa and mfa.confirmed_at else None,
+                         "recovery_codes_remaining": len(mfa.recovery_codes) if mfa and mfa.enabled else 0})
+
+
+@endpoint
+def mfa_enroll(request):
+    """Start MFA setup from the security menu for an already authenticated admin."""
+    method(request, "POST")
+    user = _authenticated_platform_user(request)
+    if settings.PLATFORM_MFA_REQUIRED and not request.session.get(MFA_VERIFIED):
+        raise APIError("Entre novamente para iniciar a configuração da MFA", 403)
+    mfa, _ = PlatformMFA.objects.get_or_create(user=user)
+    if mfa.enabled:
+        raise APIError("A MFA desta conta já está ativa", 409)
+    request.session[MFA_ENROLL_USER] = user.pk
+    return JsonResponse(_mfa_setup_response(user, mfa))
 
 
 @endpoint
@@ -170,7 +217,7 @@ def mfa_setup_confirm(request):
     method(request, "POST")
     data = payload(request)
     fields(data, ("code",), ("code",))
-    user = _pending_platform_user(request)
+    user, pending_login = _mfa_setup_user(request)
     code = text(data["code"], "Código MFA", 32)
     mfa = PlatformMFA.objects.filter(user=user).first()
     if mfa is None or not mfa.secret_encrypted or mfa.enabled:
@@ -186,10 +233,31 @@ def mfa_setup_confirm(request):
     mfa.failed_attempts = 0
     mfa.locked_until = None
     mfa.save(update_fields=["enabled", "recovery_codes", "confirmed_at", "failed_attempts", "locked_until"])
-    result = _finish_platform_login(request, user)
+    if pending_login:
+        result = _finish_platform_login(request, user)
+    else:
+        request.session[MFA_VERIFIED] = True
+        request.session.pop(MFA_ENROLL_USER, None)
+        result = {"user": user_dict(user), "memberships": memberships_for(user)}
     audit(None, user, "platform.mfa_enabled", user, {"recovery_codes": len(recovery)})
     result["recovery_codes"] = recovery
     return JsonResponse(result)
+
+
+@endpoint
+def mfa_recovery_codes(request):
+    method(request, "POST")
+    user = _authenticated_platform_user(request)
+    if settings.PLATFORM_MFA_REQUIRED and not request.session.get(MFA_VERIFIED):
+        raise APIError("Conclua a autenticação multifator antes de gerar novos códigos", 403)
+    mfa = PlatformMFA.objects.filter(user=user, enabled=True).first()
+    if mfa is None:
+        raise APIError("A MFA desta conta ainda não está ativa", 409)
+    recovery = _recovery_codes()
+    mfa.recovery_codes = [make_password(value) for value in recovery]
+    mfa.save(update_fields=["recovery_codes"])
+    audit(None, user, "platform.mfa_recovery_codes_regenerated", user, {"recovery_codes": len(recovery)})
+    return JsonResponse({"recovery_codes": recovery})
 
 
 @endpoint

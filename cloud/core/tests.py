@@ -94,6 +94,25 @@ class CloudAPITests(TestCase):
         self.assertEqual(verified.status_code, 200, verified.content)
         self.assertEqual(self.api("GET", "/api/v1/platform/tenants", tenant=False).status_code, 200)
 
+    @override_settings(PLATFORM_MFA_REQUIRED=False)
+    def test_platform_security_menu_can_enroll_and_rotate_recovery_codes(self):
+        User = get_user_model()
+        root = User.objects.create_superuser(username="root-security@example.test",
+                                              email="root-security@example.test",
+                                              password="Root-Security-42!")
+        self.client.force_login(root)
+        status = self.api("GET", "/api/v1/auth/mfa/status", tenant=False)
+        self.assertEqual(status.status_code, 200, status.content)
+        self.assertFalse(status.json()["enabled"])
+        enrolled = self.api("POST", "/api/v1/auth/mfa/enroll", {}, tenant=False)
+        self.assertEqual(enrolled.status_code, 200, enrolled.content)
+        confirmed = self.api("POST", "/api/v1/auth/mfa/setup/confirm",
+                             {"code": pyotp.TOTP(enrolled.json()["secret"]).now()}, tenant=False)
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        rotated = self.api("POST", "/api/v1/auth/mfa/recovery-codes", {}, tenant=False)
+        self.assertEqual(rotated.status_code, 200, rotated.content)
+        self.assertEqual(len(rotated.json()["recovery_codes"]), 10)
+
     def test_proxy_throttle_uses_last_forwarded_ip_only_from_trusted_peer(self):
         trust = (ip_network("172.16.0.0/12"),)
         with override_settings(PDV_TRUST_PROXY=True, PDV_TRUSTED_PROXY_NETWORKS=trust):

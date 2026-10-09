@@ -55,6 +55,7 @@ const platformNav = [
   { group: "Plataforma", id: "subscriptions", label: "Assinaturas", icon: "▤", roles:["platform_support","platform_billing"] },
   { group: "Plataforma", id: "devices", label: "Terminais", icon: "▥", roles:["platform_support","platform_ops"] },
   { group: "Plataforma", id: "platform_users", label: "Usuários e permissões", icon: "♙", roles:[], superuserOnly:true },
+  { group: "Plataforma", id: "security", label: "Segurança e MFA", icon: "⌑", roles:["platform_support","platform_billing","platform_ops"] },
   { group: "Plataforma", id: "services", label: "Serviços", icon: "◇", roles:["platform_support","platform_billing","platform_ops"] },
   { group: "Plataforma", id: "releases", label: "Versões", icon: "↥", roles:["platform_ops"] },
   { group: "Plataforma", id: "invoices", label: "Cobranças", icon: "◎", roles:["platform_billing"] },
@@ -396,7 +397,10 @@ function renderProfileMenu() {
   menu.append(el("strong", "profile-menu-name", state.user?.name || "Conta"));
   menu.append(el("small", "profile-menu-email", state.user?.email || ""));
   const links = [];
-  if (canOpenPlatform()) links.push(["Administração SaaS", "/platform/"]);
+  if (canOpenPlatform()) {
+    links.push(["Administração SaaS", "/platform/"]);
+    links.push(["Segurança e MFA", "/platform/#security"]);
+  }
   if (state.memberships?.length) links.push(["Painel da empresa", "/app/"]);
   if (links.length) {
     menu.append(el("div", "profile-menu-divider"));
@@ -2319,12 +2323,24 @@ async function releasesPage() {
   const token=++state.renderId;
   const view=page("Versões","Pacotes publicados para terminal e nuvem.","Plataforma");
   view.actions.append(button("+ Publicar versão",releaseForm));
-  view.outer.append(info("Uma versão publicada não instala automaticamente. O aplicativo local precisa consultar o manifesto assinado e validar o arquivo.",true));
+  view.outer.append(info("A nuvem só muda quando o Dokploy recria os serviços a partir do Git. O terminal consulta o manifesto assinado, mas a instalação do pacote continua sendo uma ação manual do suporte.",true));
   const box=surface("Histórico de versões");view.outer.append(box);box.append(loadingSurface());
   try {
-    const result=await api.get("/ops/releases",{tenant:false});
+    const [result,releaseStatus]=await Promise.all([
+      api.get("/ops/releases",{tenant:false}),
+      api.get("/ops/releases/status",{tenant:false})
+    ]);
     if(token!==state.renderId)return;
-    box.lastChild.remove();const rows=records(result);
+    box.lastChild.remove();
+    const statusGrid=el("div","metric-grid");
+    const cloud=releaseStatus.cloud||{},terminal=releaseStatus.terminal||{};
+    statusGrid.append(
+      metric("Nuvem em execução",cloud.running_version||"—",cloud.deployment_pending?"Há uma versão publicada aguardando deploy":"Versão em execução"),
+      metric("Nuvem publicada",cloud.published_version||"—",cloud.published_version?"Metadado disponível":"Nenhuma versão cloud publicada"),
+      metric("Terminal estável",terminal.published_version||"—",terminal.manifest_available?"Manifesto assinado disponível":"Nenhum pacote publicado")
+    );
+    view.outer.insertBefore(statusGrid,box);
+    const rows=records(result);
     box.append(rows.length?table([
       {label:"Componente",render:row=>row.component==="cloud"?"Nuvem":"Terminal"},
       {label:"Canal",render:row=>row.channel==="pilot"?"Piloto":"Estável"},
@@ -2452,6 +2468,92 @@ async function platformUsersPage() {
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
 
+function showPlatformRecoveryCodes(codes) {
+  const content = el("div");
+  content.append(info("Guarde estes códigos em um local seguro. Cada código funciona uma única vez.", true));
+  const list = el("code", "auth-recovery-codes");
+  list.textContent = (codes || []).join("\n");
+  content.append(list);
+  content.append(el("p", "hint", "Se você perder o autenticador, use um destes códigos para entrar e depois gere uma nova lista."));
+  content.append(el("div", "form-actions"));
+  openDialog("Códigos de recuperação", "A lista não será exibida novamente depois que esta janela for fechada.", content);
+}
+
+async function startPlatformMfaEnrollment() {
+  const setup = await api.post("/auth/mfa/enroll", {}, { tenant:false });
+  const content = el("div");
+  content.append(info("Abra Google Authenticator, Microsoft Authenticator ou outro aplicativo TOTP e adicione esta conta. Depois informe o código de seis dígitos.", false));
+  const secret = el("code", "auth-secret", setup.secret);
+  const uri = el("small", "auth-secret-uri", setup.otpauth_uri);
+  content.append(el("p", "field-label", "Chave de configuração"), secret, uri);
+  const field = el("div", "field");
+  const label = el("label", "", "Código do autenticador");
+  const code = el("input");
+  code.inputMode = "numeric"; code.autocomplete = "one-time-code"; code.maxLength = 8; code.placeholder = "000000"; code.required = true;
+  label.htmlFor = "platform-mfa-code"; code.id = "platform-mfa-code"; field.append(label, code); content.append(field);
+  const message = formMessage(content); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("Cancelar", closeDialog, "ghost"));
+  const confirm = button("Ativar MFA");
+  confirm.addEventListener("click", async () => {
+    if (!code.value.trim()) { message.textContent = "Informe o código do autenticador."; message.hidden = false; return; }
+    confirm.disabled = true;
+    try {
+      const result = await api.post("/auth/mfa/setup/confirm", { code: code.value.trim() }, { tenant:false });
+      closeDialog();
+      renderRoute();
+      showPlatformRecoveryCodes(result.recovery_codes);
+      toast("MFA ativada para esta conta.");
+    } catch (error) { handleError(error, message); confirm.disabled = false; }
+  });
+  actions.append(confirm); content.append(actions);
+  openDialog("Ativar MFA da administração", "A proteção passa a ser exigida no próximo acesso.", content);
+}
+
+async function regeneratePlatformRecoveryCodes() {
+  const content = el("div");
+  content.append(info("Os códigos atuais deixarão de funcionar imediatamente. Gere uma nova lista somente se você perdeu ou suspeita que os códigos antigos foram expostos.", true));
+  const message = formMessage(content); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("Cancelar", closeDialog, "ghost"));
+  const confirm = button("Gerar novos códigos", async () => {
+    confirm.disabled = true;
+    try {
+      const result = await api.post("/auth/mfa/recovery-codes", {}, { tenant:false });
+      closeDialog(); renderRoute(); showPlatformRecoveryCodes(result.recovery_codes);
+    } catch (error) { handleError(error, message); confirm.disabled = false; }
+  }, "danger");
+  actions.append(confirm); content.append(actions);
+  openDialog("Regenerar códigos de recuperação", "Confirme a troca dos códigos atuais.", content);
+}
+
+async function platformSecurityPage() {
+  const token = ++state.renderId;
+  const view = page("Segurança e MFA", "Proteja o acesso à administração SaaS e controle os códigos de recuperação.", "Plataforma");
+  const box = surface("Autenticação multifator"); view.outer.append(box); box.append(loadingSurface());
+  try {
+    const status = await api.get("/auth/mfa/status", { tenant:false });
+    if (token !== state.renderId) return;
+    box.lastChild.remove();
+    const cards = el("div", "metric-grid");
+    cards.append(metric("MFA", status.enabled ? "Ativa" : "Não configurada", status.required ? "Obrigatória em produção" : "Ativação opcional neste ambiente"));
+    cards.append(metric("Códigos restantes", String(status.recovery_codes_remaining || 0), status.enabled ? "Códigos de uso único" : "Disponíveis após ativação"));
+    const detail = surface("Estado da conta", status.enabled
+      ? "A senha sozinha não libera a administração. O próximo acesso exigirá o autenticador ou um código de recuperação."
+      : "Ative a MFA agora para proteger esta conta. Em produção, a ativação é obrigatória no primeiro acesso.");
+    detail.append(detailList([
+      ["Obrigatoriedade", status.required ? "Produção: obrigatória" : "Local: opcional"],
+      ["Ativação", status.enabled ? dateTime(status.confirmed_at) : "Ainda não ativada"],
+      ["Recuperação", status.enabled ? `${status.recovery_codes_remaining} códigos disponíveis` : "Será criada ao ativar"]
+    ]));
+    const actions = el("div", "form-actions");
+    if (!status.enabled) actions.append(button("Ativar MFA", () => startPlatformMfaEnrollment().catch(handleError), "primary"));
+    else actions.append(button("Gerar novos códigos", () => regeneratePlatformRecoveryCodes(), "secondary"));
+    detail.append(actions);
+    box.append(cards, detail);
+  } catch (error) { if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } }
+}
+
 const tenantRoutes = {
   dashboard:dashboardPage,sales:salesPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
@@ -2462,7 +2564,7 @@ const tenantRoutes = {
 const platformRoutes = {
   overview:platformOverview,tenants:platformTenants,plans:platformPlans,
   subscriptions:platformSubscriptions,devices:platformDevices,services:platformServices,
-  releases:releasesPage,invoices:invoicesPage,platform_audit:platformAuditPage,
+  releases:releasesPage,invoices:invoicesPage,platform_audit:platformAuditPage,security:platformSecurityPage,
   platform_users:platformUsersPage
 };
 function activeSection() {

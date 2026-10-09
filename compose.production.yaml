@@ -3,6 +3,7 @@ name: pdv2
 x-env: &env
   PDV_ENV: production
   PDV_DEBUG: "0"
+  PDV_VERSION: ${PDV_VERSION:-2.0.0}
   PDV_SECRET_KEY: ${PDV_SECRET_KEY:?Set a unique secret with at least 50 random characters}
   DATABASE_URL: postgresql://pdv2:${POSTGRES_PASSWORD:?Set database password}@db:5432/pdv2
   PDV_ALLOWED_HOSTS: ${PDV_DOMAIN:?Set the real domain},127.0.0.1,localhost

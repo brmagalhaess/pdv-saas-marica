@@ -48,6 +48,14 @@ Cancelamento fiscal e estorno comercial são operações separadas. O payload tr
 
 Geração local: `python scripts/package_terminal.py`. Verificação antes de instalar: `python scripts/verify_update.py pacote.zip manifesto.json chave-confiavel.pem`. Hospedagem pública/privada do pacote, acesso de download e assinatura do instalador Windows ainda precisam ser definidos no ambiente final.
 
+O menu **Plataforma → Versões** mostra a versão realmente carregada pela nuvem
+(`PDV_VERSION`), a última versão cloud publicada e o manifesto estável do
+terminal. Publicar um registro cloud não reinicia a nuvem: o Dokploy precisa
+fazer o deploy do commit/imagem correspondente. O terminal consulta o
+manifesto assinado durante o bootstrap e periodicamente pelo worker, exibe o
+aviso de versão e só instala depois da validação manual do pacote e do backup
+local.
+
 Se a resposta incerta ocorreu ao criar o cliente (antes de existir `customer_id` salvo), a equipe financeira pode solicitar `POST jobs/<id>/reconcile` com `recover_customer: true`. A recuperação consulta a referência externa e confere o documento, sem criar outro cliente. Havendo um único cliente correspondente, continua a solicitação original a partir da etapa de assinatura.
 
 `GET platform/metrics` calcula contagens globais, sem depender da primeira página. MRR considera assinaturas ativas vigentes, com valor anual dividido por 12 quando contratado anualmente. Só billing/superusuário recebem valores financeiros. MRR contratado e soma de cobranças confirmadas são métricas distintas.

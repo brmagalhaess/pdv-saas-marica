@@ -378,7 +378,7 @@ def create_app(config=None):
     @app.get("/api/sync")
     @authenticated()
     def sync_state(_operator):
-        return jsonify({"sync": store.sync_status(), "license": store.lease_status(),
+        return jsonify({"version": sync.VERSION, "sync": store.sync_status(), "license": store.lease_status(),
                         "printer_jobs": store.print_jobs()})
 
     @app.post("/api/sync/now")

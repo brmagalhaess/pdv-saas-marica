@@ -11,6 +11,6 @@ urlpatterns=[
     path('fiscal/documents/<uuid:pk>/cancel',views.fiscal_cancel),
     path('health',views.health),
     path('platform/metrics',views.platform_metrics),
-    path('releases',views_releases.releases),path('releases/current',views_releases.current),
+    path('releases',views_releases.releases),path('releases/status',views_releases.status),path('releases/current',views_releases.current),
     path('releases/<uuid:pk>/withdraw',views_releases.withdraw),
 ]

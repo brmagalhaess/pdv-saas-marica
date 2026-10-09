@@ -12,7 +12,7 @@ from .printers import send_bytes
 from .store import TerminalError
 
 
-VERSION = "2.0-preview"
+VERSION = os.environ.get("PDV_VERSION", "2.0.0")
 
 
 def validate_cloud_url(url):

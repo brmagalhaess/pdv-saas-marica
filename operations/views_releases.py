@@ -1,4 +1,5 @@
 from django.db import IntegrityError,transaction
+from django.conf import settings
 from django.http import JsonResponse
 from core.api_common import endpoint,method,platform_user,payload,fields,text,APIError,audit
 from shared.licensing import load_private_key,load_public_key,LicenseError
@@ -20,6 +21,21 @@ def current(request):
     if not row:return JsonResponse({'release':None})
     try:return JsonResponse({'release':sign_release(manifest(row),load_private_key()),'public_key':load_public_key()})
     except LicenseError:raise APIError('Assinatura da versão indisponível',503)
+
+@endpoint
+def status(request):
+    method(request,'GET');platform_user(request,roles=('platform_ops',))
+    rows=list(ProductRelease.objects.filter(active=True))
+    def newest(component, channel='stable'):
+        matches=[row for row in rows if row.component==component and row.channel==channel]
+        return max(matches,key=lambda row:tuple(map(int,row.version.split('.'))),default=None)
+    cloud=newest('cloud');terminal=newest('terminal')
+    cloud_version=str(getattr(settings,'PDV_VERSION',''))
+    return JsonResponse({'cloud':{'running_version':cloud_version,
+                                  'published_version':cloud.version if cloud else None,
+                                  'deployment_pending':bool(cloud and cloud.version != cloud_version)},
+                         'terminal':{'published_version':terminal.version if terminal else None,
+                                     'manifest_available':bool(terminal)}})
 
 @endpoint
 def releases(request):
