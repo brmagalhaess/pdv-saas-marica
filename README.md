@@ -90,6 +90,7 @@ Use `compose.production.yaml` para a nuvem Dokploy e `compose.terminal.yaml` par
 
 ## Documentação
 
+- [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md)
 - [Estado e critérios de lançamento](docs/STATUS-V2.md)
 - [Dokploy](docs/DEPLOY-DOKPLOY.md)
 - [API](docs/API-V2.md)
