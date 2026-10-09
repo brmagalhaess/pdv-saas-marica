@@ -210,6 +210,26 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(reopened.login(self.cashier_id, "123987")["role"], "cashier")
         self.assertEqual(reopened.login(self.manager_id, "654321")["role"], "manager")
 
+    def test_http_terminal_stays_operational_when_cloud_is_unreachable(self):
+        """The local checkout must not call the cloud in its critical path."""
+        self.login()
+        csrf = self.csrf()
+        with patch("terminal.sync._request", side_effect=TerminalError("nuvem indisponível", 503)) as remote:
+            products = self.client.get("/api/products")
+            self.assertEqual(products.status_code, 200, products.json)
+            opened = self.client.post("/api/cash/open", json={"opening_cents": 1000},
+                                      headers={"X-CSRF-Token": csrf})
+            self.assertEqual(opened.status_code, 200, opened.json)
+            sale = self.client.post("/api/sales", json={
+                "request_id": "offline-http-sale",
+                "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+                "discount_cents": 0,
+                "payments": [{"method": "cash", "amount_cents": 700}],
+            }, headers={"X-CSRF-Token": self.csrf()})
+            self.assertEqual(sale.status_code, 200, sale.json)
+            self.assertEqual(self.client.get("/api/session").status_code, 200)
+            remote.assert_not_called()
+
     def test_weight_product_keeps_scale_plu_in_local_catalog(self):
         product = next(row for row in self.store.products() if row["id"] == self.product_id)
         self.assertEqual(product["unit"], "KG")

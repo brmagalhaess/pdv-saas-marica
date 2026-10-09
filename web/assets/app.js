@@ -71,6 +71,9 @@ function handleError(error, target) {
     location.assign("/login/?next=" + encodeURIComponent(location.pathname + location.hash));
     return;
   }
+  if (error?.status === 0 || error?.status >= 500) {
+    toast("Sem conexão com a nuvem. Para continuar as vendas, abra o terminal local em http://127.0.0.1:8010/.", "error");
+  }
   if (target) {
     target.textContent = errorText(error);
     target.className = "feedback error";

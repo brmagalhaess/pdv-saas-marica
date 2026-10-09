@@ -38,6 +38,8 @@ Ainda faltam mesas/comandas/cozinha/delivery; agenda/ordens de serviço; farmác
 
 ## Limites offline
 
+O painel web (`8000`) não é o caixa offline: ele depende da API em nuvem. A operação offline deve ser feita no serviço local do terminal (`8010`), já pareado e com catálogo/operadores baixados. O terminal grava vendas e caixa em SQLite, mantém a fila pendente e sincroniza quando a conexão retorna.
+
 - Licença normal até 72 horas, podendo ser encurtada por vencimentos; o terminal não adiciona prazo após `expires_at`.
 - Expiração preserva leitura/exportação e envio de registros pendentes; novas vendas exigem renovação.
 - Caixas desconectados podem vender o mesmo saldo. A nuvem recebe o histórico e sinaliza divergências; estoque global instantâneo exige comunicação.
