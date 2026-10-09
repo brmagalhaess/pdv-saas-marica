@@ -53,6 +53,9 @@ class Tenant(models.Model):
     # Percentage in basis points: 10000 = 100%. This is the hard company
     # ceiling for discounts, including manager approvals.
     max_discount_bps = models.PositiveIntegerField(default=10000)
+    # Local operating schedule consumed by terminals for opening control.
+    # Example: {"mon": {"enabled": true, "open": "08:00", "close": "18:00"}}
+    business_hours = models.JSONField(default=dict, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

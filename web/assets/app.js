@@ -407,6 +407,8 @@ function renderProfileMenu() {
       `Empresa · ${roleNames[membership.role] || membership.role}`
     ]));
   }
+  const accountSwitcher = $("#account-switcher");
+  if (accountSwitcher) accountSwitcher.hidden = switches.length < 2;
   if (switches.length > 1 || (platform && state.memberships?.length)) {
     menu.append(el("small", "profile-menu-section-title", "Trocar área de acesso"));
     switches.forEach(([label, href, description]) => {
@@ -434,6 +436,11 @@ $("#avatar").addEventListener("click", event => {
   if (open) renderProfileMenu();
   menu.hidden = !open;
   trigger.setAttribute("aria-expanded", String(open));
+});
+$("#account-switcher").addEventListener("click", event => {
+  event.stopPropagation();
+  const menu = $("#profile-menu"), trigger = $("#avatar");
+  renderProfileMenu(); menu.hidden = false; trigger.setAttribute("aria-expanded", "true");
 });
 document.addEventListener("click", event => {
   if (!event.target.closest(".profile-menu-wrap")) closeProfileMenu();
@@ -1736,6 +1743,17 @@ async function companyPage() {
     discount.id="company-discount";discountLabel.htmlFor=discount.id;discount.type="number";discount.min="0";discount.max="100";discount.step="0.01";
     discount.value=(Number(company.max_discount_bps ?? 10000)/100).toFixed(2).replace(/\.00$/,"");
     discountField.append(discountLabel,discount,el("small","","Limite para qualquer desconto, inclusive quando autorizado por um gerente. Ex.: 10 = até 10% do total."));
+    const hoursField=el("fieldset","business-hours-fieldset"),hoursLegend=el("legend","","Horário de funcionamento");
+    hoursField.append(hoursLegend,el("small","","O terminal impede a abertura do caixa fora destes horários. Um caixa já aberto continua funcionando e recebe um alerta."));
+    const hourLabels={mon:"Segunda",tue:"Terça",wed:"Quarta",thu:"Quinta",fri:"Sexta",sat:"Sábado",sun:"Domingo"};
+    const hoursInputs={};const savedHours=company.business_hours||{};
+    Object.entries(hourLabels).forEach(([day,labelText])=>{
+      const row=el("div","business-hours-row"),toggle=el("input"),open=el("input"),close=el("input");
+      toggle.type="checkbox";toggle.checked=Boolean(savedHours[day]?.enabled);open.type="time";close.type="time";
+      open.value=savedHours[day]?.open||"08:00";close.value=savedHours[day]?.close||"18:00";
+      const label=el("label","business-hours-day",labelText);label.prepend(toggle);
+      row.append(label,open,el("span","business-hours-separator","até"),close);hoursField.append(row);hoursInputs[day]={toggle,open,close};
+    });
     const plainField=(id,labelText,value,max=160,placeholder="")=>{const field=el("div","field"),label=el("label","",labelText),input=el("input");input.id=id;label.htmlFor=id;input.maxLength=max;input.value=value||"";if(placeholder)input.placeholder=placeholder;field.append(label,input);return {field,input}};
     const trade=plainField("company-trade-name","Nome fantasia",company.trade_name,160);
     const stateRegistration=plainField("company-state-registration","Inscrição estadual",company.state_registration,30,"Não contribuinte, se aplicável");
@@ -1751,7 +1769,7 @@ async function companyPage() {
     const environmentField=el("div","field"),environmentLabel=el("label","","Emissão fiscal"),environment=el("select");environment.id="company-fiscal-environment";environmentLabel.htmlFor=environment.id;[["non_fiscal","Comprovante não fiscal · atual"],["homologation","NFC-e em homologação"],["production","NFC-e em produção · requer provedor"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;environment.append(option)});environment.value=company.fiscal_environment||"non_fiscal";environmentField.append(environmentLabel,environment,el("small","","A chave de acesso, QR Code, protocolo e impostos só aparecem após autorização real da SEFAZ por um provedor configurado."));
     const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(series);
     const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumber);
-    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,taxField,environmentField,seriesField,nextNumberField,discountField);
+    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,taxField,environmentField,seriesField,nextNumberField,discountField,hoursField);
     const message=formMessage(form);
     const actions=el("div","form-actions"),save=el("button","button","Salvar dados");save.type="submit";
     actions.append(save);form.append(actions);
@@ -1768,7 +1786,8 @@ async function companyPage() {
           address_line:addressLine.input.value.trim(),address_number:addressNumber.input.value.trim(),address_complement:addressComplement.input.value.trim(),
           address_neighborhood:addressNeighborhood.input.value.trim(),address_city:addressCity.input.value.trim(),address_state:addressState.input.value.trim().toUpperCase(),
           address_zip:addressZip.input.value.replace(/\D/g,""),tax_regime:tax.value,fiscal_environment:environment.value,
-          nfce_series:Number(series.value),nfce_next_number:Number(nextNumber.value),max_discount_bps:Math.round(maxDiscount*100)};
+          nfce_series:Number(series.value),nfce_next_number:Number(nextNumber.value),max_discount_bps:Math.round(maxDiscount*100),
+          business_hours:Object.fromEntries(Object.entries(hoursInputs).map(([day,inputs])=>[day,{enabled:inputs.toggle.checked,open:inputs.toggle.checked?inputs.open.value:"",close:inputs.toggle.checked?inputs.close.value:""}]))};
         await api.patch("/ops/company",companyPayload);
         toast("Dados da empresa atualizados.");renderRoute();
       }catch(error){handleError(error,message);save.disabled=false;}
@@ -2552,7 +2571,8 @@ async function startPlatformMfaEnrollment() {
   content.append(info("Abra Google Authenticator, Microsoft Authenticator ou outro aplicativo TOTP e adicione esta conta. Depois informe o código de seis dígitos.", false));
   const secret = el("code", "auth-secret", setup.secret);
   const uri = el("small", "auth-secret-uri", setup.otpauth_uri);
-  content.append(el("p", "field-label", "Chave de configuração"), secret, uri);
+  const qr = el("img", "mfa-qr"); qr.src = setup.qr_data_uri || ""; qr.alt = "QR Code para configurar o autenticador"; qr.hidden = !setup.qr_data_uri;
+  content.append(el("p", "field-label", "Escaneie no aplicativo autenticador"), qr, el("small", "mfa-qr-help", "Se não conseguir escanear, use a chave de configuração abaixo."), el("p", "field-label", "Chave de configuração"), secret, uri);
   const field = el("div", "field");
   const label = el("label", "", "Código do autenticador");
   const code = el("input");

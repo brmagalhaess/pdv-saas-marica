@@ -13,8 +13,15 @@
   <div id="toast" role="status" aria-live="polite"></div>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">▣</span><span><strong>PDV<span class="accent">2</span></strong><small>TERMINAL LOCAL</small></span></div>
-    <div class="top-status"><span id="connectionBadge" class="badge">Empresa não vinculada</span><span id="networkBadge" class="badge">Verificando…</span><span id="leaseBadge" class="badge">Licença…</span><span id="pendingBadge" class="badge">Fila: —</span><span id="releaseBadge" class="badge hidden">Versão disponível</span></div>
-    <div class="operator"><span id="operatorName">Sem operador</span><button id="logoutBtn" class="text-button hidden">Sair</button></div>
+    <div class="top-status"><span id="connectionBadge" class="badge">Empresa não vinculada</span><span id="networkBadge" class="badge">Verificando…</span><span id="leaseBadge" class="badge">Licença…</span><span id="pendingBadge" class="badge">Fila: —</span><span id="releaseBadge" class="badge hidden">Versão disponível</span><span id="hoursAlert" class="badge hours-alert hidden" role="status"></span></div>
+    <nav class="top-nav hidden" aria-label="Seções do terminal">
+      <button class="nav-item active" data-tab="checkout"><span>▣</span> Caixa</button>
+      <button class="nav-item" data-tab="sales"><span>▤</span> Vendas</button>
+      <button class="nav-item admin-only" data-tab="stock"><span>▦</span> Estoque</button>
+      <button class="nav-item admin-only" data-tab="printers"><span>▥</span> Impressoras</button>
+      <button class="nav-item admin-only" data-tab="system"><span>◉</span> Sistema</button>
+    </nav>
+    <div class="operator"><span id="operatorName">Sem operador</span><button id="cashOpenHeaderBtn" class="secondary small hidden">Abrir caixa</button><button id="closeCashHeaderBtn" class="secondary small hidden">Fechar caixa</button><button id="lockBtn" class="text-button hidden">Bloquear caixa</button><button id="logoutBtn" class="text-button hidden">Sair</button></div>
   </header>
 
   <section id="pairView" class="gate hidden">
@@ -56,16 +63,6 @@
   </section>
 
   <div id="appView" class="shell hidden">
-    <aside class="sidebar">
-      <nav aria-label="Seções do terminal">
-        <button class="nav-item active" data-tab="checkout"><span>▣</span> Caixa</button>
-        <button class="nav-item" data-tab="sales"><span>▤</span> Vendas</button>
-        <button class="nav-item" data-tab="stock"><span>▦</span> Estoque</button>
-        <button class="nav-item" data-tab="printers"><span>▥</span> Impressoras</button>
-        <button class="nav-item" data-tab="system"><span>◉</span> Sistema</button>
-      </nav>
-      <div class="sidebar-bottom"><span class="online-dot"></span> Dados neste computador<br><small>Venda continua sem internet</small></div>
-    </aside>
     <main class="workspace">
       <section id="checkoutTab" class="tab-panel">
         <div class="section-head"><div><span class="eyebrow">OPERAÇÃO · CAIXA</span><h1>Frente de caixa</h1><p class="section-subtitle">Leia o código, confira o pedido e finalize em poucos toques.</p></div><div class="register-head-actions"><span id="cashChip" class="chip">Caixa fechado</span><span class="shortcut-hint"><kbd>F2</kbd> buscar <kbd>Enter</kbd> adicionar</span></div></div>
@@ -83,7 +80,7 @@
             <div id="productsGrid" class="products-grid"></div>
           </div>
           <div class="cart card">
-            <div class="card-head"><div><span class="card-kicker">PEDIDO ATUAL</span><h2>Venda atual</h2><p id="cartCount">Nenhum item</p></div><div class="cart-actions"><button id="newSaleBtn" class="secondary small" type="button">Nova venda</button><button id="suspendBtn" class="secondary small" type="button">Suspender</button></div></div>
+            <div class="card-head"><div><span class="card-kicker">PEDIDO ATUAL</span><h2>Venda atual</h2><p id="cartCount">Nenhum item</p></div><div class="cart-actions"><button id="newSaleBtn" class="secondary small" type="button">Nova venda</button></div></div>
             <div id="cartItems" class="cart-items empty-state">Adicione produtos para iniciar a venda.</div>
             <div class="cart-fields">
               <label>Cliente (opcional) <input id="customerName" placeholder="Nome para identificação"></label>
@@ -107,10 +104,7 @@
             <p class="legal-note">Pix e cartão são confirmados pelo operador. Integrações TEF e Pix bancário podem automatizar essa confirmação.</p>
           </div>
         </div>
-        <div class="bottom-grid">
-          <section class="card compact cash-control-card"><div class="card-head"><div><span class="card-kicker">CONTROLE DE TURNO</span><h2>Caixa e fechamento</h2><p id="cashInfo" class="hint"></p></div><span id="cashStatus" class="cash-status">Fechado</span></div><div id="cashOpeningPrompt" class="cash-opening"><label>Dinheiro disponível no início (R$)<input id="cashOpeningAmount" class="money-input" type="text" inputmode="decimal" placeholder="Informe o saldo inicial"></label><button id="openCashBtn" class="primary" type="button">Abrir caixa</button></div><div id="cashMovementControls" class="inline-controls hidden"><input id="cashAmount" class="money-input" type="text" inputmode="decimal" placeholder="Valor do movimento"><input id="cashReason" placeholder="Motivo do suprimento ou sangria"><button id="supplyBtn" class="secondary" type="button">Suprimento</button><button id="withdrawBtn" class="secondary" type="button">Sangria</button><button id="closeCashBtn" class="secondary" type="button">Fechar e conferir</button></div><p class="cash-control-note">Antes da primeira venda, informe o dinheiro físico disponível. No fechamento, o sistema mostra PIX, crédito, débito, dinheiro esperado e a diferença encontrada.</p></section>
-          <section class="card compact"><div class="card-head"><h2>Vendas suspensas</h2></div><div id="suspendedList" class="mini-list">Nenhuma venda suspensa.</div></section>
-        </div>
+        <div id="cashStateProxy" class="hidden" aria-hidden="true"><span id="cashStatus">Fechado</span><p id="cashInfo"></p><div id="cashOpeningPrompt"><input id="cashOpeningAmount" type="text"></div><div id="cashMovementControls"><input id="cashAmount" type="text"><input id="cashReason" type="text"></div><button id="openCashBtn" type="button"></button><button id="supplyBtn" type="button"></button><button id="withdrawBtn" type="button"></button><button id="closeCashBtn" type="button"></button></div>
       </section>
 
       <section id="salesTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">HISTÓRICO LOCAL</span><h1>Vendas</h1></div><button id="reloadSales" class="secondary">Atualizar</button></div><div id="salesList" class="card list-card"></div></section>

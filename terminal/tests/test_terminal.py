@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import ANY, patch
 
@@ -95,6 +96,18 @@ class TerminalTests(unittest.TestCase):
                                  headers={"X-CSRF-Token": self.csrf()})
         self.assertEqual(valid.status_code, 200, valid.json)
         self.assertEqual(valid.json, {"authorized": True})
+
+    def test_item_removal_requires_manager_pin_and_signed_hours_are_visible(self):
+        with self.assertRaisesRegex(TerminalError, "PIN"):
+            self.store.authorize_item_removal(self.cashier, "000000")
+        self.assertTrue(self.store.authorize_item_removal(self.cashier, "654321")["authorized"])
+        self.assertTrue(self.store.authorize_item_removal(self.manager)["authorized"])
+        claims = dict(self.claims, business_hours={"mon": {"enabled": True, "open": "08:00", "close": "18:00"}})
+        lease = sign_lease(claims, self.private)
+        with self.store.transaction() as conn:
+            self.store._set_meta(conn, "lease", json.dumps(lease))
+        self.assertTrue(self.store.business_hours_status(datetime(2026, 10, 5, 10, 0))["open"])
+        self.assertFalse(self.store.business_hours_status(datetime(2026, 10, 5, 20, 0))["open"])
 
     def test_license_key_and_one_time_pairing_do_not_store_full_key(self):
         fresh = Store(Path(self.temp.name) / "fresh.sqlite3")

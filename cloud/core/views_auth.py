@@ -1,7 +1,10 @@
 from datetime import timedelta
+import base64
 import secrets
 
 import pyotp
+import qrcode
+from qrcode.image.svg import SvgImage
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
 from django.contrib.auth.hashers import check_password, make_password
@@ -81,8 +84,16 @@ def _mfa_setup_response(user, mfa):
         mfa.save(update_fields=["secret_encrypted"])
     secret = decrypt_secret(mfa.secret_encrypted)
     uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="PDV2 SaaS")
+    qr = qrcode.QRCode(image_factory=SvgImage, box_size=8, border=4)
+    qr.add_data(uri)
+    qr.make(fit=True)
+    image = qr.make_image()
+    svg = image.to_string()
+    if isinstance(svg, str):
+        svg = svg.encode("utf-8")
     return {"enabled": False, "account": user.email, "issuer": "PDV2 SaaS",
-            "secret": secret, "otpauth_uri": uri}
+            "secret": secret, "otpauth_uri": uri,
+            "qr_data_uri": "data:image/svg+xml;base64," + base64.b64encode(svg).decode("ascii")}
 
 
 def _recovery_codes(count=10):

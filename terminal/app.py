@@ -157,6 +157,7 @@ def create_app(config=None):
                         "operators": store.operators(), "paired": bool(identity["terminal_id"]),
                         "device_id": identity["device_id"], "connection": store.connection_info(),
                         "license": store.lease_status(),
+                        "hours": store.business_hours_status(),
                         "cash": store.cash_state(), "sync": store.sync_status()})
 
     @app.post("/api/unpair")
@@ -362,6 +363,11 @@ def create_app(config=None):
         data = body()
         return jsonify(store.authorize_discount(data.get("pin"), data.get("gross_cents"),
                                                 data.get("discount_cents")))
+
+    @app.post("/api/cart/items/authorize-remove")
+    @authenticated(*SELL_ROLES)
+    def authorize_item_remove(operator):
+        return jsonify(store.authorize_item_removal(operator, body().get("manager_pin")))
 
     @app.post("/api/print/jobs/<job_id>/retry")
     @authenticated(*SELL_ROLES)

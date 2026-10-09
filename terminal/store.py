@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 from collections import defaultdict
 from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
@@ -20,6 +21,7 @@ OFFLINE_LEASE_SECONDS = 72 * 60 * 60
 SELL_ROLES = {"owner", "admin", "manager", "cashier"}
 MANAGER_ROLES = {"owner", "admin", "manager"}
 DISCOUNT_BPS = {"cashier": 1000, "manager": 5000, "admin": 10000, "owner": 10000}
+BUSINESS_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 class TerminalError(Exception):
@@ -248,7 +250,7 @@ class Store:
     def _clear_connection_meta(conn):
         for key in ("token", "tenant_id", "tenant_name", "shop_id", "shop_name",
                     "terminal_id", "terminal_name", "license_hint", "lease", "public_key", "cloud_url",
-                    "discount_max_bps", "issuer_profile", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
+                    "discount_max_bps", "issuer_profile", "business_hours", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at",
                     "last_heartbeat_at", "last_heartbeat_error"):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
@@ -420,7 +422,39 @@ class Store:
                 self._set_meta(conn, "last_seen", str(now))
             return {"state": "active", "can_sell": True, "reason": "Licença ativa",
                     "expires_at": expires, "offline_seconds_max": OFFLINE_LEASE_SECONDS,
-                    "plan_status": claims.get("status"), "features": claims.get("features", [])}
+                    "plan_status": claims.get("status"), "features": claims.get("features", []),
+                    "business_hours": claims.get("business_hours", {})}
+
+    def business_hours_status(self, now=None):
+        """Evaluate the last signed company schedule using the terminal clock."""
+        now_dt = datetime.now() if now is None else now
+        with self.connection() as conn:
+            raw = self._meta(conn, "lease")
+        try:
+            hours = (json.loads(raw).get("payload", {}).get("business_hours") or {}) if raw else {}
+        except (TypeError, ValueError):
+            hours = {}
+        if not isinstance(hours, dict) or not any(isinstance(row, dict) and row.get("enabled") for row in hours.values()):
+            return {"configured": False, "open": True, "message": "Horário de funcionamento não configurado."}
+        minute = now_dt.hour * 60 + now_dt.minute
+        day_index = now_dt.weekday()
+        for index, current_minute in ((day_index, minute), ((day_index - 1) % 7, minute)):
+            row = hours.get(BUSINESS_DAYS[index]) or {}
+            if not row.get("enabled"):
+                continue
+            try:
+                opening = int(str(row.get("open", "")).split(":")[0]) * 60 + int(str(row.get("open", "")).split(":")[1])
+                closing = int(str(row.get("close", "")).split(":")[0]) * 60 + int(str(row.get("close", "")).split(":")[1])
+            except (ValueError, IndexError, TypeError):
+                continue
+            if closing > opening and index == day_index and opening <= minute < closing:
+                return {"configured": True, "open": True, "message": "Dentro do horário de funcionamento.", "day": BUSINESS_DAYS[index]}
+            if closing <= opening:
+                if index == day_index and minute >= opening:
+                    return {"configured": True, "open": True, "message": "Dentro do horário de funcionamento.", "day": BUSINESS_DAYS[index]}
+                if index != day_index and current_minute < closing:
+                    return {"configured": True, "open": True, "message": "Dentro do horário de funcionamento.", "day": BUSINESS_DAYS[index]}
+        return {"configured": True, "open": False, "message": "Fora do horário de funcionamento da empresa."}
 
     def ensure_sale_allowed(self):
         status = self.lease_status()
@@ -584,6 +618,7 @@ class Store:
             if type(max_discount) is not int or not 0 <= max_discount <= 10000:
                 raise TerminalError("Limite de desconto da licença inválido", 403)
             self._set_meta(conn, "discount_max_bps", str(max_discount))
+            self._set_meta(conn, "business_hours", _json(claims.get("business_hours") or {}))
             self._set_meta(conn, "bootstrap_at", str(timestamp))
             self._audit(conn, None, "terminal.bootstrap", None,
                         f"{len(products)} produtos; {len(operators)} operadores")
@@ -782,6 +817,9 @@ class Store:
 
     def open_cash(self, operator_id, opening_cents):
         self.ensure_sale_allowed()
+        schedule = self.business_hours_status()
+        if schedule["configured"] and not schedule["open"]:
+            raise TerminalError("Fora do horário de funcionamento da empresa; o caixa não pode ser aberto agora", 403)
         opening_cents = _positive_int(opening_cents, "Valor de abertura", zero=True)
         with self.transaction() as conn:
             if conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone():
@@ -834,6 +872,13 @@ class Store:
                             "counted_cents": counted_cents,
                             "difference_cents": counted_cents - expected})
             return summary
+
+    def authorize_item_removal(self, operator, manager_pin=None):
+        """Require a supervisor PIN when a cashier removes a line from a cart."""
+        authorizer = operator["id"] if operator.get("role") in MANAGER_ROLES else self.manager_override(manager_pin)
+        with self.transaction() as conn:
+            self._audit(conn, operator["id"], "cart.item_removed_authorized", None, f"authorizer={authorizer}")
+        return {"authorized": True, "authorizer_id": authorizer}
 
     def suspend_cart(self, operator_id, label, cart):
         if not isinstance(cart, dict) or not isinstance(cart.get("items"), list) or not cart["items"]:

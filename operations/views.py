@@ -25,7 +25,7 @@ def company(request):
         data=payload(request);fields(data,('name','trade_name','document','state_registration',
             'municipal_registration','address_line','address_number','address_complement',
             'address_neighborhood','address_city','address_state','address_zip','tax_regime',
-            'fiscal_environment','nfce_series','nfce_next_number','max_discount_bps'))
+            'fiscal_environment','nfce_series','nfce_next_number','max_discount_bps','business_hours'))
         if not data:raise APIError('Informe os dados a alterar')
         if 'name' in data:tenant.name=text(data['name'],'Razão social',160)
         if 'trade_name' in data:tenant.trade_name=text(data['trade_name'],'Nome fantasia',160,optional=True)
@@ -70,6 +70,26 @@ def company(request):
             if type(value) is not int or not 0 <= value <= 10000:
                 raise APIError('Desconto máximo deve ficar entre 0% e 100%')
             tenant.max_discount_bps = value
+        if 'business_hours' in data:
+            value = data['business_hours']
+            if not isinstance(value, dict):
+                raise APIError('Horário de funcionamento inválido')
+            normalized = {}
+            for day in ('mon','tue','wed','thu','fri','sat','sun'):
+                row = value.get(day, {})
+                if not isinstance(row, dict):
+                    raise APIError('Horário de funcionamento inválido')
+                enabled = row.get('enabled', False)
+                if type(enabled) is not bool:
+                    raise APIError('Horário de funcionamento inválido')
+                opening = str(row.get('open', '')).strip()
+                closing = str(row.get('close', '')).strip()
+                if enabled:
+                    import re
+                    if not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', opening) or not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', closing):
+                        raise APIError(f'Informe horários válidos para {day}')
+                normalized[day] = {'enabled': enabled, 'open': opening if enabled else '', 'close': closing if enabled else ''}
+            tenant.business_hours = normalized
         with transaction.atomic():
             tenant.save(update_fields=list(data));audit(tenant,request.user,'company.updated',tenant,{'fields':list(data)})
     return JsonResponse({'id':str(tenant.pk),'name':tenant.name,'trade_name':tenant.trade_name,
@@ -81,7 +101,8 @@ def company(request):
                          'address_state':tenant.address_state,'address_zip':tenant.address_zip,
                          'tax_regime':tenant.tax_regime,'fiscal_environment':tenant.fiscal_environment,
                          'nfce_series':tenant.nfce_series,'nfce_next_number':tenant.nfce_next_number,
-                         'max_discount_bps': tenant.max_discount_bps})
+                         'max_discount_bps': tenant.max_discount_bps,
+                         'business_hours': tenant.business_hours or {}})
 
 @endpoint
 def integration(request,provider):

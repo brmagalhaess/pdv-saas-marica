@@ -61,6 +61,10 @@ async function showMfa(setupRequired) {
     const setup = await api.get("/auth/mfa/setup", { tenant: false });
     $("#mfa-secret").textContent = setup.secret;
     $("#mfa-uri").textContent = setup.otpauth_uri;
+    $("#mfa-qr").src = setup.qr_data_uri || "";
+    $("#mfa-qr").hidden = !setup.qr_data_uri;
+  } else {
+    $("#mfa-qr").hidden = true;
   }
   $("#mfa-code").focus();
 }
