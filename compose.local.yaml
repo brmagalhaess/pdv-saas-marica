@@ -46,7 +46,7 @@ services:
     environment: *cloud-env
     depends_on: {migrate: {condition: service_completed_successfully}}
     secrets: [license_private, license_public]
-    volumes: [backup_status:/backup-status:ro]
+    volumes: [backup_status:/backup-status]
     expose: ["8080"]
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/', timeout=3)"]
@@ -121,6 +121,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?Run scripts/init_local.py}
       RESTIC_REPOSITORY: /backups
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:?Run scripts/init_local.py}
+      PDV_BACKUP_OFFSITE: "0"
       BACKUP_INTERVAL_SECONDS: "3600"
     depends_on: {db: {condition: service_healthy}}
     volumes: [backup_data:/backups, backup_status:/status]

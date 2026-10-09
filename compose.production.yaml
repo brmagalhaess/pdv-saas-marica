@@ -55,7 +55,7 @@ services:
     <<: *service
     expose: ["8080"]
     depends_on: {migrate: {condition: service_completed_successfully}}
-    volumes: [backup_status:/backup-status:ro]
+    volumes: [backup_status:/backup-status]
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/', timeout=3)"]
       interval: 20s

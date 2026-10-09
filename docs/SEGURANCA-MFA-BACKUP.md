@@ -57,3 +57,17 @@ O teste local já foi validado no projeto com o repositório Restic do volume de
 desenvolvimento: a restauração isolada passou com 2 tenants, 9 produtos, 25
 vendas e 38 migrações. Essa evidência não substitui a execução final apontando
 para o bucket externo da VPS antes de aceitar clientes pagantes.
+
+## Menu de gerenciamento
+
+Usuários `platform_ops` e superusuários acessam **Plataforma → Backups e
+restauração**. O painel mostra o estado (saudável, atrasado ou com falha), a
+última cópia, o destino externo, os snapshots disponíveis e o último resultado
+de restauração. **Executar backup agora** cria uma solicitação consumida pelo
+container de backup. **Restaurar** faz uma validação em banco temporário e
+remove esse banco ao terminar; nunca substitui o banco ativo pela interface.
+
+As solicitações são pequenos marcadores no volume compartilhado
+`backup_status`. O cloud não acessa as credenciais Restic nem o arquivo de
+backup. O worker publica o inventário de snapshots e o relatório da última
+restauração no mesmo volume.

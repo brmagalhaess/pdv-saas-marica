@@ -16,7 +16,7 @@ const platformSuperuser = () => !!state.user?.is_superuser;
 const tenantOption = platform ? { tenant: false } : {};
 const roleNames = { owner: "Proprietário", admin: "Administrador", manager: "Gerente", cashier: "Operador de caixa", inventory: "Estoque", finance: "Financeiro", viewer: "Consulta" };
 const cancellationAccess = role => ["owner","admin","manager"].includes(role) ? "Autorizado" : role==="cashier" ? "Com PIN de gerente" : "Sem permissão";
-const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
+const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", passed:"Aprovada", healthy:"Saudável", stale:"Atrasado", error:"Falha", unknown:"Aguardando", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
 function editableMoney(cents) {
   const value = Number(cents);
   return Number.isFinite(value) ? (value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
@@ -57,6 +57,7 @@ const platformNav = [
   { group: "Plataforma", id: "platform_users", label: "Usuários e permissões", icon: "♙", roles:[], superuserOnly:true },
   { group: "Plataforma", id: "security", label: "Segurança e MFA", icon: "⌑", roles:["platform_support","platform_billing","platform_ops"] },
   { group: "Plataforma", id: "services", label: "Serviços", icon: "◇", roles:["platform_support","platform_billing","platform_ops"] },
+  { group: "Plataforma", id: "backups", label: "Backups e restauração", icon: "◫", roles:["platform_ops"] },
   { group: "Plataforma", id: "releases", label: "Versões", icon: "↥", roles:["platform_ops"] },
   { group: "Plataforma", id: "invoices", label: "Cobranças", icon: "◎", roles:["platform_billing"] },
   { group: "Plataforma", id: "platform_audit", label: "Auditoria", icon: "≡", roles:["platform_support","platform_ops"] }
@@ -177,7 +178,7 @@ function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
   const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
     : ["trial","past_due","pending","open","acknowledged","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
-    : ["active","settled","completed","succeeded","paid","resolved","ignored","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
+    : ["active","settled","completed","succeeded","paid","resolved","ignored","passed","healthy","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
   return el("span", "badge " + tone, statusNames[normalized] || value || "—");
 }
 function table(columns, rows, actionsFor) {
@@ -2254,6 +2255,58 @@ async function platformServices() {
   }catch(error){if(token===state.renderId){content.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
 
+function requestPlatformBackup() {
+  confirmAction("Executar backup agora", "O banco será exportado, validado e enviado ao destino Restic configurado. A venda e o banco ativo continuam disponíveis.", async () => {
+    await api.post("/ops/backups", { action: "run" }, { tenant:false });
+    toast("Backup solicitado. Atualize o painel para acompanhar o resultado.");
+    renderRoute();
+  }, "Executar backup");
+}
+
+function requestPlatformRestore(snapshot) {
+  confirmAction("Validar restauração", `O snapshot ${snapshot.short_id || snapshot.id.slice(0, 8)} será restaurado em um banco temporário isolado. O banco ativo não será alterado.`, async () => {
+    await api.post("/ops/backups", { action: "restore_test", snapshot_id: snapshot.id, confirm:true }, { tenant:false });
+    toast("Restauração solicitada. O resultado aparecerá neste painel.");
+    renderRoute();
+  }, "Restaurar em ambiente isolado");
+}
+
+async function platformBackupsPage() {
+  const token=++state.renderId;
+  const view=page("Backups e restauração","Acompanhe cópias do SaaS, solicite uma cópia imediata e valide restaurações sem tocar no banco ativo.","Plataforma");
+  view.actions.append(button("Atualizar",()=>renderRoute()),button("Executar backup agora",requestPlatformBackup,"primary"));
+  view.outer.append(info("A restauração disponível nesta tela é uma validação em banco temporário. Ela confirma que o snapshot pode ser recuperado e preserva o banco de produção.",true));
+  const content=el("div");view.outer.append(content);content.append(loadingSurface());
+  try {
+    const result=await api.get("/ops/backups",{tenant:false});
+    if(token!==state.renderId)return;
+    const restore=result.restore||{};
+    const cards=el("div","metric-grid");
+    cards.append(
+      metric("Estado do backup",result.state||"—",result.pending_action?`Ação pendente: ${result.pending_action}`:"Verificação automática"),
+      metric("Última cópia",dateTime(result.last_success_at),result.last_failure_at?`Última falha: ${dateTime(result.last_failure_at)}`:"Sem falha registrada"),
+      metric("Destino externo",result.external_configured?"Configurado":"Não configurado","Restic criptografado"),
+      metric("Última restauração",restore.status?String(restore.status):"Nenhuma",restore.completed_at?dateTime(Number(restore.completed_at)*1000):"Ainda não executada")
+    );
+    const overview=surface("Estado do serviço","O container de backup executa cópias periódicas e consome as solicitações desta tela.");
+    overview.append(detailList([
+      ["Periodicidade",`${Math.round((result.interval_seconds||3600)/60)} minutos`],
+      ["Próxima ação",result.pending_action?"Aguardando o worker":"Agendada pelo serviço"],
+      ["Mensagem da restauração",restore.message||"—"],
+      ["Falha mais recente",result.last_failure||"Nenhuma falha registrada"]
+    ]));
+    const snapshots=surface("Snapshots disponíveis","Escolha uma cópia estável para validar a recuperação.");
+    const rows=Array.isArray(result.snapshots)?result.snapshots:[];
+    snapshots.append(rows.length?table([
+      {label:"ID",render:row=>row.short_id||row.id.slice(0,8)},
+      {label:"Data",render:row=>dateTime(row.time)},
+      {label:"Origem",render:row=>row.hostname},
+      {label:"Tags",render:row=>(row.tags||[]).join(", ")||"—"}
+    ],rows,row=>[{label:"Restaurar",onClick:()=>requestPlatformRestore(row)}]):empty("Nenhum snapshot listado","O serviço ainda não publicou o inventário de cópias."));
+    content.replaceChildren(cards,overview,snapshots);
+  }catch(error){if(token===state.renderId){content.replaceChildren(empty("Falha ao carregar backups",errorText(error),"!"));handleError(error);}}
+}
+
 function billingForm(plans) {
   const form=el("form","form-grid");
   function selectField(id,label,options) {
@@ -2564,7 +2617,7 @@ const tenantRoutes = {
 const platformRoutes = {
   overview:platformOverview,tenants:platformTenants,plans:platformPlans,
   subscriptions:platformSubscriptions,devices:platformDevices,services:platformServices,
-  releases:releasesPage,invoices:invoicesPage,platform_audit:platformAuditPage,security:platformSecurityPage,
+  releases:releasesPage,invoices:invoicesPage,platform_audit:platformAuditPage,security:platformSecurityPage,backups:platformBackupsPage,
   platform_users:platformUsersPage
 };
 function activeSection() {

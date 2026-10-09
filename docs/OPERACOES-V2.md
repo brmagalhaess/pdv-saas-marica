@@ -40,6 +40,12 @@ Cancelamento fiscal e estorno comercial são operações separadas. O payload tr
 
 `GET health` mostra quantidade de pendentes/revisões e instante do último backup. O webhook retorna sucesso após persistir o evento, não após completar o pagamento.
 
+`GET/POST backups` é restrito a `platform_ops` e superusuário. O GET acompanha
+estado, última cópia, snapshots e restauração; o POST aceita `{"action":"run"}`
+para solicitar uma cópia imediata ou `{"action":"restore_test","snapshot_id":"...","confirm":true}`
+para validar um snapshot em banco temporário isolado. A restauração não altera o
+banco ativo.
+
 ## Versões
 
 `GET/POST releases`: equipe platform_ops/superusuário administra metadados. Publicação exige `component` terminal/cloud, `channel` stable/pilot, versão semântica de três números, URL HTTPS, SHA-256, tamanho e notas. Versões publicadas são imutáveis; retirada via `POST releases/<id>/withdraw`.
