@@ -100,6 +100,8 @@ def monitoring(request):
             "device_id": row.device_id,
             "version": row.version,
             "paired": bool(row.token_hash),
+            "heartbeat_pending_events": row.heartbeat_pending_events,
+            "heartbeat_error": row.heartbeat_error,
             "revoked": row.revoked,
             "status": "revoked" if row.revoked else ("online" if row.id in online_ids else "offline"),
             "last_seen_at": iso(row.last_seen_at),

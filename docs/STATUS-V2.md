@@ -38,11 +38,11 @@ Ainda faltam mesas/comandas/cozinha/delivery; agenda/ordens de serviço; farmác
 
 ## Limites offline
 
-O painel web (`8000`) não é o caixa offline: ele depende da API em nuvem. A operação offline deve ser feita no serviço local do terminal (`8010`), já pareado e com catálogo/operadores baixados. O terminal grava vendas e caixa em SQLite, mantém a fila pendente e sincroniza quando a conexão retorna.
+O painel web (`8000`) não é o caixa offline: ele depende da API em nuvem. A operação offline deve ser feita no serviço local do terminal (`8010`), já pareado e com catálogo/operadores baixados. O terminal grava vendas e caixa em SQLite, mantém a fila pendente, envia heartbeat periódico e sincroniza quando a conexão retorna. Divergências de estoque aparecem no painel da empresa em **Administração → Conflitos offline**.
 
 - Licença normal até 72 horas, podendo ser encurtada por vencimentos; o terminal não adiciona prazo após `expires_at`.
 - Expiração preserva leitura/exportação e envio de registros pendentes; novas vendas exigem renovação.
-- Caixas desconectados podem vender o mesmo saldo. A nuvem recebe o histórico e sinaliza divergências; estoque global instantâneo exige comunicação.
+- Caixas desconectados podem vender o mesmo saldo. A nuvem recebe o histórico, registra um conflito por evento quando o saldo central fica negativo e mantém a decisão auditável; estoque global instantâneo exige comunicação.
 - Revogação de pessoa/dispositivo depende de reconexão ou vencimento da licença já emitida.
 - ESC/POS imprime comprovante **não fiscal**. Persistir venda offline não equivale a emitir NFC-e em contingência. Prazos fiscais são independentes dos prazos da licença.
 
@@ -51,6 +51,16 @@ O painel web (`8000`) não é o caixa offline: ele depende da API em nuvem. A op
 A V2 é uma base operacional para validação e pilotos supervisionados. Liberação comercial de produção depende das pendências acima. Containers e testes automatizados isoladamente não encerram essa validação.
 
 ## Fechamento desta validação local
+
+Após a auditoria de 09/10/2026, a suíte reconstruída com as migrações atuais passou por:
+
+- 34 testes cloud (`core` + `operations`), incluindo heartbeat e conflito offline resolvível;
+- 37 testes do terminal (`test_terminal` + `test_receipts`);
+- 1 contrato terminal-cloud em banco SQLite temporário;
+- 4 testes compartilhados de licenciamento/releases;
+- `makemigrations --check --dry-run`: nenhuma migração pendente.
+
+O `check --deploy` em Compose local continua emitindo cinco avisos esperados porque o perfil local usa HTTP e DEBUG. O check deve ser repetido com o ambiente de produção, domínio e TLS configurados.
 
 - 18 testes Django de core/operations passaram com PostgreSQL em banco de teste separado.
 - 14 testes do terminal passaram, incluindo contrato com Django e persistência após reinício.

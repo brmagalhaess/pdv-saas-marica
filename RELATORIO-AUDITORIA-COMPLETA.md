@@ -426,3 +426,19 @@ Em 9 de outubro de 2026 foram executados os testes disponíveis nos containers d
 - os testes `shared/tests` não rodaram no Python do host porque a dependência `cryptography` não está instalada; a tentativa no container não encontrou esse diretório no contexto de imagem. Isso deve ser corrigido na esteira CI para que licenciamento e releases sejam sempre testados junto com o restante do projeto.
 
 Esses resultados validam a base automatizada existente, mas não substituem os testes físicos de periféricos, emissão fiscal, pagamentos, rede interrompida e restauração descritos acima.
+
+## 15. Incremento aplicado após a auditoria — 9 de outubro de 2026
+
+Este incremento aplica a primeira tranche P0 sem declarar homologações que ainda dependem de terceiros:
+
+- `SyncConflict` no cloud, com tenant/loja/terminal, evento, saldo observado, estado, resolução, responsável e auditoria;
+- criação automática de conflito quando uma venda offline aceita deixa o saldo central negativo;
+- endpoints protegidos para listar e resolver conflitos no painel da empresa;
+- heartbeat autenticado do terminal a cada 30 segundos, com versão, fila pendente e presença para o monitoramento;
+- fila SQLite local para conflitos e diagnóstico no terminal, sem apagar eventos ou vendas;
+- política única documentada em 72 horas para licença normal (24 horas durante atraso), alinhada ao emissor cloud;
+- navegação **Administração → Conflitos offline** e métricas locais de conflitos;
+- testes de integração para conflito resolvível e heartbeat;
+- documentação atualizada em `docs/SYNC-VENDAS.md`, `docs/API-V2.md` e `docs/STATUS-V2.md`.
+
+Continuam bloqueadores externos de produção: homologação NFC-e/contingência com certificado e SEFAZ, TEF/adquirência, Pix dinâmico, MFA da plataforma, backup externo restaurado no ambiente final, matriz física de periféricos e deploy com domínio/TLS/segredos reais. O produto deve ser anunciado como **piloto não fiscal** até essas evidências existirem.

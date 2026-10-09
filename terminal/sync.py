@@ -150,9 +150,32 @@ def sync_once(store):
     if response.get("accepted_event_ids") != expected:
         store.set_sync_result("Confirmação incompleta do servidor")
         raise TerminalError("Servidor não confirmou o lote completo; reenvio será tentado", 502)
+    store.record_sync_conflicts(response.get("conflicts") or [])
     store.ack_events(expected)
     store.set_sync_result()
-    return {"sent": len(expected), "remaining": store.sync_status()["pending"]}
+    result = {"sent": len(expected), "remaining": store.sync_status()["pending"]}
+    if response.get("conflicts"):
+        result["conflicts"] = response["conflicts"]
+    return result
+
+
+def heartbeat_once(store):
+    """Advertise terminal presence even when the outbox is empty."""
+    meta = store.meta()
+    if not meta.get("token") or not meta.get("cloud_url"):
+        raise TerminalError("Terminal ainda não pareado", 409)
+    status = store.sync_status()
+    try:
+        response = _request("POST", meta["cloud_url"] + "/api/v1/terminal/heartbeat",
+                            headers={"Authorization": "Bearer " + meta["token"]},
+                            json={"version": VERSION, "pending_events": status["pending"],
+                                  "last_error": status.get("last_sync_error") or "",
+                                  "client_time": int(time.time())})
+    except TerminalError as exc:
+        store.set_heartbeat_result(str(exc))
+        raise
+    store.set_heartbeat_result()
+    return response
 
 
 def print_once(store):
@@ -200,6 +223,12 @@ class Worker:
             except (TerminalError, OSError, ValueError) as exc:
                 errors.append(str(exc))
             if self.store.meta().get("token"):
+                try:
+                    heartbeat_at = int(self.store.meta().get("last_heartbeat_at") or 0)
+                    if int(time.time() * 1000) - heartbeat_at > 30 * 1000:
+                        heartbeat_once(self.store)
+                except (TerminalError, OSError, ValueError) as exc:
+                    errors.append("Heartbeat: " + str(exc))
                 try:
                     result = sync_once(self.store)
                     if result["remaining"]:

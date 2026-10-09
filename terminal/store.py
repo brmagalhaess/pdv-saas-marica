@@ -14,7 +14,9 @@ from pathlib import Path
 from .printers import LABEL_PRINTER_REQUIRED, label_bytes, receipt_bytes, receipt_layout
 
 
-OFFLINE_LEASE_SECONDS = 7 * 24 * 60 * 60
+# The cloud issues a normal offline lease for 72h (past_due is 24h).
+# Keep this value exposed to the terminal UI and diagnostics.
+OFFLINE_LEASE_SECONDS = 72 * 60 * 60
 SELL_ROLES = {"owner", "admin", "manager", "cashier"}
 MANAGER_ROLES = {"owner", "admin", "manager"}
 DISCOUNT_BPS = {"cashier": 1000, "manager": 5000, "admin": 10000, "owner": 10000}
@@ -123,6 +125,12 @@ class Store:
                 CREATE TABLE IF NOT EXISTS audit(
                     id TEXT PRIMARY KEY,operator_id TEXT,action TEXT NOT NULL,
                     subject_id TEXT,detail TEXT,created_at INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS sync_conflicts(
+                    id TEXT PRIMARY KEY,event_id TEXT NOT NULL UNIQUE,event_type TEXT NOT NULL,
+                    aggregate_id TEXT NOT NULL,reason TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',detail TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,resolved_at INTEGER);
+                CREATE INDEX IF NOT EXISTS sync_conflicts_status ON sync_conflicts(status,created_at);
                 CREATE TABLE IF NOT EXISTS print_settings(
                     kind TEXT PRIMARY KEY,driver TEXT NOT NULL,target TEXT NOT NULL,format TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS print_jobs(
@@ -233,7 +241,7 @@ class Store:
     def _clear_company_cache(conn):
         # These are downloaded/setup data, not locally created business records.
         # Clearing them also makes exports after a new pairing tenant-isolated.
-        for table in ("products", "operators", "login_attempts", "audit", "print_settings"):
+        for table in ("products", "operators", "login_attempts", "audit", "print_settings", "sync_conflicts"):
             conn.execute(f"DELETE FROM {table}")
 
     @staticmethod
@@ -241,7 +249,8 @@ class Store:
         for key in ("token", "tenant_id", "tenant_name", "shop_id", "shop_name",
                     "terminal_id", "terminal_name", "license_hint", "lease", "public_key", "cloud_url",
                     "discount_max_bps", "issuer_profile", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
-                    "release_info", "release_error", "release_checked_at", "last_backup_at"):
+                    "release_info", "release_error", "release_checked_at", "last_backup_at",
+                    "last_heartbeat_at", "last_heartbeat_error"):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
 
     def ensure_pairable(self):
@@ -297,8 +306,11 @@ class Store:
         with self.connection() as conn:
             release = self._meta(conn, "release_info")
             return {"pending": conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0],
+                    "conflicts": conn.execute("SELECT COUNT(*) FROM sync_conflicts WHERE status IN ('open','acknowledged')").fetchone()[0],
                     "last_sync_at": self._meta(conn, "last_sync_at"),
                     "last_sync_error": self._meta(conn, "last_sync_error"),
+                    "last_heartbeat_at": self._meta(conn, "last_heartbeat_at"),
+                    "last_heartbeat_error": self._meta(conn, "last_heartbeat_error"),
                     "bootstrap_at": self._meta(conn, "bootstrap_at"),
                     "release": json.loads(release) if release else None,
                     "release_error": self._meta(conn, "release_error")}
@@ -308,6 +320,67 @@ class Store:
             self._set_meta(conn, "last_sync_error", error or "")
             if error is None:
                 self._set_meta(conn, "last_sync_at", str(_now_ms()))
+
+    def set_heartbeat_result(self, error=None):
+        with self.transaction() as conn:
+            self._set_meta(conn, "last_heartbeat_error", error or "")
+            if error is None:
+                self._set_meta(conn, "last_heartbeat_at", str(_now_ms()))
+
+    def record_sync_conflicts(self, conflicts):
+        """Persist server conflict responses before acknowledging the outbox."""
+        if not conflicts:
+            return
+        now = _now_ms()
+        with self.transaction() as conn:
+            for conflict in conflicts:
+                if not isinstance(conflict, dict) or not conflict.get("event_id"):
+                    continue
+                conn.execute(
+                    """INSERT INTO sync_conflicts
+                       (id,event_id,event_type,aggregate_id,reason,status,detail,created_at,resolved_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(event_id) DO UPDATE SET
+                         event_type=excluded.event_type, aggregate_id=excluded.aggregate_id,
+                         reason=excluded.reason, detail=excluded.detail""",
+                    (str(conflict.get("id") or _uuid()), str(conflict["event_id"]),
+                     str(conflict.get("event_type") or ""), str(conflict.get("aggregate_id") or ""),
+                     str(conflict.get("reason") or "unknown"), str(conflict.get("status") or "open"),
+                     _json(conflict.get("detail") or {}), now, None))
+
+    def sync_conflicts(self, status=None):
+        allowed = {"open", "acknowledged", "resolved", "ignored"}
+        if status and status not in allowed:
+            raise TerminalError("Estado de conflito inválido")
+        with self.connection() as conn:
+            query = "SELECT * FROM sync_conflicts"
+            params = []
+            if status:
+                query += " WHERE status=?"
+                params.append(status)
+            query += " ORDER BY created_at DESC LIMIT 200"
+            rows = []
+            for row in conn.execute(query, params):
+                item = dict(row)
+                try:
+                    item["detail"] = json.loads(item["detail"])
+                except (TypeError, ValueError):
+                    item["detail"] = {}
+                rows.append(item)
+            return rows
+
+    def resolve_sync_conflict(self, conflict_id, status, resolution=""):
+        if status not in {"acknowledged", "resolved", "ignored"}:
+            raise TerminalError("Estado de resolução inválido")
+        if not isinstance(resolution, str) or len(resolution) > 1000:
+            raise TerminalError("Resolução inválida")
+        with self.transaction() as conn:
+            row = conn.execute("SELECT id FROM sync_conflicts WHERE id=?", (str(conflict_id),)).fetchone()
+            if not row:
+                raise TerminalError("Conflito não encontrado", 404)
+            conn.execute("UPDATE sync_conflicts SET status=?,resolution=?,resolved_at=? WHERE id=?",
+                         (status, resolution.strip(), _now_ms(), str(conflict_id)))
+        return self.sync_conflicts()
 
     def set_release_result(self, payload=None, error=None):
         with self.transaction() as conn:

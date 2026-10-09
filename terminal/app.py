@@ -389,6 +389,19 @@ def create_app(config=None):
             result["bootstrap"] = sync.refresh_bootstrap(store)
         return jsonify(result)
 
+    @app.get("/api/sync/conflicts")
+    @authenticated(*MANAGER_ROLES)
+    def sync_conflicts(_operator):
+        return jsonify({"conflicts": store.sync_conflicts(request.args.get("status"))})
+
+    @app.post("/api/sync/conflicts/<conflict_id>/resolve")
+    @authenticated(*MANAGER_ROLES)
+    def resolve_sync_conflict(_operator, conflict_id):
+        data = body()
+        rows = store.resolve_sync_conflict(conflict_id, data.get("status"), data.get("resolution", ""))
+        match = next((row for row in rows if row.get("id") == str(conflict_id)), None)
+        return jsonify(match or {"id": str(conflict_id), "status": data.get("status")})
+
     @app.get("/api/export")
     @authenticated(*MANAGER_ROLES)
     def export(_operator):

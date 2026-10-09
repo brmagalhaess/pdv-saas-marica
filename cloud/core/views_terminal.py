@@ -13,9 +13,10 @@ from django.views.decorators.csrf import csrf_exempt
 
 from shared.licensing import LicenseError, load_private_key, load_public_key, payload_digest, sign_lease
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, product_quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
-from .models import Membership, Product, Sale, Shop, StockMovement, Subscription, SyncEvent, Tenant, Terminal
+from .models import Membership, Product, Sale, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .sale_logic import event_time, persist_sale, reverse_sale
-from .serializers import plan as plan_data, terminal as terminal_data
+from .serializers import plan as plan_data, sync_conflict as sync_conflict_data, terminal as terminal_data
+from .views_stock import balance
 
 DEVICE_ROLES = {"owner", "admin"}
 EVENT_TYPES = {"sale.completed", "sale.voided", "stock.adjusted", "cash.opened", "cash.closed",
@@ -292,6 +293,53 @@ def bootstrap(request):
                          "license_hint": terminal.tenant.subscription.license_key.replace("-", "")[-4:]})
 
 
+@csrf_exempt
+@endpoint
+def heartbeat(request):
+    """Keep terminal presence current even when there are no sales to sync."""
+    method(request, "POST")
+    terminal = _bearer_terminal(request)
+    now = timezone.now()
+    data = payload(request)
+    fields(data, ("version", "pending_events", "last_error", "client_time"))
+    if "version" in data:
+        terminal.version = text(data["version"], "Versão", 80)
+    if "pending_events" in data:
+        if type(data["pending_events"]) is not int or not 0 <= data["pending_events"] <= 10**7:
+            raise APIError("Fila pendente inválida")
+        terminal.heartbeat_pending_events = data["pending_events"]
+    if "last_error" in data and data["last_error"] is not None:
+        terminal.heartbeat_error = text(data["last_error"], "Erro de sincronização", 300, optional=True)
+    update_fields = []
+    if "version" in data: update_fields.append("version")
+    if "pending_events" in data: update_fields.append("heartbeat_pending_events")
+    if "last_error" in data: update_fields.append("heartbeat_error")
+    if update_fields:
+        terminal.save(update_fields=update_fields)
+    return JsonResponse({"ok": True, "server_time": int(time.time()),
+                         "terminal_id": str(terminal.id), "last_seen_at": now.isoformat()})
+
+
+def _negative_stock_conflict(terminal, event, sale):
+    if sale.stock_status != "negative":
+        return None
+    details = []
+    for item in sale.items.select_related("product").all():
+        available = balance(terminal.tenant, terminal.shop, item.product)
+        if available < 0:
+            details.append({"product_id": str(item.product_id), "product_name": item.name,
+                            "requested_milli": item.quantity_milli,
+                            "central_balance_milli": available})
+    if not details:
+        return None
+    conflict, _ = SyncConflict.objects.get_or_create(
+        event_id=event["event_id"],
+        defaults={"tenant": terminal.tenant, "shop": terminal.shop, "terminal": terminal,
+                  "event_type": event["type"], "aggregate_id": event["aggregate_id"],
+                  "reason": "negative_stock", "detail":{"items": details}})
+    return conflict
+
+
 def _validate_event(event, terminal):
     if not isinstance(event, dict):
         raise APIError("Evento inválido")
@@ -385,6 +433,7 @@ def sync(request):
     for event in events:
         _validate_event(event, terminal)
     accepted = []
+    conflicts = []
     with transaction.atomic():
         Terminal.objects.select_for_update().get(pk=terminal.pk)
         for event in events:
@@ -399,7 +448,10 @@ def sync(request):
                                          event_type=event["type"], aggregate_id=event["aggregate_id"],
                                          payload=event, payload_hash=event_hash)
             if event["type"] == "sale.completed":
-                persist_sale(terminal, event)
+                sale = persist_sale(terminal, event)
+                conflict = _negative_stock_conflict(terminal, event, sale)
+                if conflict:
+                    conflicts.append(sync_conflict_data(conflict))
             elif event["type"] == "sale.voided":
                 row = Sale.objects.select_for_update().filter(
                     tenant=terminal.tenant, shop=terminal.shop,
@@ -411,4 +463,40 @@ def sync(request):
             elif event["type"] == "stock.adjusted":
                 _persist_adjustment(terminal, event)
             accepted.append(event["event_id"])
-    return JsonResponse({"accepted_event_ids": accepted})
+    return JsonResponse({"accepted_event_ids": accepted, "conflicts": conflicts})
+
+
+@endpoint
+def conflicts(request):
+    method(request, "GET")
+    member = membership_context(request, roles={"owner", "admin", "manager"})
+    rows = (SyncConflict.objects.select_related("terminal", "shop", "resolved_by")
+            .filter(tenant=member.tenant))
+    status = request.GET.get("status")
+    if status:
+        if status not in {choice[0] for choice in SyncConflict.STATUS}:
+            raise APIError("Estado de conflito inválido")
+        rows = rows.filter(status=status)
+    return page(request, rows.order_by("-created_at", "-id"), sync_conflict_data)
+
+
+@endpoint
+def conflict_detail(request, pk):
+    method(request, "PATCH")
+    member = membership_context(request, roles={"owner", "admin", "manager"}, write=True)
+    row = SyncConflict.objects.filter(tenant=member.tenant, pk=uuid_value(pk)).first()
+    if row is None:
+        raise APIError("Conflito não encontrado", 404)
+    data = payload(request)
+    fields(data, ("status", "resolution"), ("status",))
+    status = text(data["status"], "Estado", 20)
+    if status not in {"acknowledged", "resolved", "ignored"}:
+        raise APIError("Estado de resolução inválido")
+    resolution = text(data.get("resolution", ""), "Resolução", 1000, optional=True)
+    row.status, row.resolution = status, resolution
+    row.resolved_by = member.user
+    row.resolved_at = timezone.now()
+    row.save(update_fields=["status", "resolution", "resolved_by", "resolved_at"])
+    audit(member.tenant, member.user, "sync.conflict_resolved", row,
+          {"status": status, "resolution": resolution})
+    return JsonResponse(sync_conflict_data(row))

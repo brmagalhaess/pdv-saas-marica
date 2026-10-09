@@ -174,6 +174,8 @@ class Terminal(models.Model):
     revoked = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_pending_events = models.PositiveIntegerField(default=0)
+    heartbeat_error = models.CharField(max_length=300, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["tenant", "device_id"], condition=~Q(device_id=""), name="terminal_tenant_device_unique")]
@@ -317,6 +319,35 @@ class SyncEvent(models.Model):
     payload = models.JSONField()
     payload_hash = models.CharField(max_length=64)
     received_at = models.DateTimeField(auto_now_add=True)
+
+
+class SyncConflict(models.Model):
+    """Durable reconciliation record for an accepted offline event.
+
+    A terminal is allowed to finish a sale while disconnected. If the central
+    ledger discovers that the sale makes a shop balance negative, the sale is
+    kept for audit and this record sends the decision to the business admin.
+    """
+    STATUS = [(s, s) for s in ("open", "acknowledged", "resolved", "ignored")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="sync_conflicts")
+    shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
+    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT)
+    event_id = models.CharField(max_length=64, unique=True)
+    event_type = models.CharField(max_length=40)
+    aggregate_id = models.CharField(max_length=160)
+    reason = models.CharField(max_length=120, default="negative_stock")
+    status = models.CharField(max_length=20, choices=STATUS, default="open")
+    detail = models.JSONField(default=dict)
+    resolution = models.TextField(blank=True)
+    resolved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                    null=True, blank=True, related_name="resolved_sync_conflicts")
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["tenant", "status", "-created_at"]),
+                   models.Index(fields=["terminal", "status", "-created_at"])]
 
 
 class AuditEvent(models.Model):

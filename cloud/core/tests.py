@@ -19,7 +19,7 @@ from operations.models import BillingBinding
 from operations.services import enqueue
 from .api_common import client_ip, password_policy
 from .models import (AuditEvent, Membership, Plan, Product, RateLimit, Sale, SalePayment, Shop,
-                      Subscription, SyncEvent, Tenant, Terminal)
+                      Subscription, SyncConflict, SyncEvent, Tenant, Terminal)
 
 
 class CloudAPITests(TestCase):
@@ -360,6 +360,52 @@ class CloudAPITests(TestCase):
         self.assertEqual(self.api("POST", "/api/v1/terminal/sync", {"events": [opened]},
                                   tenant=False, **headers).status_code, 200)
         self.assertEqual(SyncEvent.objects.count(), 1)
+
+    def test_offline_negative_stock_creates_resolvable_conflict(self):
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="conflict-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id),
+                    "terminal_id": str(terminal.id)}
+        event = {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": str(uuid.uuid4()),
+                 "identity": identity,
+                 "data": {"request_id": uuid.uuid4().hex, "cash_session_id": uuid.uuid4().hex,
+                          "created_at": int(time.time() * 1000), "customer_id": None,
+                          "customer_name": "", "customer_document": "", "gross_cents": 999,
+                          "discount_cents": 0, "total_cents": 999, "change_cents": 0,
+                          "items": [{"product_id": str(self.product.id), "name": self.product.name,
+                                     "unit": "UN", "quantity_milli": 1000, "unit_price_cents": 999,
+                                     "gross_cents": 999, "discount_cents": 0, "line_total_cents": 999}],
+                          "payments": [{"method": "card_credit", "amount_cents": 999}]}}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+        response = self.api("POST", "/api/v1/terminal/sync", {"events": [event]},
+                            tenant=False, **headers)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(len(response.json()["conflicts"]), 1)
+        conflict = SyncConflict.objects.get(event_id=event["event_id"])
+        self.assertEqual(conflict.status, "open")
+        self.client.force_login(self.owner)
+        listing = self.api("GET", "/api/v1/sync/conflicts?status=open")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(len(listing.json()["results"]), 1)
+        resolved = self.api("PATCH", f"/api/v1/sync/conflicts/{conflict.id}",
+                            {"status": "resolved", "resolution": "Entrada conferida"})
+        self.assertEqual(resolved.status_code, 200)
+        self.assertEqual(resolved.json()["status"], "resolved")
+
+    def test_terminal_heartbeat_updates_presence_without_sales(self):
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="heartbeat-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+        response = self.api("POST", "/api/v1/terminal/heartbeat",
+                            {"version": "2.0-test", "pending_events": 0, "last_error": "", "client_time": int(time.time())},
+                            tenant=False, **headers)
+        self.assertEqual(response.status_code, 200, response.content)
+        saved = Terminal.objects.get(pk=terminal.pk)
+        self.assertIsNotNone(saved.last_seen_at)
+        self.assertEqual(saved.heartbeat_pending_events, 0)
+        self.assertEqual(saved.heartbeat_error, "")
 
     def test_platform_staff_scope(self):
         User = get_user_model()

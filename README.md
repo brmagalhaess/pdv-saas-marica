@@ -48,7 +48,7 @@ Se a prévia antiga ocupar a porta 8000, pare apenas `pdv-saas-phase1-pdv-previe
 - Terminal: código/nome, quantidade fracionária, desconto autorizado, pagamento dividido informado pelo operador, troco, abrir/fechar caixa, sangria/suprimento, suspensão, histórico, cancelamento e reimpressão.
 - Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque.
 - **Modo offline:** o painel web em `8000` depende da nuvem; o caixa deve ser aberto em `http://127.0.0.1:8010/`. Depois do pareamento e de uma carga inicial de catálogo, login, produtos, caixa, vendas e recibo usam o SQLite local. A fila é enviada à nuvem quando a conexão volta. O painel mostra um atalho para o terminal local quando a nuvem não responde.
-- Comprovante não fiscal ESC/POS 58/80 mm. No painel da empresa, Produtos → Imprimir etiquetas oferece prévia e quantidade em páginas de 50×30 mm para o driver de uma impressora de etiquetas com sensor de intervalo. O terminal mantém uma fila ZPL/EPL dedicada. O antigo envio de etiquetas ESC/POS à fila de recibos foi desabilitado: a TM-T20 usa bobinas de recibo de 58/80 mm e não alinha etiquetas pré-cortadas de 50×30 mm. Hardware físico exige validação.
+- Comprovante não fiscal ESC/POS 58/80 mm. No painel da empresa, Produtos → Imprimir etiquetas oferece prévia e quantidade em páginas de 50×30 mm para o driver de uma impressora de etiquetas com sensor de intervalo. O terminal imprime somente recibos de venda; a fila de etiquetas fica no painel da empresa. O antigo envio de etiquetas ESC/POS à fila de recibos foi desabilitado: a TM-T20 usa bobinas de recibo de 58/80 mm e não alinha etiquetas pré-cortadas de 50×30 mm. Hardware físico exige validação.
 - Conectores Focus NFe e Asaas com credenciais criptografadas, fila e confirmação pelo provedor. Não há credenciais reais configuradas.
 - Web responsiva e PWA instalável no Android/iPhone. A PWA é gestão web; o caixa offline exige o serviço local. O app nativo iOS de monitoramento do proprietário está em [ios/PDV2OwnerMonitor](ios/PDV2OwnerMonitor), com projeto Xcode compilável e painel somente leitura.
 
@@ -92,6 +92,7 @@ Use `compose.production.yaml` para a nuvem Dokploy e `compose.terminal.yaml` par
 ## Documentação
 
 - [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md)
+- [Checklist de teste e promoção](docs/RELEASE-CHECKLIST.md)
 - [Estado e critérios de lançamento](docs/STATUS-V2.md)
 - [Dokploy](docs/DEPLOY-DOKPLOY.md)
 - [API](docs/API-V2.md)

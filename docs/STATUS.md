@@ -13,7 +13,7 @@ Este repositório é um **incremento de desenvolvimento**. A landing apresenta o
 - Backup consistente do banco de desenvolvimento.
 - Testes básicos de isolamento entre empresas.
 
-O código do catálogo e do caixa local é um protótipo. Vendas sincronizadas geram uma baixa única no saldo central e mostram divergência negativa, mas ainda não há fila operacional de conciliação, envio automático do catálogo ao caixa nem configuração do terminal pela interface. Emissão fiscal, impressoras reais, cobrança, segurança e operação de produção seguem pendentes.
+O código do catálogo e do caixa local ainda exige piloto supervisionado. Vendas sincronizadas geram uma baixa única no saldo central e divergências negativas entram em uma fila operacional de conciliação no painel da empresa; o terminal também envia heartbeat e mantém a fila local. Emissão fiscal, impressoras reais, cobrança, segurança e operação de produção seguem pendentes.
 
 ## Portões para uma loja piloto
 

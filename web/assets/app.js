@@ -16,7 +16,7 @@ const platformSuperuser = () => !!state.user?.is_superuser;
 const tenantOption = platform ? { tenant: false } : {};
 const roleNames = { owner: "Proprietário", admin: "Administrador", manager: "Gerente", cashier: "Operador de caixa", inventory: "Estoque", finance: "Financeiro", viewer: "Consulta" };
 const cancellationAccess = role => ["owner","admin","manager"].includes(role) ? "Autorizado" : role==="cashier" ? "Com PIN de gerente" : "Sem permissão";
-const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
+const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
 function editableMoney(cents) {
   const value = Number(cents);
   return Number.isFinite(value) ? (value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
@@ -45,7 +45,8 @@ const tenantNav = [
   { group: "Administração", id: "terminals", label: "Terminais", icon: "▥", roles: ["owner","admin"] },
   { group: "Administração", id: "subscription", label: "Assinatura", icon: "◉", roles: ["owner","admin"] },
   { group: "Administração", id: "integrations", label: "Integrações", icon: "◇", roles: ["owner","admin"] },
-  { group: "Administração", id: "audit", label: "Auditoria", icon: "≡", roles: ["owner","admin"] }
+  { group: "Administração", id: "audit", label: "Auditoria", icon: "≡", roles: ["owner","admin"] },
+  { group: "Administração", id: "sync_conflicts", label: "Conflitos offline", icon: "⚠", roles: ["owner","admin","manager"] }
 ];
 const platformNav = [
   { group: "Plataforma", id: "overview", label: "Visão geral", icon: "◫", roles:["platform_support","platform_billing","platform_ops"] },
@@ -174,8 +175,8 @@ function productStatus(row) {
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
   const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
-    : ["trial","past_due","pending","open","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
-    : ["active","settled","completed","succeeded","paid","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
+    : ["trial","past_due","pending","open","acknowledged","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
+    : ["active","settled","completed","succeeded","paid","resolved","ignored","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
   return el("span", "badge " + tone, statusNames[normalized] || value || "—");
 }
 function table(columns, rows, actionsFor) {
@@ -1637,7 +1638,7 @@ async function terminalsPage() {
     box.append(pagedContent(response,"/terminals",[
       {label:"Terminal",render:row=>row.name},{label:"Loja",render:row=>shopName(row.shop_id)},
       {label:"Dispositivo",render:row=>row.device_id || "Aguardando pareamento"},{label:"Versão",render:row=>row.version},
-      {label:"Último contato",render:row=>dateTime(row.last_seen_at)},{label:"Estado",render:row=>statusBadge(row.revoked ? "Revogado" : row.paired ? "Pareado" : "Aguardando")}
+      {label:"Fila",render:row=>row.heartbeat_pending_events??0},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},{label:"Estado",render:row=>statusBadge(row.revoked ? "Revogado" : row.paired ? "Pareado" : "Aguardando")}
     ], row => row.revoked ? [] : [
       ...(canActivate?[{label:"Novo código",onClick:async()=>{
         try { const updated=await api.patch("/terminals/"+row.id,{reissue_pairing:true}); pairingDialog(updated); }
@@ -1770,6 +1771,49 @@ async function auditPage() {
       {label:"Identificador",render:row=>row.subject_id}
     ], null, empty("Sem eventos", "Alterações auditadas aparecerão aqui.")));
   } catch (error) { if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar",errorText(error),"!")); handleError(error); } }
+}
+
+async function syncConflictsPage() {
+  const token = ++state.renderId;
+  const view = page("Conflitos offline", "Reveja vendas sincronizadas com divergência de estoque e registre a decisão da equipe.", "Administração");
+  view.actions.append(button("Atualizar", () => renderRoute(), "secondary"));
+  const box = surface("Pendências", "Uma venda não é apagada: o terminal continua vendendo dentro da política local e esta fila orienta o ajuste de estoque.");
+  view.outer.append(info("Conflitos são gerados quando dois terminais trabalham offline e a confirmação central deixa o estoque negativo. Resolva depois de conferir a contagem física.", true), box);
+  box.append(loadingSurface());
+  try {
+    const response = await api.get("/sync/conflicts?status=open");
+    if (token !== state.renderId) return;
+    box.lastChild.remove();
+    const rows = records(response);
+    box.append(pagedContent(response, "/sync/conflicts?status=open", [
+      { label: "Data", render: row => dateTime(row.created_at) },
+      { label: "Terminal", render: row => row.terminal_name || "—" },
+      { label: "Motivo", render: row => row.reason === "negative_stock" ? "Estoque negativo" : row.reason },
+      { label: "Itens", render: row => (row.detail?.items || []).map(item => `${item.product_name} (${Number(item.central_balance_milli || 0) / 1000})`).join(" · ") || "Ver detalhes" },
+      { label: "Estado", render: row => statusBadge(row.status) }
+    ], row => [{ label: "Resolver", onClick: () => resolveSyncConflict(row) }],
+      empty("Nenhum conflito pendente", "As vendas offline estão conciliadas.")));
+  } catch (error) {
+    if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); }
+  }
+}
+
+async function resolveSyncConflict(row) {
+  const content = el("div");
+  const items = (row.detail?.items || []).map(item => `${item.product_name}: saldo central ${Number(item.central_balance_milli || 0) / 1000}`).join("\n");
+  content.append(info(items || "Confira a venda e o estoque físico antes de resolver.", true));
+  const field = el("div", "field"), label = el("label", "", "Observação da resolução");
+  const textarea = el("textarea"); textarea.rows = 4; textarea.placeholder = "Ex.: feita entrada de 2 unidades após conferência física"; label.htmlFor = "conflict-resolution"; textarea.id = "conflict-resolution"; field.append(label, textarea);
+  const message = formMessage(content); message.hidden = true;
+  const actions = el("div", "form-actions");
+  const cancel = button("Voltar", closeDialog, "ghost");
+  const accept = button("Marcar como resolvido", async () => {
+    accept.disabled = true;
+    try { await api.patch("/sync/conflicts/" + encodeURIComponent(row.id), { status: "resolved", resolution: textarea.value.trim() }); closeDialog(); toast("Conflito resolvido e auditado."); renderRoute(); }
+    catch (error) { handleError(error, message); accept.disabled = false; }
+  });
+  actions.append(cancel, accept); content.append(field, message, actions);
+  openDialog("Resolver conflito offline", "A decisão ficará registrada no histórico da empresa.", content);
 }
 
 const platformApi = path => api.get("/platform" + path, { tenant:false });
@@ -1989,7 +2033,7 @@ async function platformDevices() {
     box.append(pagedContent(response,"/platform/terminals",[
       {label:"Empresa",render:row=>row.tenant_name},{label:"Loja",render:row=>row.shop_name},
       {label:"Terminal",render:row=>row.name},{label:"Dispositivo",render:row=>row.device_id},
-      {label:"Versão",render:row=>row.version},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},
+      {label:"Versão",render:row=>row.version},{label:"Fila",render:row=>row.heartbeat_pending_events??0},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},
       {label:"Estado",render:row=>statusBadge(row.revoked?"Revogado":"Ativo")}
     ],platformCan("platform_ops")?row=>row.revoked?[]:[{label:"Revogar",danger:true,onClick:()=>platformRevokeDevice(row)}]:null,
       empty("Nenhum terminal","Terminais pareados ou cadastrados aparecerão aqui."),{tenant:false}));
@@ -2413,7 +2457,7 @@ const tenantRoutes = {
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,
-  terminals:terminalsPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage
+  terminals:terminalsPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage
 };
 const platformRoutes = {
   overview:platformOverview,tenants:platformTenants,plans:platformPlans,

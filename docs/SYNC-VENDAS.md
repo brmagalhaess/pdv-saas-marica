@@ -2,7 +2,9 @@
 
 ## Contrato atual
 
-O caixa envia lotes de 1 a 50 eventos para `POST /api/sync/events` com o token do terminal em `Authorization: Bearer`. A credencial fixa empresa e loja; a identidade de cada evento deve coincidir. O servidor grava o lote em uma transação SQLite e só devolve `accepted_event_ids` após o commit. Se qualquer evento for inválido ou conflitante, rejeita o lote inteiro, sem confirmar nem aplicar os anteriores.
+O caixa envia lotes de 1 a 50 eventos para `POST /api/v1/terminal/sync` com o token do terminal em `Authorization: Bearer`. A credencial fixa empresa e loja; a identidade de cada evento deve coincidir. O servidor grava o lote em uma transação PostgreSQL e só devolve `accepted_event_ids` após o commit. Se qualquer evento for inválido ou conflitante, rejeita o lote inteiro, sem confirmar nem aplicar os anteriores.
+
+O worker também envia `POST /api/v1/terminal/heartbeat` a cada 30 segundos, mesmo sem vendas. O heartbeat atualiza versão, fila pendente e `last_seen_at`, alimentando o monitoramento do proprietário.
 
 Em `sale.completed`, `aggregate_id` é o ID imutável da venda. O servidor valida produto cadastrado na mesma empresa, itens, preços registrados no momento da venda, soma dos itens, pagamentos e troco. Os preços atuais do catálogo não substituem o retrato da venda offline. A venda fica em `sales`, com itens em `sale_items` e pagamentos em `sale_payments`.
 
@@ -16,7 +18,7 @@ O saldo central mostrado por `GET /api/stock?shop_id=...` soma entradas/ajustes 
 
 O estoque inicial passado a `local_pdv.upsert_product` fica apenas no caixa e **não emite evento**. Na implantação, use um único fluxo de carga: cadastre o mesmo produto por ID no SaaS, carregue o saldo inicial no caixa por `upsert_product` e lance **uma única entrada correspondente** no SaaS por `/api/stock/movements`. Não chame também `local_pdv.adjust_stock` para esse saldo inicial: ele emite `stock.adjusted`, que produziria uma segunda entrada central. Para recebimentos posteriores feitos no caixa, use `adjust_stock` e deixe a sincronização fazer a entrada central; não repita esses recebimentos manualmente no SaaS.
 
-Sem saldo inicial central, a venda é recebida, mas pode gerar saldo negativo. O servidor preserva a venda concluída e expõe `stock_status=negative` na consulta de vendas, além do saldo negativo em `/api/stock`, para conferência; não altera ou descarta a venda para forçar o saldo a zero. Ajustes posteriores devem registrar motivo e responsável. Essa visibilidade é uma indicação técnica de reconciliação, ainda sem fila de tarefas ou alerta operacional.
+Sem saldo inicial central, a venda é recebida, mas pode gerar saldo negativo. O servidor preserva a venda concluída e expõe `stock_status=negative` na consulta de vendas, além do saldo negativo em `/api/v1/stock`, para conferência; não altera ou descarta a venda para forçar o saldo a zero. Também cria um registro em `sync_conflicts`, com os produtos e saldo central observado. O painel da empresa lista conflitos abertos em `GET /api/v1/sync/conflicts`; gerente, administrador ou proprietário resolvem com `PATCH /api/v1/sync/conflicts/<id>` informando `status=resolved|ignored|acknowledged` e uma observação. A resolução é auditada e não reescreve o histórico da venda.
 
 Produto inexistente na empresa é erro: o lote não recebe ACK. Cadastre/corrija o produto com o mesmo ID e reenvie os eventos pendentes. Um produto arquivado continua reconhecido para receber vendas offline feitas antes do arquivamento. Isso não equivale a autorização fiscal; NFC-e, contingência e transmissão precisam de fluxo próprio.
 
@@ -28,4 +30,4 @@ Produto inexistente na empresa é erro: o lote não recebe ACK. Cadastre/corrija
 
 ## Limites conhecidos
 
-Eventos `sale.completed` antigos que já tenham sido confirmados antes da criação das tabelas de vendas ficam apenas em `sync_events`; um reenvio os materializa, mas os que não forem reenviados requerem migração específica antes de produção. O servidor ainda não sincroniza catálogo e saldo central para o caixa, não resolve conflitos entre vários terminais, não emite NFC-e e não oferece fila de reconciliação para o operador. Essas etapas impedem uso comercial sem supervisão.
+Eventos `sale.completed` antigos que já tenham sido confirmados antes da criação das tabelas de vendas ficam apenas em `sync_events`; um reenvio os materializa, mas os que não forem reenviados requerem migração específica antes de produção. O catálogo continua sendo baixado por bootstrap periódico, sem cursor incremental; para lojas muito grandes, a próxima evolução é adicionar versões/cursors. NFC-e, contingência fiscal, TEF e Pix dinâmico continuam fora deste fluxo e exigem homologação própria.

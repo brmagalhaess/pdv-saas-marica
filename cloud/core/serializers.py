@@ -42,7 +42,19 @@ def terminal(row):
     return {"id": str(row.id), "shop_id": str(row.shop_id), "name": row.name,
             "device_id": row.device_id, "version": row.version,
             "revoked": row.revoked, "paired": bool(row.token_hash),
-            "last_seen_at": iso(row.last_seen_at)}
+            "last_seen_at": iso(row.last_seen_at),
+            "heartbeat_pending_events": row.heartbeat_pending_events,
+            "heartbeat_error": row.heartbeat_error}
+
+
+def sync_conflict(row):
+    return {"id": str(row.id), "event_id": row.event_id, "event_type": row.event_type,
+            "aggregate_id": row.aggregate_id, "reason": row.reason, "status": row.status,
+            "detail": row.detail, "resolution": row.resolution,
+            "terminal_id": str(row.terminal_id), "terminal_name": row.terminal.name,
+            "shop_id": str(row.shop_id), "shop_name": row.shop.name,
+            "created_at": iso(row.created_at), "resolved_at": iso(row.resolved_at),
+            "resolved_by": row.resolved_by_id}
 
 
 def movement(row):
