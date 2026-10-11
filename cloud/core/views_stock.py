@@ -47,8 +47,9 @@ def stock(request):
     quantities = {row["product_id"]: row["value"] for row in values}
     return JsonResponse({"results": [{"product_id": str(p.id), "sku": p.sku, "name": p.name,
                                       "unit": p.unit, "quantity_milli": quantities.get(p.id, 0),
+                                      "stock_controlled": p.stock_controlled,
                                       "stock_minimum_milli": p.stock_minimum_milli,
-                                      "below_minimum": quantities.get(p.id, 0) < p.stock_minimum_milli}
+                                      "below_minimum": p.stock_controlled and quantities.get(p.id, 0) < p.stock_minimum_milli}
                                      for p in shown],
                          "next_cursor": str(offset + limit) if len(rows) > limit else None})
 
@@ -72,6 +73,8 @@ def movements(request):
            ("shop_id", "product_id", "delta_milli", "reason", "idempotency_key"))
     shop = scoped(Shop, tenant, data["shop_id"])
     product = scoped(Product, tenant, data["product_id"])
+    if not product.stock_controlled:
+        raise APIError("Produto de produção própria não usa controle de estoque")
     delta = product_quantity(product, data["delta_milli"], allow_negative=True)
     reason = text(data["reason"], "Motivo", 240)
     key = text(data["idempotency_key"], "Chave de repetição", 160)
@@ -139,6 +142,8 @@ def receipts(request):
         product = scoped(Product, tenant, item["product_id"])
         if product.id in seen or not product.active:
             raise APIError("Produto repetido ou inativo")
+        if not product.stock_controlled:
+            raise APIError("Produto de produção própria não usa entrada de estoque")
         seen.add(product.id)
         prepared.append((product, product_quantity(product, item["quantity_milli"]),
                          money(item["unit_cost_cents"], "Custo da entrada")))

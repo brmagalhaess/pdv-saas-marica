@@ -82,7 +82,7 @@ def form_values(kind, data, tenant, creating):
         allowed, required = {"name", "active"}, {"name"}
     elif kind == "products":
         allowed = {"name", "category_id", "variant", "unit", "scale_code", "ncm",
-                   "price_cents", "stock_minimum_milli", "image_url", "tax_fields", "active"}
+                   "price_cents", "stock_minimum_milli", "stock_controlled", "image_url", "tax_fields", "active"}
         required = {"name", "price_cents"}
     else:
         allowed, required = {"name", "document", "email", "phone", "active"}, {"name"}
@@ -94,6 +94,10 @@ def form_values(kind, data, tenant, creating):
         if key == "active":
             if type(value) is not bool:
                 raise APIError("Estado inválido")
+            result[key] = value
+        elif key == "stock_controlled":
+            if type(value) is not bool:
+                raise APIError("Configuração de estoque inválida")
             result[key] = value
         elif key == "address":
             if not isinstance(value, dict) or len(str(value)) > 2000:

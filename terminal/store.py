@@ -95,6 +95,7 @@ class Store:
                     price_cents INTEGER NOT NULL CHECK(price_cents>=0),
                     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents>=0),
                     image_url TEXT NOT NULL DEFAULT '',
+                    stock_controlled INTEGER NOT NULL DEFAULT 1 CHECK(stock_controlled IN (0,1)),
                     stock_milli INTEGER NOT NULL CHECK(stock_milli>=0),
                     active INTEGER NOT NULL CHECK(active IN (0,1)),updated_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS operators(
@@ -152,6 +153,8 @@ class Store:
                 conn.execute("ALTER TABLE products ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
             if "ncm" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN ncm TEXT")
+            if "stock_controlled" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN stock_controlled INTEGER NOT NULL DEFAULT 1")
             sales_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sales)")}
             if "customer_document" not in sales_columns:
                 conn.execute("ALTER TABLE sales ADD COLUMN customer_document TEXT")
@@ -563,21 +566,25 @@ class Store:
                 image_url = product.get("image_url") or ""
                 if not isinstance(image_url, str) or len(image_url) > 500:
                     raise TerminalError("Imagem do produto inválida")
+                stock_controlled = product.get("stock_controlled", True)
+                if type(stock_controlled) is not bool:
+                    raise TerminalError("Configuração de estoque inválida")
                 conn.execute("""INSERT INTO products
-                    (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_milli,active,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_controlled,stock_milli,active,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
                     ncm=excluded.ncm,
                     scale_code=excluded.scale_code,
                     name=excluded.name,unit=excluded.unit,category=excluded.category,
                     price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
-                    image_url=excluded.image_url,stock_milli=excluded.stock_milli,
+                    image_url=excluded.image_url,stock_controlled=excluded.stock_controlled,stock_milli=excluded.stock_milli,
                     active=excluded.active,updated_at=excluded.updated_at""",
                     (product_id, product.get("sku"), product.get("barcode") or None,
                      product.get("ncm") or None, product.get("scale_code") or None,
                      _str(product.get("name"), "Nome do produto"), unit, category or "Geral",
                      price, _positive_int(product.get("cost_cents", 0), "Custo", zero=True),
                      image_url,
+                     int(stock_controlled),
                      stock,
                      int(bool(product.get("active", True))), timestamp))
             operator_ids = []
@@ -954,11 +961,12 @@ class Store:
                     raise TerminalError("Produto não encontrado", 404)
                 if row["unit"] == "UN" and qty % 1000:
                     raise TerminalError("Produto UN exige quantidade inteira")
-                if row["stock_milli"] < qty:
+                if row["stock_controlled"] and row["stock_milli"] < qty:
                     raise TerminalError(f"Estoque insuficiente: {row['name']}", 409)
                 gross = _line_gross(row["price_cents"], qty)
                 lines.append({"product_id": product_id, "name": row["name"], "sku": row["sku"] or "",
                               "ncm": row["ncm"] or "", "unit": row["unit"],
+                              "stock_controlled": bool(row["stock_controlled"]),
                               "quantity_milli": qty, "unit_price_cents": row["price_cents"],
                               "gross_cents": gross})
             gross_total = sum(line["gross_cents"] for line in lines)
@@ -996,8 +1004,9 @@ class Store:
                         "status": "completed"}
             snapshot = self._receipt_context(conn, snapshot)
             for line in lines:
-                conn.execute("UPDATE products SET stock_milli=stock_milli-? WHERE id=?",
-                             (line["quantity_milli"], line["product_id"]))
+                if line.get("stock_controlled", True):
+                    conn.execute("UPDATE products SET stock_milli=stock_milli-? WHERE id=?",
+                                 (line["quantity_milli"], line["product_id"]))
             conn.execute("""INSERT INTO sales
                 (id,request_id,session_id,operator_id,customer_name,customer_id,gross_cents,
                  discount_cents,total_cents,change_cents,snapshot,status,created_at,voided_at,void_reason,customer_document)
@@ -1045,8 +1054,9 @@ class Store:
                 raise TerminalError("Caixa dessa venda já foi fechado; registre devolução pelo processo administrativo", 409)
             snapshot = json.loads(row["snapshot"])
             for item in snapshot["items"]:
-                conn.execute("UPDATE products SET stock_milli=stock_milli+? WHERE id=?",
-                             (item["quantity_milli"], item["product_id"]))
+                if item.get("stock_controlled", True):
+                    conn.execute("UPDATE products SET stock_milli=stock_milli+? WHERE id=?",
+                                 (item["quantity_milli"], item["product_id"]))
             timestamp = _now_ms()
             conn.execute("UPDATE sales SET status='voided',voided_at=?,void_reason=? WHERE id=?",
                          (timestamp, reason, sale_id))
@@ -1065,9 +1075,11 @@ class Store:
             raise TerminalError("Quantidade inválida")
         reason = _str(reason, "Motivo", 240)
         with self.transaction() as conn:
-            row = conn.execute("SELECT stock_milli,unit FROM products WHERE id=?", (product_id,)).fetchone()
+            row = conn.execute("SELECT stock_milli,unit,stock_controlled FROM products WHERE id=?", (product_id,)).fetchone()
             if not row:
                 raise TerminalError("Produto não encontrado", 404)
+            if not row["stock_controlled"]:
+                raise TerminalError("Produto de produção própria não usa controle de estoque")
             if row["unit"] == "UN" and delta_milli % 1000:
                 raise TerminalError("Produto UN exige ajuste em unidades inteiras")
             if row["stock_milli"] + delta_milli < 0:

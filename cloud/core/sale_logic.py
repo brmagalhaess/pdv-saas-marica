@@ -107,9 +107,12 @@ def persist_sale(terminal, event):
     if Sale.objects.filter(tenant=tenant, terminal=terminal, request_id=validated["request_id"]).exists():
         raise APIError("Identificador de venda já usado", 409)
     quantities = defaultdict(int)
+    products = {}
     for product, _, qty, *_ in validated["items"]:
         quantities[product.id] += qty
-    stock_status = "negative" if any(balance(tenant, shop, Product.objects.get(pk=pid)) - qty < 0
+        products[product.id] = product
+    stock_status = "negative" if any(products[pid].stock_controlled and
+                                     balance(tenant, shop, products[pid]) - qty < 0
                                      for pid, qty in quantities.items()) else "ok"
     sale = Sale.objects.create(id=sale_id, tenant=tenant, shop=shop, terminal=terminal,
                                customer=validated["customer"], customer_name_snapshot=validated["customer_name"],
@@ -125,7 +128,10 @@ def persist_sale(terminal, event):
     for number, (method, amount) in enumerate(validated["payments"]):
         SalePayment.objects.create(sale=sale, line_number=number, method=method, amount_cents=amount)
     for product_id, qty in quantities.items():
-        StockMovement.objects.create(tenant=tenant, shop=shop, product_id=product_id,
+        product = products[product_id]
+        if not product.stock_controlled:
+            continue
+        StockMovement.objects.create(tenant=tenant, shop=shop, product=product,
                                      delta_milli=-qty, source="sale", reason="Venda",
                                      reference=str(sale.id), terminal=terminal, sale=sale,
                                      idempotency_key=f"sale:{sale.id}:{product_id}")
@@ -148,7 +154,10 @@ def reverse_sale(sale, reason, status, actor=None, terminal=None, when=None):
     for item in sale.items.all():
         quantities[item.product_id] += item.quantity_milli
     for product_id, qty in quantities.items():
-        StockMovement.objects.create(tenant=sale.tenant, shop=sale.shop, product_id=product_id,
+        product = Product.objects.get(pk=product_id)
+        if not product.stock_controlled:
+            continue
+        StockMovement.objects.create(tenant=sale.tenant, shop=sale.shop, product=product,
                                      delta_milli=qty, source="void", reason=reason,
                                      reference=str(sale.id), actor=actor, terminal=terminal or sale.terminal,
                                      sale=sale, idempotency_key=f"void:{sale.id}:{product_id}")

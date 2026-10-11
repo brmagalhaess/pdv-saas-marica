@@ -301,6 +301,21 @@ class TerminalTests(unittest.TestCase):
         close = reopened.close_cash(self.cashier_id, 10400, "654321")
         self.assertEqual(close["expected_cents"], 10400)
 
+    def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
+        production_id = str(uuid.uuid4())
+        production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",
+                       "name": "Pão francês", "unit": "KG", "category": "Padaria",
+                       "price_cents": 1290, "quantity_milli": 0, "stock_controlled": False,
+                       "active": True}
+        self.store.apply_bootstrap(dict(self.bootstrap, products=self.products + [production]))
+        self.store.open_cash(self.cashier_id, 0)
+        sale = self.store.sale(self.cashier, {"request_id": "production-sale",
+            "items": [{"product_id": production_id, "quantity_milli": 350}],
+            "payments": [{"method": "cash", "amount_cents": 452}]})
+        self.assertEqual(sale["total_cents"], 452)
+        self.assertFalse(sale["items"][0]["stock_controlled"])
+        self.assertEqual(next(row for row in self.store.products() if row["id"] == production_id)["stock_milli"], 0)
+
     def test_cash_close_requires_supervisor_pin_before_mutating_session(self):
         self.store.open_cash(self.cashier_id, 10000)
         with self.assertRaisesRegex(TerminalError, "PIN"):

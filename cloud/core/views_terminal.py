@@ -283,6 +283,7 @@ def bootstrap(request):
     products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode, "ncm": p.ncm, "scale_code": p.scale_code,
                  "name": p.name, "unit": p.unit, "price_cents": p.price_cents,
                  "cost_cents": p.cost_cents, "image_url": p.image_url, "active": p.active,
+                 "stock_controlled": p.stock_controlled,
                  "quantity_milli": by_product.get(p.id, 0),
                  "category": p.category.name if p.category else None}
             for p in shown]
@@ -404,6 +405,8 @@ def _validate_event(event, terminal):
 def _persist_adjustment(terminal, event):
     data = event["data"]
     product = scoped(Product, terminal.tenant, data["product_id"])
+    if not product.stock_controlled:
+        raise APIError("Produto de produção própria não usa controle de estoque")
     key = f"adjustment:{terminal.id}:{event['aggregate_id']}"
     previous = StockMovement.objects.filter(tenant=terminal.tenant, source="terminal_adjustment",
                                             idempotency_key=key).first()

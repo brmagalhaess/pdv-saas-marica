@@ -94,7 +94,8 @@ def dashboard(request):
         amounts = (StockMovement.objects.filter(tenant=tenant, shop=current_shop)
                    .values("product_id").annotate(q=Sum("delta_milli")))
         by_product = {row["product_id"]: row["q"] for row in amounts}
-        low_stock += sum(by_product.get(p.id, 0) < p.stock_minimum_milli for p in products if p.stock_minimum_milli > 0)
+        low_stock += sum(by_product.get(p.id, 0) < p.stock_minimum_milli
+                         for p in products if p.stock_controlled and p.stock_minimum_milli > 0)
     recent = list(sales.order_by("-received_at")[:10])
     return JsonResponse({"sales_count": count, "revenue_cents": revenue,
                          "average_ticket_cents": revenue // count if count else 0,

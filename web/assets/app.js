@@ -171,7 +171,7 @@ function productFinancials(row) {
 function productStatus(row) {
   const wrap = el("div", "product-status-stack");
   wrap.append(statusBadge(row.active ? "Ativo" : "Inativo"));
-  wrap.append(el("small", "", row.stock_minimum_milli ? `Estoque mínimo: ${quantity(row.stock_minimum_milli, row.unit)}` : "Estoque mínimo não definido"));
+  wrap.append(el("small", "", row.stock_controlled === false ? "Produção própria · sem controle de saldo" : row.stock_minimum_milli ? `Estoque mínimo: ${quantity(row.stock_minimum_milli, row.unit)}` : "Estoque mínimo não definido"));
   return wrap;
 }
 function statusBadge(value) {
@@ -493,6 +493,7 @@ const resourceSpecs = {
       { key: "unit", label: "Unidade", type: "select", required: true, choices: [["UN","Unidade"],["KG","Quilo"],["L","Litro"]], default: "UN" },
       { key: "price_cents", label: "Preço de venda (R$)", type: "money", required: true, min: 0 },
       { key: "stock_minimum_milli", label: "Estoque mínimo (alerta)", type: "milli", min: 0, default: 0, help: "Apenas sinaliza reposição. Para adicionar unidades, use Operação > Estoque > Registrar entrada ou Ajustar estoque." },
+      { key: "stock_controlled", label: "Controlar estoque", type: "checkbox", default: true, help: "Desative para produtos de produção própria, como pão, salgados e refeições vendidos por KG. O terminal permitirá vender mesmo sem saldo de entrada." },
       { key: "image_url", label: "Imagem do produto (URL opcional)", placeholder: "https://... ou /assets/product-images/...", max: 500, full: true, help: "Se ficar vazio, o PDV escolhe automaticamente uma imagem da categoria." },
       { key: "active", label: "Produto ativo", type: "checkbox", default: true }
     ],
@@ -774,6 +775,7 @@ async function resourcePage(key) {
   }));
   if (key === "products") {
     view.outer.append(info("O estoque mínimo é apenas um alerta. O saldo disponível do terminal é lançado por loja em Operação > Estoque, usando Registrar entrada, Importar compra CSV ou Ajustar estoque."));
+    view.outer.append(info("Para itens fabricados pela própria empresa, como pão e refeições vendidos por KG, desative Controlar estoque no cadastro. O terminal aceitará a venda pelo preço do quilo sem exigir entrada ou saldo, mantendo esses itens identificados como produção própria."));
     view.outer.append(info("A emissão fiscal depende de configuração tributária e homologação próprias. Este catálogo ainda não torna o PDV apto a emitir NFC-e.", true));
   }
   const box = el("section", "surface");
@@ -1378,8 +1380,8 @@ async function stockPage() {
       const columns=[
             { label: "Produto", render: row => row.name },
             { label: "SKU", render: row => row.sku },
-            { label: "Saldo", render: row => quantity(row.quantity_milli, row.unit) },
-            { label: "Mínimo", render: row => quantity(row.stock_minimum_milli, row.unit) },
+            { label: "Saldo", render: row => row.stock_controlled === false ? "Produção própria" : quantity(row.quantity_milli, row.unit) },
+            { label: "Mínimo", render: row => row.stock_controlled === false ? "—" : quantity(row.stock_minimum_milli, row.unit) },
             { label: "Atenção", render: row => row.below_minimum ? statusBadge("Baixo") : statusBadge("Regular") }
           ];
       const balanceContent=el("div");

@@ -20,7 +20,7 @@ from operations.models import BillingBinding
 from operations.services import enqueue
 from .api_common import client_ip, password_policy
 from .models import (AuditEvent, Membership, Plan, Product, RateLimit, Sale, SalePayment, Shop,
-                      PlatformMFA, Subscription, SyncConflict, SyncEvent, Tenant, Terminal)
+                      PlatformMFA, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal)
 
 
 class CloudAPITests(TestCase):
@@ -165,6 +165,20 @@ class CloudAPITests(TestCase):
                            {"image_url": "https://cdn.example.test/leite.png"})
         self.assertEqual(updated.status_code, 200, updated.content)
         self.assertEqual(updated.json()["image_url"], "https://cdn.example.test/leite.png")
+
+    def test_product_can_be_marked_as_company_production_without_stock_control(self):
+        self.client.force_login(self.owner)
+        created = self.api("POST", "/api/v1/products",
+                           {"name": "Pão francês", "price_cents": 1290,
+                            "unit": "KG", "stock_controlled": False})
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertFalse(created.json()["stock_controlled"])
+        product_id = created.json()["id"]
+        listed = self.api("GET", "/api/v1/products").json()["results"]
+        self.assertFalse(next(row for row in listed if row["id"] == product_id)["stock_controlled"])
+        updated = self.api("PATCH", f"/api/v1/products/{product_id}", {"stock_controlled": True})
+        self.assertEqual(updated.status_code, 200, updated.content)
+        self.assertTrue(updated.json()["stock_controlled"])
 
     def test_last_owner_and_plan_features(self):
         self.client.force_login(self.owner)
@@ -440,6 +454,32 @@ class CloudAPITests(TestCase):
                             {"status": "resolved", "resolution": "Entrada conferida"})
         self.assertEqual(resolved.status_code, 200)
         self.assertEqual(resolved.json()["status"], "resolved")
+
+    def test_company_production_sale_does_not_create_stock_movement(self):
+        production = Product.objects.create(tenant=self.tenant, sku="PAO-KG", name="Pão francês",
+                                             unit="KG", price_cents=1290, stock_controlled=False)
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="production-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id),
+                    "terminal_id": str(terminal.id)}
+        sale_id = uuid.uuid4()
+        event = {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": str(sale_id),
+                 "identity": identity,
+                 "data": {"request_id": uuid.uuid4().hex, "cash_session_id": uuid.uuid4().hex,
+                          "created_at": int(time.time() * 1000), "customer_id": None,
+                          "customer_name": "", "customer_document": "", "gross_cents": 452,
+                          "discount_cents": 0, "total_cents": 452, "change_cents": 0,
+                          "items": [{"product_id": str(production.id), "name": production.name,
+                                     "unit": "KG", "quantity_milli": 350, "unit_price_cents": 1290,
+                                     "gross_cents": 452, "discount_cents": 0, "line_total_cents": 452}],
+                          "payments": [{"method": "cash", "amount_cents": 452}]}}
+        response = self.api("POST", "/api/v1/terminal/sync", {"events": [event]}, tenant=False,
+                            HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(response.status_code, 200, response.content)
+        sale = Sale.objects.get(pk=sale_id)
+        self.assertEqual(sale.stock_status, "ok")
+        self.assertFalse(StockMovement.objects.filter(product=production).exists())
 
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
