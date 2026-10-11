@@ -215,3 +215,7 @@ html,body{width:100%;max-width:100%;overflow:hidden}
 #checkoutTab{display:flex;flex-direction:column;min-height:0}
 #checkoutTab .section-head{height:auto;min-height:54px;flex:0 0 auto;align-items:center;margin-bottom:16px}
 #checkoutTab .checkout-grid{height:auto;flex:1 1 auto;min-height:0}
+
+/* Product cards stay fully inside the scroll area while hovered. */
+.catalog .products-grid{contain:layout;padding:7px 5px 14px}
+.product:hover{transform:none;box-shadow:0 10px 24px #123f4b20;border-color:#15ad89}
