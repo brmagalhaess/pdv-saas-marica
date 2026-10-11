@@ -209,3 +209,9 @@ html,body{width:100%;max-width:100%;overflow:hidden}
   .checkout-confirm-dialog .payment-methods{grid-template-columns:1fr}
   .checkout-confirm-total strong{font-size:27px}
 }
+
+/* Keep the operation heading in normal flow. The terminal header must never cover it. */
+.topbar{position:relative}
+#checkoutTab{display:flex;flex-direction:column;min-height:0}
+#checkoutTab .section-head{height:auto;min-height:54px;flex:0 0 auto;align-items:center;margin-bottom:16px}
+#checkoutTab .checkout-grid{height:auto;flex:1 1 auto;min-height:0}
