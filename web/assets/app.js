@@ -407,8 +407,6 @@ function renderProfileMenu() {
       `Empresa · ${roleNames[membership.role] || membership.role}`
     ]));
   }
-  const accountSwitcher = $("#account-switcher");
-  if (accountSwitcher) accountSwitcher.hidden = switches.length < 2;
   if (switches.length > 1 || (platform && state.memberships?.length)) {
     menu.append(el("small", "profile-menu-section-title", "Trocar área de acesso"));
     switches.forEach(([label, href, description]) => {
@@ -436,11 +434,6 @@ $("#avatar").addEventListener("click", event => {
   if (open) renderProfileMenu();
   menu.hidden = !open;
   trigger.setAttribute("aria-expanded", String(open));
-});
-$("#account-switcher").addEventListener("click", event => {
-  event.stopPropagation();
-  const menu = $("#profile-menu"), trigger = $("#avatar");
-  renderProfileMenu(); menu.hidden = false; trigger.setAttribute("aria-expanded", "true");
 });
 document.addEventListener("click", event => {
   if (!event.target.closest(".profile-menu-wrap")) closeProfileMenu();

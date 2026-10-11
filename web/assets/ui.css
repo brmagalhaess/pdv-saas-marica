@@ -364,7 +364,6 @@ td.actions { white-space: nowrap; text-align: right; }
 .business-hours-row { min-width:0; }
 .mfa-qr { display:block; width:190px; height:190px; margin:12px auto; padding:10px; border:1px solid #d7e6dc; border-radius:12px; background:#fff; image-rendering:pixelated; }
 .mfa-qr-help { display:block; margin:5px 0 10px; color:var(--muted); font-size:11px; line-height:1.45; }
-.account-switcher { min-height:32px; padding:7px 10px; font-size:11px; }
 @media (max-width: 620px) {
   .business-hours-row { grid-template-columns:minmax(105px,1fr) 1fr auto 1fr; gap:6px; }
   .business-hours-row input[type=time] { min-width:0; width:100%; }
