@@ -708,6 +708,91 @@ class CloudAPITests(TestCase):
         self.assertEqual(self.api("GET", "/api/v1/reports/nope").status_code, 404)
         self.assertEqual(self.api("GET", "/api/v1/reports/sales_by_day?from=2026-01-01&to=2025-01-01").status_code, 400)
 
+    def test_fiado_store_credit_and_partial_returns(self):
+        from .models import Customer, CustomerCredit, FinanceEntry, SaleReturn
+        customer = Customer.objects.create(tenant=self.tenant, name="Dona Rosa", credit_limit_cents=10000)
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="fiado-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id), "terminal_id": str(terminal.id)}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+        session_id = uuid.uuid4().hex
+        now = int(time.time() * 1000)
+
+        def sync(*events, status=200):
+            response = self.api("POST", "/api/v1/terminal/sync", {"events": list(events)}, tenant=False, **headers)
+            self.assertEqual(response.status_code, status, response.content)
+            return response
+
+        def sale(payments, qty=2, customer_id=str(customer.id)):
+            total = 999 * qty
+            return {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": str(uuid.uuid4()),
+                    "identity": identity, "data": {
+                        "request_id": uuid.uuid4().hex, "cash_session_id": session_id, "created_at": now,
+                        "customer_id": customer_id, "customer_name": "", "customer_document": "",
+                        "operator_id": str(self.member.id), "gross_cents": total, "discount_cents": 0,
+                        "total_cents": total, "change_cents": 0,
+                        "items": [{"product_id": str(self.product.id), "name": "Arroz", "unit": "UN",
+                                   "quantity_milli": qty * 1000, "unit_price_cents": 999, "gross_cents": total,
+                                   "discount_cents": 0, "line_total_cents": total}],
+                        "payments": [{"method": m, "amount_cents": a} for m, a in payments]}}
+
+        def returned(sale_event, qty, refund):
+            return {"event_id": uuid.uuid4().hex, "type": "sale.returned", "aggregate_id": str(uuid.uuid4()),
+                    "identity": identity, "data": {
+                        "sale_id": sale_event["aggregate_id"], "refund_method": refund, "reason": "Produto avariado",
+                        "operator_id": str(self.member.id), "cash_session_id": session_id, "created_at": now + 1,
+                        "items": [{"product_id": str(self.product.id), "quantity_milli": qty * 1000, "amount_cents": 999 * qty}],
+                        "total_cents": 999 * qty}}
+
+        # Fiado: one receivable per credit-account payment, due after the tenant term.
+        fiado = sale([("credit_account", 1998)])
+        sync(fiado)
+        entry = FinanceEntry.objects.get(sale_id=fiado["aggregate_id"])
+        self.assertEqual((entry.kind, entry.status, entry.amount_cents, entry.customer_id), ("receivable", "open", 1998, customer.id))
+        self.assertEqual((entry.due_date - timezone.localdate()).days, 30)
+        sync(sale([("credit_account", 999)], qty=1, customer_id=None), status=400)
+
+        # Partial return abates the open fiado; a later return after payment becomes store credit.
+        sync(returned(fiado, 1, "account"))
+        entry.refresh_from_db()
+        self.assertEqual(entry.amount_cents, 999)
+        self.client.force_login(self.owner)
+        statement = self.api("GET", f"/api/v1/customers/{customer.id}/statement").json()
+        self.assertEqual((statement["open_credit_cents"], statement["available_credit_cents"]), (999, 9001))
+        received = self.api("POST", f"/api/v1/customers/{customer.id}/receive", {"entry_ids": [str(entry.id)]})
+        self.assertEqual(received.json()["received_cents"], 999)
+        sync(returned(fiado, 1, "account"))
+        self.assertEqual(sum(CustomerCredit.objects.filter(customer=customer).values_list("delta_cents", flat=True)), 999)
+        sync(returned(fiado, 1, "account"), status=409)  # nothing left to return
+
+        # Store credit pays a later sale; a cash return leaves the drawer.
+        paid_with_credit = sale([("store_credit", 999)], qty=1)
+        pix = sale([("pix", 1998)])
+        sync(paid_with_credit, pix, returned(pix, 1, "cash"))
+        summary = self.api("GET", "/api/v1/customers/credit-summary").json()["results"]
+        self.assertEqual(summary, [])  # fiado received and credit used: nothing outstanding
+        self.assertEqual(StockMovement.objects.filter(source="return").count(), 3)
+        self.assertEqual(self.api("POST", f"/api/v1/sales/{pix['aggregate_id']}/cancel",
+                                  {"reason": "Teste"}).status_code, 409)
+        self.assertEqual(SaleReturn.objects.filter(refund_method="cash").count(), 1)
+
+        # Cancelling the credit-paid sale gives the credit back; terminals get balances on bootstrap.
+        self.assertEqual(self.api("POST", f"/api/v1/sales/{paid_with_credit['aggregate_id']}/cancel",
+                                  {"reason": "Desistiu"}).status_code, 200)
+        private, public = generate_keypair()
+        with patch.dict(os.environ, {"PDV_LICENSE_PRIVATE_KEY": private, "PDV_LICENSE_PUBLIC_KEY": public,
+                                    "PDV_LICENSE_PRIVATE_KEY_FILE": "", "PDV_LICENSE_PUBLIC_KEY_FILE": ""}):
+            boot = self.api("GET", "/api/v1/terminal/bootstrap", tenant=False, **headers).json()
+        mine = next(c for c in boot["customers"] if c["id"] == str(customer.id))
+        self.assertEqual((mine["credit_limit_cents"], mine["open_credit_cents"], mine["store_credit_cents"]), (10000, 0, 999))
+        Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
+        another = sale([("credit_account", 999)], qty=1)
+        sync(another)
+        open_entry = FinanceEntry.objects.get(sale_id=another["aggregate_id"])
+        self.assertEqual(self.api("PATCH", f"/api/v1/finance/{open_entry.id}", {"amount_cents": 1}).status_code, 409)
+        self.assertEqual(self.api("PATCH", f"/api/v1/finance/{open_entry.id}", {"due_date": "2026-12-20"}).status_code, 200)
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",

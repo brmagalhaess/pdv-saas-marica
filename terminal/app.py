@@ -302,6 +302,21 @@ def create_app(config=None):
         data = body()
         return jsonify(store.void_sale(operator, sale_id, data.get("reason"), data.get("manager_pin")))
 
+    @app.get("/api/sales/<sale_id>/returnable")
+    @authenticated(*SELL_ROLES)
+    def returnable(operator, sale_id):
+        return jsonify(store.returnable(sale_id))
+
+    @app.post("/api/sales/<sale_id>/return")
+    @authenticated(*SELL_ROLES)
+    def return_sale(operator, sale_id):
+        return jsonify(store.return_sale(operator, sale_id, body()))
+
+    @app.get("/api/customers")
+    @authenticated(*SELL_ROLES)
+    def customers(operator):
+        return jsonify({"customers": store.customers(request.args.get("q", ""))})
+
     @app.post("/api/sales/<sale_id>/reprint")
     @authenticated(*SELL_ROLES)
     def reprint(operator, sale_id):

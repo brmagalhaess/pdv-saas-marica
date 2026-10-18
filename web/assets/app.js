@@ -507,20 +507,22 @@ const resourceSpecs = {
     ]
   },
   customers: {
-    title: "Clientes", description: "Contatos cadastrados para consultas e futuras operações.",
+    title: "Clientes", description: "Cadastro, limite de fiado, crédito na loja e extrato de cada cliente.",
     endpoint: "/customers", singular: "cliente", create: () => can("owner","admin","manager","cashier"), edit: () => can("owner","admin","manager","cashier"), remove: false,
     fields: [
       { key: "name", label: "Nome", required: true, max: 160, full: true },
       { key: "document", label: "CPF ou CNPJ", max: 18 },
       { key: "email", label: "E-mail", type: "email", max: 254 },
       { key: "phone", label: "Telefone", type: "tel", max: 30 },
+      { key: "credit_limit_cents", label: "Limite de fiado (R$)", type: "money", min: 0, default: 0, help: "Valor máximo em aberto para vendas a prazo. Deixe 0 para não liberar fiado; acima do limite o caixa exige PIN de gerente." },
       { key: "active", label: "Cliente ativo", type: "checkbox", default: true }
     ],
     columns: [
       { label: "Nome", render: row => row.name },
       { label: "Documento", render: row => row.document },
-      { label: "E-mail", render: row => row.email },
       { label: "Telefone", render: row => row.phone },
+      { label: "Fiado em aberto / limite", render: row => { const c = state.creditByCustomer?.[row.id]; const open = c?.open_credit_cents || 0; return row.credit_limit_cents || open ? `${money(open)} / ${money(row.credit_limit_cents || 0)}` : "—"; } },
+      { label: "Crédito na loja", render: row => { const v = state.creditByCustomer?.[row.id]?.store_credit_cents || 0; return v ? money(v) : "—"; } },
       { label: "Estado", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
     ]
   },
@@ -836,8 +838,14 @@ async function resourcePage(key) {
         content.append(empty(query ? "Nenhum resultado" : "Nada cadastrado ainda", query ? "Tente outro termo de busca." : "Use o botão acima para adicionar o primeiro registro."));
         return;
       }
+      if (key === "customers") {
+        try { state.creditByCustomer = Object.fromEntries(records(await api.get("/customers/credit-summary")).map(r => [r.customer_id, r])); }
+        catch { state.creditByCustomer = {}; }
+        if (token !== state.renderId) return;
+      }
       const actionsFor = spec.edit() || (spec.remove && spec.edit()) ? row => {
         const actions = [];
+        if (key === "customers") actions.push({ label: "Extrato", onClick: () => customerStatement(row).catch(handleError) });
         if (spec.edit()) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
         if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row).catch(handleError) });
         if (spec.remove && spec.edit()) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria.", async () => {
@@ -1004,8 +1012,20 @@ async function saleDetail(id) {
     payTitle.style.marginTop = "23px";
     content.append(payTitle);
     content.append(payments.length
-      ? table([{ label: "Forma", render: row => row.method }, { label: "Valor", render: row => money(row.amount_cents) }], payments)
+      ? table([{ label: "Forma", render: row => paymentNames[row.method] || row.method }, { label: "Valor", render: row => money(row.amount_cents) }], payments)
       : empty("Sem pagamentos disponíveis", "Não há detalhes de pagamento nesta resposta."));
+    const returns = response.returns || sale.returns || [];
+    if (returns.length) {
+      const returnTitle = el("h3", "", "Devoluções");
+      returnTitle.style.marginTop = "23px";
+      content.append(returnTitle, table([
+        { label: "Data", render: r => dateTime(r.created_at) },
+        { label: "Itens", render: r => r.items.map(i => `${i.name} × ${quantity(i.quantity_milli)}`).join(", ") },
+        { label: "Valor", render: r => money(r.total_cents) },
+        { label: "Devolvido em", render: r => refundNames[r.refund_method] || r.refund_method },
+        { label: "Motivo", render: r => r.reason }
+      ], returns));
+    }
     if (canSales() && sale.status === "completed") {
       const actions = el("div", "form-actions");
       actions.append(button("Cancelar venda comercial", () => cancelSale(sale), "danger"));
@@ -1127,8 +1147,55 @@ function personSelect(id, labelText, allText) {
   } };
 }
 
+const creditSources = { return: "Devolução", sale: "Usado em venda", sale_cancel: "Venda cancelada", account_overpaid: "Devolução de fiado pago", manual: "Ajuste" };
+const refundNames = { cash: "Dinheiro", store_credit: "Crédito na loja", account: "Abatido do fiado" };
+async function customerStatement(customer) {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando extrato…"));
+  openDialog("Extrato de " + customer.name, "Fiado, crédito na loja e devoluções do cliente.", loading);
+  const data = await api.get(`/customers/${customer.id}/statement`);
+  const content = el("div");
+  content.append(detailList([
+    ["Limite de fiado", money(data.customer.credit_limit_cents)],
+    ["Fiado em aberto", money(data.open_credit_cents)],
+    ["Disponível para fiado", money(data.available_credit_cents)],
+    ["Crédito na loja", money(data.store_credit_cents)]
+  ]));
+  const openEntries = data.entries.filter(e => e.status === "open");
+  const title = el("h3", "", "Vendas a prazo"); title.style.marginTop = "23px";
+  content.append(title, data.entries.length ? table([
+    { label: "Venda", render: e => e.description },
+    { label: "Valor", render: e => money(e.amount_cents) },
+    { label: "Vencimento", render: e => e.due_date.split("-").reverse().join("/") },
+    { label: "Estado", render: e => e.overdue ? el("span", "badge danger", "Vencido") : statusBadge(e.status) }
+  ], data.entries) : empty("Sem fiado", "Este cliente ainda não comprou a prazo."));
+  if (openEntries.length && can("owner", "admin", "manager", "finance")) {
+    const actions = el("div", "form-actions");
+    actions.append(button(`Receber tudo em aberto (${money(openEntries.reduce((s, e) => s + e.amount_cents, 0))})`, () => confirmAction(
+      "Receber fiado", "Confirme que o cliente pagou as parcelas em aberto. Elas serão baixadas como recebidas hoje.", async () => {
+        await api.post(`/customers/${customer.id}/receive`, { entry_ids: openEntries.map(e => e.id) });
+        toast("Fiado recebido."); renderRoute();
+      }, "Confirmar recebimento")));
+    content.append(actions);
+  }
+  const creditTitle = el("h3", "", "Crédito na loja"); creditTitle.style.marginTop = "23px";
+  content.append(creditTitle, data.credits.length ? table([
+    { label: "Data", render: c => dateTime(c.created_at) },
+    { label: "Origem", render: c => creditSources[c.source] || c.source },
+    { label: "Descrição", render: c => c.description },
+    { label: "Valor", render: c => el("span", c.delta_cents < 0 ? "badge danger" : "badge", (c.delta_cents < 0 ? "− " : "+ ") + money(Math.abs(c.delta_cents))) }
+  ], data.credits) : empty("Sem crédito na loja", "Devoluções em crédito aparecem aqui."));
+  if (data.returns.length) {
+    const returnTitle = el("h3", "", "Devoluções"); returnTitle.style.marginTop = "23px";
+    content.append(returnTitle, table([
+      { label: "Data", render: r => dateTime(r.created_at) }, { label: "Valor", render: r => money(r.total_cents) },
+      { label: "Devolvido em", render: r => refundNames[r.refund_method] || r.refund_method }, { label: "Motivo", render: r => r.reason }
+    ], data.returns));
+  }
+  loading.replaceChildren(content);
+}
 function percentText(bps) { return (Number(bps) / 100).toLocaleString("pt-BR", { maximumFractionDigits: 2 }) + "%"; }
-const paymentNames = { cash: "Dinheiro (líquido de troco)", pix: "Pix", card_credit: "Crédito", card_debit: "Débito", card: "Cartão" };
+const paymentNames = { cash: "Dinheiro (líquido de troco)", pix: "Pix", card_credit: "Crédito", card_debit: "Débito", card: "Cartão", credit_account: "A prazo (fiado)", store_credit: "Crédito na loja" };
 function differenceBadge(cents) {
   if (cents == null) return statusBadge("open");
   const value = Number(cents);

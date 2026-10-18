@@ -53,6 +53,8 @@ class Tenant(models.Model):
     # Percentage in basis points: 10000 = 100%. This is the hard company
     # ceiling for discounts, including manager approvals.
     max_discount_bps = models.PositiveIntegerField(default=10000)
+    # Due date of a credit-account (fiado) sale, counted from the sale day.
+    credit_term_days = models.PositiveIntegerField(default=30)
     # Local operating schedule consumed by terminals for opening control.
     # Example: {"mon": {"enabled": true, "open": "08:00", "close": "18:00"}}
     business_hours = models.JSONField(default=dict, blank=True)
@@ -158,6 +160,8 @@ class Customer(models.Model):
     document = models.CharField(max_length=30, blank=True)
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=30, blank=True)
+    # Maximum open balance for credit-account (fiado) sales; 0 = no fiado.
+    credit_limit_cents = models.PositiveBigIntegerField(default=0)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -272,13 +276,61 @@ class Commission(models.Model):
     amount_cents = models.BigIntegerField()
     status = models.CharField(max_length=20, choices=STATUS, default="pending")
     reversal = models.BooleanField(default=False)
+    # Set on the negative row created by a partial return.
+    sale_return = models.ForeignKey("SaleReturn", on_delete=models.PROTECT, null=True, blank=True)
     finance_entry = models.ForeignKey("FinanceEntry", on_delete=models.PROTECT, null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["sale", "reversal"], name="commission_once_per_sale")]
+        constraints = [models.UniqueConstraint(fields=["sale", "reversal"], condition=models.Q(sale_return__isnull=True),
+                                               name="commission_once_per_sale"),
+                       models.UniqueConstraint(fields=["sale_return"], condition=models.Q(sale_return__isnull=False),
+                                               name="commission_once_per_return")]
         indexes = [models.Index(fields=["tenant", "seller", "status"])]
+
+
+class SaleReturn(models.Model):
+    """Partial or total return registered at the terminal after the sale."""
+    REFUNDS = [(s, s) for s in ("cash", "store_credit", "account")]
+    id = models.UUIDField(primary_key=True, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="sale_returns")
+    shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
+    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT)
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="returns")
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, null=True, blank=True)
+    operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    supervisor = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    cash_session_id = models.CharField(max_length=160, blank=True)
+    refund_method = models.CharField(max_length=20, choices=REFUNDS)
+    total_cents = models.PositiveBigIntegerField()
+    reason = models.CharField(max_length=240)
+    content_hash = models.CharField(max_length=64)
+    created_at = models.DateTimeField()
+    received_at = models.DateTimeField(auto_now_add=True)
+
+
+class SaleReturnItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    sale_return = models.ForeignKey(SaleReturn, on_delete=models.PROTECT, related_name="items")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT)
+    quantity_milli = models.PositiveBigIntegerField()
+    amount_cents = models.PositiveBigIntegerField()
+
+
+class CustomerCredit(models.Model):
+    """Store-credit ledger: positive issues credit, negative uses it."""
+    SOURCES = [(s, s) for s in ("return", "sale", "sale_cancel", "account_overpaid", "manual")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name="credits")
+    delta_cents = models.BigIntegerField()
+    source = models.CharField(max_length=20, choices=SOURCES)
+    description = models.CharField(max_length=240)
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, null=True, blank=True)
+    sale_return = models.ForeignKey(SaleReturn, on_delete=models.PROTECT, null=True, blank=True)
+    idempotency_key = models.CharField(max_length=200, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
 class CashSession(models.Model):
@@ -319,7 +371,7 @@ class CashMovement(models.Model):
 
 
 class StockMovement(models.Model):
-    SOURCES = [(s, s) for s in ("manual", "receipt", "sale", "void", "terminal_adjustment")]
+    SOURCES = [(s, s) for s in ("manual", "receipt", "sale", "void", "terminal_adjustment", "return")]
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
     shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
@@ -337,7 +389,8 @@ class StockMovement(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["tenant", "source", "idempotency_key"], condition=Q(idempotency_key__isnull=False), name="stock_idem_unique"),
-            models.UniqueConstraint(fields=["tenant", "sale", "product", "source"], condition=Q(sale__isnull=False), name="stock_sale_product_source_unique"),
+            # Partial returns repeat (sale, product, source); their own idempotency key protects them.
+            models.UniqueConstraint(fields=["tenant", "sale", "product", "source"], condition=Q(sale__isnull=False) & ~Q(source="return"), name="stock_sale_product_source_unique"),
         ]
         indexes = [models.Index(fields=["tenant", "shop", "product", "created_at"])]
 
@@ -386,7 +439,11 @@ class FinanceEntry(models.Model):
     due_date = models.DateField()
     status = models.CharField(max_length=20, choices=STATUS, default="open")
     settled_at = models.DateTimeField(null=True, blank=True)
-    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    # Set for receivables created by a credit-account (fiado) sale.
+    sale = models.ForeignKey("Sale", on_delete=models.PROTECT, null=True, blank=True,
+                             related_name="finance_entries")
+    # Null for entries created by terminal sync rather than a person.
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 

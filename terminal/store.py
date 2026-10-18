@@ -20,6 +20,19 @@ from .printers import LABEL_PRINTER_REQUIRED, label_bytes, receipt_bytes, receip
 OFFLINE_LEASE_SECONDS = 72 * 60 * 60
 SELL_ROLES = {"owner", "admin", "manager", "cashier"}
 MANAGER_ROLES = {"owner", "admin", "manager"}
+CREDIT_METHODS = ("credit_account", "store_credit")
+REFUND_METHODS = ("cash", "store_credit", "account")
+
+
+def _brl(cents):
+    return "R$ " + f"{cents / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _return_amount(line_total_cents, line_quantity_milli, returned_milli):
+    """Same half-up rule as the cloud (credit_logic.return_line_amount)."""
+    return (2 * line_total_cents * returned_milli + line_quantity_milli) // (2 * line_quantity_milli)
+
+
 DISCOUNT_BPS = {"cashier": 1000, "manager": 5000, "admin": 10000, "owner": 10000}
 BUSINESS_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -118,6 +131,15 @@ class Store:
                     total_cents INTEGER NOT NULL,change_cents INTEGER NOT NULL,
                     snapshot TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,
                     voided_at INTEGER,void_reason TEXT);
+                CREATE TABLE IF NOT EXISTS customers(
+                    id TEXT PRIMARY KEY,name TEXT NOT NULL,document TEXT,
+                    credit_limit_cents INTEGER NOT NULL DEFAULT 0,open_credit_cents INTEGER NOT NULL DEFAULT 0,
+                    store_credit_cents INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1);
+                CREATE TABLE IF NOT EXISTS sale_returns(
+                    id TEXT PRIMARY KEY,sale_id TEXT NOT NULL,session_id TEXT,operator_id TEXT NOT NULL,
+                    refund_method TEXT NOT NULL,total_cents INTEGER NOT NULL,items TEXT NOT NULL,
+                    reason TEXT NOT NULL,created_at INTEGER NOT NULL);
+                CREATE INDEX IF NOT EXISTS sale_returns_sale ON sale_returns(sale_id);
                 CREATE TABLE IF NOT EXISTS suspended_carts(
                     id TEXT PRIMARY KEY,label TEXT NOT NULL,cart TEXT NOT NULL,
                     operator_id TEXT NOT NULL,created_at INTEGER NOT NULL);
@@ -246,7 +268,7 @@ class Store:
     def _clear_company_cache(conn):
         # These are downloaded/setup data, not locally created business records.
         # Clearing them also makes exports after a new pairing tenant-isolated.
-        for table in ("products", "operators", "login_attempts", "audit", "print_settings", "sync_conflicts"):
+        for table in ("products", "operators", "customers", "login_attempts", "audit", "print_settings", "sync_conflicts"):
             conn.execute(f"DELETE FROM {table}")
 
     @staticmethod
@@ -518,6 +540,9 @@ class Store:
                 if sale:
                     for item in (json.loads(sale[0]).get("items") or []):
                         deltas[str(item.get("product_id"))] += int(item.get("quantity_milli") or 0)
+            elif event_type == "sale.returned":
+                for item in data.get("items") or []:
+                    deltas[str(item.get("product_id"))] += int(item.get("quantity_milli") or 0)
         return deltas
 
     def apply_bootstrap(self, response):
@@ -612,6 +637,9 @@ class Store:
                              ",".join("?" for _ in operator_ids) + ")", operator_ids)
             else:
                 conn.execute("DELETE FROM login_attempts")
+            customers = response.get("customers")
+            if isinstance(customers, list):
+                self._apply_customers(conn, customers)
             for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
                 value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
                 if value:
@@ -630,6 +658,63 @@ class Store:
             self._audit(conn, None, "terminal.bootstrap", None,
                         f"{len(products)} produtos; {len(operators)} operadores")
             return {"products": len(products), "operators": len(operators)}
+
+    @staticmethod
+    def _pending_credit_effects(conn):
+        """Fiado and store-credit effects of events the cloud has not acknowledged."""
+        effects = defaultdict(lambda: [0, 0])  # customer_id -> [open fiado, store credit]
+        for (payload,) in conn.execute("SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY created_at,rowid"):
+            event = json.loads(payload)
+            data = event.get("data") or {}
+            kind = event.get("type")
+            if kind == "sale.completed" and data.get("customer_id"):
+                for payment in data.get("payments") or []:
+                    if payment.get("method") == "credit_account":
+                        effects[data["customer_id"]][0] += int(payment["amount_cents"])
+                    elif payment.get("method") == "store_credit":
+                        effects[data["customer_id"]][1] -= int(payment["amount_cents"])
+            elif kind == "sale.voided":
+                row = conn.execute("SELECT snapshot FROM sales WHERE id=?", (data.get("sale_id"),)).fetchone()
+                sale = json.loads(row["snapshot"]) if row else {}
+                for payment in (sale.get("payments") or []) if sale.get("customer_id") else []:
+                    if payment.get("method") == "credit_account":
+                        effects[sale["customer_id"]][0] -= int(payment["amount_cents"])
+                    elif payment.get("method") == "store_credit":
+                        effects[sale["customer_id"]][1] += int(payment["amount_cents"])
+            elif kind == "sale.returned" and data.get("customer_id"):
+                if data.get("refund_method") == "account":
+                    effects[data["customer_id"]][0] -= int(data["total_cents"])
+                elif data.get("refund_method") == "store_credit":
+                    effects[data["customer_id"]][1] += int(data["total_cents"])
+        return effects
+
+    def _apply_customers(self, conn, customers):
+        pending = self._pending_credit_effects(conn)
+        ids = []
+        for customer in customers:
+            customer_id = _str(customer.get("id"), "Cliente")
+            values = [customer.get(key, 0) for key in ("credit_limit_cents", "open_credit_cents", "store_credit_cents")]
+            if any(type(value) is not int for value in values) or values[0] < 0:
+                raise TerminalError("Saldo de cliente inválido")
+            open_credit = max(0, values[1] + pending[customer_id][0])
+            store_credit = values[2] + pending[customer_id][1]
+            conn.execute("""INSERT INTO customers VALUES (?,?,?,?,?,?,1)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name,document=excluded.document,
+                credit_limit_cents=excluded.credit_limit_cents,open_credit_cents=excluded.open_credit_cents,
+                store_credit_cents=excluded.store_credit_cents,active=1""",
+                (customer_id, _str(customer.get("name"), "Nome do cliente", 180),
+                 str(customer.get("document") or "")[:30], values[0], open_credit, store_credit))
+            ids.append(customer_id)
+        conn.execute("UPDATE customers SET active=0" + (" WHERE id NOT IN (" + ",".join("?" for _ in ids) + ")" if ids else ""), ids)
+
+    def customers(self, query=""):
+        query = f"%{str(query or '').strip()[:60]}%"
+        with self.connection() as conn:
+            return [dict(row) for row in conn.execute(
+                """SELECT id,name,document,credit_limit_cents,open_credit_cents,store_credit_cents,
+                   MAX(credit_limit_cents-open_credit_cents,0) available_credit_cents
+                   FROM customers WHERE active=1 AND (name LIKE ? OR document LIKE ?) ORDER BY name LIMIT 50""",
+                (query, query))]
 
     def unpair(self):
         """Undo a clean setup; a database with business history stays bound."""
@@ -797,6 +882,9 @@ class Store:
                     categories["card_legacy_cents"] += amount
             received_total += payment_total
         categories["cash_sales_net_cents"] -= changes
+        categories["cash_refunds_cents"] = conn.execute(
+            "SELECT COALESCE(SUM(total_cents),0) FROM sale_returns WHERE session_id=? AND refund_method='cash'",
+            (cash["id"],)).fetchone()[0]
         movements = conn.execute(
             "SELECT kind,COALESCE(SUM(amount_cents),0) amount FROM cash_movements "
             "WHERE session_id=? GROUP BY kind", (cash["id"],))
@@ -806,7 +894,7 @@ class Store:
             elif row["kind"] == "withdrawn":
                 categories["withdrawn_cents"] = row["amount"]
         expected = (cash["opening_cents"] + categories["cash_sales_net_cents"] +
-                    categories["supplied_cents"] - categories["withdrawn_cents"])
+                    categories["supplied_cents"] - categories["withdrawn_cents"] - categories["cash_refunds_cents"])
         return {
             "id": cash["id"], "opened_at": cash["opened_at"],
             "opening_cents": cash["opening_cents"], "sales_count": sales_count,
@@ -941,8 +1029,8 @@ class Store:
                                         for x in previous["items"]],
                               "payments": previous["payments"],
                               "discount_cents": previous["discount_cents"],
-                              "customer_name": previous["customer_name"],
-                              "customer_document": previous.get("customer_document", ""),
+                              "customer_name": previous.get("requested_customer", [previous["customer_name"]])[0],
+                              "customer_document": previous.get("requested_customer", [None, previous.get("customer_document", "")])[1],
                               "customer_id": previous["customer_id"],
                               "seller_id": previous.get("seller_id")}
                 received = {"items": item_requests, "payments": payments, "discount_cents": discount,
@@ -996,7 +1084,7 @@ class Store:
             normalized_payments = []
             for payment in payments:
                 if not isinstance(payment, dict) or payment.get("method") not in (
-                        "cash", "pix", "card", "card_credit", "card_debit"):
+                        "cash", "pix", "card", "card_credit", "card_debit", *CREDIT_METHODS):
                     raise TerminalError("Forma de pagamento inválida")
                 normalized_payments.append({"method": payment["method"],
                                             "amount_cents": _positive_int(payment.get("amount_cents"), "Pagamento")})
@@ -1005,6 +1093,23 @@ class Store:
             change = paid - total
             if change < 0 or change > cash_paid:
                 raise TerminalError("Pagamentos não fecham o total; troco exige dinheiro")
+            requested_customer = None
+            on_account = sum(p["amount_cents"] for p in normalized_payments if p["method"] == "credit_account")
+            from_credit = sum(p["amount_cents"] for p in normalized_payments if p["method"] == "store_credit")
+            if on_account or from_credit:
+                customer = conn.execute("SELECT * FROM customers WHERE id=? AND active=1", (customer_id,)).fetchone() if customer_id else None
+                if not customer:
+                    raise TerminalError("Venda a prazo ou com crédito na loja exige cliente cadastrado", 409)
+                if from_credit > customer["store_credit_cents"]:
+                    raise TerminalError(f"Crédito na loja insuficiente: disponível {_brl(customer['store_credit_cents'])}", 409)
+                available = customer["credit_limit_cents"] - customer["open_credit_cents"]
+                if on_account > available and not override_id:
+                    raise TerminalError(f"Limite de fiado excedido: disponível {_brl(max(0, available))}; PIN de gerente necessário", 403)
+                conn.execute("UPDATE customers SET open_credit_cents=open_credit_cents+?,store_credit_cents=store_credit_cents-? WHERE id=?",
+                             (on_account, from_credit, customer_id))
+                requested_customer = [customer_name, customer_document]
+                customer_name = customer_name or customer["name"]
+                customer_document = customer_document or (customer["document"] or "")
             sale_id, timestamp = _uuid(), _now_ms()
             snapshot = {"id": sale_id, "request_id": request_id, "cash_session_id": cash["id"],
                         "operator_id": operator["id"], "seller_id": seller_id, "seller_name": seller_name,
@@ -1014,6 +1119,8 @@ class Store:
                         "discount_cents": discount, "total_cents": total, "change_cents": change,
                         "items": lines, "payments": normalized_payments, "created_at": timestamp,
                         "status": "completed"}
+            if requested_customer and requested_customer != [customer_name, customer_document]:
+                snapshot["requested_customer"] = requested_customer  # for idempotent retries
             snapshot = self._receipt_context(conn, snapshot)
             for line in lines:
                 if line.get("stock_controlled", True):
@@ -1062,6 +1169,8 @@ class Store:
                 raise TerminalError("Venda não encontrada", 404)
             if row["status"] == "voided":
                 return self.sale_detail(sale_id)
+            if conn.execute("SELECT 1 FROM sale_returns WHERE sale_id=?", (sale_id,)).fetchone():
+                raise TerminalError("Venda com devolução não pode ser cancelada; devolva os itens restantes", 409)
             original_cash = conn.execute("SELECT closed_at FROM cash_sessions WHERE id=?", (row["session_id"],)).fetchone()
             if original_cash and original_cash["closed_at"] is not None:
                 raise TerminalError("Caixa dessa venda já foi fechado; registre devolução pelo processo administrativo", 409)
@@ -1070,6 +1179,14 @@ class Store:
                 if item.get("stock_controlled", True):
                     conn.execute("UPDATE products SET stock_milli=stock_milli+? WHERE id=?",
                                  (item["quantity_milli"], item["product_id"]))
+            if snapshot.get("customer_id"):
+                for payment in snapshot.get("payments", []):
+                    if payment["method"] == "credit_account":
+                        conn.execute("UPDATE customers SET open_credit_cents=MAX(open_credit_cents-?,0) WHERE id=?",
+                                     (payment["amount_cents"], snapshot["customer_id"]))
+                    elif payment["method"] == "store_credit":
+                        conn.execute("UPDATE customers SET store_credit_cents=store_credit_cents+? WHERE id=?",
+                                     (payment["amount_cents"], snapshot["customer_id"]))
             timestamp = _now_ms()
             conn.execute("UPDATE sales SET status='voided',voided_at=?,void_reason=? WHERE id=?",
                          (timestamp, reason, sale_id))
@@ -1079,6 +1196,114 @@ class Store:
             snapshot["status"] = "voided"
             snapshot["void_reason"] = reason
             return self._receipt_data(conn, snapshot)
+
+    def returnable(self, sale_id):
+        """Lines of a sale with the quantity still available for return."""
+        with self.connection() as conn:
+            row = conn.execute("SELECT snapshot,status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            if not row:
+                raise TerminalError("Venda não encontrada", 404)
+            snapshot = json.loads(row["snapshot"])
+            returned = self._returned_quantities(conn, sale_id)
+            return {"sale_id": sale_id, "status": row["status"], "customer_id": snapshot.get("customer_id"),
+                    "customer_name": snapshot.get("customer_name", ""),
+                    "on_account": any(p["method"] == "credit_account" for p in snapshot.get("payments", [])),
+                    "items": [{"product_id": item["product_id"], "name": item["name"], "unit": item["unit"],
+                               "quantity_milli": item["quantity_milli"], "line_total_cents": item["line_total_cents"],
+                               "available_milli": item["quantity_milli"] - returned.get(item["product_id"], 0)}
+                              for item in snapshot["items"]]}
+
+    @staticmethod
+    def _returned_quantities(conn, sale_id):
+        totals = defaultdict(int)
+        for (items,) in conn.execute("SELECT items FROM sale_returns WHERE sale_id=?", (sale_id,)):
+            for item in json.loads(items):
+                totals[item["product_id"]] += item["quantity_milli"]
+        return totals
+
+    def return_sale(self, operator, sale_id, request):
+        """Partial or total return; refund in cash, store credit or abated from fiado."""
+        self.ensure_sale_allowed()
+        if operator["role"] not in SELL_ROLES:
+            raise TerminalError("Papel sem permissão de devolução", 403)
+        return_id = _str(request.get("return_id"), "Identificador da devolução")
+        refund = request.get("refund_method")
+        if refund not in REFUND_METHODS:
+            raise TerminalError("Forma de devolução inválida")
+        reason = _str(request.get("reason"), "Motivo da devolução", 240)
+        wanted = request.get("items")
+        if not isinstance(wanted, list) or not wanted:
+            raise TerminalError("Informe os itens devolvidos")
+        supervisor = operator["id"] if operator["role"] in MANAGER_ROLES else self.manager_override(request.get("manager_pin"))
+        with self.transaction() as conn:
+            old = conn.execute("SELECT * FROM sale_returns WHERE id=?", (return_id,)).fetchone()
+            if old:
+                if old["sale_id"] != sale_id or old["refund_method"] != refund:
+                    raise TerminalError("Identificador já usado para outra devolução", 409)
+                return {"id": old["id"], "sale_id": sale_id, "refund_method": refund,
+                        "total_cents": old["total_cents"], "items": json.loads(old["items"])}
+            row = conn.execute("SELECT snapshot,status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            if not row:
+                raise TerminalError("Venda não encontrada", 404)
+            if row["status"] != "completed":
+                raise TerminalError("Venda cancelada não aceita devolução", 409)
+            snapshot = json.loads(row["snapshot"])
+            lines = {item["product_id"]: item for item in snapshot["items"]}
+            returned = self._returned_quantities(conn, sale_id)
+            items, total, seen = [], 0, set()
+            for item in wanted:
+                if not isinstance(item, dict):
+                    raise TerminalError("Item inválido")
+                product_id = _str(item.get("product_id"), "Produto")
+                qty = _positive_int(item.get("quantity_milli"), "Quantidade")
+                line = lines.get(product_id)
+                if line is None or product_id in seen:
+                    raise TerminalError("Produto não pertence à venda ou está repetido")
+                seen.add(product_id)
+                if line["unit"] == "UN" and qty % 1000:
+                    raise TerminalError("Produto UN exige quantidade inteira")
+                if returned.get(product_id, 0) + qty > line["quantity_milli"]:
+                    raise TerminalError(f"Quantidade maior que a disponível para devolução: {line['name']}", 409)
+                amount = _return_amount(line["line_total_cents"], line["quantity_milli"], qty)
+                if amount <= 0:
+                    raise TerminalError("Valor devolvido inválido")
+                items.append({"product_id": product_id, "quantity_milli": qty, "amount_cents": amount})
+                total += amount
+            customer_id = request.get("customer_id") or snapshot.get("customer_id")
+            session_id = None
+            if refund == "cash":
+                cash = self._open_cash(conn)
+                session_id = cash["id"]
+                if total > self._cash_expected(conn, cash):
+                    raise TerminalError("Dinheiro no caixa insuficiente para a devolução", 409)
+            elif refund == "store_credit":
+                if not customer_id or not conn.execute("SELECT 1 FROM customers WHERE id=? AND active=1", (customer_id,)).fetchone():
+                    raise TerminalError("Crédito na loja exige cliente cadastrado", 409)
+                conn.execute("UPDATE customers SET store_credit_cents=store_credit_cents+? WHERE id=?", (total, customer_id))
+            else:
+                if not any(p["method"] == "credit_account" for p in snapshot.get("payments", [])):
+                    raise TerminalError("Abatimento no fiado exige venda a prazo", 409)
+                customer = conn.execute("SELECT open_credit_cents FROM customers WHERE id=?", (customer_id,)).fetchone()
+                open_credit = customer["open_credit_cents"] if customer else 0
+                conn.execute("UPDATE customers SET open_credit_cents=?,store_credit_cents=store_credit_cents+? WHERE id=?",
+                             (max(0, open_credit - total), max(0, total - open_credit), customer_id))
+            for item in items:
+                if lines[item["product_id"]].get("stock_controlled", True):
+                    conn.execute("UPDATE products SET stock_milli=stock_milli+? WHERE id=?",
+                                 (item["quantity_milli"], item["product_id"]))
+            timestamp = _now_ms()
+            conn.execute("INSERT INTO sale_returns VALUES (?,?,?,?,?,?,?,?,?)",
+                         (return_id, sale_id, session_id, operator["id"], refund, total, _json(items), reason, timestamp))
+            data = {"sale_id": sale_id, "items": items, "total_cents": total, "refund_method": refund,
+                    "reason": reason, "operator_id": operator["id"], "supervisor_id": supervisor,
+                    "created_at": timestamp}
+            if customer_id:
+                data["customer_id"] = customer_id
+            if session_id:
+                data["cash_session_id"] = session_id
+            self._event(conn, "sale.returned", return_id, data)
+            self._audit(conn, operator["id"], "sale.returned", sale_id, f"{refund}; {total}; supervisor={supervisor}")
+            return {"id": return_id, "sale_id": sale_id, "refund_method": refund, "total_cents": total, "items": items}
 
     def adjust_stock(self, operator, product_id, delta_milli, reason):
         self.ensure_sale_allowed()

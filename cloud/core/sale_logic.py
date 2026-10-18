@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.utils import timezone
 
 from . import commission_logic
+from .credit_logic import CREDIT_METHODS, apply_sale_payments, reverse_sale_credit
 from .api_common import APIError, audit, digest, fields, money, quantity, scoped, text, uuid_value
 from .models import Customer, FiscalDocument, Membership, Product, Sale, SaleItem, SalePayment, StockMovement
 from .views_stock import balance
@@ -91,8 +92,10 @@ def validate_sale(data, tenant):
         if not isinstance(payment, dict):
             raise APIError("Pagamento inválido")
         fields(payment, ("method", "amount_cents"), ("method", "amount_cents"))
-        if payment["method"] not in ("cash", "pix", "card", "card_credit", "card_debit"):
+        if payment["method"] not in ("cash", "pix", "card", "card_credit", "card_debit", *CREDIT_METHODS):
             raise APIError("Forma de pagamento inválida")
+        if payment["method"] in CREDIT_METHODS and customer is None:
+            raise APIError("Venda a prazo ou com crédito na loja exige cliente cadastrado")
         amount = money(payment["amount_cents"], "Pagamento", allow_zero=False)
         normalized_payments.append((payment["method"], amount))
         paid += amount
@@ -156,6 +159,7 @@ def persist_sale(terminal, event):
                                      delta_milli=-qty, source="sale", reason="Venda",
                                      reference=str(sale.id), terminal=terminal, sale=sale,
                                      idempotency_key=f"sale:{sale.id}:{product_id}")
+    apply_sale_payments(sale, validated["payments"])
     commission_logic.accrue(sale)
     audit(tenant, None, "sale.synced", sale, {"terminal_id": str(terminal.id), "stock_status": stock_status})
     return sale
@@ -183,6 +187,9 @@ def reverse_sale(sale, reason, status, actor=None, terminal=None, when=None):
                                      delta_milli=qty, source="void", reason=reason,
                                      reference=str(sale.id), actor=actor, terminal=terminal or sale.terminal,
                                      sale=sale, idempotency_key=f"void:{sale.id}:{product_id}")
+    if sale.returns.exists():
+        raise APIError("Venda com devolução registrada não pode ser cancelada; registre a devolução dos itens restantes", 409)
+    reverse_sale_credit(sale)
     commission_logic.reverse(sale, actor)
     sale.status = status
     sale.cancellation_reason = reason

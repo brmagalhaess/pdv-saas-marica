@@ -219,3 +219,12 @@ html,body{width:100%;max-width:100%;overflow:hidden}
 /* Product cards stay fully inside the scroll area while hovered. */
 .catalog .products-grid{contain:layout;padding:7px 5px 14px}
 .product:hover{transform:none;box-shadow:0 10px 24px #123f4b20;border-color:#15ad89}
+
+/* Devolução de venda */
+.return-dialog { max-width: 560px; width: min(560px, calc(100vw - 32px)); display: grid; gap: 12px; }
+.return-dialog label { display: grid; gap: 6px; font-weight: 600; }
+.return-lines { display: grid; gap: 8px; max-height: 40vh; overflow: auto; }
+.return-line { grid-template-columns: 1fr 110px; align-items: center; padding: 8px 10px; border: 1px solid var(--line, #dfe6e1); border-radius: 10px; }
+.return-line span { display: grid; gap: 2px; }
+.return-line small { font-weight: 400; opacity: .75; }
+.customer-select-field { grid-column: 1 / -1; }

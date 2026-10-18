@@ -89,7 +89,7 @@
             <div id="checkoutDetailsHome" class="checkout-details-home">
               <div class="checkout-confirm-section customer-section">
                 <div class="checkout-section-heading"><span>Cliente e documento</span><small>Opcional · informe somente se solicitado</small></div>
-                <div class="checkout-customer-grid"><label>Cliente <input id="customerName" placeholder="Nome para identificação"></label><label>CPF/CNPJ <input id="customerDocument" inputmode="numeric" maxlength="30" placeholder="Somente se o cliente solicitar"></label><label>Vendedor <select id="sellerSelect"><option value="">Sem vendedor</option></select></label></div>
+                <div class="checkout-customer-grid"><label>Cliente <input id="customerName" placeholder="Nome para identificação"></label><label>CPF/CNPJ <input id="customerDocument" inputmode="numeric" maxlength="30" placeholder="Somente se o cliente solicitar"></label><label>Vendedor <select id="sellerSelect"><option value="">Sem vendedor</option></select></label><label class="customer-select-field">Cliente cadastrado (fiado e crédito) <select id="customerSelect"><option value="">Consumidor não identificado</option></select></label></div>
               </div>
               <div class="checkout-confirm-section payment-section">
                 <div class="payment-heading"><span>Pagamento</span><small>Escolha como o cliente pagou</small></div>
@@ -97,13 +97,15 @@
                   <button type="button" class="payment-method" data-payment-method="cash"><span class="payment-method-icon">▣</span><strong>Dinheiro</strong><small>Informe o recebido</small></button>
                   <button type="button" class="payment-method" data-payment-method="pix"><span class="payment-method-icon">⌁</span><strong>Pix</strong><small>Confirmar no app</small></button>
                   <button type="button" class="payment-method" data-payment-method="card"><span class="payment-method-icon">▤</span><strong>Cartão</strong><small>Crédito ou débito</small></button>
+                  <button type="button" class="payment-method" data-payment-method="credit_account"><span class="payment-method-icon">✎</span><strong>A prazo</strong><small>Fiado do cliente</small></button>
+                  <button type="button" class="payment-method" data-payment-method="store_credit"><span class="payment-method-icon">↺</span><strong>Crédito loja</strong><small>Saldo de devolução</small></button>
                 </div>
                 <div id="cashPaymentPanel" class="payment-panel hidden"><label>Valor recebido em dinheiro<input id="payCash" class="money-input" type="text" inputmode="decimal" placeholder="Ex.: 50,00" autocomplete="off"></label><small class="payment-helper">O troco é calculado automaticamente.</small></div>
                 <div id="cardPaymentPanel" class="payment-panel card-payment-panel hidden"><span class="payment-panel-title">Tipo de cartão</span><div class="card-choice-row"><button type="button" class="card-choice" data-card-method="card_credit"><strong>Crédito</strong><small>Venda no crédito</small></button><button type="button" class="card-choice" data-card-method="card_debit"><strong>Débito</strong><small>Venda no débito</small></button></div></div>
                 <div id="paymentSelectionSummary" class="payment-selection-summary" aria-live="polite">Selecione uma forma de pagamento.</div>
                 <button id="splitPaymentToggle" class="payment-advanced-toggle" type="button" aria-expanded="false">Dividir pagamento</button>
                 <div id="advancedPaymentPanel" class="payment-advanced-panel hidden"><div class="payment-advanced-title"><strong>Pagamento dividido</strong><small>Use somente quando o cliente combinar formas.</small></div><div class="payment-grid"><label><span>Dinheiro</span><input id="paySplitCash" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label><label><span>Pix</span><input id="paySplitPix" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label><label><span>Crédito</span><input id="paySplitCredit" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label><label><span>Débito</span><input id="paySplitDebit" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label></div></div>
-                <div class="payment-values" hidden aria-hidden="true"><input id="payPix" type="hidden"><input id="payCredit" type="hidden"><input id="payDebit" type="hidden"></div>
+                <div class="payment-values" hidden aria-hidden="true"><input id="payPix" type="hidden"><input id="payCredit" type="hidden"><input id="payDebit" type="hidden"><input id="payAccount" type="hidden"><input id="payStoreCredit" type="hidden"></div>
                 <div class="checkout-change"><span id="changeText">Troco: R$ 0,00</span></div>
               </div>
             </div>

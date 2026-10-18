@@ -31,7 +31,8 @@ def product(row):
 
 def contact(row):
     return {"id": str(row.id), "name": row.name, "document": row.document,
-            "email": row.email, "phone": row.phone, "active": row.active}
+            "email": row.email, "phone": row.phone, "active": row.active,
+            **({"credit_limit_cents": row.credit_limit_cents} if hasattr(row, "credit_limit_cents") else {})}
 
 
 def member(row):
@@ -85,6 +86,7 @@ def receipt(row):
 
 def finance(row):
     return {"id": str(row.id), "shop_id": str(row.shop_id) if row.shop_id else None,
+            "sale_id": str(row.sale_id) if row.sale_id else None,
             "customer_id": str(row.customer_id) if row.customer_id else None,
             "supplier_id": str(row.supplier_id) if row.supplier_id else None,
             "kind": row.kind, "description": row.description, "amount_cents": row.amount_cents,
@@ -118,4 +120,10 @@ def sale(row, detail=False):
                            for x in row.items.all().order_by("line_number")]
         result["payments"] = [{"method": x.method, "amount_cents": x.amount_cents}
                               for x in row.payments.all().order_by("line_number")]
+        result["returns"] = [{"id": str(r.id), "total_cents": r.total_cents, "refund_method": r.refund_method,
+                              "reason": r.reason, "created_at": iso(r.created_at),
+                              "items": [{"product_id": str(i.product_id), "name": i.product.name,
+                                         "quantity_milli": i.quantity_milli, "amount_cents": i.amount_cents}
+                                        for i in r.items.select_related("product")]}
+                             for r in row.returns.prefetch_related("items").order_by("created_at")]
     return result

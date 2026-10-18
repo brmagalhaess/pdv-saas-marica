@@ -72,6 +72,8 @@ def finance_detail(request, pk):
         fields(data, ("description", "amount_cents", "due_date", "shop_id", "customer_id", "supplier_id"))
         if not data:
             raise APIError("Informe ao menos um campo")
+        if row.sale_id and set(data) & {"amount_cents", "customer_id", "shop_id"}:
+            raise APIError("Fiado gerado por venda: altere apenas descrição ou vencimento; use devolução ou cancelamento da venda", 409)
     values = {}
     for key, value in data.items():
         if key == "description":

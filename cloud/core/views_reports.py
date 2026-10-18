@@ -16,10 +16,11 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 
 from .api_common import APIError, endpoint, membership_context, method, require_feature, scoped
-from .models import FinanceEntry, Product, Sale, SaleItem, SalePayment, Shop, StockMovement
+from .models import FinanceEntry, Product, Sale, SaleItem, SalePayment, SaleReturn, Shop, StockMovement
 
 READ = {"owner", "admin", "manager", "finance", "viewer"}
-PAYMENT_NAMES = {"cash": "Dinheiro", "pix": "Pix", "card_credit": "Crédito", "card_debit": "Débito", "card": "Cartão"}
+PAYMENT_NAMES = {"cash": "Dinheiro", "pix": "Pix", "card_credit": "Crédito", "card_debit": "Débito", "card": "Cartão",
+                 "credit_account": "A prazo (fiado)", "store_credit": "Crédito na loja"}
 COVERAGE_DAYS = 15
 
 
@@ -49,16 +50,31 @@ def _pct(part, whole):
     return int((Decimal(part) * 10000 / Decimal(whole)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)) if whole else 0
 
 
+def _returns(tenant, shop, start, end):
+    rows = SaleReturn.objects.filter(tenant=tenant, sale__status="completed",
+                                     created_at__date__gte=start, created_at__date__lte=end)
+    return rows.filter(shop=shop) if shop else rows
+
+
 def sales_by_day(tenant, shop, start, end):
     rows = (_sales(tenant, shop, start, end).annotate(day=TruncDate("created_at")).values("day")
             .annotate(count=Count("id"), total=Sum("total_cents"), discount=Sum("discount_cents")).order_by("day"))
-    data = [{"day": r["day"].isoformat(), "count": r["count"], "total": r["total"], "discount": r["discount"],
-             "ticket": r["total"] // r["count"]} for r in rows]
+    returned = dict(_returns(tenant, shop, start, end).annotate(day=TruncDate("created_at"))
+                    .values_list("day").annotate(v=Sum("total_cents")))
+    days = {r["day"]: r for r in rows}
+    data = []
+    for day in sorted(set(days) | set(returned)):
+        r = days.get(day, {"count": 0, "total": 0, "discount": 0})
+        back = returned.get(day, 0)
+        data.append({"day": day.isoformat(), "count": r["count"], "total": r["total"], "discount": r["discount"],
+                     "returns": back, "net": r["total"] - back, "ticket": r["total"] // r["count"] if r["count"] else 0})
     count, total = sum(r["count"] for r in data), sum(r["total"] for r in data)
+    back = sum(r["returns"] for r in data)
     return ([_col("day", "Dia"), _col("count", "Vendas", "int"), _col("total", "Faturamento", "money"),
-             _col("discount", "Descontos", "money"), _col("ticket", "Ticket médio", "money")], data,
-            {"count": count, "total": total, "discount": sum(r["discount"] for r in data),
-             "ticket": total // count if count else 0})
+             _col("discount", "Descontos", "money"), _col("returns", "Devoluções", "money"),
+             _col("net", "Faturamento líquido", "money"), _col("ticket", "Ticket médio", "money")], data,
+            {"count": count, "total": total, "discount": sum(r["discount"] for r in data), "returns": back,
+             "net": total - back, "ticket": total // count if count else 0})
 
 
 def sales_by_hour(tenant, shop, start, end):
@@ -181,8 +197,16 @@ def stock_losses(tenant, shop, start, end):
 
 def cash_flow(tenant, shop, start, end):
     days = defaultdict(lambda: {"sales": 0, "received": 0, "paid": 0, "due_in": 0, "due_out": 0})
-    for row in _sales(tenant, shop, start, end).annotate(day=TruncDate("created_at")).values("day").annotate(v=Sum("total_cents")):
+    # Money that actually came in at the counter: fiado and store credit are not cash in.
+    sales = _sales(tenant, shop, start, end)
+    for row in (SalePayment.objects.filter(sale__in=sales).exclude(method__in=("credit_account", "store_credit"))
+                .annotate(day=TruncDate("sale__created_at")).values("day").annotate(v=Sum("amount_cents"))):
         days[row["day"]]["sales"] += row["v"]
+    for row in sales.annotate(day=TruncDate("created_at")).values("day").annotate(v=Sum("change_cents")):
+        days[row["day"]]["sales"] -= row["v"]
+    for row in (_returns(tenant, shop, start, end).filter(refund_method="cash")
+                .annotate(day=TruncDate("created_at")).values("day").annotate(v=Sum("total_cents"))):
+        days[row["day"]]["sales"] -= row["v"]
     finance = FinanceEntry.objects.filter(tenant=tenant)
     if shop:
         finance = finance.filter(Q(shop=shop) | Q(shop__isnull=True))
@@ -197,7 +221,7 @@ def cash_flow(tenant, shop, start, end):
         balance += v["sales"] + v["received"] - v["paid"]
         data.append({"day": day.isoformat(), **v, "net": v["sales"] + v["received"] - v["paid"], "balance": balance})
     totals = {k: sum(r[k] for r in data) for k in ("sales", "received", "paid", "due_in", "due_out", "net")}
-    return ([_col("day", "Dia"), _col("sales", "Vendas", "money"), _col("received", "Recebimentos", "money"),
+    return ([_col("day", "Dia"), _col("sales", "Vendas recebidas no caixa", "money"), _col("received", "Recebimentos", "money"),
              _col("paid", "Pagamentos", "money"), _col("net", "Resultado do dia", "money"),
              _col("balance", "Acumulado", "money"), _col("due_in", "A receber (previsto)", "money"),
              _col("due_out", "A pagar (previsto)", "money")], data, totals)

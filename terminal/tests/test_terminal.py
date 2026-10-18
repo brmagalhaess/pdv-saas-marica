@@ -331,6 +331,64 @@ class TerminalTests(unittest.TestCase):
         closed = [e["data"] for e in self.store.pending_events() if e["type"] == "cash.closed"]
         self.assertEqual([(e["operator_id"], e["supervisor_id"]) for e in closed], [(self.cashier_id, self.manager_id)])
 
+    def test_fiado_limit_store_credit_and_partial_returns(self):
+        customer_id = str(uuid.uuid4())
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[
+            {"id": customer_id, "name": "Dona Rosa", "document": "", "credit_limit_cents": 1500,
+             "open_credit_cents": 100, "store_credit_cents": 0}]))
+        self.store.open_cash(self.cashier_id, 5000)
+        rice = lambda qty: [{"product_id": self.unit_product_id, "quantity_milli": qty * 1000}]
+        fiado = self.store.sale(self.cashier, {"request_id": "fiado-1", "customer_id": customer_id,
+                                               "items": rice(2), "payments": [{"method": "credit_account", "amount_cents": 1400}]})
+        self.assertEqual(fiado["customer_name"], "Dona Rosa")
+        self.assertEqual(self.store.sale(self.cashier, {"request_id": "fiado-1", "customer_id": customer_id,
+            "items": rice(2), "payments": [{"method": "credit_account", "amount_cents": 1400}]})["id"], fiado["id"])
+        with self.assertRaisesRegex(TerminalError, "Limite de fiado excedido"):
+            self.store.sale(self.cashier, {"request_id": "fiado-2", "customer_id": customer_id,
+                                           "items": rice(1), "payments": [{"method": "credit_account", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "exige cliente"):
+            self.store.sale(self.cashier, {"request_id": "fiado-3", "items": rice(1),
+                                           "payments": [{"method": "credit_account", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "PIN de gerente"):
+            self.store.return_sale(self.cashier, fiado["id"], {"return_id": "r0", "refund_method": "account",
+                                   "reason": "Avaria", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        abated = self.store.return_sale(self.cashier, fiado["id"], {"return_id": "r1", "refund_method": "account",
+            "reason": "Avaria", "manager_pin": "654321", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        self.assertEqual(abated["total_cents"], 700)
+        self.assertEqual(self.store.returnable(fiado["id"])["items"][0]["available_milli"], 1000)
+        with self.assertRaisesRegex(TerminalError, "não pode ser cancelada"):
+            self.store.void_sale(self.manager, fiado["id"], "Teste")
+        # Return in store credit, then pay a new sale with it (an exchange).
+        self.store.return_sale(self.manager, fiado["id"], {"return_id": "r2", "refund_method": "store_credit",
+            "reason": "Troca", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        with self.assertRaisesRegex(TerminalError, "disponível para devolução"):
+            self.store.return_sale(self.manager, fiado["id"], {"return_id": "r3", "refund_method": "cash",
+                "reason": "x", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        swap = self.store.sale(self.cashier, {"request_id": "swap", "customer_id": customer_id, "items": rice(1),
+                                              "payments": [{"method": "store_credit", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "Crédito na loja insuficiente"):
+            self.store.sale(self.cashier, {"request_id": "swap-2", "customer_id": customer_id, "items": rice(1),
+                                           "payments": [{"method": "store_credit", "amount_cents": 700}]})
+        cash_sale = self.store.sale(self.cashier, {"request_id": "cash", "items": rice(1),
+                                                   "payments": [{"method": "cash", "amount_cents": 700}]})
+        self.store.return_sale(self.manager, cash_sale["id"], {"return_id": "r4", "refund_method": "cash",
+            "reason": "Desistiu", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        summary = self.store.cash_summary()
+        self.assertEqual((summary["categories"]["cash_refunds_cents"], summary["expected_cents"]), (700, 5000))
+        customer = self.store.customers("Rosa")[0]
+        self.assertEqual((customer["open_credit_cents"], customer["store_credit_cents"], customer["available_credit_cents"]),
+                         (800, 0, 700))
+        self.assertEqual(next(p for p in self.store.products() if p["id"] == self.unit_product_id)["stock_milli"], 2000)
+        returns = [e["data"] for e in self.store.pending_events() if e["type"] == "sale.returned"]
+        self.assertEqual([(r["refund_method"], r["total_cents"]) for r in returns], [("account", 700), ("store_credit", 700), ("cash", 700)])
+        # A catalog refresh keeps unsynced effects on top of the cloud balance.
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[
+            {"id": customer_id, "name": "Dona Rosa", "document": "", "credit_limit_cents": 1500,
+             "open_credit_cents": 100, "store_credit_cents": 0}]))
+        refreshed = self.store.customers()[0]
+        self.assertEqual((refreshed["open_credit_cents"], refreshed["store_credit_cents"]), (800, 0))
+        self.assertTrue(swap["id"])
+
     def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
         production_id = str(uuid.uuid4())
         production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",

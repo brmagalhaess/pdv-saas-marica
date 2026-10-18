@@ -86,6 +86,8 @@ def form_values(kind, data, tenant, creating):
         required = {"name", "price_cents"}
     else:
         allowed, required = {"name", "document", "email", "phone", "active"}, {"name"}
+        if kind == "customers":
+            allowed = allowed | {"credit_limit_cents"}
     fields(data, allowed, required if creating else ())
     if not data:
         raise APIError("Informe ao menos um campo")
@@ -110,7 +112,7 @@ def form_values(kind, data, tenant, creating):
                 result["category"] = None
             else:
                 result["category"] = scoped(Category, tenant, value)
-        elif key in ("price_cents", "stock_minimum_milli"):
+        elif key in ("price_cents", "stock_minimum_milli", "credit_limit_cents"):
             result[key] = money(value, key)
         elif key == "tax_fields":
             if not isinstance(value, dict) or len(str(value)) > 16000:
