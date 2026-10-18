@@ -14,6 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 from shared.licensing import LicenseError, load_private_key, load_public_key, payload_digest, sign_lease
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, product_quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
 from .models import Membership, Product, Sale, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
+from .cash_logic import CASH_EVENTS, apply_cash_event
 from .sale_logic import event_time, persist_sale, reverse_sale
 from .serializers import plan as plan_data, sync_conflict as sync_conflict_data, terminal as terminal_data
 from .views_stock import balance
@@ -384,8 +385,12 @@ def _validate_event(event, terminal):
         event_time(data["created_at"])
     elif event["type"] == "cash.closed":
         data = event["data"]
-        fields(data, ("counted_cents", "expected_cents", "difference_cents", "created_at"),
+        fields(data, ("counted_cents", "expected_cents", "difference_cents", "created_at",
+                      "operator_id", "supervisor_id"),
                ("counted_cents", "expected_cents", "difference_cents", "created_at"))
+        for key, label in (("operator_id", "Operador"), ("supervisor_id", "Supervisor")):
+            if data.get(key):
+                uuid_value(data[key], label)
         counted = money(data["counted_cents"], "Valor contado")
         expected = money(data["expected_cents"], "Valor esperado")
         if type(data["difference_cents"]) is not int or data["difference_cents"] != counted - expected:
@@ -466,6 +471,8 @@ def sync(request):
                              when=event_time(event["data"]["created_at"]))
             elif event["type"] == "stock.adjusted":
                 _persist_adjustment(terminal, event)
+            elif event["type"] in CASH_EVENTS:
+                apply_cash_event(terminal, event)
             accepted.append(event["event_id"])
     return JsonResponse({"accepted_event_ids": accepted, "conflicts": conflicts})
 

@@ -33,6 +33,7 @@ function parseMoneyInput(raw) {
 const tenantNav = [
   { group: "Acompanhar", id: "dashboard", label: "Visão geral", icon: "◫", feature:"cloud_dashboard", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
   { group: "Operação", id: "sales", label: "Vendas", icon: "▤", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
+  { group: "Operação", id: "cash", label: "Caixas", icon: "▢", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Operação", id: "products", label: "Produtos", icon: "▦", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
   { group: "Operação", id: "categories", label: "Categorias", icon: "◈", roles: ["owner","admin","manager","inventory","viewer"] },
   { group: "Operação", id: "stock", label: "Estoque", icon: "▣", feature:"stock", roles: ["owner","admin","manager","inventory","finance","viewer"] },
@@ -1115,6 +1116,111 @@ function personSelect(id, labelText, allText) {
       select.append(option);
     });
   } };
+}
+
+const paymentNames = { cash: "Dinheiro (líquido de troco)", pix: "Pix", card_credit: "Crédito", card_debit: "Débito", card: "Cartão" };
+function differenceBadge(cents) {
+  if (cents == null) return statusBadge("open");
+  const value = Number(cents);
+  return el("span", "badge " + (value < 0 ? "danger" : value > 0 ? "warn" : ""),
+    value === 0 ? "Sem diferença" : (value < 0 ? "Falta " : "Sobra ") + money(Math.abs(value)));
+}
+async function cashDetail(id) {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando caixa…"));
+  openDialog("Conferência de caixa", "Abertura, vendas por forma, movimentos e fechamento.", loading);
+  try {
+    const row = await api.get("/cash-sessions/" + encodeURIComponent(id));
+    const content = el("div");
+    if (row.incomplete) content.append(info("A abertura deste caixa não foi recebida pela nuvem; o valor de abertura pode estar incompleto.", true));
+    content.append(detailList([
+      ["Loja", shopName(row.shop_id)], ["Terminal", row.terminal_name], ["Aberto por", row.operator_name || "—"],
+      ["Abertura", dateTime(row.opened_at) + " · " + money(row.opening_cents)],
+      ["Fechamento", row.closed_at ? dateTime(row.closed_at) : "Caixa aberto"],
+      ["Fechado por", [row.closed_by_name, row.supervisor_name && "autorizado por " + row.supervisor_name].filter(Boolean).join(" · ") || "—"],
+      ["Vendas", `${row.sales_count} · ${money(row.sales_total_cents)}`],
+      ["Esperado em dinheiro", row.expected_cents == null ? "—" : money(row.expected_cents)],
+      ["Contado", row.counted_cents == null ? "—" : money(row.counted_cents)],
+      ["Diferença", differenceBadge(row.difference_cents)]
+    ]));
+    const methods = Object.entries(row.by_method || {});
+    const payTitle = el("h3", "", "Recebido por forma de pagamento");
+    payTitle.style.marginTop = "23px";
+    content.append(payTitle, methods.length
+      ? table([{ label: "Forma", render: r => paymentNames[r[0]] || r[0] }, { label: "Valor", render: r => money(r[1]) }], methods)
+      : empty("Sem vendas neste caixa", "Nenhuma venda concluída foi sincronizada para este turno."));
+    const moveTitle = el("h3", "", "Sangrias e suprimentos");
+    moveTitle.style.marginTop = "23px";
+    content.append(moveTitle, row.movements.length
+      ? table([{ label: "Tipo", render: m => m.kind === "withdrawn" ? "Sangria" : "Suprimento" },
+               { label: "Valor", render: m => money(m.amount_cents) }, { label: "Motivo", render: m => m.reason },
+               { label: "Operador", render: m => m.operator_name || "—" }, { label: "Hora", render: m => dateTime(m.created_at) }], row.movements)
+      : empty("Sem movimentos", "Não houve sangria nem suprimento neste turno."));
+    loading.replaceChildren(content);
+  } catch (error) {
+    loading.replaceChildren(empty("Não foi possível abrir o caixa", errorText(error), "!"));
+    handleError(error);
+  }
+}
+async function cashPage() {
+  const current = ++state.renderId;
+  const view = page("Caixas", "Confira abertura, vendas por forma de pagamento, sangrias e quebra de cada turno.", "Operação");
+  const box = el("section", "surface");
+  const toolbar = el("div", "toolbar");
+  const shop = shopSelect("cash-shop", true);
+  const statusField = el("div", "field");
+  const statusLabel = el("label", "", "Estado");
+  statusLabel.htmlFor = "cash-status";
+  const status = el("select");
+  status.id = "cash-status";
+  [["", "Todos"], ["open", "Abertos"], ["closed", "Fechados"], ["shortage", "Com falta"]].forEach(([value, text]) => {
+    const option = el("option", "", text); option.value = value; status.append(option);
+  });
+  statusField.append(statusLabel, status);
+  toolbar.append(shop.field, statusField);
+  box.append(toolbar);
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  async function load(cursor = "") {
+    const token = ++state.renderId;
+    content.replaceChildren(loadingSurface());
+    const params = new URLSearchParams({ limit: "30" });
+    if (shop.select.value) params.set("shop_id", shop.select.value);
+    if (status.value) params.set("status", status.value);
+    if (cursor) params.set("cursor", cursor);
+    try {
+      const response = await api.get("/cash-sessions?" + params);
+      if (token !== state.renderId) return;
+      const rows = records(response);
+      content.replaceChildren();
+      if (!rows.length) {
+        content.append(empty("Nenhum caixa encontrado", "Os turnos abertos e fechados nos terminais aparecerão aqui após a sincronização."));
+        return;
+      }
+      content.append(table([
+        { label: "Terminal", render: row => `${row.terminal_name} · ${shopName(row.shop_id)}` },
+        { label: "Operador", render: row => row.operator_name || "—" },
+        { label: "Abertura", render: row => dateTime(row.opened_at) },
+        { label: "Fechamento", render: row => row.closed_at ? dateTime(row.closed_at) : statusBadge("open") },
+        { label: "Vendido", render: row => money(row.sales_total_cents) },
+        { label: "Sangrias", render: row => money(row.withdrawn_cents) },
+        { label: "Quebra", render: row => differenceBadge(row.difference_cents) }
+      ], rows, row => [{ label: "Conferir", onClick: () => cashDetail(row.id) }]));
+      if (response.next_cursor) {
+        const footer = el("div", "table-footer");
+        footer.append(el("span", "", "Há mais caixas para consultar."));
+        footer.append(button("Próxima página", () => load(response.next_cursor), "ghost", "small"));
+        content.append(footer);
+      }
+    } catch (error) {
+      if (token !== state.renderId) return;
+      content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!"));
+      handleError(error);
+    }
+  }
+  if (current === state.renderId) load();
+  [shop.select, status].forEach(input => input.addEventListener("change", () => load()));
 }
 
 function idempotency(form, payload) {
@@ -2790,7 +2896,7 @@ async function printersPage() {
 }
 
 const tenantRoutes = {
-  dashboard:dashboardPage,sales:salesPage,products:()=>resourcePage("products"),
+  dashboard:dashboardPage,sales:salesPage,cash:cashPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,

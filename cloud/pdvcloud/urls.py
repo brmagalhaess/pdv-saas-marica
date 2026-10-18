@@ -3,6 +3,7 @@ from django.urls import include, path
 
 from core import views_auth as auth, views_finance as finance, views_pages as pages
 from core import views_platform as platform, views_resources as resources
+from core import views_cash as cash
 from core import views_sales as sales, views_stock as stock, views_terminal as terminal
 from core import views_users as users
 from core import views_owner as owner
@@ -58,6 +59,8 @@ urlpatterns = [
     path("api/v1/sales/<uuid:pk>/refund", sales.sale_reverse, {"action": "refund"}),
     path("api/v1/sales/<uuid:pk>", sales.sale_detail),
     path("api/v1/dashboard", sales.dashboard),
+    path("api/v1/cash-sessions", cash.cash_sessions),
+    path("api/v1/cash-sessions/<uuid:pk>", cash.cash_session_detail),
     path("api/v1/owner/monitoring", owner.monitoring),
     path("api/v1/audit", sales.audit_events),
     path("api/v1/platform/tenants", platform.tenants),

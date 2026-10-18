@@ -206,6 +206,9 @@ class Sale(models.Model):
                                related_name="credited_sales")
     seller_name_snapshot = models.CharField(max_length=160, blank=True)
     request_id = models.CharField(max_length=160)
+    # Plain id instead of FK: sales synced before CashSession existed reference
+    # sessions rebuilt later from SyncEvent, and ordering must never block sync.
+    cash_session_id = models.CharField(max_length=160, blank=True, db_index=True)
     content_hash = models.CharField(max_length=64)
     gross_cents = models.PositiveBigIntegerField()
     discount_cents = models.PositiveBigIntegerField(default=0)
@@ -250,6 +253,43 @@ class SalePayment(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["sale", "line_number"], name="sale_payment_line_unique")]
+
+
+class CashSession(models.Model):
+    """Register shift materialized from terminal cash.* events."""
+    id = models.UUIDField(primary_key=True, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="cash_sessions")
+    shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
+    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT)
+    operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name="opened_cash_sessions")
+    opening_cents = models.PositiveBigIntegerField(default=0)
+    opened_at = models.DateTimeField()
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
+                                  related_name="closed_cash_sessions")
+    supervisor = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name="supervised_cash_sessions")
+    counted_cents = models.PositiveBigIntegerField(null=True, blank=True)
+    expected_cents = models.PositiveBigIntegerField(null=True, blank=True)
+    difference_cents = models.BigIntegerField(null=True, blank=True)
+    # True when a movement or close arrived for a session whose opening was
+    # never received; the opening amount is then unknown.
+    incomplete = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [models.Index(fields=["tenant", "-opened_at"])]
+
+
+class CashMovement(models.Model):
+    KINDS = [(s, s) for s in ("withdrawn", "supplied")]
+    id = models.UUIDField(primary_key=True, editable=False)
+    session = models.ForeignKey(CashSession, on_delete=models.PROTECT, related_name="movements")
+    kind = models.CharField(max_length=20, choices=KINDS)
+    amount_cents = models.PositiveBigIntegerField()
+    reason = models.CharField(max_length=240)
+    operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True)
+    created_at = models.DateTimeField()
 
 
 class StockMovement(models.Model):

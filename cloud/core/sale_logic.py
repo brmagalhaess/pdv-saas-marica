@@ -136,6 +136,7 @@ def persist_sale(terminal, event):
                                operator_name_snapshot=validated["operator"].name if validated["operator"] else "",
                                seller_name_snapshot=validated["seller"].name if validated["seller"] else "",
                                request_id=validated["request_id"],
+                               cash_session_id=validated["cash_session_id"],
                                content_hash=content_hash, gross_cents=validated["gross_cents"],
                                discount_cents=validated["discount_cents"], total_cents=validated["total_cents"],
                                change_cents=validated["change_cents"], stock_status=stock_status,

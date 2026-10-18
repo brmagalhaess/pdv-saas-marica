@@ -534,6 +534,65 @@ class CloudAPITests(TestCase):
         self.assertTrue(people["Vendedora"]["seller"] and not people["Vendedora"]["operator"])
         self.assertEqual(self.api("GET", f"/api/v1/sales?seller_id={foreign.id}").status_code, 404)
 
+    def test_cash_shift_is_materialized_with_breakdown_and_shortage(self):
+        manager_user = get_user_model().objects.create_user(username="gerente-caixa@example.test",
+                                                            email="gerente-caixa@example.test", password="Synthetic-45!")
+        manager = Membership.objects.create(tenant=self.tenant, user=manager_user, name="Gerente", role="manager")
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa 1",
+            device_id="cash-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id), "terminal_id": str(terminal.id)}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+        now = int(time.time() * 1000)
+        session_id = uuid.uuid4().hex
+
+        def event(kind, aggregate, data):
+            return {"event_id": uuid.uuid4().hex, "type": kind, "aggregate_id": aggregate,
+                    "identity": identity, "data": data}
+
+        def sale(payments, change):
+            return event("sale.completed", str(uuid.uuid4()), {
+                "request_id": uuid.uuid4().hex, "cash_session_id": session_id, "created_at": now,
+                "customer_id": None, "customer_name": "", "customer_document": "",
+                "operator_id": str(self.member.id), "gross_cents": 999, "discount_cents": 0,
+                "total_cents": 999, "change_cents": change,
+                "items": [{"product_id": str(self.product.id), "name": "Arroz", "unit": "UN",
+                           "quantity_milli": 1000, "unit_price_cents": 999, "gross_cents": 999,
+                           "discount_cents": 0, "line_total_cents": 999, "stock_controlled": True}],
+                "payments": payments})
+
+        events = [
+            event("cash.opened", session_id, {"opening_cents": 5000, "operator_id": str(self.member.id), "created_at": now}),
+            sale([{"method": "cash", "amount_cents": 1000}], 1),
+            sale([{"method": "pix", "amount_cents": 999}], 0),
+            event("cash.withdrawn", uuid.uuid4().hex, {"cash_session_id": session_id, "amount_cents": 2000,
+                  "reason": "Depósito", "operator_id": str(self.member.id), "created_at": now + 1}),
+            event("cash.closed", session_id, {"counted_cents": 3900, "expected_cents": 3999, "difference_cents": -99,
+                  "created_at": now + 2, "operator_id": str(self.member.id), "supervisor_id": str(manager.id)}),
+            # Movement whose opening never reached the cloud must not block the queue.
+            event("cash.supplied", uuid.uuid4().hex, {"cash_session_id": uuid.uuid4().hex, "amount_cents": 100,
+                  "reason": "Troco", "operator_id": str(self.member.id), "created_at": now}),
+        ]
+        response = self.api("POST", "/api/v1/terminal/sync", {"events": events}, tenant=False, **headers)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.api("POST", "/api/v1/terminal/sync", {"events": events}, tenant=False,
+                                  **headers).status_code, 200)
+
+        self.client.force_login(self.owner)
+        listing = self.api("GET", "/api/v1/cash-sessions?status=shortage").json()["results"]
+        self.assertEqual(len(listing), 1)
+        row = listing[0]
+        self.assertEqual((row["operator_name"], row["closed_by_name"], row["supervisor_name"]), ("Dona", "Dona", "Gerente"))
+        self.assertEqual((row["sales_count"], row["sales_total_cents"], row["withdrawn_cents"]), (2, 1998, 2000))
+        self.assertEqual(row["by_method"], {"cash": 999, "pix": 999})
+        self.assertEqual(row["difference_cents"], -99)
+        detail = self.api("GET", f"/api/v1/cash-sessions/{row['id']}").json()
+        self.assertEqual([m["reason"] for m in detail["movements"]], ["Depósito"])
+        orphan = [r for r in self.api("GET", "/api/v1/cash-sessions?status=open").json()["results"]]
+        self.assertEqual(len(orphan), 1)
+        self.assertTrue(orphan[0]["incomplete"])
+        self.assertEqual(self.api("GET", "/api/v1/cash-sessions", tenant=self.other_tenant.id).status_code, 403)
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",

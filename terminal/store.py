@@ -862,7 +862,7 @@ class Store:
         # Fechar o caixa é uma operação de supervisão. A validação acontece
         # antes de alterar a sessão para que um PIN inválido nunca deixe o
         # operador em um estado parcialmente fechado.
-        self.manager_override(manager_pin)
+        supervisor_id = self.manager_override(manager_pin)
         counted_cents = _positive_int(counted_cents, "Valor contado", zero=True)
         with self.transaction() as conn:
             cash = self._open_cash(conn)
@@ -873,7 +873,8 @@ class Store:
                          (timestamp, counted_cents, expected, cash["id"]))
             self._event(conn, "cash.closed", cash["id"],
                         {"counted_cents": counted_cents, "expected_cents": expected,
-                         "difference_cents": counted_cents - expected, "created_at": timestamp})
+                         "difference_cents": counted_cents - expected, "created_at": timestamp,
+                         "operator_id": operator_id, "supervisor_id": supervisor_id})
             self._audit(conn, operator_id, "cash.closed", cash["id"])
             summary.update({"closed_at": timestamp, "expected_cents": expected,
                             "counted_cents": counted_cents,

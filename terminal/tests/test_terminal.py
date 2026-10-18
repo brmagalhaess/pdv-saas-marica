@@ -325,6 +325,12 @@ class TerminalTests(unittest.TestCase):
                          [(self.cashier_id, self.manager_id), (self.cashier_id, None)])
         self.assertEqual(next(x for x in self.store.products() if x["id"] == self.unit_product_id)["stock_milli"], 1000)
 
+    def test_cash_close_event_names_closer_and_supervisor(self):
+        self.store.open_cash(self.cashier_id, 0)
+        self.store.close_cash(self.cashier_id, 0, "654321")
+        closed = [e["data"] for e in self.store.pending_events() if e["type"] == "cash.closed"]
+        self.assertEqual([(e["operator_id"], e["supervisor_id"]) for e in closed], [(self.cashier_id, self.manager_id)])
+
     def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
         production_id = str(uuid.uuid4())
         production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",
