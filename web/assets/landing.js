@@ -7,7 +7,7 @@ const starterPlans = [
   { slug:"advanced", name:"Avançado", price_month_cents:34900, price_year_cents:349000, terminal_limit:3, shop_limit:2 }
 ];
 const featureNames = {
-  pdv_local:"Frente de caixa local (funciona offline)",
+  pdv_local:"Frente de caixa offline, fiado e trocas",
   cloud_dashboard:"Painel de gestão e conferência de caixas",
   stock:"Estoque por loja",
   finance:"Financeiro e comissão de vendedores",

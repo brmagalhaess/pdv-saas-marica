@@ -14,7 +14,9 @@ Os itens P0 fiscais e de pagamento continuam no plano de 90 dias da auditoria e 
 | 1.3 Caixa na nuvem + 2.1 conferência de caixa | ✅ entregue (turnos reconstruídos do histórico pela migração 0024) |
 | 2.2 Comissão de vendedor | ✅ entregue (planos com Financeiro) |
 | Onda 3 — relatórios com CSV | ✅ entregue: vendas (dia/hora/forma/operador/vendedor), curva ABC e lucro, fluxo de caixa, estoque baixo com sugestão, perdas. Falta: DRE, gráficos no painel, PDF |
-| Próximos | 2.3 fiado, 2.4 devolução/troca, 1.2 saldo materializado, 1.4 formas de pagamento configuráveis |
+| 2.3 Venda a prazo (fiado) com limite | ✅ entregue (limite controlado offline; extrato e recebimento em todos os planos) |
+| 2.4 Devolução parcial, troca e crédito na loja | ✅ entregue no terminal (dinheiro, crédito na loja ou abatimento do fiado) |
+| Próximos | 1.2 saldo materializado, 1.4 formas de pagamento configuráveis, recebimento de fiado no caixa, comprovante impresso de devolução, devolução pelo painel |
 
 ---
 
