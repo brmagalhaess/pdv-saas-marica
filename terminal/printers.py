@@ -162,6 +162,8 @@ def receipt_layout(sale, width=80):
         text(f"Caixa: {sale['terminal_name']}")
     if sale.get("operator_name"):
         text(f"Operador: {sale['operator_name']}")
+    if sale.get("seller_name"):
+        text(f"Vendedor: {sale['seller_name']}")
     rule()
     text("ITENS DA COMPRA", bold=True)
     for index, item in enumerate(sale.get("items", []), 1):

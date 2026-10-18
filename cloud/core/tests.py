@@ -481,6 +481,59 @@ class CloudAPITests(TestCase):
         self.assertEqual(sale.stock_status, "ok")
         self.assertFalse(StockMovement.objects.filter(product=production).exists())
 
+    def test_sale_keeps_operator_and_seller_and_filters_by_them(self):
+        seller_user = get_user_model().objects.create_user(username="seller@example.test",
+                                                           email="seller@example.test", password="Synthetic-44!")
+        seller = Membership.objects.create(tenant=self.tenant, user=seller_user, name="Vendedora", role="cashier")
+        foreign = Membership.objects.get(tenant=self.other_tenant)
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="seller-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id),
+                    "terminal_id": str(terminal.id)}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+        def sale_event(**people):
+            data = {"request_id": uuid.uuid4().hex, "cash_session_id": uuid.uuid4().hex,
+                    "created_at": int(time.time() * 1000), "customer_id": None,
+                    "customer_name": "", "customer_document": "", "gross_cents": 999,
+                    "discount_cents": 0, "total_cents": 999, "change_cents": 1,
+                    "items": [{"product_id": str(self.product.id), "name": self.product.name,
+                               "unit": "UN", "quantity_milli": 1000, "unit_price_cents": 999,
+                               "gross_cents": 999, "discount_cents": 0, "line_total_cents": 999,
+                               # Sent by current terminals; rejecting it stalled the sync queue.
+                               "stock_controlled": True}],
+                    "payments": [{"method": "cash", "amount_cents": 1000}], **people}
+            return {"event_id": uuid.uuid4().hex, "type": "sale.completed",
+                    "aggregate_id": str(uuid.uuid4()), "identity": identity, "data": data}
+
+        credited = sale_event(operator_id=str(self.member.id), seller_id=str(seller.id))
+        legacy = sale_event()  # queued by a terminal released before operator/seller existed
+        response = self.api("POST", "/api/v1/terminal/sync", {"events": [credited, legacy]},
+                            tenant=False, **headers)
+        self.assertEqual(response.status_code, 200, response.content)
+        sale = Sale.objects.get(pk=credited["aggregate_id"])
+        self.assertEqual((sale.operator_id, sale.seller_id), (self.member.id, seller.id))
+        self.assertEqual((sale.operator_name_snapshot, sale.seller_name_snapshot), ("Dona", "Vendedora"))
+        old = Sale.objects.get(pk=legacy["aggregate_id"])
+        self.assertEqual((old.operator_id, old.seller_id), (None, None))
+
+        intruder = sale_event(operator_id=str(self.member.id), seller_id=str(foreign.id))
+        response = self.api("POST", "/api/v1/terminal/sync", {"events": [intruder]}, tenant=False, **headers)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(Sale.objects.filter(pk=intruder["aggregate_id"]).exists())
+
+        self.client.force_login(self.owner)
+        listing = self.api("GET", f"/api/v1/sales?seller_id={seller.id}").json()["results"]
+        self.assertEqual([row["id"] for row in listing], [str(sale.id)])
+        self.assertEqual((listing[0]["operator_name"], listing[0]["seller_name"]), ("Dona", "Vendedora"))
+        self.assertEqual(len(self.api("GET", f"/api/v1/sales?operator_id={self.member.id}").json()["results"]), 1)
+        people = {row["name"]: row for row in self.api("GET", "/api/v1/sales/people").json()["results"]}
+        self.assertEqual(set(people), {"Dona", "Vendedora"})
+        self.assertTrue(people["Dona"]["operator"] and not people["Dona"]["seller"])
+        self.assertTrue(people["Vendedora"]["seller"] and not people["Vendedora"]["operator"])
+        self.assertEqual(self.api("GET", f"/api/v1/sales?seller_id={foreign.id}").status_code, 404)
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
@@ -494,6 +547,25 @@ class CloudAPITests(TestCase):
         self.assertIsNotNone(saved.last_seen_at)
         self.assertEqual(saved.heartbeat_pending_events, 0)
         self.assertEqual(saved.heartbeat_error, "")
+
+    def test_label_settings_default_validation_and_isolation(self):
+        self.client.force_login(self.owner)
+        self.assertEqual(self.api("GET", "/api/v1/label-settings").json(),
+                         {"width_mm": 50, "height_mm": 30, "gap_mm": 2, "sensor": "gap"})
+        saved = self.api("PATCH", "/api/v1/label-settings",
+                         {"width_mm": 40, "height_mm": 25.5, "gap_mm": 3, "sensor": "gap"})
+        self.assertEqual(saved.status_code, 200, saved.content)
+        self.assertEqual(Tenant.objects.get(pk=self.tenant.pk).label_settings,
+                         {"width_mm": 40, "height_mm": 25.5, "gap_mm": 3, "sensor": "gap"})
+        continuous = self.api("PATCH", "/api/v1/label-settings",
+                              {"width_mm": 58, "height_mm": 40, "gap_mm": 3, "sensor": "continuous"})
+        self.assertEqual(continuous.json()["gap_mm"], 0)
+        for body in ({"width_mm": 200, "height_mm": 30, "gap_mm": 2, "sensor": "gap"},
+                     {"width_mm": 50, "height_mm": 30, "gap_mm": 2, "sensor": "laser"},
+                     {"width_mm": True, "height_mm": 30, "gap_mm": 2, "sensor": "gap"},
+                     {"width_mm": 50, "height_mm": 30, "sensor": "gap"}):
+            self.assertEqual(self.api("PATCH", "/api/v1/label-settings", body).status_code, 400, body)
+        self.assertEqual(self.api("GET", "/api/v1/label-settings", tenant=self.other_tenant.id).status_code, 403)
 
     def test_platform_staff_scope(self):
         User = get_user_model()

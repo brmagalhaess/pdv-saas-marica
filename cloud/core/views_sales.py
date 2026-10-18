@@ -6,7 +6,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 
 from .api_common import APIError, endpoint, iso, membership_context, method, page, payload, require_feature, scoped, text, uuid_value
-from .models import AuditEvent, FinanceEntry, Product, Sale, Shop, StockMovement
+from .models import AuditEvent, FinanceEntry, Membership, Product, Sale, Shop, StockMovement
 from .sale_logic import reverse_sale
 from .serializers import sale as sale_data
 
@@ -27,7 +27,28 @@ def sales(request):
         rows = rows.filter(shop=scoped(Shop, member.tenant, request.GET["shop_id"]))
     if request.GET.get("status"):
         rows = rows.filter(status=request.GET["status"])
+    if request.GET.get("operator_id"):
+        rows = rows.filter(operator=scoped(Membership, member.tenant, request.GET["operator_id"]))
+    if request.GET.get("seller_id"):
+        rows = rows.filter(seller=scoped(Membership, member.tenant, request.GET["seller_id"]))
     return page(request, rows.order_by("-received_at", "-id"), sale_data)
+
+
+@endpoint
+def sale_people(request):
+    """Operators and sellers that appear on synced sales, for list filters.
+
+    Built from sales instead of the team list so every role that can read sales
+    gets the filter without gaining access to the company's user directory.
+    """
+    method(request, "GET")
+    member = membership_context(request)
+    rows = Sale.objects.filter(tenant=member.tenant)
+    people = {}
+    for field in ("operator", "seller"):
+        for pk, name in rows.exclude(**{f"{field}__isnull": True}).values_list(f"{field}_id", f"{field}__name").distinct():
+            people.setdefault(str(pk), {"id": str(pk), "name": name, "operator": False, "seller": False})[field] = True
+    return JsonResponse({"results": sorted(people.values(), key=lambda row: row["name"].lower())})
 
 
 @endpoint

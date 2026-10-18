@@ -301,6 +301,30 @@ class TerminalTests(unittest.TestCase):
         close = reopened.close_cash(self.cashier_id, 10400, "654321")
         self.assertEqual(close["expected_cents"], 10400)
 
+    def test_sale_event_carries_operator_and_optional_seller(self):
+        self.store.open_cash(self.cashier_id, 0)
+        request = {"request_id": "credited-sale", "seller_id": self.manager_id,
+                   "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+                   "payments": [{"method": "cash", "amount_cents": 700}]}
+        sale = self.store.sale(self.cashier, request)
+        self.assertEqual((sale["operator_name"], sale["seller_id"], sale["seller_name"]),
+                         ("Ana", self.manager_id, "Bruno"))
+        self.assertIn(b"Vendedor: Bruno", receipt_bytes(sale))
+        with self.assertRaisesRegex(TerminalError, "outra venda"):
+            self.store.sale(self.cashier, dict(request, seller_id=None))
+        plain = self.store.sale(self.cashier, {"request_id": "plain-sale",
+            "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+            "payments": [{"method": "cash", "amount_cents": 700}]})
+        self.assertIsNone(plain["seller_id"])
+        with self.assertRaisesRegex(TerminalError, "Vendedor não encontrado"):
+            self.store.sale(self.cashier, {"request_id": "ghost-seller", "seller_id": str(uuid.uuid4()),
+                "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+                "payments": [{"method": "cash", "amount_cents": 700}]})
+        events = [e["data"] for e in self.store.pending_events() if e["type"] == "sale.completed"]
+        self.assertEqual([(e["operator_id"], e["seller_id"]) for e in events],
+                         [(self.cashier_id, self.manager_id), (self.cashier_id, None)])
+        self.assertEqual(next(x for x in self.store.products() if x["id"] == self.unit_product_id)["stock_milli"], 1000)
+
     def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
         production_id = str(uuid.uuid4())
         production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",

@@ -130,6 +130,9 @@ class CloudContractTests(unittest.TestCase):
         with patch("terminal.sync._request", side_effect=django_request):
             self.assertEqual(sync_once(store)["remaining"], 0)
         self.assertEqual(Sale.objects.filter(tenant=tenant).count(), 1)
+        synced = Sale.objects.get(pk=sale["id"])
+        self.assertEqual((str(synced.operator_id), synced.operator_name_snapshot), (operator["id"], "Gerente"))
+        self.assertIsNone(synced.seller_id)
         self.assertEqual(StockMovement.objects.filter(tenant=tenant, source="sale").count(), 1)
         self.assertEqual(StockMovement.objects.filter(tenant=tenant, product=product).aggregate(
             total=django.db.models.Sum("delta_milli"))["total"], 3750)

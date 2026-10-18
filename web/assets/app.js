@@ -43,6 +43,7 @@ const tenantNav = [
   { group: "Administração", id: "company", label: "Minha empresa", icon: "◧", roles: ["owner","admin"] },
   { group: "Administração", id: "users", label: "Equipe", icon: "♙", roles: ["owner","admin"] },
   { group: "Administração", id: "terminals", label: "Terminais", icon: "▥", roles: ["owner","admin"] },
+  { group: "Administração", id: "printers", label: "Impressoras", icon: "⎙", roles: ["owner","admin"] },
   { group: "Administração", id: "subscription", label: "Assinatura", icon: "◉", roles: ["owner","admin"] },
   { group: "Administração", id: "integrations", label: "Integrações", icon: "◇", roles: ["owner","admin"] },
   { group: "Administração", id: "audit", label: "Auditoria", icon: "≡", roles: ["owner","admin"] },
@@ -569,36 +570,49 @@ const productLabelStyles = `
   .product-print-label-unit{font-size:8pt;font-weight:400}
   .product-print-label-barcode{width:37.29mm;height:15.18mm;justify-self:center}
   .product-print-label-barcode svg{display:block;width:37.29mm;height:15.18mm;max-width:none}
+  .product-print-page{box-sizing:border-box;margin:0;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
+  .product-print-page .product-print-label{flex:none}
 `;
+const defaultLabelSize = { width_mm: 50, height_mm: 30, gap_mm: 2, sensor: "gap" };
+// The 50 × 30 mm design is scaled to the configured label stock.
+function labelScale(size) { return Math.min(size.width_mm / 50, size.height_mm / 30); }
+function labelSizeText(size) { return `${String(size.width_mm).replace(".", ",")} × ${String(size.height_mm).replace(".", ",")} mm`; }
 function labelHtmlEscape(value) {
   return String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 }
 function productLabelMarkup(product) {
   return `<article class="product-print-label"><div class="product-print-label-name" title="${labelHtmlEscape(product.name)}">${labelHtmlEscape(product.name)}</div><div class="product-print-label-price"><span>${labelHtmlEscape(money(product.price_cents))}</span><span class="product-print-label-unit">/ ${labelHtmlEscape(product.unit || "UN")}</span></div><div class="product-print-label-barcode">${ean13Svg(product.barcode)}</div></article>`;
 }
-function productLabelPrintDocument(product, quantity) {
+function productLabelPageMarkup(product, size) {
+  return `<div class="product-print-page" style="width:${size.width_mm}mm;height:${size.height_mm}mm"><div style="transform:scale(${labelScale(size)})">${productLabelMarkup(product)}</div></div>`;
+}
+function productLabelPrintDocument(product, quantity, size = defaultLabelSize) {
   if (!validEan13(product.barcode)) throw new Error("O produto precisa ter um EAN-13 válido para imprimir etiquetas.");
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) throw new Error("Informe uma quantidade entre 1 e 999 etiquetas.");
-  const labels = Array.from({ length: quantity }, () => productLabelMarkup(product)).join("");
+  const labels = Array.from({ length: quantity }, () => productLabelPageMarkup(product, size)).join("");
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiquetas · ${labelHtmlEscape(product.name)}</title><style>
-    html,body{margin:0;padding:0;background:#fff}body{width:50mm}
+    html,body{margin:0;padding:0;background:#fff}body{width:${size.width_mm}mm}
     ${productLabelStyles}
-    @page{size:50mm 30mm;margin:0}
-    @media print{.product-print-label{break-after:page;page-break-after:always}.product-print-label:last-child{break-after:auto;page-break-after:auto}}
+    @page{size:${size.width_mm}mm ${size.height_mm}mm;margin:0}
+    @media print{.product-print-page{break-after:page;page-break-after:always}.product-print-page:last-child{break-after:auto;page-break-after:auto}}
   </style></head><body>${labels}</body></html>`;
 }
-function printProductBarcode(product, quantity) {
-  const markup = productLabelPrintDocument(product, quantity);
+function printProductBarcode(product, quantity, size) {
+  printLabelDocument(productLabelPrintDocument(product, quantity, size));
+}
+function printLabelDocument(markup) {
   const popup = window.open("", "_blank", "width=440,height=620");
   if (!popup) { toast("Permita pop-ups para imprimir a etiqueta.", "error"); return; }
   popup.document.open();
   popup.document.write(markup);
   popup.document.close();
   popup.focus();
-  // This function runs only after the user submits the label dialog.
+  // Callers run only after a user action (dialog submit or button click).
   popup.print();
 }
-function productLabelDialog(product) {
+async function productLabelDialog(product) {
+  const size = { ...defaultLabelSize, ...(await api.get("/label-settings")) };
+  const sizeText = labelSizeText(size);
   const form = el("form", "label-print-form");
   const style = el("style"); style.textContent = productLabelStyles; form.append(style);
   form.append(info("Use impressora de etiquetas com sensor de intervalo. A Epson TM-T20 utiliza bobinas de recibo de 58 ou 80 mm e não alinha etiquetas com espaços.", true));
@@ -609,18 +623,18 @@ function productLabelDialog(product) {
   quantityLabel.htmlFor = quantityInput.id;
   quantityField.append(quantityLabel, quantityInput, el("small", "", "De 1 a 999 cópias deste produto."));
   const sizeField = el("div", "field");
-  sizeField.append(el("span", "field-label", "Tamanho da etiqueta"), el("strong", "label-print-size", "50 × 30 mm"), el("small", "", "Uma etiqueta por página."));
+  sizeField.append(el("span", "field-label", "Tamanho da etiqueta"), el("strong", "label-print-size", sizeText), el("small", "", "Uma etiqueta por página. Altere em Administração → Impressoras."));
   controls.append(quantityField, sizeField); form.append(controls);
-  const preview = el("figure", "label-print-preview"), caption = el("figcaption", "", "Prévia · 50 × 30 mm");
+  const preview = el("figure", "label-print-preview"), caption = el("figcaption", "", "Prévia · " + sizeText);
   preview.append(caption);
   const barcodeValid = validEan13(product.barcode);
   if (barcodeValid) {
-    const sheet = el("div", "label-print-sheet"); sheet.innerHTML = productLabelMarkup(product); preview.append(sheet);
+    const sheet = el("div", "label-print-sheet"); sheet.innerHTML = productLabelPageMarkup(product, size); preview.append(sheet);
   } else {
     preview.append(el("p", "feedback error", "O código de barras deste produto não é um EAN-13 válido. Corrija o cadastro antes de imprimir."));
   }
   form.append(preview);
-  form.append(el("p", "label-print-help", "Na impressão do navegador, selecione papel 50 × 30 mm, escala 100%, margens zero e desative cabeçalhos e rodapés. Nas preferências da impressora, desative o corte automático."));
+  form.append(el("p", "label-print-help", "Na impressão do navegador, selecione papel " + sizeText + ", escala 100%, margens zero e desative cabeçalhos e rodapés. Nas preferências da impressora, desative o corte automático."));
   const message = el("p", "feedback error"); message.hidden = true; message.setAttribute("role", "alert"); form.append(message);
   const actions = el("div", "form-actions"), print = button("Imprimir etiquetas", null);
   print.type = "submit"; print.disabled = !barcodeValid;
@@ -628,7 +642,7 @@ function productLabelDialog(product) {
   form.addEventListener("submit", event => {
     event.preventDefault();
     if (!form.reportValidity()) return;
-    try { printProductBarcode(product, Number(quantityInput.value)); message.hidden = true; }
+    try { printProductBarcode(product, Number(quantityInput.value), size); message.hidden = true; }
     catch (error) { handleError(error, message); }
   });
   openDialog("Imprimir etiquetas", product.name, form);
@@ -815,7 +829,7 @@ async function resourcePage(key) {
       const actionsFor = spec.edit() || (spec.remove && spec.edit()) ? row => {
         const actions = [];
         if (spec.edit()) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
-        if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row) });
+        if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row).catch(handleError) });
         if (spec.remove && spec.edit()) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria.", async () => {
           await api.delete(spec.endpoint + "/" + row.id);
           toast("Registro desativado.");
@@ -963,6 +977,8 @@ async function saleDetail(id) {
       ["Identificador", sale.id],
       ["Loja", shopName(sale.shop_id)],
       ["Terminal", sale.terminal_name || sale.terminal_id],
+      ["Operador", sale.operator_name || "—"],
+      ["Vendedor", sale.seller_name || "—"],
       ["Data", dateTime(sale.created_at)],
       ["Total", money(sale.total_cents)],
       ["Estado", statusBadge(sale.status)],
@@ -1029,7 +1045,14 @@ async function salesPage() {
   const box = el("section", "surface");
   const toolbar = el("div", "toolbar");
   const shop = shopSelect("sales-shop", true);
-  toolbar.append(shop.field, el("span", "toolbar-meta", "Vendas recebidas pela nuvem"));
+  const operator = personSelect("sales-operator", "Operador", "Todos os operadores");
+  const seller = personSelect("sales-seller", "Vendedor", "Todos os vendedores");
+  toolbar.append(shop.field, operator.field, seller.field, el("span", "toolbar-meta", "Vendas recebidas pela nuvem"));
+  api.get("/sales/people").then(response => {
+    const people = records(response);
+    operator.fill(people.filter(row => row.operator));
+    seller.fill(people.filter(row => row.seller));
+  }).catch(handleError);
   box.append(toolbar);
   const content = el("div");
   box.append(content);
@@ -1039,6 +1062,8 @@ async function salesPage() {
     content.replaceChildren(loadingSurface());
     const params = new URLSearchParams({ limit: "30" });
     if (shop.select.value) params.set("shop_id", shop.select.value);
+    if (operator.select.value) params.set("operator_id", operator.select.value);
+    if (seller.select.value) params.set("seller_id", seller.select.value);
     if (cursor) params.set("cursor", cursor);
     try {
       const response = await api.get("/sales?" + params);
@@ -1053,6 +1078,7 @@ async function salesPage() {
         { label: "Venda", render: row => String(row.id).slice(0, 8) },
         { label: "Loja", render: row => shopName(row.shop_id) },
         { label: "Data", render: row => dateTime(row.created_at) },
+        { label: "Operador / vendedor", render: row => [row.operator_name, row.seller_name].filter(Boolean).join(" / ") || "—" },
         { label: "Total", render: row => money(row.total_cents) },
         { label: "Estado", render: row => statusBadge(row.status) },
         { label: "Fiscal", render: row => statusBadge(row.fiscal_state || row.fiscal_status || "not_issued") }
@@ -1070,7 +1096,25 @@ async function salesPage() {
     }
   }
   if (current === state.renderId) load();
-  shop.select.addEventListener("change", () => load());
+  [shop.select, operator.select, seller.select].forEach(input => input.addEventListener("change", () => load()));
+}
+function personSelect(id, labelText, allText) {
+  const field = el("div", "field");
+  const label = el("label", "", labelText);
+  label.htmlFor = id;
+  const select = el("select");
+  select.id = id;
+  const all = el("option", "", allText);
+  all.value = "";
+  select.append(all);
+  field.append(label, select);
+  return { field, select, fill(people) {
+    people.forEach(person => {
+      const option = el("option", "", person.name);
+      option.value = person.id;
+      select.append(option);
+    });
+  } };
 }
 
 function idempotency(form, payload) {
@@ -2636,12 +2680,121 @@ async function platformSecurityPage() {
   } catch (error) { if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } }
 }
 
+const labelPresets = [
+  { width_mm: 30, height_mm: 20, use: "gôndola pequena, bijuteria" },
+  { width_mm: 40, height_mm: 25, use: "preço de gôndola" },
+  { width_mm: 40, height_mm: 30, use: "produto pequeno" },
+  { width_mm: 40, height_mm: 40, use: "frios, padaria" },
+  { width_mm: 50, height_mm: 25, use: "código de barras compacto" },
+  { width_mm: 50, height_mm: 30, use: "produto com código de barras" },
+  { width_mm: 60, height_mm: 40, use: "balança, hortifrúti" },
+  { width_mm: 100, height_mm: 50, use: "caixa, prateleira" },
+  { width_mm: 100, height_mm: 100, use: "volume, estoque" },
+  { width_mm: 100, height_mm: 150, use: "envio, Correios e marketplaces" }
+];
+const labelSensorNames = { gap: "Espaço entre etiquetas (mais comum)", mark: "Marca preta no verso", continuous: "Papel contínuo, sem divisão" };
+function selectNode(id, labelText, options, value) {
+  const field = el("div", "field"), label = el("label", "", labelText), select = el("select");
+  label.htmlFor = select.id = id;
+  options.forEach(([optionValue, text]) => { const option = el("option", "", text); option.value = optionValue; select.append(option); });
+  if (value !== undefined) select.value = String(value);
+  field.append(label, select);
+  return { field, select };
+}
+function numberNode(id, labelText, min, max, value) {
+  const field = el("div", "field"), label = el("label", "", labelText), input = el("input");
+  label.htmlFor = input.id = id; input.type = "number"; input.min = String(min); input.max = String(max); input.step = "0.1"; input.required = true; input.value = String(value);
+  field.append(label, input);
+  return { field, input };
+}
+function testLabelPrintDocument(size) {
+  const font = Math.max(6, Math.min(14, size.height_mm / 4));
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiqueta de teste · ${labelSizeText(size)}</title><style>
+    html,body{margin:0;padding:0;background:#fff}
+    @page{size:${size.width_mm}mm ${size.height_mm}mm;margin:0}
+    .test-label{box-sizing:border-box;width:${size.width_mm}mm;height:${size.height_mm}mm;border:.6mm solid #000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1mm;font-family:Arial,sans-serif;color:#000;overflow:hidden}
+    .test-label strong{font-size:${font}pt}.test-label span{font-size:${(font * .7).toFixed(1)}pt}
+  </style></head><body><div class="test-label"><strong>TESTE PDV</strong><span>${labelSizeText(size)}</span></div></body></html>`;
+}
+async function printersPage() {
+  const token = ++state.renderId;
+  const view = page("Impressoras", "Escolha o tamanho da etiqueta, imprima um teste e calibre a impressora de etiquetas.", "Administração");
+  view.outer.append(info("As etiquetas são impressas por este computador, pela janela de impressão do navegador. A impressora de etiquetas precisa estar instalada no sistema (Windows, Linux ou macOS) com o driver do fabricante."));
+  const labelBox = surface("Etiqueta da loja", "Usada em Produtos → Imprimir etiquetas.");
+  const testBox = surface("Testar e calibrar", "Calibre sempre que trocar o rolo ou quando a impressora puxar etiquetas em branco.");
+  view.outer.append(labelBox, testBox);
+  labelBox.append(loadingSurface());
+  try {
+    const settings = await api.get("/label-settings");
+    if (token !== state.renderId) return;
+    const label = { ...defaultLabelSize, ...settings };
+
+    const form = el("form", "form-grid");
+    const presetKey = size => `${size.width_mm}x${size.height_mm}`;
+    const preset = selectNode("label-preset", "Tamanho da etiqueta",
+      [...labelPresets.map(size => [presetKey(size), `${labelSizeText(size)} · ${size.use}`]), ["custom", "Outro tamanho…"]]);
+    preset.select.value = labelPresets.some(size => presetKey(size) === presetKey(label)) ? presetKey(label) : "custom";
+    const width = numberNode("label-width", "Largura (mm)", 15, 108, label.width_mm);
+    const height = numberNode("label-height", "Altura (mm)", 10, 200, label.height_mm);
+    const sensor = selectNode("label-sensor", "Tipo de papel", Object.entries(labelSensorNames), label.sensor);
+    const gap = selectNode("label-gap", "Espaço entre etiquetas", [0, 1, 2, 3, 4, 5, 6, 8, 10].map(mm => [String(mm), mm + " mm"]), label.gap_mm);
+    if (![...gap.select.options].some(option => option.value === String(label.gap_mm))) gap.select.value = "2";
+    const smallWarning = info("Em etiquetas com menos de 40 mm de largura o código de barras fica pequeno e alguns leitores podem não reconhecer.", true);
+    const currentLabel = () => ({ width_mm: Number(width.input.value), height_mm: Number(height.input.value),
+      gap_mm: sensor.select.value === "continuous" ? 0 : Number(gap.select.value), sensor: sensor.select.value });
+    const driverHint = el("p", "label-print-help");
+    const syncFields = () => {
+      const custom = preset.select.value === "custom";
+      width.input.disabled = height.input.disabled = !custom;
+      if (!custom) { const [w, h] = preset.select.value.split("x").map(Number); width.input.value = w; height.input.value = h; }
+      gap.select.disabled = sensor.select.value === "continuous";
+      smallWarning.hidden = Number(width.input.value) >= 40;
+      const size = currentLabel();
+      driverHint.textContent = "No driver da impressora, configure o papel " + labelSizeText(size) + " e o tipo " +
+        (size.sensor === "gap" ? "etiqueta com espaço de " + size.gap_mm + " mm" : size.sensor === "mark" ? "marca preta" : "contínuo") +
+        ". Na janela de impressão do navegador, use escala 100%, margens nenhuma e desative cabeçalhos e rodapés.";
+    };
+    [preset.select, sensor.select, gap.select].forEach(node => node.addEventListener("change", syncFields));
+    [width.input, height.input].forEach(node => node.addEventListener("input", syncFields));
+    syncFields();
+    form.append(preset.field, sensor.field, width.field, height.field, gap.field);
+    const labelMessage = formMessage(form);
+    const labelActions = el("div", "form-actions"), save = el("button", "button", "Salvar tamanho"); save.type = "submit";
+    labelActions.append(save); form.append(labelActions);
+    labelBox.replaceChildren(labelBox.firstChild, labelBox.children[1], smallWarning, form);
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); if (!form.reportValidity()) return;
+      save.disabled = true;
+      try { await api.patch("/label-settings", currentLabel()); labelMessage.hidden = true; toast("Tamanho da etiqueta salvo."); }
+      catch (error) { handleError(error, labelMessage); }
+      finally { save.disabled = false; }
+    });
+
+    const steps = el("ol", "label-calibration-steps");
+    ["Coloque o rolo com o lado térmico (o que escurece ao riscar com a unha) virado para cima, passando pelo sensor.",
+     "Desligue a impressora.",
+     "Segure o botão FEED e ligue a impressora.",
+     "Solte o FEED quando a luz piscar ou o papel começar a avançar. A impressora mede o espaço entre etiquetas sozinha e para no início de uma etiqueta.",
+     "Com a luz estável (verde ou azul), clique em Imprimir etiqueta de teste. Deve sair uma única etiqueta, dentro da borda."
+    ].forEach(text => steps.append(el("li", "", text)));
+    const testActions = el("div", "connection-actions");
+    testActions.append(button("Imprimir etiqueta de teste", () => {
+      if (!form.reportValidity()) return;
+      printLabelDocument(testLabelPrintDocument(currentLabel()));
+    }));
+    testBox.append(steps, testActions, driverHint,
+      info("Luz vermelha piscando ou várias etiquetas em branco: o sensor perdeu o espaço entre etiquetas. Repita a calibração e confira se o tamanho e o espaço no driver são os mesmos desta tela.", true));
+  } catch (error) {
+    if (token === state.renderId) { labelBox.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); testBox.replaceChildren(); handleError(error); }
+  }
+}
+
 const tenantRoutes = {
   dashboard:dashboardPage,sales:salesPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,
-  terminals:terminalsPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage
+  terminals:terminalsPage,printers:printersPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage
 };
 const platformRoutes = {
   overview:platformOverview,tenants:platformTenants,plans:platformPlans,

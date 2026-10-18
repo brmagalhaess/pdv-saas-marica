@@ -6,6 +6,7 @@ from core import views_platform as platform, views_resources as resources
 from core import views_sales as sales, views_stock as stock, views_terminal as terminal
 from core import views_users as users
 from core import views_owner as owner
+from core import views_labels as labels
 
 admin.site.site_header = "PDV2 • Administração da plataforma"
 admin.site.site_title = "PDV2"
@@ -48,9 +49,11 @@ urlpatterns = [
     path("api/v1/terminal/bootstrap", terminal.bootstrap),
     path("api/v1/terminal/heartbeat", terminal.heartbeat),
     path("api/v1/terminal/sync", terminal.sync),
+    path("api/v1/label-settings", labels.label_settings),
     path("api/v1/sync/conflicts", terminal.conflicts),
     path("api/v1/sync/conflicts/<uuid:pk>", terminal.conflict_detail),
     path("api/v1/sales", sales.sales),
+    path("api/v1/sales/people", sales.sale_people),
     path("api/v1/sales/<uuid:pk>/cancel", sales.sale_reverse, {"action": "cancel"}),
     path("api/v1/sales/<uuid:pk>/refund", sales.sale_reverse, {"action": "refund"}),
     path("api/v1/sales/<uuid:pk>", sales.sale_detail),

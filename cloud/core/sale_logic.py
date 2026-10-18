@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.utils import timezone
 
 from .api_common import APIError, audit, digest, fields, money, quantity, scoped, text, uuid_value
-from .models import Customer, FiscalDocument, Product, Sale, SaleItem, SalePayment, StockMovement
+from .models import Customer, FiscalDocument, Membership, Product, Sale, SaleItem, SalePayment, StockMovement
 from .views_stock import balance
 
 
@@ -19,16 +19,28 @@ def event_time(value):
         raise APIError("Data do evento inválida")
 
 
+def _member(tenant, pk, label):
+    if not pk:
+        return None
+    row = Membership.objects.filter(tenant=tenant, pk=uuid_value(pk, label)).first()
+    if row is None:
+        raise APIError(f"{label} da venda não pertence à empresa")
+    return row
+
+
 def validate_sale(data, tenant):
     if not isinstance(data, dict):
         raise APIError("Venda inválida")
     required = ("request_id", "cash_session_id", "created_at", "gross_cents",
                 "discount_cents", "total_cents", "change_cents", "items", "payments")
-    fields(data, required + ("customer_id", "customer_name", "customer_document"), required)
+    fields(data, required + ("customer_id", "customer_name", "customer_document",
+                             "operator_id", "seller_id"), required)
     request_id = text(data["request_id"], "Identificador da venda", 160)
     cash_session_id = text(data["cash_session_id"], "Sessão de caixa", 160)
     created_at = event_time(data["created_at"])
     customer = scoped(Customer, tenant, data["customer_id"]) if data.get("customer_id") else None
+    operator = _member(tenant, data.get("operator_id"), "Operador")
+    seller = _member(tenant, data.get("seller_id"), "Vendedor")
     customer_name = text(data.get("customer_name", ""), "Nome do consumidor", 180, optional=True)
     customer_document = text(data.get("customer_document", ""), "Documento do consumidor", 30, optional=True)
     items, payments = data["items"], data["payments"]
@@ -43,7 +55,9 @@ def validate_sale(data, tenant):
             raise APIError("Item inválido")
         required_item = ("product_id", "name", "unit", "quantity_milli", "unit_price_cents",
                          "gross_cents", "discount_cents", "line_total_cents")
-        fields(item, required_item + ("ncm", "sku"), required_item)
+        # stock_controlled is the terminal's catalog snapshot; the central
+        # product record stays authoritative for stock effects.
+        fields(item, required_item + ("ncm", "sku", "stock_controlled"), required_item)
         product = scoped(Product, tenant, item["product_id"])
         name = text(item["name"], "Nome do item", 180)
         if item["unit"] != product.unit:
@@ -90,7 +104,8 @@ def validate_sale(data, tenant):
             "gross_cents": gross_sale, "discount_cents": discount_sale,
             "total_cents": total_sale, "change_cents": change,
             "items": normalized_items, "payments": normalized_payments,
-            "customer_name": customer_name, "customer_document": customer_document}
+            "customer_name": customer_name, "customer_document": customer_document,
+            "operator": operator, "seller": seller}
 
 
 def persist_sale(terminal, event):
@@ -116,7 +131,11 @@ def persist_sale(terminal, event):
                                      for pid, qty in quantities.items()) else "ok"
     sale = Sale.objects.create(id=sale_id, tenant=tenant, shop=shop, terminal=terminal,
                                customer=validated["customer"], customer_name_snapshot=validated["customer_name"],
-                               customer_document_snapshot=validated["customer_document"], request_id=validated["request_id"],
+                               customer_document_snapshot=validated["customer_document"],
+                               operator=validated["operator"], seller=validated["seller"],
+                               operator_name_snapshot=validated["operator"].name if validated["operator"] else "",
+                               seller_name_snapshot=validated["seller"].name if validated["seller"] else "",
+                               request_id=validated["request_id"],
                                content_hash=content_hash, gross_cents=validated["gross_cents"],
                                discount_cents=validated["discount_cents"], total_cents=validated["total_cents"],
                                change_cents=validated["change_cents"], stock_status=stock_status,

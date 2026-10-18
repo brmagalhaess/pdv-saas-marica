@@ -56,6 +56,9 @@ class Tenant(models.Model):
     # Local operating schedule consumed by terminals for opening control.
     # Example: {"mon": {"enabled": true, "open": "08:00", "close": "18:00"}}
     business_hours = models.JSONField(default=dict, blank=True)
+    # Label stock used by the panel's label print (Administração > Impressoras).
+    # Example: {"width_mm": 50, "height_mm": 30, "gap_mm": 2, "sensor": "gap"}
+    label_settings = models.JSONField(default=dict, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -194,6 +197,14 @@ class Sale(models.Model):
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, null=True, blank=True)
     customer_name_snapshot = models.CharField(max_length=180, blank=True)
     customer_document_snapshot = models.CharField(max_length=30, blank=True)
+    # Who ran the register and who is credited with the sale. Null only for
+    # sales queued by terminals released before these fields existed.
+    operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name="operated_sales")
+    operator_name_snapshot = models.CharField(max_length=160, blank=True)
+    seller = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
+                               related_name="credited_sales")
+    seller_name_snapshot = models.CharField(max_length=160, blank=True)
     request_id = models.CharField(max_length=160)
     content_hash = models.CharField(max_length=64)
     gross_cents = models.PositiveBigIntegerField()

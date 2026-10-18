@@ -62,6 +62,9 @@ services:
     environment: *cloud-env
     depends_on: {cloud: {condition: service_healthy}}
     secrets: [license_private, license_public]
+    # The health marker is rewritten every ~2 s; keep it in memory instead of
+    # the Docker disk image (an external USB drive on the dev Mac).
+    tmpfs: [/tmp]
     restart: unless-stopped
   gateway:
     image: caddy:2-alpine

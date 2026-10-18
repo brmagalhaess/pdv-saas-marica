@@ -928,6 +928,9 @@ class Store:
         customer_id = request.get("customer_id") or None
         if customer_id is not None:
             customer_id = _str(customer_id, "Cliente")
+        seller_id = request.get("seller_id") or None
+        if seller_id is not None:
+            seller_id = _str(seller_id, "Vendedor")
         override_id = self.manager_override(request.get("manager_pin")) if request.get("manager_pin") else None
         with self.transaction() as conn:
             old = conn.execute("SELECT snapshot FROM sales WHERE request_id=?", (request_id,)).fetchone()
@@ -939,14 +942,21 @@ class Store:
                               "discount_cents": previous["discount_cents"],
                               "customer_name": previous["customer_name"],
                               "customer_document": previous.get("customer_document", ""),
-                              "customer_id": previous["customer_id"]}
+                              "customer_id": previous["customer_id"],
+                              "seller_id": previous.get("seller_id")}
                 received = {"items": item_requests, "payments": payments, "discount_cents": discount,
                             "customer_name": customer_name, "customer_document": customer_document,
-                            "customer_id": customer_id}
+                            "customer_id": customer_id, "seller_id": seller_id}
                 if _json(comparable) != _json(received):
                     raise TerminalError("Identificador já usado para outra venda", 409)
                 return self._receipt_data(conn, previous)
             cash = self._open_cash(conn)
+            seller_name = ""
+            if seller_id is not None:
+                seller = conn.execute("SELECT name FROM operators WHERE id=? AND active=1", (seller_id,)).fetchone()
+                if not seller:
+                    raise TerminalError("Vendedor não encontrado", 404)
+                seller_name = seller["name"]
             lines, seen = [], set()
             for item in item_requests:
                 if not isinstance(item, dict):
@@ -996,7 +1006,8 @@ class Store:
                 raise TerminalError("Pagamentos não fecham o total; troco exige dinheiro")
             sale_id, timestamp = _uuid(), _now_ms()
             snapshot = {"id": sale_id, "request_id": request_id, "cash_session_id": cash["id"],
-                        "operator_id": operator["id"], "customer_name": customer_name,
+                        "operator_id": operator["id"], "seller_id": seller_id, "seller_name": seller_name,
+                        "customer_name": customer_name,
                         "customer_document": customer_document,
                         "customer_id": customer_id, "gross_cents": gross_total,
                         "discount_cents": discount, "total_cents": total, "change_cents": change,
@@ -1017,7 +1028,8 @@ class Store:
             event_data = {key: snapshot[key] for key in ("request_id", "cash_session_id", "created_at",
                                                        "gross_cents", "discount_cents", "total_cents",
                                                        "change_cents", "customer_id", "customer_name",
-                                                       "customer_document", "items", "payments")}
+                                                       "customer_document", "operator_id", "seller_id",
+                                                       "items", "payments")}
             self._event(conn, "sale.completed", sale_id, event_data)
             self._audit(conn, operator["id"], "sale.completed", sale_id,
                         f"manager_override={override_id}" if override_id else None)
