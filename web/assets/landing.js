@@ -7,11 +7,11 @@ const starterPlans = [
   { slug:"advanced", name:"Avançado", price_month_cents:34900, price_year_cents:349000, terminal_limit:3, shop_limit:2 }
 ];
 const featureNames = {
-  pdv_local:"Frente de caixa local",
-  cloud_dashboard:"Painel de gestão",
+  pdv_local:"Frente de caixa local (funciona offline)",
+  cloud_dashboard:"Painel de gestão e conferência de caixas",
   stock:"Estoque por loja",
-  finance:"Financeiro",
-  reports:"Relatórios (em implantação)",
+  finance:"Financeiro e comissão de vendedores",
+  reports:"Relatórios, curva ABC e exportação CSV",
   priority_support:"Prioridade de suporte prevista"
 };
 let plans = starterPlans;
