@@ -98,6 +98,9 @@ class Membership(models.Model):
     name = models.CharField(max_length=160)
     role = models.CharField(max_length=20, choices=ROLES)
     pin_hash = models.CharField(max_length=200, blank=True)
+    # Sales commission in basis points (100 = 1%) credited when this member
+    # is the seller of a sale, or its operator when no seller was chosen.
+    commission_bps = models.PositiveIntegerField(default=0)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -109,6 +112,8 @@ class Category(models.Model):
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
     name = models.CharField(max_length=120)
+    # Overrides the member rate for items of this category; null = member rate.
+    commission_bps = models.PositiveIntegerField(null=True, blank=True)
     active = models.BooleanField(default=True)
 
     class Meta:
@@ -253,6 +258,27 @@ class SalePayment(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["sale", "line_number"], name="sale_payment_line_unique")]
+
+
+class Commission(models.Model):
+    """Commission accrued on a sale. Reversal of a paid one is a negative row
+    so it is discounted from the next payment instead of rewriting history."""
+    STATUS = [(s, s) for s in ("pending", "paid", "cancelled")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="commissions")
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="commissions")
+    seller = models.ForeignKey(Membership, on_delete=models.PROTECT, related_name="commissions")
+    base_cents = models.BigIntegerField()
+    amount_cents = models.BigIntegerField()
+    status = models.CharField(max_length=20, choices=STATUS, default="pending")
+    reversal = models.BooleanField(default=False)
+    finance_entry = models.ForeignKey("FinanceEntry", on_delete=models.PROTECT, null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["sale", "reversal"], name="commission_once_per_sale")]
+        indexes = [models.Index(fields=["tenant", "seller", "status"])]
 
 
 class CashSession(models.Model):

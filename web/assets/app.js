@@ -39,6 +39,7 @@ const tenantNav = [
   { group: "Operação", id: "stock", label: "Estoque", icon: "▣", feature:"stock", roles: ["owner","admin","manager","inventory","finance","viewer"] },
   { group: "Relacionamento", id: "customers", label: "Clientes", icon: "♧", roles: ["owner","admin","manager","cashier","finance"] },
   { group: "Relacionamento", id: "suppliers", label: "Fornecedores", icon: "▱", roles: ["owner","admin","manager","inventory","finance"] },
+  { group: "Relacionamento", id: "commissions", label: "Comissões", icon: "%", feature:"finance", roles: ["owner","admin","manager","finance"] },
   { group: "Relacionamento", id: "finance", label: "Financeiro", icon: "◎", feature:"finance", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Administração", id: "shops", label: "Lojas", icon: "⌂", roles: ["owner","admin","manager","viewer"] },
   { group: "Administração", id: "company", label: "Minha empresa", icon: "◧", roles: ["owner","admin"] },
@@ -467,10 +468,12 @@ const resourceSpecs = {
     endpoint: "/categories", singular: "categoria", create: canCatalog, edit: canCatalog, remove: false,
     fields: [
       { key: "name", label: "Nome da categoria", required: true, max: 120 },
+      { key: "commission_bps", label: "Comissão da categoria (%) — opcional", type: "percent", help: "Se preenchida, substitui a comissão do vendedor nos itens desta categoria." },
       { key: "active", label: "Categoria ativa", type: "checkbox", default: true }
     ],
     columns: [
       { label: "Categoria", render: row => row.name },
+      { label: "Comissão", render: row => row.commission_bps == null ? "Do vendedor" : percentText(row.commission_bps) },
       { label: "Estado", render: row => statusBadge(row.active ? "Ativa" : "Inativa") }
     ]
   },
@@ -680,6 +683,7 @@ async function fieldNode(field, value, creating = false) {
     input = el("input");
     input.type = field.type === "money" ? "text" : field.type === "milli" ? "number" : field.type === "checkbox" ? "checkbox" : field.type || "text";
     if (field.type === "money") { input.inputMode = "decimal"; input.placeholder = "0,00"; input.value = value == null ? (field.default == null ? "" : editableMoney(field.default)) : editableMoney(value); input.addEventListener("blur", () => { const cents = parseMoneyInput(input.value); if (Number.isSafeInteger(cents) && cents >= 0) input.value = editableMoney(cents); }); }
+    else if (field.type === "percent") { input.type = "number"; input.step = "0.01"; input.min = "0"; input.max = "100"; input.value = value == null ? (field.default == null ? "" : String(field.default / 100)) : String(value / 100); }
     else if (field.type === "milli") { input.step = "0.001"; input.value = value == null ? (field.default == null ? "" : String(field.default / 1000)) : String(value / 1000); }
     else if (field.type === "checkbox") input.checked = value == null ? !!field.default : !!value;
     else input.value = value ?? field.default ?? "";
@@ -723,11 +727,15 @@ function formPayload(form, fields) {
     if (field.type === "checkbox") value = input.checked;
     else if (field.type === "money") value = parseMoneyInput(input.value);
     else if (field.type === "milli") value = Math.round(Number(input.value) * 1000);
+    else if (field.type === "percent") value = input.value.trim() === "" ? "" : Math.round(Number(input.value.replace(",", ".")) * 100);
     else if (field.type === "json") {
       try { value = JSON.parse(input.value || "{}"); }
       catch { throw new Error(field.label + ": JSON inválido."); }
     } else value = input.value.trim();
     if ((value === "" || value === null) && !field.required) continue;
+    if (field.type === "percent" && (!Number.isSafeInteger(value) || value < 0 || value > 10000)) {
+      throw new Error(field.label + ": informe um percentual entre 0 e 100.");
+    }
     if ((field.type === "money" || field.type === "milli") && (!Number.isSafeInteger(value) || value < 0)) {
       throw new Error(field.label + ": informe um número válido.");
     }
@@ -1118,6 +1126,7 @@ function personSelect(id, labelText, allText) {
   } };
 }
 
+function percentText(bps) { return (Number(bps) / 100).toLocaleString("pt-BR", { maximumFractionDigits: 2 }) + "%"; }
 const paymentNames = { cash: "Dinheiro (líquido de troco)", pix: "Pix", card_credit: "Crédito", card_debit: "Débito", card: "Cartão" };
 function differenceBadge(cents) {
   if (cents == null) return statusBadge("open");
@@ -1221,6 +1230,56 @@ async function cashPage() {
   }
   if (current === state.renderId) load();
   [shop.select, status].forEach(input => input.addEventListener("change", () => load()));
+}
+
+async function commissionsPage() {
+  const current = ++state.renderId;
+  const view = page("Comissões", "Comissão acumulada por vendedor a partir das vendas sincronizadas. Cancelamentos estornam automaticamente.", "Relacionamento");
+  view.outer.append(info("Defina o percentual de cada pessoa em Equipe e, se quiser, um percentual por categoria. O pagamento gera uma conta a pagar no Financeiro."));
+  const box = el("section", "surface");
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  const canPay = ["owner", "admin", "finance"].includes(state.role);
+  async function load() {
+    content.replaceChildren(loadingSurface());
+    try {
+      const rows = records(await api.get("/commissions/summary"));
+      if (current !== state.renderId) return;
+      content.replaceChildren();
+      if (!rows.length) {
+        content.append(empty("Nenhuma comissão ainda", "Configure percentuais em Equipe e escolha o vendedor no caixa."));
+        return;
+      }
+      content.append(table([
+        { label: "Vendedor", render: r => r.seller_name },
+        { label: "Percentual", render: r => percentText(r.commission_bps) },
+        { label: "Vendas", render: r => String(r.sales) },
+        { label: "Base", render: r => money(r.base_cents) },
+        { label: "A pagar", render: r => money(r.pending_cents) },
+        { label: "Pago", render: r => money(r.paid_cents) }
+      ], rows, r => canPay && r.pending_cents > 0 ? [{ label: "Pagar", onClick: () => payCommission(r) }] : []));
+    } catch (error) {
+      content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!"));
+      handleError(error);
+    }
+  }
+  async function payCommission(row) {
+    const fields = [{ key: "due_date", label: "Vencimento da conta a pagar", type: "date", required: true, default: new Date().toISOString().slice(0, 10) }];
+    const form = await formFor(fields, null);
+    form.prepend(info(`Fechar ${money(row.pending_cents)} de comissão de ${row.seller_name} em uma conta a pagar.`));
+    const message = formMessage(form), submit = formButtons(form, "Gerar conta a pagar");
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); if (!form.reportValidity()) return;
+      submit.disabled = true;
+      try {
+        await api.post("/commissions/pay", { seller_id: row.seller_id, ...formPayload(form, fields) });
+        closeDialog(); toast("Comissão fechada no Financeiro."); load();
+      } catch (error) { handleError(error, message); submit.disabled = false; }
+    });
+    openDialog("Pagar comissão", "As comissões pendentes viram uma conta a pagar.", form);
+  }
+  load();
 }
 
 function idempotency(form, payload) {
@@ -1690,6 +1749,7 @@ async function userEdit(row) {
   const fields = [
     { key:"name", label:"Nome", required:true, max:160 },
     { key:"role", label:"Papel", type:"select", required:true, choices },
+    { key:"commission_bps", label:"Comissão sobre vendas (%)", type:"percent", default:0, help:"Aplicada quando esta pessoa é o vendedor da venda (ou o operador, se nenhum vendedor for escolhido)." },
     { key:"active", label:"Acesso ativo", type:"checkbox", default:true }
   ];
   const form = await formFor(fields, row);
@@ -2896,7 +2956,7 @@ async function printersPage() {
 }
 
 const tenantRoutes = {
-  dashboard:dashboardPage,sales:salesPage,cash:cashPage,products:()=>resourcePage("products"),
+  dashboard:dashboardPage,sales:salesPage,cash:cashPage,commissions:commissionsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,

@@ -7,7 +7,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.http import JsonResponse
 
-from .api_common import APIError, audit, endpoint, fields, membership_context, method, money, page, payload, scoped, text, uuid_value
+from .api_common import APIError, audit, bps, endpoint, fields, membership_context, method, money, page, payload, scoped, text, uuid_value
 from .models import Category, Customer, Product, Shop, Supplier, Terminal
 from .serializers import category as category_data, contact as contact_data, product as product_data, shop as shop_data
 
@@ -79,7 +79,7 @@ def form_values(kind, data, tenant, creating):
     if kind == "shops":
         allowed, required = {"name", "address", "active"}, {"name"}
     elif kind == "categories":
-        allowed, required = {"name", "active"}, {"name"}
+        allowed, required = {"name", "active", "commission_bps"}, {"name"}
     elif kind == "products":
         allowed = {"name", "category_id", "variant", "unit", "scale_code", "ncm",
                    "price_cents", "stock_minimum_milli", "stock_controlled", "image_url", "tax_fields", "active"}
@@ -95,6 +95,8 @@ def form_values(kind, data, tenant, creating):
             if type(value) is not bool:
                 raise APIError("Estado inválido")
             result[key] = value
+        elif key == "commission_bps":
+            result[key] = None if value is None or value == "" else bps(value, "Comissão da categoria")
         elif key == "stock_controlled":
             if type(value) is not bool:
                 raise APIError("Configuração de estoque inválida")

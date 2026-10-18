@@ -61,6 +61,13 @@ def fields(data, allowed, required=()):
         raise APIError("Campos inválidos ou ausentes")
 
 
+def bps(value, name):
+    """Percentage in basis points: integer from 0 (0%) to 10000 (100%)."""
+    if type(value) is not int or not 0 <= value <= 10000:
+        raise APIError(f"{name} deve ser um percentual entre 0 e 100")
+    return value
+
+
 def text(value, name, maximum=160, optional=False):
     if value is None and optional:
         return ""

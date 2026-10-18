@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
 
+from . import commission_logic
 from .api_common import APIError, audit, digest, fields, money, quantity, scoped, text, uuid_value
 from .models import Customer, FiscalDocument, Membership, Product, Sale, SaleItem, SalePayment, StockMovement
 from .views_stock import balance
@@ -155,6 +156,7 @@ def persist_sale(terminal, event):
                                      delta_milli=-qty, source="sale", reason="Venda",
                                      reference=str(sale.id), terminal=terminal, sale=sale,
                                      idempotency_key=f"sale:{sale.id}:{product_id}")
+    commission_logic.accrue(sale)
     audit(tenant, None, "sale.synced", sale, {"terminal_id": str(terminal.id), "stock_status": stock_status})
     return sale
 
@@ -181,6 +183,7 @@ def reverse_sale(sale, reason, status, actor=None, terminal=None, when=None):
                                      delta_milli=qty, source="void", reason=reason,
                                      reference=str(sale.id), actor=actor, terminal=terminal or sale.terminal,
                                      sale=sale, idempotency_key=f"void:{sale.id}:{product_id}")
+    commission_logic.reverse(sale, actor)
     sale.status = status
     sale.cancellation_reason = reason
     sale.cancelled_at = when or timezone.now()

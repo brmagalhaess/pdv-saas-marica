@@ -593,6 +593,67 @@ class CloudAPITests(TestCase):
         self.assertTrue(orphan[0]["incomplete"])
         self.assertEqual(self.api("GET", "/api/v1/cash-sessions", tenant=self.other_tenant.id).status_code, 403)
 
+    def test_commission_accrues_by_category_reverses_and_pays(self):
+        from .models import Category, Commission, FinanceEntry
+        seller_user = get_user_model().objects.create_user(username="comissao@example.test",
+                                                           email="comissao@example.test", password="Synthetic-46!")
+        seller = Membership.objects.create(tenant=self.tenant, user=seller_user, name="Vera", role="cashier",
+                                           commission_bps=500)
+        drinks = Category.objects.create(tenant=self.tenant, name="Bebidas", commission_bps=1000)
+        soda = Product.objects.create(tenant=self.tenant, sku="REFRI", name="Refri", price_cents=1000, category=drinks)
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="commission-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id), "terminal_id": str(terminal.id)}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+        def item(product, price):
+            return {"product_id": str(product.id), "name": product.name, "unit": "UN", "quantity_milli": 1000,
+                    "unit_price_cents": price, "gross_cents": price, "discount_cents": 0, "line_total_cents": price}
+
+        def sale_event():
+            return {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": str(uuid.uuid4()),
+                    "identity": identity, "data": {
+                        "request_id": uuid.uuid4().hex, "cash_session_id": uuid.uuid4().hex,
+                        "created_at": int(time.time() * 1000), "customer_id": None, "customer_name": "",
+                        "customer_document": "", "operator_id": str(self.member.id), "seller_id": str(seller.id),
+                        "gross_cents": 1999, "discount_cents": 0, "total_cents": 1999, "change_cents": 0,
+                        "items": [item(self.product, 999), item(soda, 1000)],
+                        "payments": [{"method": "pix", "amount_cents": 1999}]}}
+
+        first, second, third = sale_event(), sale_event(), sale_event()
+        self.assertEqual(self.api("POST", "/api/v1/terminal/sync", {"events": [first, second, third]},
+                                  tenant=False, **headers).status_code, 200)
+        accrued = Commission.objects.get(sale_id=first["aggregate_id"])
+        # 5% of 9.99 (seller rate) + 10% of 10.00 (category rate) = 0.50 + 1.00
+        self.assertEqual((accrued.base_cents, accrued.amount_cents, accrued.seller_id), (1999, 150, seller.id))
+
+        self.client.force_login(self.owner)
+        self.assertEqual(self.api("GET", "/api/v1/commissions/summary").status_code, 403)  # Essencial sem financeiro
+        Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
+
+        self.assertEqual(self.api("POST", f"/api/v1/sales/{first['aggregate_id']}/cancel",
+                                  {"reason": "Cliente desistiu"}).status_code, 200)
+        self.assertEqual(Commission.objects.get(pk=accrued.pk).status, "cancelled")
+
+        paid = self.api("POST", "/api/v1/commissions/pay", {"seller_id": str(seller.id), "due_date": "2026-11-05"})
+        self.assertEqual(paid.status_code, 201, paid.content)
+        self.assertEqual((paid.json()["amount_cents"], paid.json()["count"]), (300, 2))
+        entry = FinanceEntry.objects.get(pk=paid.json()["finance_entry_id"])
+        self.assertEqual((entry.kind, entry.status, entry.amount_cents), ("payable", "open", 300))
+        self.assertEqual(self.api("POST", "/api/v1/commissions/pay",
+                                  {"seller_id": str(seller.id), "due_date": "2026-11-05"}).status_code, 409)
+
+        self.assertEqual(self.api("POST", f"/api/v1/sales/{second['aggregate_id']}/cancel",
+                                  {"reason": "Devolvido"}).status_code, 200)
+        reversal = Commission.objects.get(sale_id=second["aggregate_id"], reversal=True)
+        self.assertEqual((reversal.amount_cents, reversal.status), (-150, "pending"))
+        summary = self.api("GET", "/api/v1/commissions/summary").json()["results"]
+        self.assertEqual([(r["seller_name"], r["sales"], r["pending_cents"], r["paid_cents"]) for r in summary],
+                         [("Vera", 2, -150, 300)])
+        self.assertEqual(self.api("PATCH", f"/api/v1/users/{seller.id}", {"commission_bps": 10001}).status_code, 400)
+        self.assertEqual(self.api("PATCH", f"/api/v1/users/{seller.id}", {"commission_bps": 250}).json()["commission_bps"], 250)
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",

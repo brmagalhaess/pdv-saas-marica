@@ -14,7 +14,8 @@ def shop(row):
 
 
 def category(row):
-    return {"id": str(row.id), "name": row.name, "active": row.active}
+    return {"id": str(row.id), "name": row.name, "active": row.active,
+            "commission_bps": row.commission_bps}
 
 
 def product(row):
@@ -36,7 +37,7 @@ def contact(row):
 def member(row):
     return {"id": str(row.id), "user_id": row.user_id, "name": row.name,
             "email": row.user.email, "role": row.role, "active": row.active,
-            "has_pin": bool(row.pin_hash)}
+            "has_pin": bool(row.pin_hash), "commission_bps": row.commission_bps}
 
 
 def terminal(row):
