@@ -31,6 +31,7 @@ function parseMoneyInput(raw) {
 }
 
 const tenantNav = [
+  { group: "Acompanhar", id: "reports", label: "Relatórios", icon: "▧", feature:"reports", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Acompanhar", id: "dashboard", label: "Visão geral", icon: "◫", feature:"cloud_dashboard", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
   { group: "Operação", id: "sales", label: "Vendas", icon: "▤", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
   { group: "Operação", id: "cash", label: "Caixas", icon: "▢", roles: ["owner","admin","manager","finance","viewer"] },
@@ -1279,6 +1280,80 @@ async function commissionsPage() {
     });
     openDialog("Pagar comissão", "As comissões pendentes viram uma conta a pagar.", form);
   }
+  load();
+}
+
+function reportCell(value, type) {
+  if (value == null) return "—";
+  if (type === "money") return money(value);
+  if (type === "percent") return percentText(value);
+  if (type === "milli") return (Number(value) / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+  if (type === "int") return Number(value).toLocaleString("pt-BR");
+  return String(value);
+}
+async function reportsPage() {
+  const current = ++state.renderId;
+  const view = page("Relatórios", "Vendas, lucro, curva ABC, fluxo de caixa e reposição. Exporte em CSV para Excel ou contabilidade.", "Acompanhar");
+  view.outer.append(info("Lucro e custo usam o custo médio atual de cada produto; mantenha as entradas de estoque com custo para valores corretos."));
+  const box = el("section", "surface");
+  const toolbar = el("div", "toolbar");
+  const kindField = el("div", "field"), kindLabel = el("label", "", "Relatório"), kind = el("select");
+  kind.id = "report-kind"; kindLabel.htmlFor = kind.id; kindField.append(kindLabel, kind);
+  const today = new Date(), first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const dateField = (id, text, value) => {
+    const field = el("div", "field"), label = el("label", "", text), input = el("input");
+    input.type = "date"; input.id = id; input.value = value; label.htmlFor = id; field.append(label, input);
+    return { field, input };
+  };
+  const from = dateField("report-from", "De", iso(first)), to = dateField("report-to", "Até", iso(today));
+  const shop = shopSelect("report-shop", true);
+  const exportButton = button("Exportar CSV", () => exportCsv(), "ghost");
+  toolbar.append(kindField, from.field, to.field, shop.field, exportButton);
+  box.append(toolbar);
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  function params() {
+    const p = new URLSearchParams({ from: from.input.value, to: to.input.value });
+    if (shop.select.value) p.set("shop_id", shop.select.value);
+    return p;
+  }
+  async function load() {
+    const token = ++state.renderId;
+    content.replaceChildren(loadingSurface());
+    try {
+      const data = await api.get(`/reports/${encodeURIComponent(kind.value)}?` + params());
+      if (token !== state.renderId) return;
+      content.replaceChildren();
+      if (!data.rows.length) { content.append(empty("Sem dados no período", "Ajuste o período ou a loja.")); return; }
+      const rows = Object.keys(data.totals || {}).length ? [...data.rows, { __total: true, ...data.totals }] : data.rows;
+      content.append(table(data.columns.map((c, i) => ({ label: c.label,
+        render: row => row.__total ? (c.key in row ? el("strong", "", reportCell(row[c.key], c.type)) : i === 0 ? el("strong", "", "Total") : "")
+                                   : reportCell(row[c.key], c.type) })), rows));
+    } catch (error) {
+      if (token !== state.renderId) return;
+      content.replaceChildren(empty("Não foi possível gerar o relatório", errorText(error), "!"));
+      handleError(error);
+    }
+  }
+  async function exportCsv() {
+    const p = params(); p.set("format", "csv");
+    try {
+      const response = await fetch(`/api/v1/reports/${encodeURIComponent(kind.value)}?` + p,
+        { credentials: "same-origin", headers: { "X-Tenant-ID": state.tenantId } });
+      if (!response.ok) throw new Error("Não foi possível exportar o relatório.");
+      const url = URL.createObjectURL(await response.blob());
+      const link = el("a"); link.href = url; link.download = `${kind.value}_${from.input.value}_${to.input.value}.csv`;
+      document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+    } catch (error) { handleError(error); }
+  }
+  try {
+    const catalog = records(await api.get("/reports"));
+    if (current !== state.renderId) return;
+    catalog.forEach(r => { const option = el("option", "", r.title); option.value = r.id; kind.append(option); });
+  } catch (error) { content.replaceChildren(empty("Relatórios indisponíveis", errorText(error), "!")); handleError(error); return; }
+  [kind, from.input, to.input, shop.select].forEach(input => input.addEventListener("change", load));
   load();
 }
 
@@ -2956,7 +3031,7 @@ async function printersPage() {
 }
 
 const tenantRoutes = {
-  dashboard:dashboardPage,sales:salesPage,cash:cashPage,commissions:commissionsPage,products:()=>resourcePage("products"),
+  dashboard:dashboardPage,sales:salesPage,cash:cashPage,commissions:commissionsPage,reports:reportsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,

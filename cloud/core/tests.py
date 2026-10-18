@@ -654,6 +654,60 @@ class CloudAPITests(TestCase):
         self.assertEqual(self.api("PATCH", f"/api/v1/users/{seller.id}", {"commission_bps": 10001}).status_code, 400)
         self.assertEqual(self.api("PATCH", f"/api/v1/users/{seller.id}", {"commission_bps": 250}).json()["commission_bps"], 250)
 
+    def test_reports_compute_totals_abc_restock_and_export_csv(self):
+        from .models import SaleItem
+        Product.objects.filter(pk=self.product.pk).update(cost_cents=600, stock_minimum_milli=5000)
+        cheap = Product.objects.create(tenant=self.tenant, sku="SAL", name="Sal", price_cents=100, cost_cents=50)
+        StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=self.product, delta_milli=3000,
+                                     source="manual", reason="Inventário")
+        StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=cheap, delta_milli=50000,
+                                     source="manual", reason="Inventário")
+        StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=cheap, delta_milli=-2000,
+                                     source="manual", reason="Avaria")
+
+        def sale(lines, payments, change=0, status="completed"):
+            total = sum(price * qty // 1000 for _, price, qty in lines)
+            row = Sale.objects.create(id=uuid.uuid4(), tenant=self.tenant, shop=self.shop, request_id=uuid.uuid4().hex,
+                                      content_hash="x", gross_cents=total, total_cents=total, change_cents=change,
+                                      status=status, created_at=timezone.now(), operator_name_snapshot="Dona")
+            for n, (product, price, qty) in enumerate(lines):
+                SaleItem.objects.create(sale=row, line_number=n, product=product, name=product.name, unit="UN",
+                                        quantity_milli=qty, unit_price_cents=price, gross_cents=price * qty // 1000,
+                                        discount_cents=0, line_total_cents=price * qty // 1000)
+            for n, (method, amount) in enumerate(payments):
+                SalePayment.objects.create(sale=row, line_number=n, method=method, amount_cents=amount)
+            return row
+
+        sale([(self.product, 999, 2000)], [("cash", 2000)], change=2)
+        sale([(self.product, 999, 1000), (cheap, 100, 1000)], [("pix", 1099)])
+        sale([(self.product, 999, 1000)], [("pix", 999)], status="cancelled")
+
+        self.client.force_login(self.owner)
+        self.assertEqual(self.api("GET", "/api/v1/reports/sales_by_day").status_code, 403)
+        Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
+
+        day = self.api("GET", "/api/v1/reports/sales_by_day").json()
+        self.assertEqual((day["totals"]["count"], day["totals"]["total"]), (2, 3097))
+        payment = {r["method"]: r["total"] for r in self.api("GET", "/api/v1/reports/sales_by_payment").json()["rows"]}
+        self.assertEqual(payment, {"Dinheiro": 1998, "Pix": 1099})
+        abc = self.api("GET", "/api/v1/reports/products_abc").json()
+        self.assertEqual([(r["sku"], r["abc"], r["profit"]) for r in abc["rows"]], [("ARROZ", "A", 2997 - 1800), ("SAL", "C", 50)])
+        operator = self.api("GET", "/api/v1/reports/sales_by_operator").json()["rows"]
+        self.assertEqual([(r["person"], r["count"]) for r in operator], [("Dona", 2)])
+        restock = {r["sku"]: r for r in self.api("GET", "/api/v1/reports/low_stock").json()["rows"]}
+        self.assertEqual(set(restock), {"ARROZ"})
+        self.assertEqual((restock["ARROZ"]["balance"], restock["ARROZ"]["suggested"]), (3000, 2000))
+        losses = self.api("GET", "/api/v1/reports/stock_losses").json()["rows"]
+        self.assertEqual([(r["reason"], r["qty"], r["cost"]) for r in losses], [("Avaria", 2000, 100)])
+        self.assertEqual(self.api("GET", "/api/v1/reports/cash_flow").json()["totals"]["sales"], 3097)
+
+        csv_response = self.api("GET", "/api/v1/reports/sales_by_day?format=csv")
+        body = csv_response.content.decode("utf-8")
+        self.assertTrue(body.startswith("\ufeffDia;Vendas;Faturamento"))
+        self.assertIn("Total;2;30,97", body)
+        self.assertEqual(self.api("GET", "/api/v1/reports/nope").status_code, 404)
+        self.assertEqual(self.api("GET", "/api/v1/reports/sales_by_day?from=2026-01-01&to=2025-01-01").status_code, 400)
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
