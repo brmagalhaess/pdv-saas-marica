@@ -6,6 +6,16 @@ A auditoria anterior cobre bem os bloqueios de **produção**: NFC-e, TEF, Pix d
 
 Os itens P0 fiscais e de pagamento continuam no plano de 90 dias da auditoria e **não se repetem aqui**.
 
+## Andamento
+
+| Item | Estado |
+|---|---|
+| 1.1 Operador e vendedor na venda | ✅ entregue (inclui correção do sync que recusava `stock_controlled`) |
+| 1.3 Caixa na nuvem + 2.1 conferência de caixa | ✅ entregue (turnos reconstruídos do histórico pela migração 0024) |
+| 2.2 Comissão de vendedor | ✅ entregue (planos com Financeiro) |
+| Onda 3 — relatórios com CSV | ✅ entregue: vendas (dia/hora/forma/operador/vendedor), curva ABC e lucro, fluxo de caixa, estoque baixo com sugestão, perdas. Falta: DRE, gráficos no painel, PDF |
+| Próximos | 2.3 fiado, 2.4 devolução/troca, 1.2 saldo materializado, 1.4 formas de pagamento configuráveis |
+
 ---
 
 ## 1. Achados novos no código (não citados na auditoria)
