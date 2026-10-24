@@ -158,7 +158,8 @@ def create_app(config=None):
                         "device_id": identity["device_id"], "connection": store.connection_info(),
                         "license": store.lease_status(),
                         "hours": store.business_hours_status(),
-                        "cash": store.cash_state(), "sync": store.sync_status()})
+                        "cash": store.cash_state(), "sync": store.sync_status(),
+                        "payment_methods": store.payment_methods()})
 
     @app.post("/api/unpair")
     def unpair():

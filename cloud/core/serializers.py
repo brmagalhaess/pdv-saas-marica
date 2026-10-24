@@ -118,8 +118,9 @@ def sale(row, detail=False):
                             "gross_cents": x.gross_cents, "discount_cents": x.discount_cents,
                             "line_total_cents": x.line_total_cents}
                            for x in row.items.all().order_by("line_number")]
-        result["payments"] = [{"method": x.method, "amount_cents": x.amount_cents}
-                              for x in row.payments.all().order_by("line_number")]
+        result["payments"] = [{"method": x.method, "amount_cents": x.amount_cents,
+                               "name": x.payment_method.name if x.payment_method_id else None}
+                              for x in row.payments.select_related("payment_method").order_by("line_number")]
         result["returns"] = [{"id": str(r.id), "total_cents": r.total_cents, "refund_method": r.refund_method,
                               "reason": r.reason, "created_at": iso(r.created_at),
                               "items": [{"product_id": str(i.product_id), "name": i.product.name,

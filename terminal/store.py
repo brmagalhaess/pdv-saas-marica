@@ -21,6 +21,9 @@ OFFLINE_LEASE_SECONDS = 72 * 60 * 60
 SELL_ROLES = {"owner", "admin", "manager", "cashier"}
 MANAGER_ROLES = {"owner", "admin", "manager"}
 CREDIT_METHODS = ("credit_account", "store_credit")
+BUILTIN_NAMES = {"cash": "Dinheiro", "pix": "Pix", "card_credit": "Crédito", "card_debit": "Débito",
+                 "credit_account": "A prazo (fiado)", "store_credit": "Crédito na loja"}
+BUILTIN_PAYMENTS = tuple(BUILTIN_NAMES)
 REFUND_METHODS = ("cash", "store_credit", "account")
 
 
@@ -640,6 +643,8 @@ class Store:
             customers = response.get("customers")
             if isinstance(customers, list):
                 self._apply_customers(conn, customers)
+            if isinstance(response.get("payment_methods"), list):
+                self._set_meta(conn, "payment_methods", _json(self._validated_payment_methods(response["payment_methods"])))
             for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
                 value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
                 if value:
@@ -706,6 +711,28 @@ class Store:
                  str(customer.get("document") or "")[:30], values[0], open_credit, store_credit))
             ids.append(customer_id)
         conn.execute("UPDATE customers SET active=0" + (" WHERE id NOT IN (" + ",".join("?" for _ in ids) + ")" if ids else ""), ids)
+
+    @staticmethod
+    def _validated_payment_methods(rows):
+        result = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("kind") not in BUILTIN_PAYMENTS + ("other",):
+                raise TerminalError("Forma de pagamento recebida inválida")
+            result.append({"id": _str(row.get("id"), "Forma de pagamento"), "kind": row["kind"],
+                           "name": _str(row.get("name"), "Nome da forma de pagamento", 60),
+                           "active": bool(row.get("active", True))})
+        return result
+
+    def _payment_config(self, conn):
+        raw = self._meta(conn, "payment_methods")
+        if raw:
+            return json.loads(raw)
+        # Terminals paired before configurable methods: every built-in stays enabled.
+        return [{"id": kind, "kind": kind, "name": name, "active": True} for kind, name in BUILTIN_NAMES.items()]
+
+    def payment_methods(self):
+        with self.connection() as conn:
+            return self._payment_config(conn)
 
     def customers(self, query=""):
         query = f"%{str(query or '').strip()[:60]}%"
@@ -1082,12 +1109,25 @@ class Store:
             _allocate_discount(lines, discount, gross_total)
             total = gross_total - discount
             normalized_payments = []
+            config = self._payment_config(conn)
+            enabled = {row["kind"] for row in config if row["active"] and row["kind"] != "other"} | {"card"}
+            others = {row["id"]: row["name"] for row in config if row["kind"] == "other" and row["active"]}
+            payment_names = {}
             for payment in payments:
                 if not isinstance(payment, dict) or payment.get("method") not in (
-                        "cash", "pix", "card", "card_credit", "card_debit", *CREDIT_METHODS):
+                        "cash", "pix", "card", "card_credit", "card_debit", "other", *CREDIT_METHODS):
                     raise TerminalError("Forma de pagamento inválida")
-                normalized_payments.append({"method": payment["method"],
-                                            "amount_cents": _positive_int(payment.get("amount_cents"), "Pagamento")})
+                line = {"method": payment["method"],
+                        "amount_cents": _positive_int(payment.get("amount_cents"), "Pagamento")}
+                if payment["method"] == "other":
+                    configured_id = payment.get("payment_method_id")
+                    if configured_id not in others:
+                        raise TerminalError("Forma de pagamento desativada ou desconhecida", 409)
+                    line["payment_method_id"] = configured_id
+                    payment_names[configured_id] = others[configured_id]
+                elif payment["method"] not in enabled:
+                    raise TerminalError("Forma de pagamento desativada pela empresa", 409)
+                normalized_payments.append(line)
             paid = sum(p["amount_cents"] for p in normalized_payments)
             cash_paid = sum(p["amount_cents"] for p in normalized_payments if p["method"] == "cash")
             change = paid - total
@@ -1119,6 +1159,8 @@ class Store:
                         "discount_cents": discount, "total_cents": total, "change_cents": change,
                         "items": lines, "payments": normalized_payments, "created_at": timestamp,
                         "status": "completed"}
+            if payment_names:
+                snapshot["payment_names"] = payment_names
             if requested_customer and requested_customer != [customer_name, customer_document]:
                 snapshot["requested_customer"] = requested_customer  # for idempotent retries
             snapshot = self._receipt_context(conn, snapshot)

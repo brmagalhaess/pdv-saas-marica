@@ -194,9 +194,11 @@ def receipt_layout(sale, width=80):
     rule()
     pair("FORMA DE PAGAMENTO", "VALOR PAGO", bold=True)
     methods = {"cash": "Dinheiro", "pix": "Pix", "card": "Cartao", "card_credit": "Cartao de credito",
-               "card_debit": "Cartao de debito"}
+               "card_debit": "Cartao de debito", "credit_account": "A prazo (fiado)", "store_credit": "Credito na loja"}
+    names = sale.get("payment_names") or {}
     for payment in sale.get("payments", []):
-        pair(methods.get(payment['method'], payment['method']), _money(payment['amount_cents']))
+        label = names.get(payment.get("payment_method_id")) or methods.get(payment['method'], payment['method'])
+        pair(label, _money(payment['amount_cents']))
     if len(sale.get("payments", [])) > 1:
         pair("Total recebido", _money(sum(p['amount_cents'] for p in sale['payments'])))
     if any(p['method'] == "cash" for p in sale.get("payments", [])):

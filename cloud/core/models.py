@@ -253,11 +253,36 @@ class SaleItem(models.Model):
         constraints = [models.UniqueConstraint(fields=["sale", "line_number"], name="sale_item_line_unique")]
 
 
+class PaymentMethod(models.Model):
+    """Per-company payment configuration.
+
+    Built-in kinds keep the semantics the register depends on (cash drawer,
+    fiado, store credit); `other` rows are company-defined (meal voucher,
+    cheque...). Fee and settlement days feed net-revenue reports.
+    """
+    KINDS = [(s, s) for s in ("cash", "pix", "card_credit", "card_debit", "credit_account", "store_credit", "other")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="payment_methods")
+    kind = models.CharField(max_length=20, choices=KINDS)
+    name = models.CharField(max_length=60)
+    fee_bps = models.PositiveIntegerField(default=0)
+    settlement_days = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+    position = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["tenant", "kind"], condition=~models.Q(kind="other"),
+                                               name="payment_method_builtin_once")]
+
+
 class SalePayment(models.Model):
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="payments")
     line_number = models.PositiveIntegerField()
     method = models.CharField(max_length=20)
+    # Set for method="other" (company-defined payment such as a meal voucher).
+    payment_method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, null=True, blank=True)
     amount_cents = models.PositiveBigIntegerField()
 
     class Meta:

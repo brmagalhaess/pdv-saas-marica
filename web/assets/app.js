@@ -46,6 +46,7 @@ const tenantNav = [
   { group: "Administração", id: "company", label: "Minha empresa", icon: "◧", roles: ["owner","admin"] },
   { group: "Administração", id: "users", label: "Equipe", icon: "♙", roles: ["owner","admin"] },
   { group: "Administração", id: "terminals", label: "Terminais", icon: "▥", roles: ["owner","admin"] },
+  { group: "Administração", id: "payment_methods", label: "Formas de pagamento", icon: "◈", roles: ["owner","admin"] },
   { group: "Administração", id: "printers", label: "Impressoras", icon: "⎙", roles: ["owner","admin"] },
   { group: "Administração", id: "subscription", label: "Assinatura", icon: "◉", roles: ["owner","admin"] },
   { group: "Administração", id: "integrations", label: "Integrações", icon: "◇", roles: ["owner","admin"] },
@@ -1422,6 +1423,48 @@ async function reportsPage() {
   } catch (error) { content.replaceChildren(empty("Relatórios indisponíveis", errorText(error), "!")); handleError(error); return; }
   [kind, from.input, to.input, shop.select].forEach(input => input.addEventListener("change", load));
   load();
+}
+
+const paymentKindNames = { cash: "Dinheiro", pix: "Pix", card_credit: "Cartão de crédito", card_debit: "Cartão de débito", credit_account: "A prazo (fiado)", store_credit: "Crédito na loja", other: "Forma própria" };
+async function paymentMethodsPage() {
+  const current = ++state.renderId;
+  const view = page("Formas de pagamento", "Ative as formas aceitas no caixa, informe a taxa da maquininha e o prazo de recebimento, e crie formas próprias como vale-refeição.", "Administração");
+  view.outer.append(info("A taxa e o prazo entram nos relatórios como valor líquido estimado. Mudanças chegam ao caixa na próxima atualização do catálogo do terminal."));
+  const fields = [
+    { key: "name", label: "Nome exibido no caixa", required: true, max: 60, full: true },
+    { key: "fee_bps", label: "Taxa (%)", type: "percent", default: 0, help: "Percentual cobrado pela adquirente ou operadora." },
+    { key: "settlement_days", label: "Prazo de recebimento (dias)", type: "number", default: 0 },
+    { key: "active", label: "Ativa no caixa", type: "checkbox", default: true }
+  ];
+  const payloadOf = form => { const data = formPayload(form, fields); if (data.settlement_days !== undefined) data.settlement_days = Number(data.settlement_days); return data; };
+  async function edit(row) {
+    const form = await formFor(fields, row);
+    const message = formMessage(form), submit = formButtons(form, row ? "Salvar" : "Criar forma");
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); if (!form.reportValidity()) return;
+      submit.disabled = true;
+      try {
+        if (row) await api.patch("/payment-methods/" + row.id, payloadOf(form));
+        else await api.post("/payment-methods", payloadOf(form));
+        closeDialog(); toast("Forma de pagamento salva."); renderRoute();
+      } catch (error) { handleError(error, message); submit.disabled = false; }
+    });
+    openDialog(row ? "Editar " + row.name : "Nova forma de pagamento", row ? paymentKindNames[row.kind] : "Use para vale-refeição, voucher, cheque e outras formas aceitas pela loja.", form);
+  }
+  view.actions.append(button("+ Nova forma", () => edit(null).catch(handleError)));
+  const box = el("section", "surface");
+  view.outer.append(box);
+  try {
+    const rows = records(await api.get("/payment-methods"));
+    if (current !== state.renderId) return;
+    box.append(table([
+      { label: "Nome", render: r => r.name },
+      { label: "Tipo", render: r => paymentKindNames[r.kind] || r.kind },
+      { label: "Taxa", render: r => percentText(r.fee_bps) },
+      { label: "Recebimento", render: r => r.settlement_days ? `${r.settlement_days} dia(s)` : "Na hora" },
+      { label: "Estado", render: r => statusBadge(r.active ? "Ativa" : "Inativa") }
+    ], rows, r => [{ label: "Editar", onClick: () => edit(r).catch(handleError) }]));
+  } catch (error) { box.append(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
 }
 
 function idempotency(form, payload) {
@@ -3098,7 +3141,7 @@ async function printersPage() {
 }
 
 const tenantRoutes = {
-  dashboard:dashboardPage,sales:salesPage,cash:cashPage,commissions:commissionsPage,reports:reportsPage,products:()=>resourcePage("products"),
+  dashboard:dashboardPage,sales:salesPage,cash:cashPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,

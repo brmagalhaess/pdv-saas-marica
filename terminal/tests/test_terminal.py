@@ -389,6 +389,28 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual((refreshed["open_credit_cents"], refreshed["store_credit_cents"]), (800, 0))
         self.assertTrue(swap["id"])
 
+    def test_payment_config_disables_methods_and_adds_custom(self):
+        voucher = str(uuid.uuid4())
+        config = [{"id": "c", "kind": "cash", "name": "Dinheiro", "active": True},
+                  {"id": "p", "kind": "pix", "name": "Pix", "active": False},
+                  {"id": voucher, "kind": "other", "name": "Vale-refeição", "active": True}]
+        self.store.apply_bootstrap(dict(self.bootstrap, payment_methods=config))
+        self.assertEqual([m["name"] for m in self.store.payment_methods()], ["Dinheiro", "Pix", "Vale-refeição"])
+        self.store.open_cash(self.cashier_id, 0)
+        item = [{"product_id": self.unit_product_id, "quantity_milli": 1000}]
+        with self.assertRaisesRegex(TerminalError, "desativada pela empresa"):
+            self.store.sale(self.cashier, {"request_id": "pix", "items": item, "payments": [{"method": "pix", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "desconhecida"):
+            self.store.sale(self.cashier, {"request_id": "x", "items": item,
+                "payments": [{"method": "other", "payment_method_id": str(uuid.uuid4()), "amount_cents": 700}]})
+        request = {"request_id": "vale", "items": item,
+                   "payments": [{"method": "other", "payment_method_id": voucher, "amount_cents": 700}]}
+        sale = self.store.sale(self.cashier, request)
+        self.assertEqual(self.store.sale(self.cashier, request)["id"], sale["id"])
+        self.assertIn(b"Vale-refei", receipt_bytes(sale))
+        event = [e["data"] for e in self.store.pending_events() if e["type"] == "sale.completed"][0]
+        self.assertEqual(event["payments"], [{"method": "other", "payment_method_id": voucher, "amount_cents": 700}])
+
     def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
         production_id = str(uuid.uuid4())
         production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",

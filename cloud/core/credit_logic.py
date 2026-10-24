@@ -38,7 +38,7 @@ def balances(tenant, customer_ids=None):
 
 def apply_sale_payments(sale, payments):
     """Create the receivable / credit usage implied by a synced sale."""
-    for number, (method, amount) in enumerate(payments):
+    for number, (method, amount, _configured) in enumerate(payments):
         if method == "credit_account":
             due = timezone.localdate(sale.created_at) + timedelta(days=sale.tenant.credit_term_days)
             FinanceEntry.objects.get_or_create(

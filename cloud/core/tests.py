@@ -817,6 +817,51 @@ class CloudAPITests(TestCase):
         self.assertEqual(StockBalance.objects.get(pk=row.pk).quantity_milli, 2500)
         call_command("reconcile_stock", stdout=StringIO())  # clean now: no SystemExit
 
+    def test_payment_methods_config_custom_sale_and_net_report(self):
+        from .models import PaymentMethod
+        self.client.force_login(self.owner)
+        rows = {r["kind"]: r for r in self.api("GET", "/api/v1/payment-methods").json()["results"]}
+        self.assertEqual(set(rows), {"cash", "pix", "card_credit", "card_debit", "credit_account", "store_credit"})
+        self.assertEqual(self.api("PATCH", f"/api/v1/payment-methods/{rows['cash']['id']}", {"active": False}).status_code, 409)
+        self.assertEqual(self.api("PATCH", f"/api/v1/payment-methods/{rows['card_credit']['id']}",
+                                  {"fee_bps": 350, "settlement_days": 30}).json()["fee_bps"], 350)
+        voucher = self.api("POST", "/api/v1/payment-methods", {"name": "Vale-refeição", "fee_bps": 600})
+        self.assertEqual(voucher.status_code, 201, voucher.content)
+        voucher = voucher.json()
+        foreign = PaymentMethod.objects.create(tenant=self.other_tenant, kind="other", name="Alheio")
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="payment-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id), "terminal_id": str(terminal.id)}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+        def sale(payments):
+            return {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": str(uuid.uuid4()),
+                    "identity": identity, "data": {
+                        "request_id": uuid.uuid4().hex, "cash_session_id": uuid.uuid4().hex,
+                        "created_at": int(time.time() * 1000), "customer_id": None, "customer_name": "",
+                        "customer_document": "", "gross_cents": 1000, "discount_cents": 0, "total_cents": 1000,
+                        "change_cents": 0, "items": [{"product_id": str(self.product.id), "name": "Arroz", "unit": "UN",
+                        "quantity_milli": 1000, "unit_price_cents": 1000, "gross_cents": 1000, "discount_cents": 0,
+                        "line_total_cents": 1000}], "payments": payments}}
+
+        Product.objects.filter(pk=self.product.pk).update(price_cents=1000)
+        # Deactivated after the offline sale happened: still accepted.
+        self.api("PATCH", f"/api/v1/payment-methods/{voucher['id']}", {"active": False})
+        ok = sale([{"method": "other", "payment_method_id": voucher["id"], "amount_cents": 1000}])
+        card = sale([{"method": "card_credit", "amount_cents": 1000}])
+        sync = lambda e: self.api("POST", "/api/v1/terminal/sync", {"events": [e]}, tenant=False, **headers)
+        self.assertEqual(sync(ok).status_code, 200, sync(ok).content)
+        self.assertEqual(sync(card).status_code, 200)
+        self.assertEqual(sync(sale([{"method": "other", "payment_method_id": str(foreign.id), "amount_cents": 1000}])).status_code, 404)
+        self.assertEqual(sync(sale([{"method": "pix", "payment_method_id": voucher["id"], "amount_cents": 1000}])).status_code, 400)
+        detail = self.api("GET", f"/api/v1/sales/{ok['aggregate_id']}").json()
+        self.assertEqual(detail["payments"][0]["name"], "Vale-refeição")
+        Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
+        report = {r["method"]: r for r in self.api("GET", "/api/v1/reports/sales_by_payment").json()["rows"]}
+        self.assertEqual((report["Vale-refeição"]["fee"], report["Vale-refeição"]["net"]), (60, 940))
+        self.assertEqual((report["Crédito"]["fee"], report["Crédito"]["net"]), (35, 965))
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",

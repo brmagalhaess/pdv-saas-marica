@@ -16,6 +16,7 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 
 from .api_common import APIError, endpoint, membership_context, method, require_feature, scoped
+from .payment_methods import fee_lookup
 from .stock_balance import balances as stock_balances
 from .models import FinanceEntry, Product, Sale, SaleItem, SalePayment, SaleReturn, Shop, StockMovement
 
@@ -88,15 +89,24 @@ def sales_by_hour(tenant, shop, start, end):
 
 def sales_by_payment(tenant, shop, start, end):
     sales = _sales(tenant, shop, start, end)
+    configured = fee_lookup(tenant)
     sums = defaultdict(int)
-    for method_name, amount in SalePayment.objects.filter(sale__in=sales).values_list("method", "amount_cents"):
-        sums[method_name] += amount
+    for method_name, configured_id, amount in (SalePayment.objects.filter(sale__in=sales)
+                                               .values_list("method", "payment_method_id", "amount_cents")):
+        sums[configured_id if method_name == "other" else method_name] += amount
     sums["cash"] -= sales.aggregate(v=Sum("change_cents"))["v"] or 0
     total = sum(sums.values())
-    data = [{"method": PAYMENT_NAMES.get(k, k), "total": v, "share": _pct(v, total)}
-            for k, v in sorted(sums.items(), key=lambda kv: -kv[1]) if v]
-    return ([_col("method", "Forma"), _col("total", "Recebido", "money"), _col("share", "Participação", "percent")],
-            data, {"total": total, "share": 10000 if total else 0})
+    data = []
+    for key, value in sorted(sums.items(), key=lambda kv: -kv[1]):
+        if not value:
+            continue
+        name, fee_bps = configured.get(key, (PAYMENT_NAMES.get(key, str(key)), 0))
+        fee = int((Decimal(value) * fee_bps / 10000).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        data.append({"method": name, "total": value, "share": _pct(value, total), "fee": fee, "net": value - fee})
+    fees = sum(r["fee"] for r in data)
+    return ([_col("method", "Forma"), _col("total", "Recebido", "money"), _col("share", "Participação", "percent"),
+             _col("fee", "Taxa estimada", "money"), _col("net", "Líquido", "money")],
+            data, {"total": total, "share": 10000 if total else 0, "fee": fees, "net": total - fees})
 
 
 def _by_person(field, label):
