@@ -9,7 +9,7 @@ from . import commission_logic
 from .credit_logic import CREDIT_METHODS, apply_sale_payments, reverse_sale_credit
 from .api_common import APIError, audit, digest, fields, money, quantity, scoped, text, uuid_value
 from .models import Customer, FiscalDocument, Membership, Product, Sale, SaleItem, SalePayment, StockMovement
-from .views_stock import balance
+from .stock_balance import balance
 
 
 def event_time(value):

@@ -6,8 +6,9 @@ from django.http import JsonResponse
 from django.utils import timezone
 
 from .api_common import APIError, endpoint, iso, membership_context, method, page, payload, require_feature, scoped, text, uuid_value
-from .models import AuditEvent, FinanceEntry, Membership, Product, Sale, Shop, StockMovement
+from .models import AuditEvent, FinanceEntry, Membership, Product, Sale, Shop
 from .sale_logic import reverse_sale
+from .stock_balance import balances as stock_balances
 from .serializers import sale as sale_data
 
 
@@ -112,9 +113,7 @@ def dashboard(request):
     shops = [shop] if shop else list(Shop.objects.filter(tenant=tenant, active=True))
     products = list(Product.objects.filter(tenant=tenant, active=True))
     for current_shop in shops:
-        amounts = (StockMovement.objects.filter(tenant=tenant, shop=current_shop)
-                   .values("product_id").annotate(q=Sum("delta_milli")))
-        by_product = {row["product_id"]: row["q"] for row in amounts}
+        by_product = stock_balances(tenant, current_shop)
         low_stock += sum(by_product.get(p.id, 0) < p.stock_minimum_milli
                          for p in products if p.stock_controlled and p.stock_minimum_milli > 0)
     recent = list(sales.order_by("-received_at")[:10])

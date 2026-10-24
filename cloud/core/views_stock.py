@@ -1,20 +1,17 @@
 """One central ledger for manual, receipt and terminal sale movements."""
 from django.db import IntegrityError, transaction
-from django.db.models import Q, Sum
+from django.db.models import Q
 from django.http import JsonResponse
 
 from .api_common import APIError, audit, digest, endpoint, fields, membership_context, method, money, page, payload, product_quantity, scoped, text
 from .models import Product, Shop, StockMovement, StockReceipt, StockReceiptItem, Supplier
 from .serializers import movement as movement_data, receipt as receipt_data
+from .stock_balance import balance, balances, tenant_quantity
 
 
 STOCK_READ = {"owner", "admin", "manager", "inventory", "finance", "viewer"}
 STOCK_WRITE = {"owner", "admin", "manager", "inventory"}
 
-
-def balance(tenant, shop, product):
-    return (StockMovement.objects.filter(tenant=tenant, shop=shop, product=product)
-            .aggregate(value=Sum("delta_milli"))["value"] or 0)
 
 
 def _paging(request):
@@ -42,9 +39,7 @@ def stock(request):
     limit, offset = _paging(request)
     rows = list(products.order_by("name", "id")[offset:offset + limit + 1])
     shown = rows[:limit]
-    values = (StockMovement.objects.filter(tenant=member.tenant, shop=shop, product_id__in=[p.id for p in shown])
-              .values("product_id").annotate(value=Sum("delta_milli")))
-    quantities = {row["product_id"]: row["value"] for row in values}
+    quantities = balances(member.tenant, shop, [p.id for p in shown])
     return JsonResponse({"results": [{"product_id": str(p.id), "sku": p.sku, "name": p.name,
                                       "unit": p.unit, "quantity_milli": quantities.get(p.id, 0),
                                       "stock_controlled": p.stock_controlled,
@@ -167,8 +162,7 @@ def receipts(request):
             # Receipts are the only source of purchase cost.  Product.cost_cents
             # stores the weighted moving average used by margin reports.
             product = Product.objects.select_for_update().get(pk=product.pk)
-            previous_quantity = (StockMovement.objects.filter(tenant=tenant, product=product)
-                                 .aggregate(value=Sum("delta_milli"))["value"] or 0)
+            previous_quantity = tenant_quantity(tenant, product)
             if previous_quantity > 0 and product.cost_cents not in (None, 0):
                 total_quantity = previous_quantity + qty
                 average = ((previous_quantity * product.cost_cents) + (qty * cost)

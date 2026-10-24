@@ -6,7 +6,6 @@ import time
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
-from django.db.models import Sum
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -16,9 +15,10 @@ from .api_common import APIError, audit, client_ip, digest, endpoint, fields, me
 from .models import Customer, Membership, Product, Sale, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .cash_logic import CASH_EVENTS, apply_cash_event
 from .credit_logic import apply_return, balances as credit_balances
+from .stock_balance import balances as stock_balances
 from .sale_logic import event_time, persist_sale, reverse_sale
 from .serializers import plan as plan_data, sync_conflict as sync_conflict_data, terminal as terminal_data
-from .views_stock import balance
+from .stock_balance import balance
 
 DEVICE_ROLES = {"owner", "admin"}
 EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "stock.adjusted", "cash.opened", "cash.closed",
@@ -278,10 +278,7 @@ def bootstrap(request):
     rows = list(Product.objects.filter(tenant=terminal.tenant).select_related("category")
                 .order_by("id")[offset:offset + limit + 1])
     shown = rows[:limit]
-    balances = (StockMovement.objects.filter(tenant=terminal.tenant, shop=terminal.shop,
-                                             product_id__in=[p.id for p in shown])
-                .values("product_id").annotate(q=Sum("delta_milli")))
-    by_product = {row["product_id"]: row["q"] for row in balances}
+    by_product = stock_balances(terminal.tenant, terminal.shop, [p.id for p in shown])
     products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode, "ncm": p.ncm, "scale_code": p.scale_code,
                  "name": p.name, "unit": p.unit, "price_cents": p.price_cents,
                  "cost_cents": p.cost_cents, "image_url": p.image_url, "active": p.active,

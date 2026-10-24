@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import pyotp
 from django.contrib.auth import get_user_model
 from django.db import connection
+from django.db.models import Sum
 from django.db.migrations.executor import MigrationExecutor
 from django.test import Client, RequestFactory, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
@@ -792,6 +793,29 @@ class CloudAPITests(TestCase):
         open_entry = FinanceEntry.objects.get(sale_id=another["aggregate_id"])
         self.assertEqual(self.api("PATCH", f"/api/v1/finance/{open_entry.id}", {"amount_cents": 1}).status_code, 409)
         self.assertEqual(self.api("PATCH", f"/api/v1/finance/{open_entry.id}", {"due_date": "2026-12-20"}).status_code, 200)
+        from .stock_balance import balance, drift
+        self.assertEqual(drift(self.tenant), [])
+        self.assertEqual(balance(self.tenant, self.shop, self.product),
+                         StockMovement.objects.filter(product=self.product).aggregate(v=Sum("delta_milli"))["v"])
+
+    def test_reconcile_stock_reports_and_fixes_drift(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from .models import StockBalance
+        StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=self.product, delta_milli=4000,
+                                     source="manual", reason="Inventário")
+        StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=self.product, delta_milli=-1500,
+                                     source="manual", reason="Avaria")
+        row = StockBalance.objects.get(shop=self.shop, product=self.product)
+        self.assertEqual(row.quantity_milli, 2500)
+        StockBalance.objects.filter(pk=row.pk).update(quantity_milli=99)
+        with self.assertRaises(SystemExit):
+            call_command("reconcile_stock", stdout=StringIO())
+        out = StringIO()
+        call_command("reconcile_stock", "--fix", stdout=out)
+        self.assertIn("corrigida", out.getvalue())
+        self.assertEqual(StockBalance.objects.get(pk=row.pk).quantity_milli, 2500)
+        call_command("reconcile_stock", stdout=StringIO())  # clean now: no SystemExit
 
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex

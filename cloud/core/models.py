@@ -395,6 +395,24 @@ class StockMovement(models.Model):
         indexes = [models.Index(fields=["tenant", "shop", "product", "created_at"])]
 
 
+class StockBalance(models.Model):
+    """Current quantity per shop and product, kept in step with StockMovement.
+
+    Written only by core.stock_balance in the same transaction as each movement;
+    `manage.py reconcile_stock` compares it with the movement ledger.
+    """
+    id = models.BigAutoField(primary_key=True)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
+    shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="balances")
+    quantity_milli = models.BigIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["shop", "product"], name="stock_balance_shop_product")]
+        indexes = [models.Index(fields=["tenant", "shop"])]
+
+
 class StockReceipt(models.Model):
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)

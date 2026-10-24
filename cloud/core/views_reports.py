@@ -16,6 +16,7 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 
 from .api_common import APIError, endpoint, membership_context, method, require_feature, scoped
+from .stock_balance import balances as stock_balances
 from .models import FinanceEntry, Product, Sale, SaleItem, SalePayment, SaleReturn, Shop, StockMovement
 
 READ = {"owner", "admin", "manager", "finance", "viewer"}
@@ -158,8 +159,7 @@ def low_stock(tenant, shop, start, end):
     since = timezone.now() - timedelta(days=30)
     data = []
     for current in shops:
-        balances = dict(StockMovement.objects.filter(tenant=tenant, shop=current)
-                        .values_list("product_id").annotate(q=Sum("delta_milli")))
+        balances = stock_balances(tenant, current)
         sold = dict(StockMovement.objects.filter(tenant=tenant, shop=current, source="sale", created_at__gte=since)
                     .values_list("product_id").annotate(q=Sum("delta_milli")))
         for product in Product.objects.filter(tenant=tenant, active=True, stock_controlled=True).order_by("name"):
