@@ -718,6 +718,7 @@ async function fieldNode(field, value, creating = false) {
 }
 async function formFor(fields, values = {}, creating = false) {
   const form = el("form", "form-grid");
+  values = values || {};  // callers pass null for "new record"
   for (const field of fields) form.append(await fieldNode(field, values[field.key], creating));
   return form;
 }
