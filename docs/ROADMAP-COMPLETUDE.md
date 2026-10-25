@@ -18,7 +18,9 @@ Os itens P0 fiscais e de pagamento continuam no plano de 90 dias da auditoria e 
 | 2.4 Devolução parcial, troca e crédito na loja | ✅ entregue no terminal (dinheiro, crédito na loja ou abatimento do fiado) |
 | 1.2 Saldo de estoque materializado | ✅ entregue (`StockBalance` + `manage.py reconcile_stock`) |
 | 1.4 Formas de pagamento configuráveis | ✅ entregue (ativar/desativar, taxa, prazo e formas próprias; relatório líquido de taxas) |
-| Próximos | recebimento de fiado no caixa, comprovante impresso de devolução, devolução pelo painel, grade de variações (4.1), compras com XML (4.4), inventário guiado (4.3) |
+| 4.1 Grade de variações | ✅ entregue (`ProductGroup`; combinações viram produtos; escolha de variação no caixa) |
+| 4.4 Compras pelo XML da NF-e | ✅ entregue (custo real com desconto/frete/IPI/ST, memória de códigos por fornecedor, fator de embalagem, duplicatas → contas a pagar). Falta: pedido de compra e recebimento parcial, manifestação/DF-e automático |
+| Próximos | inventário guiado (4.3), transferência entre lojas (4.5), recebimento de fiado no caixa, comprovante impresso de devolução, devolução pelo painel |
 
 ---
 

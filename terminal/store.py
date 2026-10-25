@@ -180,6 +180,12 @@ class Store:
                 conn.execute("ALTER TABLE products ADD COLUMN ncm TEXT")
             if "stock_controlled" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN stock_controlled INTEGER NOT NULL DEFAULT 1")
+            if "group_id" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN group_id TEXT")
+            if "group_name" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN group_name TEXT")
+            if "variant" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN variant TEXT")
             sales_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sales)")}
             if "customer_document" not in sales_columns:
                 conn.execute("ALTER TABLE sales ADD COLUMN customer_document TEXT")
@@ -598,15 +604,17 @@ class Store:
                 if type(stock_controlled) is not bool:
                     raise TerminalError("Configuração de estoque inválida")
                 conn.execute("""INSERT INTO products
-                    (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_controlled,stock_milli,active,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_controlled,stock_milli,active,updated_at,
+                     group_id,group_name,variant)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
                     ncm=excluded.ncm,
                     scale_code=excluded.scale_code,
                     name=excluded.name,unit=excluded.unit,category=excluded.category,
                     price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
                     image_url=excluded.image_url,stock_controlled=excluded.stock_controlled,stock_milli=excluded.stock_milli,
-                    active=excluded.active,updated_at=excluded.updated_at""",
+                    active=excluded.active,updated_at=excluded.updated_at,group_id=excluded.group_id,
+                    group_name=excluded.group_name,variant=excluded.variant""",
                     (product_id, product.get("sku"), product.get("barcode") or None,
                      product.get("ncm") or None, product.get("scale_code") or None,
                      _str(product.get("name"), "Nome do produto"), unit, category or "Geral",
@@ -614,7 +622,9 @@ class Store:
                      image_url,
                      int(stock_controlled),
                      stock,
-                     int(bool(product.get("active", True))), timestamp))
+                     int(bool(product.get("active", True))), timestamp,
+                     product.get("group_id") or None, str(product.get("group_name") or "")[:140] or None,
+                     str(product.get("variant") or "")[:120] or None))
             operator_ids = []
             for operator in operators:
                 op_id = _str(operator.get("id"), "Operador")

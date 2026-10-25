@@ -4,6 +4,7 @@ from django.urls import include, path
 from core import views_auth as auth, views_finance as finance, views_pages as pages
 from core import views_platform as platform, views_resources as resources
 from core import views_customer_credit as customer_credit, views_payment_methods as payment_methods
+from core import product_groups, views_purchases as purchases
 from core import views_cash as cash, views_commissions as commissions, views_reports as reports
 from core import views_sales as sales, views_stock as stock, views_terminal as terminal
 from core import views_users as users
@@ -63,6 +64,10 @@ urlpatterns = [
     path("api/v1/customers/credit-summary", customer_credit.credit_summary),
     path("api/v1/customers/<uuid:pk>/statement", customer_credit.statement),
     path("api/v1/customers/<uuid:pk>/receive", customer_credit.receive),
+    path("api/v1/purchases/nfe/preview", purchases.nfe_preview),
+    path("api/v1/purchases/nfe/import", purchases.nfe_import),
+    path("api/v1/product-groups", product_groups.product_groups),
+    path("api/v1/product-groups/<uuid:pk>", product_groups.product_group_detail),
     path("api/v1/payment-methods", payment_methods.payment_methods),
     path("api/v1/payment-methods/<uuid:pk>", payment_methods.payment_method_detail),
     path("api/v1/cash-sessions", cash.cash_sessions),

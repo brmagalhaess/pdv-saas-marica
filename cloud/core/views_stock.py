@@ -146,18 +146,30 @@ def receipts(request):
                            "reference": reference, "source_file": {"name": source_name, "mime": source_mime,
                                                                       "size": source_size, "sha256": source_hash},
                            "items": sorted([(str(p.id), qty, cost) for p, qty, cost in prepared])})
+    row, created = record_receipt(tenant, member.user, shop, supplier, reference, key, content_hash, prepared,
+                                  (source_name, source_mime, source_size, source_hash))
+    return JsonResponse(receipt_data(row), status=201 if created else 200)
+
+
+def record_receipt(tenant, actor, shop, supplier, reference, key, content_hash, prepared, source=("", "", 0, "")):
+    """Stock entry with weighted-average cost; idempotent by `key`.
+
+    `prepared` is [(product, quantity_milli, unit_cost_cents)] with one line per
+    product. Returns (receipt, created).
+    """
+    source_name, source_mime, source_size, source_hash = source
     with transaction.atomic():
         type(tenant).objects.select_for_update().get(pk=tenant.pk)
         previous = StockReceipt.objects.filter(tenant=tenant, idempotency_key=key).first()
         if previous:
             if previous.content_hash != content_hash:
                 raise APIError("Chave já usada com outros dados", 409)
-            return JsonResponse(receipt_data(previous))
+            return previous, False
         row = StockReceipt.objects.create(tenant=tenant, shop=shop, supplier=supplier,
                                           reference=reference, source_file_name=source_name,
                                           source_file_mime=source_mime, source_file_sha256=source_hash,
                                           source_file_size=source_size, idempotency_key=key,
-                                          content_hash=content_hash, created_by=member.user)
+                                          content_hash=content_hash, created_by=actor)
         for product, qty, cost in prepared:
             # Receipts are the only source of purchase cost.  Product.cost_cents
             # stores the weighted moving average used by margin reports.
@@ -174,9 +186,9 @@ def receipts(request):
                                             average_cost_cents=average)
             StockMovement.objects.create(tenant=tenant, shop=shop, product=product,
                                          delta_milli=qty, source="receipt", reason="Entrada de mercadoria",
-                                         reference=reference or str(row.id), actor=member.user,
+                                         reference=reference or str(row.id), actor=actor,
                                          idempotency_key=f"receipt:{row.id}:{product.id}")
             product.cost_cents = average
             product.save(update_fields=["cost_cents", "updated_at"])
-        audit(tenant, member.user, "stock.received", row)
-    return JsonResponse(receipt_data(row), status=201)
+        audit(tenant, actor, "stock.received", row)
+    return row, True

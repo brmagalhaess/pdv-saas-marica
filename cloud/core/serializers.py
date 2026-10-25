@@ -22,6 +22,7 @@ def product(row):
     return {"id": str(row.id), "sku": row.sku, "barcode": row.barcode, "ncm": row.ncm, "scale_code": row.scale_code,
             "name": row.name, "category_id": str(row.category_id) if row.category_id else None,
             "variant": row.variant, "unit": row.unit,
+            "group_id": str(row.group_id) if row.group_id else None, "variant_values": row.variant_values,
             "price_cents": row.price_cents, "cost_cents": row.cost_cents,
             "stock_minimum_milli": row.stock_minimum_milli,
             "stock_controlled": row.stock_controlled,

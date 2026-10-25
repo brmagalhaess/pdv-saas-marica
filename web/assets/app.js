@@ -793,6 +793,10 @@ async function resourcePage(key) {
   if (spec.create()) view.actions.append(button("+ Novo " + spec.singular, async () => {
     try { await resourceForm(spec); } catch (error) { handleError(error); }
   }));
+  if (key === "products" && spec.create()) {
+    view.actions.append(button("+ Nova grade", () => productGroupForm(null).catch(handleError), "ghost"));
+    view.actions.append(button("Grades", () => productGroupsDialog().catch(handleError), "ghost"));
+  }
   if (key === "products") {
     view.outer.append(info("O estoque mínimo é apenas um alerta. O saldo disponível do terminal é lançado por loja em Operação > Estoque, usando Registrar entrada, Importar compra CSV ou Ajustar estoque."));
     view.outer.append(info("Para itens fabricados pela própria empresa, como pão e refeições vendidos por KG, desative Controlar estoque no cadastro. O terminal aceitará a venda pelo preço do quilo sem exigir entrada ou saldo, mantendo esses itens identificados como produção própria."));
@@ -1467,6 +1471,153 @@ async function paymentMethodsPage() {
   } catch (error) { box.append(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
 }
 
+async function productGroupsDialog() {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando grades…"));
+  openDialog("Grades de variações", "Produtos com cor, tamanho ou sabor. Cada combinação tem SKU, código de barras e estoque próprios.", loading);
+  const rows = records(await api.get("/product-groups?limit=100"));
+  loading.replaceChildren(rows.length ? table([
+    { label: "Grade", render: r => r.name },
+    { label: "Atributos", render: r => r.attributes.map(a => `${a.name}: ${a.values.join(", ")}`).join(" · ") },
+    { label: "Variações ativas", render: r => String(r.variants_count) }
+  ], rows, r => [{ label: "Editar", onClick: () => productGroupForm(r).catch(handleError) }])
+    : empty("Nenhuma grade", "Use “+ Nova grade” para cadastrar um produto com variações."));
+}
+async function productGroupForm(group) {
+  const detail = group ? await api.get("/product-groups/" + group.id) : null;
+  const attrs = detail?.attributes || [];
+  const fields = [
+    { key: "name", label: "Nome do produto", required: true, max: 140, full: true, placeholder: "Ex.: Camiseta Básica" },
+    { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
+    { key: "price_cents", label: detail ? "Preço (novas variações)" : "Preço de cada variação (R$)", type: "money", required: !detail, min: 0 },
+    ...(detail ? [{ key: "apply_price_to_all", label: "Aplicar este preço a todas as variações", type: "checkbox", default: false }] : [
+      { key: "ncm", label: "NCM (opcional)", max: 8, inputMode: "numeric", pattern: "[0-9]{7,8}" }]),
+    { key: "attr1_name", label: "Atributo 1", required: true, max: 30, placeholder: "Ex.: Cor" },
+    { key: "attr1_values", label: "Valores do atributo 1", required: true, full: true, placeholder: "Separe por vírgula: Azul, Preto, Branco" },
+    { key: "attr2_name", label: "Atributo 2 (opcional)", max: 30, placeholder: "Ex.: Tamanho" },
+    { key: "attr2_values", label: "Valores do atributo 2", full: true, placeholder: "P, M, G, GG" }
+  ];
+  const record = detail ? { name: detail.name, category_id: detail.category_id,
+    attr1_name: attrs[0]?.name, attr1_values: attrs[0]?.values.join(", "),
+    attr2_name: attrs[1]?.name || "", attr2_values: attrs[1]?.values.join(", ") || "" } : null;
+  const form = await formFor(fields, record);
+  const preview = el("p", "feedback");
+  form.append(preview);
+  const split = value => String(value || "").split(",").map(v => v.trim()).filter(Boolean);
+  const attributesOf = () => {
+    const list = [{ name: form.elements.namedItem("attr1_name").value.trim(), values: split(form.elements.namedItem("attr1_values").value) }];
+    const second = form.elements.namedItem("attr2_name").value.trim();
+    if (second) list.push({ name: second, values: split(form.elements.namedItem("attr2_values").value) });
+    return list;
+  };
+  const refresh = () => { const total = attributesOf().reduce((n, a) => n * Math.max(a.values.length, 0), 1);
+    preview.textContent = total ? `Serão mantidas ${total} variações${total > 200 ? " — acima do limite de 200" : ""}.` : "Informe os valores dos atributos."; };
+  form.addEventListener("input", refresh); refresh();
+  const message = formMessage(form), submit = formButtons(form, detail ? "Salvar grade" : "Gerar variações");
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    submit.disabled = true;
+    try {
+      const data = formPayload(form, fields.filter(f => !f.key.startsWith("attr")));
+      data.attributes = attributesOf();
+      if (detail) { if (data.price_cents === undefined) delete data.apply_price_to_all; await api.patch("/product-groups/" + detail.id, data); }
+      else await api.post("/product-groups", data);
+      closeDialog(); toast(detail ? "Grade atualizada." : "Variações geradas com SKU e código de barras."); renderRoute();
+    } catch (error) { handleError(error, message); submit.disabled = false; }
+  });
+  openDialog(detail ? "Editar grade" : "Nova grade de variações",
+    detail ? "Novos valores criam variações; valores removidos desativam a variação sem apagar o histórico." : "Cada combinação vira um produto com SKU, código de barras e estoque próprios.", form);
+}
+
+async function allProducts() {
+  const rows = [];
+  let cursor = "";
+  do {
+    const response = await api.get("/products?limit=100" + (cursor ? "&cursor=" + cursor : ""));
+    rows.push(...records(response));
+    cursor = response.next_cursor || "";
+  } while (cursor && rows.length < 5000);
+  return rows.sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+async function nfeImport(shopId) {
+  const body = el("div");
+  body.append(info("Envie o XML da NF-e que o fornecedor mandou. Vincule cada item a um produto, crie produtos novos ou ignore itens que não entram no estoque. O sistema lembra os códigos deste fornecedor para a próxima nota."));
+  const field = el("div", "field"), label = el("label", "", "Arquivo XML da NF-e"), file = el("input");
+  file.type = "file"; file.accept = ".xml,text/xml,application/xml"; file.id = "nfe-file"; label.htmlFor = file.id;
+  field.append(label, file);
+  const area = el("div");
+  body.append(field, area);
+  openDialog("Importar NF-e de compra", "Entrada de estoque com custo real, custo médio atualizado e contas a pagar das duplicatas.", body);
+  file.addEventListener("change", async () => {
+    if (!file.files[0]) return;
+    area.replaceChildren(loadingSurface("Lendo a NF-e…"));
+    try {
+      const xml = await file.files[0].text();
+      const [preview, products] = await Promise.all([api.post("/purchases/nfe/preview", { xml }), allProducts()]);
+      renderNfe(xml, preview, products.filter(p => p.active !== false && p.stock_controlled !== false));
+    } catch (error) { area.replaceChildren(empty("Não foi possível ler a NF-e", errorText(error), "!")); }
+  });
+  function renderNfe(xml, nfe, products) {
+    area.replaceChildren();
+    area.append(detailList([
+      ["Fornecedor", `${nfe.supplier.name} · ${nfe.supplier.document}${nfe.supplier_id ? "" : " (será cadastrado)"}`],
+      ["Nota", `Nº ${nfe.number} série ${nfe.series}${nfe.issued_on ? " · " + nfe.issued_on.split("-").reverse().join("/") : ""}`],
+      ["Total da nota", money(nfe.total_cents)],
+      ["Duplicatas", nfe.installments.length ? nfe.installments.map(d => `${d.due_date.split("-").reverse().join("/")}: ${money(d.amount_cents)}`).join(" · ") : "Sem duplicatas (vencimento em 30 dias)"]
+    ]));
+    nfe.warnings.forEach(text => area.append(info(text, true)));
+    if (nfe.already_imported) { area.append(info("Esta NF-e já foi importada. Nada será lançado de novo.", true)); return; }
+    const options = products.map(p => `<option value="${p.id}">${p.name.replace(/</g, "&lt;")}${p.variant ? "" : ""} · ${p.sku}</option>`).join("");
+    const rows = nfe.items.map(item => {
+      const wrap = el("div", "nfe-line");
+      const s = item.suggestion;
+      wrap.innerHTML = `<div class="nfe-line-head"><strong></strong><small></small></div>
+        <div class="nfe-line-controls">
+          <label>Destino<select data-k="action"><option value="map">Vincular a produto</option><option value="new">Criar produto novo</option><option value="skip">Ignorar (não entra no estoque)</option></select></label>
+          <label data-show="map">Produto<select data-k="product"><option value="">Escolha…</option>${options}</select></label>
+          <label data-show="new">Preço de venda (R$)<input data-k="price" inputmode="decimal" placeholder="0,00"></label>
+          <label data-show="map new">Unidades por ${item.unit || "unidade"} da nota<input data-k="factor" type="number" min="0.001" step="0.001" value="${(s.factor_milli || 1000) / 1000}"></label>
+        </div><small class="nfe-hint"></small>`;
+      wrap.querySelector("strong").textContent = item.name;
+      wrap.querySelector(".nfe-line-head small").textContent = `Cód. ${item.code}${item.ean ? " · EAN " + item.ean : ""} · ${item.quantity} ${item.unit} · custo ${money(item.total_cost_cents)}`;
+      const action = wrap.querySelector('[data-k="action"]'), product = wrap.querySelector('[data-k="product"]');
+      if (s.product_id) product.value = s.product_id; else action.value = "new";
+      const hint = wrap.querySelector(".nfe-hint");
+      hint.textContent = s.source === "memory" ? "Vínculo lembrado de notas anteriores deste fornecedor." : s.source === "barcode" ? "Encontrado pelo código de barras." : "";
+      const sync = () => wrap.querySelectorAll("[data-show]").forEach(node => node.hidden = !node.dataset.show.split(" ").includes(action.value));
+      action.addEventListener("change", sync); sync();
+      return { item, wrap, read() {
+        const line = { n_item: item.n_item, action: action.value };
+        if (line.action === "skip") return line;
+        const factor = Math.round(Number(wrap.querySelector('[data-k="factor"]').value.replace(",", ".")) * 1000);
+        if (!Number.isSafeInteger(factor) || factor <= 0) throw new Error(`${item.name}: informe as unidades por embalagem.`);
+        line.factor_milli = factor;
+        if (line.action === "map") { if (!product.value) throw new Error(`${item.name}: escolha o produto ou mude o destino.`); line.product_id = product.value; }
+        else { const price = parseMoneyInput(wrap.querySelector('[data-k="price"]').value); if (!Number.isSafeInteger(price) || price <= 0) throw new Error(`${item.name}: informe o preço de venda do produto novo.`); line.new_product = { price_cents: price }; }
+        return line;
+      } };
+    });
+    rows.forEach(r => area.append(r.wrap));
+    const payablesLabel = el("label", "checkbox-line"), payables = el("input");
+    payables.type = "checkbox"; payables.checked = true;
+    payablesLabel.append(payables, document.createTextNode(" Gerar contas a pagar das duplicatas"));
+    const message = el("p", "feedback error"); message.hidden = true;
+    const actions = el("div", "form-actions");
+    actions.append(button("Cancelar", closeDialog, "ghost"));
+    const submit = button("Importar entrada", async () => {
+      submit.disabled = true; message.hidden = true;
+      try {
+        const result = await api.post("/purchases/nfe/import", { xml, shop_id: shopId, create_payables: payables.checked, lines: rows.map(r => r.read()) });
+        closeDialog();
+        toast(`NF-e importada: ${result.items} produto(s) no estoque${result.payables.length ? `, ${result.payables.length} conta(s) a pagar` : ""}.`);
+        renderRoute();
+      } catch (error) { message.textContent = errorText(error); message.hidden = false; submit.disabled = false; }
+    });
+    actions.append(submit);
+    area.append(payablesLabel, message, actions);
+  }
+}
+
 function idempotency(form, payload) {
   const signature = JSON.stringify(payload);
   if (form.dataset.signature !== signature) {
@@ -1747,6 +1898,7 @@ async function stockPage() {
     view.actions.append(button("Ajustar estoque", () => stockAdjustment(shop.select.value).catch(handleError), "ghost"));
     view.actions.append(button("+ Registrar entrada", () => stockReceipt(shop.select.value).catch(handleError)));
     view.actions.append(button("Importar compra CSV", () => stockReceiptImport(shop.select.value).catch(handleError), "secondary"));
+    view.actions.append(button("Importar XML da NF-e", () => nfeImport(shop.select.value).catch(handleError), "secondary"));
   }
   async function load() {
     const token = ++state.renderId;

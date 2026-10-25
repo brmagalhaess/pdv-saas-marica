@@ -19,7 +19,7 @@ from django.utils import timezone
 from shared.licensing import generate_keypair, verify_lease
 from operations.models import BillingBinding
 from operations.services import enqueue
-from .api_common import client_ip, password_policy
+from .api_common import APIError, client_ip, password_policy
 from .models import (AuditEvent, Membership, Plan, Product, RateLimit, Sale, SalePayment, Shop,
                       PlatformMFA, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal)
 
@@ -861,6 +861,95 @@ class CloudAPITests(TestCase):
         report = {r["method"]: r for r in self.api("GET", "/api/v1/reports/sales_by_payment").json()["rows"]}
         self.assertEqual((report["Vale-refeição"]["fee"], report["Vale-refeição"]["net"]), (60, 940))
         self.assertEqual((report["Crédito"]["fee"], report["Crédito"]["net"]), (35, 965))
+
+    def test_product_group_generates_and_syncs_variants(self):
+        self.client.force_login(self.owner)
+        attrs = [{"name": "Cor", "values": ["Azul", "Preto"]}, {"name": "Tamanho", "values": ["P", "M", "G"]}]
+        created = self.api("POST", "/api/v1/product-groups", {"name": "Camiseta Básica", "attributes": attrs, "price_cents": 4990})
+        self.assertEqual(created.status_code, 201, created.content)
+        group = created.json()
+        variants = group["variants"]
+        self.assertEqual(len(variants), 6)
+        self.assertEqual(len({v["sku"] for v in variants}), 6)
+        self.assertEqual(len({v["barcode"] for v in variants}), 6)
+        self.assertIn("Camiseta Básica - Azul / M", {v["name"] for v in variants})
+        self.assertEqual(self.api("POST", "/api/v1/product-groups", {"name": "Camiseta Básica", "attributes": attrs,
+                                                                     "price_cents": 1}).status_code, 409)
+        attrs[1]["values"] = ["P", "M", "GG"]  # G removed, GG added
+        updated = self.api("PATCH", f"/api/v1/product-groups/{group['id']}", {"attributes": attrs, "price_cents": 5490,
+                                                                               "apply_price_to_all": True}).json()
+        active = {v["variant"]: v for v in updated["variants"] if v["active"]}
+        self.assertEqual(set(active), {"Azul / P", "Azul / M", "Azul / GG", "Preto / P", "Preto / M", "Preto / GG"})
+        self.assertEqual({v["price_cents"] for v in active.values()}, {5490})
+        self.assertEqual(len(updated["variants"]), 8)  # G variants kept, inactive, for history
+        too_big = [{"name": "A", "values": [str(i) for i in range(30)]}, {"name": "B", "values": [str(i) for i in range(10)]}]
+        self.assertEqual(self.api("POST", "/api/v1/product-groups", {"name": "Grande", "attributes": too_big,
+                                                                     "price_cents": 1}).status_code, 400)
+
+    def test_nfe_import_maps_creates_converts_and_creates_payables(self):
+        from .models import FinanceEntry, StockReceipt, Supplier, SupplierProductCode
+        from .nfe import parse
+        from .stock_balance import balance
+        Product.objects.filter(pk=self.product.pk).update(barcode="7891000100103")
+        key = "33261012345678000195550010000012341000012345"
+
+        def item(n, code, ean, name, unit, qty, price, extra=""):
+            return (f'<det nItem="{n}"><prod><cProd>{code}</cProd><cEAN>{ean}</cEAN><xProd>{name}</xProd>'
+                    f'<NCM>10063021</NCM><uCom>{unit}</uCom><qCom>{qty}</qCom><vUnCom>{price}</vUnCom>'
+                    f'<vProd>{float(qty) * float(price):.2f}</vProd><cEANTrib>{ean}</cEANTrib>{extra}</prod>'
+                    '<imposto><ICMS><ICMS10><vICMSST>1.50</vICMSST></ICMS10></ICMS><IPI><IPITrib><vIPI>0.50</vIPI>'
+                    '</IPITrib></IPI></imposto></det>')
+
+        def xml(nf_key, number):
+            return (f'<?xml version="1.0" encoding="UTF-8"?><nfeProc xmlns="http://www.portalfiscal.inf.br/nfe">'
+                    f'<NFe><infNFe Id="NFe{nf_key}"><ide><mod>55</mod><serie>1</serie><nNF>{number}</nNF>'
+                    '<dhEmi>2026-10-20T10:00:00-03:00</dhEmi></ide><emit><CNPJ>12345678000195</CNPJ>'
+                    '<xNome>Distribuidora Exemplo Ltda</xNome></emit><dest><CNPJ>99999999000199</CNPJ></dest>'
+                    + item(1, "ARZ-5KG", "7891000100103", "ARROZ TIPO 1 FD 12X1KG", "FD", "2", "60.00", "<vDesc>10.00</vDesc>")
+                    + item(2, "FEI-1", "SEM GTIN", "FEIJAO CARIOCA 1KG", "UN", "10", "8.00")
+                    + item(3, "BRINDE", "SEM GTIN", "BRINDE CANETA", "UN", "1", "0.01")
+                    + '<total><ICMSTot><vNF>216.01</vNF></ICMSTot></total><cobr>'
+                    '<dup><nDup>001</nDup><dVenc>2026-11-20</dVenc><vDup>108.00</vDup></dup>'
+                    '<dup><nDup>002</nDup><dVenc>2026-12-20</dVenc><vDup>108.01</vDup></dup></cobr>'
+                    '</infNFe></NFe><protNFe><infProt><chNFe>' + nf_key + '</chNFe><nProt>133260000000001</nProt></infProt></protNFe></nfeProc>')
+
+        parsed = parse(xml(key, 1234))
+        # 120.00 - 10.00 discount + 1.50 ST + 0.50 IPI
+        self.assertEqual([i["total_cost_cents"] for i in parsed["items"]], [11200, 8200, 201])
+        self.assertEqual([d["amount_cents"] for d in parsed["installments"]], [10800, 10801])
+        with self.assertRaises(APIError):
+            parse('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>')
+
+        self.client.force_login(self.owner)
+        preview = self.api("POST", "/api/v1/purchases/nfe/preview", {"xml": xml(key, 1234)}).json()
+        self.assertIsNone(preview["supplier_id"])
+        self.assertEqual([i["suggestion"]["source"] for i in preview["items"]], ["barcode", None, None])
+        lines = [{"n_item": 1, "action": "map", "product_id": str(self.product.id), "factor_milli": 12000},
+                 {"n_item": 2, "action": "new", "factor_milli": 1000, "new_product": {"price_cents": 1190}},
+                 {"n_item": 3, "action": "skip"}]
+        bad = self.api("POST", "/api/v1/purchases/nfe/import",
+                       {"xml": xml(key, 1234), "shop_id": str(self.shop.id), "lines": lines[:2]})
+        self.assertEqual(bad.status_code, 400)  # every item needs a decision
+        done = self.api("POST", "/api/v1/purchases/nfe/import", {"xml": xml(key, 1234), "shop_id": str(self.shop.id), "lines": lines})
+        self.assertEqual(done.status_code, 201, done.content)
+        self.assertEqual(balance(self.tenant, self.shop, self.product), 24000)  # 2 fardos x 12
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.cost_cents, 467)  # 112.00 / 24 un
+        beans = Product.objects.get(tenant=self.tenant, name="FEIJAO CARIOCA 1KG")
+        self.assertEqual((beans.price_cents, beans.cost_cents, beans.ncm), (1190, 820, "10063021"))
+        supplier = Supplier.objects.get(tenant=self.tenant, document="12345678000195")
+        payables = FinanceEntry.objects.filter(supplier=supplier, kind="payable").order_by("due_date")
+        self.assertEqual([p.amount_cents for p in payables], [10800, 10801])
+        self.assertEqual(StockReceipt.objects.get(pk=done.json()["receipt_id"]).reference, "NF-e 1234 série 1")
+        self.assertEqual(self.api("POST", "/api/v1/purchases/nfe/import",
+                                  {"xml": xml(key, 1234), "shop_id": str(self.shop.id), "lines": lines}).status_code, 409)
+        self.assertTrue(self.api("POST", "/api/v1/purchases/nfe/preview", {"xml": xml(key, 1234)}).json()["already_imported"])
+        # Next note from the same supplier: codes are remembered with their conversion factor.
+        again = self.api("POST", "/api/v1/purchases/nfe/preview", {"xml": xml(key[:-4] + "9999", 1300)}).json()
+        self.assertEqual(again["supplier_id"], str(supplier.id))
+        self.assertEqual([(i["suggestion"]["source"], i["suggestion"]["factor_milli"]) for i in again["items"][:2]],
+                         [("memory", 12000), ("memory", 1000)])
+        self.assertEqual(SupplierProductCode.objects.filter(supplier=supplier).count(), 2)
 
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex

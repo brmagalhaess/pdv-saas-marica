@@ -228,3 +228,12 @@ html,body{width:100%;max-width:100%;overflow:hidden}
 .return-line span { display: grid; gap: 2px; }
 .return-line small { font-weight: 400; opacity: .75; }
 .customer-select-field { grid-column: 1 / -1; }
+
+/* Grade de variações */
+.product-group .meta { color: #0f9b7b; }
+.variant-dialog { max-width: 640px; width: min(640px, calc(100vw - 32px)); display: grid; gap: 14px; }
+.variant-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; max-height: 50vh; overflow: auto; }
+.variant-option { display: grid; gap: 4px; text-align: left; padding: 12px; border: 1px solid #d7e3e4; border-radius: 11px; background: #fff; min-height: 64px; }
+.variant-option:hover:not(:disabled) { border-color: #14ae8b; }
+.variant-option small { color: #6f878f; }
+.variant-option.out { opacity: .5; }

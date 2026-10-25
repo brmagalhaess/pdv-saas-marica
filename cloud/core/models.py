@@ -122,6 +122,22 @@ class Category(models.Model):
         constraints = [models.UniqueConstraint(fields=["tenant", "name"], name="category_tenant_name_unique")]
 
 
+class ProductGroup(models.Model):
+    """Variation grid (e.g. Cor × Tamanho). Each combination is an ordinary
+    Product, so sales, stock, sync and receipts need no grid awareness."""
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="product_groups")
+    name = models.CharField(max_length=140)
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, null=True, blank=True)
+    # [{"name": "Cor", "values": ["Azul", "Preto"]}, {"name": "Tamanho", "values": ["P", "M"]}]
+    attributes = models.JSONField(default=list)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["tenant", "name"], name="product_group_tenant_name")]
+
+
 class Product(models.Model):
     UNITS = [(s, s) for s in ("UN", "KG", "L")]
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
@@ -133,6 +149,8 @@ class Product(models.Model):
     scale_code = models.CharField(max_length=6, blank=True)
     name = models.CharField(max_length=180)
     variant = models.CharField(max_length=120, blank=True)
+    group = models.ForeignKey(ProductGroup, on_delete=models.PROTECT, null=True, blank=True, related_name="variants")
+    variant_values = models.JSONField(default=dict, blank=True)
     unit = models.CharField(max_length=2, choices=UNITS, default="UN")
     price_cents = models.PositiveBigIntegerField(default=0)
     cost_cents = models.PositiveBigIntegerField(default=0)
@@ -313,6 +331,21 @@ class Commission(models.Model):
                        models.UniqueConstraint(fields=["sale_return"], condition=models.Q(sale_return__isnull=False),
                                                name="commission_once_per_return")]
         indexes = [models.Index(fields=["tenant", "seller", "status"])]
+
+
+class SupplierProductCode(models.Model):
+    """Remembers how a supplier's item code maps to our product (NF-e import)."""
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name="product_codes")
+    supplier_code = models.CharField(max_length=60)
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="supplier_codes")
+    # Our units per supplier unit, in thousandths (a box of 12 = 12000).
+    factor_milli = models.PositiveBigIntegerField(default=1000)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["supplier", "supplier_code"], name="supplier_code_once")]
 
 
 class SaleReturn(models.Model):

@@ -368,3 +368,13 @@ td.actions { white-space: nowrap; text-align: right; }
   .business-hours-row { grid-template-columns:minmax(105px,1fr) 1fr auto 1fr; gap:6px; }
   .business-hours-row input[type=time] { min-width:0; width:100%; }
 }
+
+/* Importação de NF-e */
+.nfe-line { border: 1px solid var(--line, #e0e8e3); border-radius: 12px; padding: 12px; margin-top: 10px; display: grid; gap: 8px; }
+.nfe-line-head { display: grid; gap: 2px; }
+.nfe-line-head small, .nfe-hint { color: var(--muted, #6b7f78); }
+.nfe-line-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.nfe-line-controls label { display: grid; gap: 4px; font-size: 12px; font-weight: 600; }
+.nfe-line-controls select, .nfe-line-controls input { width: 100%; min-height: 36px; }
+.checkbox-line { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.nfe-line-controls label[hidden] { display: none; }

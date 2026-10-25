@@ -276,7 +276,7 @@ def bootstrap(request):
         raise APIError("Paginação inválida")
     if not 1 <= limit <= 1000 or not 0 <= offset <= 10**7:
         raise APIError("Paginação inválida")
-    rows = list(Product.objects.filter(tenant=terminal.tenant).select_related("category")
+    rows = list(Product.objects.filter(tenant=terminal.tenant).select_related("category", "group")
                 .order_by("id")[offset:offset + limit + 1])
     shown = rows[:limit]
     by_product = stock_balances(terminal.tenant, terminal.shop, [p.id for p in shown])
@@ -285,7 +285,9 @@ def bootstrap(request):
                  "cost_cents": p.cost_cents, "image_url": p.image_url, "active": p.active,
                  "stock_controlled": p.stock_controlled,
                  "quantity_milli": by_product.get(p.id, 0),
-                 "category": p.category.name if p.category else None}
+                 "category": p.category.name if p.category else None,
+                 "group_id": str(p.group_id) if p.group_id else None,
+                 "group_name": p.group.name if p.group_id else None, "variant": p.variant}
             for p in shown]
     customers = payment_config = None
     if offset == 0:  # non-catalog data travels on the first page only

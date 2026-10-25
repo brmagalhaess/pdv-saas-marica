@@ -411,6 +411,19 @@ class TerminalTests(unittest.TestCase):
         event = [e["data"] for e in self.store.pending_events() if e["type"] == "sale.completed"][0]
         self.assertEqual(event["payments"], [{"method": "other", "payment_method_id": voucher, "amount_cents": 700}])
 
+    def test_bootstrap_keeps_variation_grid_fields(self):
+        group = str(uuid.uuid4())
+        shirt = {"id": str(uuid.uuid4()), "sku": "P1", "barcode": "2000000000015", "name": "Camiseta - Azul / M",
+                 "unit": "UN", "category": "Moda", "price_cents": 4990, "quantity_milli": 2000, "active": True,
+                 "group_id": group, "group_name": "Camiseta", "variant": "Azul / M"}
+        self.store.apply_bootstrap(dict(self.bootstrap, products=self.products + [shirt]))
+        row = next(p for p in self.store.products() if p["id"] == shirt["id"])
+        self.assertEqual((row["group_id"], row["group_name"], row["variant"]), (group, "Camiseta", "Azul / M"))
+        self.store.open_cash(self.cashier_id, 0)
+        sale = self.store.sale(self.cashier, {"request_id": "grade", "items": [{"product_id": shirt["id"], "quantity_milli": 1000}],
+                                              "payments": [{"method": "cash", "amount_cents": 4990}]})
+        self.assertEqual(sale["items"][0]["name"], "Camiseta - Azul / M")
+
     def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
         production_id = str(uuid.uuid4())
         production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",
