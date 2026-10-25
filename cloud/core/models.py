@@ -429,7 +429,8 @@ class CashMovement(models.Model):
 
 
 class StockMovement(models.Model):
-    SOURCES = [(s, s) for s in ("manual", "receipt", "sale", "void", "terminal_adjustment", "return")]
+    SOURCES = [(s, s) for s in ("manual", "receipt", "sale", "void", "terminal_adjustment", "return",
+                                "inventory", "transfer")]
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
     shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
@@ -469,6 +470,65 @@ class StockBalance(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["shop", "product"], name="stock_balance_shop_product")]
         indexes = [models.Index(fields=["tenant", "shop"])]
+
+
+class InventoryCount(models.Model):
+    """Guided stock count. Each counted item stores the balance at the moment
+    it was counted, so sales made during the count are not read as losses."""
+    STATUS = [(s, s) for s in ("open", "closed", "cancelled")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="inventory_counts")
+    shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, null=True, blank=True)
+    blind = models.BooleanField(default=True)
+    status = models.CharField(max_length=20, choices=STATUS, default="open")
+    note = models.CharField(max_length=240, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["shop"], condition=Q(status="open"), name="one_open_inventory_per_shop")]
+
+
+class InventoryCountItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    count = models.ForeignKey(InventoryCount, on_delete=models.PROTECT, related_name="items")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT)
+    counted_milli = models.BigIntegerField()
+    balance_at_count_milli = models.BigIntegerField()
+    counted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    counted_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["count", "product"], name="inventory_item_once")]
+
+
+class StockTransfer(models.Model):
+    STATUS = [(s, s) for s in ("sent", "received", "cancelled")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="stock_transfers")
+    from_shop = models.ForeignKey(Shop, on_delete=models.PROTECT, related_name="transfers_out")
+    to_shop = models.ForeignKey(Shop, on_delete=models.PROTECT, related_name="transfers_in")
+    status = models.CharField(max_length=20, choices=STATUS, default="sent")
+    note = models.CharField(max_length=240, blank=True)
+    idempotency_key = models.CharField(max_length=160)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["tenant", "idempotency_key"], name="transfer_idempotency")]
+
+
+class StockTransferItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    transfer = models.ForeignKey(StockTransfer, on_delete=models.PROTECT, related_name="items")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT)
+    quantity_milli = models.PositiveBigIntegerField()
+    received_milli = models.PositiveBigIntegerField(null=True, blank=True)
 
 
 class StockReceipt(models.Model):

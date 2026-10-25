@@ -36,6 +36,7 @@ const tenantNav = [
   { group: "Operação", id: "sales", label: "Vendas", icon: "▤", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
   { group: "Operação", id: "cash", label: "Caixas", icon: "▢", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Operação", id: "products", label: "Produtos", icon: "▦", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
+  { group: "Operação", id: "inventory", label: "Inventário", icon: "☑", feature:"stock", roles: ["owner","admin","manager","inventory","cashier"] },
   { group: "Operação", id: "categories", label: "Categorias", icon: "◈", roles: ["owner","admin","manager","inventory","viewer"] },
   { group: "Operação", id: "stock", label: "Estoque", icon: "▣", feature:"stock", roles: ["owner","admin","manager","inventory","finance","viewer"] },
   { group: "Relacionamento", id: "customers", label: "Clientes", icon: "♧", roles: ["owner","admin","manager","cashier","finance"] },
@@ -1619,6 +1620,236 @@ async function nfeImport(shopId) {
   }
 }
 
+let inventoryCamera = null;
+function stopInventoryCamera() { inventoryCamera?.stop(); inventoryCamera = null; }
+async function inventoryPage() {
+  const current = ++state.renderId;
+  stopInventoryCamera();
+  const view = page("Inventário", "Conte o estoque pelo celular com o leitor, a câmera ou digitando o código. O ajuste é feito no fechamento.", "Operação");
+  const manager = ["owner", "admin", "manager"].includes(state.role);
+  const opener = manager || state.role === "inventory";
+  const box = el("section", "surface");
+  const toolbar = el("div", "toolbar");
+  const shop = shopSelect("inventory-shop");
+  toolbar.append(shop.field);
+  box.append(toolbar);
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  async function load() {
+    stopInventoryCamera();
+    content.replaceChildren(loadingSurface());
+    try {
+      const open = records(await api.get(`/inventories?status=open&shop_id=${shop.select.value}`))[0];
+      if (current !== state.renderId) return;
+      content.replaceChildren();
+      if (!open) return renderIdle();
+      renderCounting(await api.get("/inventories/" + open.id));
+    } catch (error) { content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
+  }
+  async function renderIdle() {
+    content.append(empty("Nenhum inventário aberto nesta loja", opener ? "Abra um inventário para começar a contar." : "Peça ao gerente para abrir o inventário."));
+    if (opener) {
+      const actions = el("div", "form-actions");
+      actions.append(button("Abrir inventário", () => openForm().catch(handleError)));
+      content.append(actions);
+    }
+    const history = records(await api.get(`/inventories?shop_id=${shop.select.value}&limit=10`)).filter(r => r.status !== "open");
+    if (history.length) {
+      const title = el("h3", "", "Inventários anteriores"); title.style.marginTop = "23px";
+      content.append(title, table([
+        { label: "Aberto em", render: r => dateTime(r.created_at) }, { label: "Escopo", render: r => r.category_name || "Todos os produtos" },
+        { label: "Itens contados", render: r => `${r.counted_items} de ${r.scope_items}` }, { label: "Estado", render: r => statusBadge(r.status) }
+      ], history));
+    }
+  }
+  async function openForm() {
+    const fields = [
+      { key: "category_id", label: "Categoria (vazio = todos os produtos)", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
+      { key: "blind", label: "Contagem cega (quem conta não vê o saldo esperado)", type: "checkbox", default: true },
+      { key: "note", label: "Observação", max: 240, full: true }
+    ];
+    const form = await formFor(fields, null);
+    const message = formMessage(form), submit = formButtons(form, "Abrir inventário");
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); submit.disabled = true;
+      try { await api.post("/inventories", { shop_id: shop.select.value, ...formPayload(form, fields) }); closeDialog(); toast("Inventário aberto. Pode começar a contar."); load(); }
+      catch (error) { handleError(error, message); submit.disabled = false; }
+    });
+    openDialog("Abrir inventário", "Vendas continuam normalmente: cada item guarda o saldo do momento em que foi contado.", form);
+  }
+  function renderCounting(count) {
+    content.append(info(`${count.category_name || "Todos os produtos"} · ${count.counted_items} de ${count.scope_items} itens contados${count.blind ? " · contagem cega" : ""}`));
+    const scanner = el("form", "inventory-scanner");
+    scanner.innerHTML = `<label>Código de barras ou SKU<input name="code" inputmode="numeric" autocomplete="off" autofocus placeholder="Bipe ou digite e tecle Enter"></label>
+      <label>Quantidade<input name="qty" inputmode="decimal" value="1"></label>
+      <label>Modo<select name="mode"><option value="add">Somar à contagem</option><option value="set">Substituir contagem</option></select></label>
+      <button class="button" type="submit">Contar</button>`;
+    const feedback = el("p", "inventory-feedback");
+    content.append(scanner, feedback);
+    const code = scanner.elements.namedItem("code");
+    async function submitCode(value) {
+      const qty = Math.round(Number(String(scanner.elements.namedItem("qty").value).replace(",", ".")) * 1000);
+      if (!value) return;
+      try {
+        const item = await api.post(`/inventories/${count.id}/count`, { code: value, quantity_milli: qty, mode: scanner.elements.namedItem("mode").value });
+        feedback.className = "inventory-feedback ok";
+        feedback.textContent = `✓ ${item.name}: ${quantity(item.counted_milli, item.unit)} contados`;
+        navigator.vibrate?.(40);
+        prepend(item);
+      } catch (error) { feedback.className = "inventory-feedback error"; feedback.textContent = errorText(error); navigator.vibrate?.([60, 40, 60]); }
+      code.value = ""; code.focus();
+    }
+    scanner.addEventListener("submit", event => { event.preventDefault(); submitCode(code.value.trim()); });
+    if ("BarcodeDetector" in window && navigator.mediaDevices?.getUserMedia) {
+      const camera = button("Usar câmera do celular", () => toggleCamera().catch(error => { feedback.className = "inventory-feedback error"; feedback.textContent = "Câmera indisponível: " + errorText(error); }), "ghost");
+      const video = el("video", "inventory-camera"); video.hidden = true; video.setAttribute("playsinline", ""); video.muted = true;
+      content.append(camera, video);
+      async function toggleCamera() {
+        if (inventoryCamera) { stopInventoryCamera(); video.hidden = true; camera.textContent = "Usar câmera do celular"; return; }
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
+        video.srcObject = stream; video.hidden = false; await video.play(); camera.textContent = "Desligar câmera";
+        let last = "", lastAt = 0, running = true;
+        inventoryCamera = { stop() { running = false; stream.getTracks().forEach(t => t.stop()); } };
+        (async function loop() {
+          while (running) {
+            try {
+              const [hit] = await detector.detect(video);
+              if (hit && (hit.rawValue !== last || Date.now() - lastAt > 1500)) { last = hit.rawValue; lastAt = Date.now(); await submitCode(hit.rawValue); }
+            } catch { /* frame not ready */ }
+            await new Promise(r => setTimeout(r, 250));
+          }
+        })();
+      }
+    }
+    const listTitle = el("h3", "", "Itens contados"); listTitle.style.marginTop = "23px";
+    const list = el("div", "inventory-list");
+    const rowFor = item => {
+      const row = el("div", "inventory-row");
+      row.dataset.product = item.product_id;
+      row.append(el("span", "", item.name), el("strong", "", quantity(item.counted_milli, item.unit)));
+      if (item.difference_milli !== undefined && item.difference_milli !== 0)
+        row.append(el("span", "badge " + (item.difference_milli < 0 ? "danger" : "warn"), `${item.difference_milli > 0 ? "+" : ""}${quantity(item.difference_milli, item.unit)} · ${money(item.difference_cents)}`));
+      return row;
+    };
+    function prepend(item) { list.querySelector(`[data-product="${item.product_id}"]`)?.remove(); list.prepend(rowFor(item)); }
+    count.items.forEach(item => list.append(rowFor(item)));
+    content.append(listTitle, list);
+    if (count.shows_expected && count.pending?.length) {
+      const pendingTitle = el("h3", "", `Ainda não contados (${count.pending.length})`); pendingTitle.style.marginTop = "23px";
+      content.append(pendingTitle, table([{ label: "Produto", render: p => p.name }, { label: "SKU", render: p => p.sku },
+        { label: "Saldo atual", render: p => quantity(p.balance_milli, p.unit) }], count.pending.slice(0, 50)));
+    }
+    if (manager) {
+      const actions = el("div", "form-actions");
+      actions.append(button("Cancelar inventário", () => confirmAction("Cancelar inventário", "As contagens serão descartadas e nenhum ajuste será feito.", async () => {
+        await api.post(`/inventories/${count.id}/cancel`, {}); toast("Inventário cancelado."); load(); }, "Cancelar inventário"), "ghost"));
+      actions.append(button("Encerrar e ajustar estoque", () => closeForm(count)));
+      content.append(actions);
+    }
+  }
+  function closeForm(count) {
+    const body = el("div");
+    body.append(detailList([["Itens contados", `${count.counted_items} de ${count.scope_items}`],
+      ["Sobras", money(count.totals?.gain_cents || 0)], ["Faltas", money(Math.abs(count.totals?.loss_cents || 0))]]));
+    const field = el("div", "field"), label = el("label", "", "Itens não contados"), select = el("select");
+    select.id = "inventory-uncounted"; label.htmlFor = select.id;
+    select.innerHTML = '<option value="ignore">Manter o saldo atual (contagem parcial)</option><option value="zero">Zerar o estoque (não foram encontrados)</option>';
+    field.append(label, select); body.append(field);
+    const actions = el("div", "form-actions");
+    actions.append(button("Voltar", closeDialog, "ghost"));
+    actions.append(button("Confirmar ajuste", async () => {
+      try {
+        const result = await api.post(`/inventories/${count.id}/close`, { uncounted: select.value });
+        closeDialog(); toast(`Inventário encerrado: ${result.adjustments} ajuste(s), sobras ${money(result.gain_cents)}, faltas ${money(Math.abs(result.loss_cents))}.`); load();
+      } catch (error) { handleError(error); }
+    }));
+    body.append(actions);
+    openDialog("Encerrar inventário", "Cada item é ajustado pela diferença entre o contado e o saldo do momento da contagem.", body);
+  }
+  shop.select.addEventListener("change", load);
+  if (state.shops.length) load(); else content.append(empty("Cadastre uma loja", "O inventário é feito por loja."));
+}
+
+async function transferForm(fromShopId) {
+  const products = (await allProducts()).filter(p => p.active !== false && p.stock_controlled !== false);
+  const targets = state.shops.filter(s => s.active !== false && String(s.id) !== String(fromShopId));
+  const body = el("div");
+  body.append(info(`Origem: ${shopName(fromShopId)}. O estoque sai da origem agora e entra no destino quando o recebimento for confirmado.`));
+  const head = el("div", "form-grid");
+  head.innerHTML = `<div class="field"><label for="transfer-to">Loja de destino</label><select id="transfer-to">${targets.map(s => `<option value="${s.id}">${s.name.replace(/</g, "&lt;")}</option>`).join("")}</select></div>
+    <div class="field"><label for="transfer-note">Observação</label><input id="transfer-note" maxlength="240"></div>`;
+  const lines = el("div", "transfer-lines");
+  const options = products.map(p => `<option value="${p.id}">${p.name.replace(/</g, "&lt;")} · ${p.sku}</option>`).join("");
+  const addLine = () => {
+    const row = el("div", "transfer-line");
+    row.innerHTML = `<select data-k="product"><option value="">Produto…</option>${options}</select><input data-k="qty" inputmode="decimal" placeholder="Quantidade"><button type="button" class="button ghost small" data-k="remove">Remover</button>`;
+    row.querySelector('[data-k="remove"]').onclick = () => row.remove();
+    lines.append(row);
+  };
+  addLine();
+  const message = el("p", "feedback error"); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("+ Item", addLine, "ghost"), button("Cancelar", closeDialog, "ghost"));
+  const key = globalThis.crypto?.randomUUID?.() || String(Date.now());
+  const submit = button("Enviar transferência", async () => {
+    message.hidden = true;
+    try {
+      const items = [...lines.children].map(row => {
+        const product = products.find(p => p.id === row.querySelector('[data-k="product"]').value);
+        const qty = Math.round(Number(row.querySelector('[data-k="qty"]').value.replace(",", ".")) * 1000);
+        if (!product) throw new Error("Escolha o produto de cada linha.");
+        if (!Number.isSafeInteger(qty) || qty <= 0) throw new Error(`${product.name}: informe a quantidade.`);
+        return { product_id: product.id, quantity_milli: qty };
+      });
+      submit.disabled = true;
+      await api.post("/transfers", { from_shop_id: fromShopId, to_shop_id: head.querySelector("#transfer-to").value,
+        note: head.querySelector("#transfer-note").value.trim(), idempotency_key: key, items });
+      closeDialog(); toast("Transferência enviada. Confirme o recebimento na loja de destino."); renderRoute();
+    } catch (error) { message.textContent = errorText(error); message.hidden = false; submit.disabled = false; }
+  });
+  actions.append(submit);
+  body.append(head, lines, message, actions);
+  openDialog("Transferir entre lojas", "Envie mercadoria de uma loja para outra.", body);
+}
+async function transfersDialog() {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando transferências…"));
+  openDialog("Transferências", "Enviadas, recebidas e canceladas.", loading);
+  const rows = records(await api.get("/transfers?limit=50"));
+  loading.replaceChildren(rows.length ? table([
+    { label: "Data", render: r => dateTime(r.created_at) },
+    { label: "Rota", render: r => `${r.from_shop_name} → ${r.to_shop_name}` },
+    { label: "Itens", render: r => r.items.map(i => `${i.name} × ${quantity(i.quantity_milli, i.unit)}${i.received_milli != null && i.received_milli !== i.quantity_milli ? ` (recebido ${quantity(i.received_milli, i.unit)})` : ""}`).join(", ") },
+    { label: "Estado", render: r => r.status === "sent" ? el("span", "badge warn", "Em trânsito") : statusBadge(r.status === "received" ? "Recebida" : "Cancelada") }
+  ], rows, r => r.status !== "sent" ? [] : [
+    { label: "Receber", onClick: () => receiveTransfer(r) },
+    { label: "Cancelar", danger: true, onClick: () => confirmAction("Cancelar transferência", "A mercadoria volta para o estoque da origem.", async () => {
+      await api.post(`/transfers/${r.id}/cancel`, {}); toast("Transferência cancelada."); closeDialog(); renderRoute(); }, "Cancelar transferência") }
+  ]) : empty("Nenhuma transferência", "Use “Transferir” para enviar mercadoria a outra loja."));
+}
+function receiveTransfer(transfer) {
+  const body = el("div");
+  body.append(info(`Confira o que chegou em ${transfer.to_shop_name}. Se faltar algo, informe a quantidade recebida; a diferença fica registrada.`));
+  const inputs = transfer.items.map(item => {
+    const field = el("div", "field"), label = el("label", "", `${item.name} (enviado ${quantity(item.quantity_milli, item.unit)})`), input = el("input");
+    input.inputMode = "decimal"; input.value = String(item.quantity_milli / 1000).replace(".", ",");
+    field.append(label, input); body.append(field);
+    return { item, input };
+  });
+  const actions = el("div", "form-actions");
+  actions.append(button("Voltar", closeDialog, "ghost"), button("Confirmar recebimento", async () => {
+    try {
+      const items = inputs.map(({ item, input }) => ({ product_id: item.product_id, received_milli: Math.round(Number(input.value.replace(",", ".")) * 1000) }));
+      await api.post(`/transfers/${transfer.id}/receive`, { items });
+      closeDialog(); toast("Recebimento confirmado."); renderRoute();
+    } catch (error) { handleError(error); }
+  }));
+  body.append(actions);
+  openDialog("Receber transferência", `${transfer.from_shop_name} → ${transfer.to_shop_name}`, body);
+}
+
 function idempotency(form, payload) {
   const signature = JSON.stringify(payload);
   if (form.dataset.signature !== signature) {
@@ -1900,6 +2131,10 @@ async function stockPage() {
     view.actions.append(button("+ Registrar entrada", () => stockReceipt(shop.select.value).catch(handleError)));
     view.actions.append(button("Importar compra CSV", () => stockReceiptImport(shop.select.value).catch(handleError), "secondary"));
     view.actions.append(button("Importar XML da NF-e", () => nfeImport(shop.select.value).catch(handleError), "secondary"));
+    if (state.shops.filter(s => s.active !== false).length > 1) {
+      view.actions.append(button("Transferir", () => transferForm(shop.select.value).catch(handleError), "secondary"));
+      view.actions.append(button("Transferências", () => transfersDialog().catch(handleError), "ghost"));
+    }
   }
   async function load() {
     const token = ++state.renderId;
@@ -3294,7 +3529,7 @@ async function printersPage() {
 }
 
 const tenantRoutes = {
-  dashboard:dashboardPage,sales:salesPage,cash:cashPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
+  dashboard:dashboardPage,sales:salesPage,cash:cashPage,inventory:inventoryPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,
@@ -3326,6 +3561,7 @@ function renderNav() {
   });
 }
 function renderRoute() {
+  stopInventoryCamera();
   closeDialog();
   renderNav();
   const id=activeSection();

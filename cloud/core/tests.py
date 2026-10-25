@@ -951,6 +951,68 @@ class CloudAPITests(TestCase):
                          [("memory", 12000), ("memory", 1000)])
         self.assertEqual(SupplierProductCode.objects.filter(supplier=supplier).count(), 2)
 
+    def test_inventory_count_blind_mobile_and_adjusts_only_true_difference(self):
+        from .stock_balance import balance
+        from .models import Category
+        Product.objects.filter(pk=self.product.pk).update(barcode="7891000100103", cost_cents=500)
+        salt = Product.objects.create(tenant=self.tenant, sku="SAL", name="Sal", price_cents=300, cost_cents=200, barcode="7891000100110")
+        drinks = Category.objects.create(tenant=self.tenant, name="Bebidas")
+        Product.objects.create(tenant=self.tenant, sku="REF", name="Refri", price_cents=900, category=drinks)
+        for product, qty in ((self.product, 10000), (salt, 5000)):
+            StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=product, delta_milli=qty,
+                                         source="manual", reason="Saldo inicial")
+        cashier_user = get_user_model().objects.create_user(username="contador@example.test", email="contador@example.test",
+                                                            password="Synthetic-47!")
+        Membership.objects.create(tenant=self.tenant, user=cashier_user, name="Contador", role="cashier")
+        self.client.force_login(self.owner)
+        opened = self.api("POST", "/api/v1/inventories", {"shop_id": str(self.shop.id)})
+        self.assertEqual(opened.status_code, 201, opened.content)
+        count_id = opened.json()["id"]
+        self.assertEqual(self.api("POST", "/api/v1/inventories", {"shop_id": str(self.shop.id)}).status_code, 409)
+        counter = Client()
+        counter.force_login(cashier_user)
+        scan = lambda body: self.api("POST", f"/api/v1/inventories/{count_id}/count", body, client=counter)
+        for _ in range(3):  # one scan per unit
+            first = scan({"code": "7891000100103", "quantity_milli": 1000})
+        self.assertEqual(first.json()["counted_milli"], 3000)
+        self.assertNotIn("difference_milli", first.json())  # blind: counter never sees the expected balance
+        scan({"code": "7891000100103", "quantity_milli": 8000, "mode": "set"})
+        self.assertEqual(scan({"code": "0000", "quantity_milli": 1000}).status_code, 404)
+        # A sale after the rice was counted must not become a fake loss.
+        StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=self.product, delta_milli=-1000,
+                                     source="manual", reason="Venda depois da contagem")
+        detail = self.api("GET", f"/api/v1/inventories/{count_id}").json()
+        self.assertEqual([(i["sku"], i["difference_milli"], i["difference_cents"]) for i in detail["items"]], [("ARROZ", -2000, -1000)])
+        self.assertEqual({p["sku"] for p in detail["pending"]}, {"SAL", "REF"})
+        self.assertEqual(self.api("POST", f"/api/v1/inventories/{count_id}/close", {}, client=counter).status_code, 403)
+        closed = self.api("POST", f"/api/v1/inventories/{count_id}/close", {"uncounted": "zero"}).json()
+        self.assertEqual((closed["status"], closed["adjustments"], closed["loss_cents"]), ("closed", 2, -2000))
+        self.assertEqual(balance(self.tenant, self.shop, self.product), 7000)  # 8 counted − 1 sold afterwards
+        self.assertEqual(balance(self.tenant, self.shop, salt), 0)  # not counted, zeroed on request
+        self.assertEqual(scan({"code": "7891000100110", "quantity_milli": 1000}).status_code, 409)
+
+    def test_transfer_send_partial_receive_and_cancel(self):
+        from .stock_balance import balance
+        branch = Shop.objects.create(tenant=self.tenant, name="Filial")
+        StockMovement.objects.create(tenant=self.tenant, shop=self.shop, product=self.product, delta_milli=10000,
+                                     source="manual", reason="Saldo inicial")
+        self.client.force_login(self.owner)
+        body = lambda qty, key: {"from_shop_id": str(self.shop.id), "to_shop_id": str(branch.id), "idempotency_key": key,
+                                 "items": [{"product_id": str(self.product.id), "quantity_milli": qty}]}
+        self.assertEqual(self.api("POST", "/api/v1/transfers", body(11000, "t0")).status_code, 409)
+        sent = self.api("POST", "/api/v1/transfers", body(4000, "t1"))
+        self.assertEqual(sent.status_code, 201, sent.content)
+        self.assertEqual(self.api("POST", "/api/v1/transfers", body(4000, "t1")).json()["id"], sent.json()["id"])  # replay
+        self.assertEqual((balance(self.tenant, self.shop, self.product), balance(self.tenant, branch, self.product)), (6000, 0))
+        got = self.api("POST", f"/api/v1/transfers/{sent.json()['id']}/receive",
+                       {"items": [{"product_id": str(self.product.id), "received_milli": 3000}]}).json()
+        self.assertEqual((got["status"], got["items"][0]["received_milli"]), ("received", 3000))
+        self.assertEqual(balance(self.tenant, branch, self.product), 3000)
+        self.assertEqual(self.api("POST", f"/api/v1/transfers/{sent.json()['id']}/cancel").status_code, 409)
+        other = self.api("POST", "/api/v1/transfers", body(2000, "t2")).json()
+        self.assertEqual(self.api("POST", f"/api/v1/transfers/{other['id']}/cancel").json()["status"], "cancelled")
+        self.assertEqual(balance(self.tenant, self.shop, self.product), 6000)
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",

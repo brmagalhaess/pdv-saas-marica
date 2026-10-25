@@ -20,7 +20,9 @@ Os itens P0 fiscais e de pagamento continuam no plano de 90 dias da auditoria e 
 | 1.4 Formas de pagamento configuráveis | ✅ entregue (ativar/desativar, taxa, prazo e formas próprias; relatório líquido de taxas) |
 | 4.1 Grade de variações | ✅ entregue (`ProductGroup`; combinações viram produtos; escolha de variação no caixa) |
 | 4.4 Compras pelo XML da NF-e | ✅ entregue (custo real com desconto/frete/IPI/ST, memória de códigos por fornecedor, fator de embalagem, duplicatas → contas a pagar). Falta: pedido de compra e recebimento parcial, manifestação/DF-e automático |
-| Próximos | inventário guiado (4.3), transferência entre lojas (4.5), recebimento de fiado no caixa, comprovante impresso de devolução, devolução pelo painel |
+| 4.3 Inventário guiado | ✅ entregue (contagem pelo celular com leitor/câmera, modo cego, ajuste pelo saldo do momento da contagem) |
+| 4.5 Transferência entre lojas | ✅ entregue (em trânsito, recebimento com divergência, cancelamento) |
+| Próximos | recebimento de fiado no caixa, comprovante impresso de devolução, devolução pelo painel, lote e validade (4.7), promoções (Onda 6) |
 
 ---
 

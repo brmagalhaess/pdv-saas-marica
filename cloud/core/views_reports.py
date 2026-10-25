@@ -192,7 +192,7 @@ def low_stock(tenant, shop, start, end):
 
 
 def stock_losses(tenant, shop, start, end):
-    rows = StockMovement.objects.filter(tenant=tenant, source__in=("manual", "terminal_adjustment"), delta_milli__lt=0,
+    rows = StockMovement.objects.filter(tenant=tenant, source__in=("manual", "terminal_adjustment", "inventory"), delta_milli__lt=0,
                                         created_at__date__gte=start, created_at__date__lte=end)
     if shop:
         rows = rows.filter(shop=shop)
