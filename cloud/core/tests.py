@@ -765,15 +765,18 @@ class CloudAPITests(TestCase):
         self.assertEqual(received.json()["received_cents"], 999)
         sync(returned(fiado, 1, "account"))
         self.assertEqual(sum(CustomerCredit.objects.filter(customer=customer).values_list("delta_cents", flat=True)), 999)
-        sync(returned(fiado, 1, "account"), status=409)  # nothing left to return
+        # Nothing left to return: the counter already refunded, so it is accepted and flagged for the admin.
+        over = sync(returned(fiado, 1, "account"))
+        self.assertEqual([c["reason"] for c in over.json()["conflicts"]], ["return_exceeds_sold"])
 
         # Store credit pays a later sale; a cash return leaves the drawer.
         paid_with_credit = sale([("store_credit", 999)], qty=1)
         pix = sale([("pix", 1998)])
         sync(paid_with_credit, pix, returned(pix, 1, "cash"))
         summary = self.api("GET", "/api/v1/customers/credit-summary").json()["results"]
-        self.assertEqual(summary, [])  # fiado received and credit used: nothing outstanding
-        self.assertEqual(StockMovement.objects.filter(source="return").count(), 3)
+        # Fiado fully received; the accepted over-return abated a paid fiado, so it became store credit.
+        self.assertEqual([(r["open_credit_cents"], r["store_credit_cents"]) for r in summary], [(0, 999)])
+        self.assertEqual(StockMovement.objects.filter(source="return").count(), 4)  # incl. the flagged over-return
         self.assertEqual(self.api("POST", f"/api/v1/sales/{pix['aggregate_id']}/cancel",
                                   {"reason": "Teste"}).status_code, 409)
         self.assertEqual(SaleReturn.objects.filter(refund_method="cash").count(), 1)
@@ -786,7 +789,7 @@ class CloudAPITests(TestCase):
                                     "PDV_LICENSE_PRIVATE_KEY_FILE": "", "PDV_LICENSE_PUBLIC_KEY_FILE": ""}):
             boot = self.api("GET", "/api/v1/terminal/bootstrap", tenant=False, **headers).json()
         mine = next(c for c in boot["customers"] if c["id"] == str(customer.id))
-        self.assertEqual((mine["credit_limit_cents"], mine["open_credit_cents"], mine["store_credit_cents"]), (10000, 0, 999))
+        self.assertEqual((mine["credit_limit_cents"], mine["open_credit_cents"], mine["store_credit_cents"]), (10000, 0, 1998))
         Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
         another = sale([("credit_account", 999)], qty=1)
         sync(another)
@@ -1012,6 +1015,91 @@ class CloudAPITests(TestCase):
         other = self.api("POST", "/api/v1/transfers", body(2000, "t2")).json()
         self.assertEqual(self.api("POST", f"/api/v1/transfers/{other['id']}/cancel").json()["status"], "cancelled")
         self.assertEqual(balance(self.tenant, self.shop, self.product), 6000)
+
+    def test_fiado_received_at_terminal_settles_oldest_and_splits(self):
+        from .models import CashSession, Customer, CustomerCredit, FinanceEntry
+        from .cash_logic import session_summary
+        customer = Customer.objects.create(tenant=self.tenant, name="Seu Zé", credit_limit_cents=50000)
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="receive-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id), "terminal_id": str(terminal.id)}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+        session_id = uuid.uuid4().hex
+        now = int(time.time() * 1000)
+        sync = lambda *events: self.api("POST", "/api/v1/terminal/sync", {"events": list(events)}, tenant=False, **headers)
+
+        def fiado(cents):
+            Product.objects.filter(pk=self.product.pk).update(price_cents=cents)
+            return {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": str(uuid.uuid4()),
+                    "identity": identity, "data": {"request_id": uuid.uuid4().hex, "cash_session_id": session_id,
+                    "created_at": now, "customer_id": str(customer.id), "customer_name": "", "customer_document": "",
+                    "gross_cents": cents, "discount_cents": 0, "total_cents": cents, "change_cents": 0,
+                    "items": [{"product_id": str(self.product.id), "name": "Arroz", "unit": "UN", "quantity_milli": 1000,
+                               "unit_price_cents": cents, "gross_cents": cents, "discount_cents": 0, "line_total_cents": cents}],
+                    "payments": [{"method": "credit_account", "amount_cents": cents}]}}
+
+        def receipt(cents, method="cash"):
+            return {"event_id": uuid.uuid4().hex, "type": "credit.received", "aggregate_id": str(uuid.uuid4()),
+                    "identity": identity, "data": {"customer_id": str(customer.id), "amount_cents": cents, "method": method,
+                    "operator_id": str(self.member.id), "cash_session_id": session_id, "created_at": now + 5}}
+
+        opened = {"event_id": uuid.uuid4().hex, "type": "cash.opened", "aggregate_id": session_id, "identity": identity,
+                  "data": {"opening_cents": 0, "operator_id": str(self.member.id), "created_at": now}}
+        self.assertEqual(sync(opened, fiado(1000), fiado(500)).status_code, 200)
+        paid = receipt(1200)
+        self.assertEqual(sync(paid).status_code, 200)
+        self.assertEqual(sync(paid).status_code, 200)  # replay
+        entries = FinanceEntry.objects.filter(customer=customer).order_by("amount_cents")
+        self.assertEqual(sorted((e.amount_cents, e.status) for e in entries),
+                         [(200, "settled"), (300, "open"), (1000, "settled")])  # 500 split: 200 paid, 300 open
+        self.assertEqual(sync(receipt(500, "pix")).status_code, 200)  # 300 open + 200 above it
+        self.assertEqual(sum(CustomerCredit.objects.filter(customer=customer).values_list("delta_cents", flat=True)), 200)
+        summary = session_summary(CashSession.objects.get(pk=uuid.UUID(session_id)))
+        self.assertEqual(summary["credit_received"], {"cash": 1200, "pix": 500})
+
+    def test_panel_return_external_and_terminal_over_return_conflict(self):
+        from .models import CustomerCredit, SaleReturn, SyncConflict
+        from .stock_balance import balance
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="panel-return-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id), "terminal_id": str(terminal.id)}
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+        sale_id = str(uuid.uuid4())
+        sale = {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": sale_id, "identity": identity,
+                "data": {"request_id": uuid.uuid4().hex, "cash_session_id": uuid.uuid4().hex, "created_at": int(time.time() * 1000),
+                         "customer_id": None, "customer_name": "", "customer_document": "", "gross_cents": 1998,
+                         "discount_cents": 0, "total_cents": 1998, "change_cents": 0,
+                         "items": [{"product_id": str(self.product.id), "name": "Arroz", "unit": "UN", "quantity_milli": 2000,
+                                    "unit_price_cents": 999, "gross_cents": 1998, "discount_cents": 0, "line_total_cents": 1998}],
+                         "payments": [{"method": "pix", "amount_cents": 1998}]}}
+        self.assertEqual(self.api("POST", "/api/v1/terminal/sync", {"events": [sale]}, tenant=False, **headers).status_code, 200)
+        self.client.force_login(self.owner)
+        item = lambda qty: [{"product_id": str(self.product.id), "quantity_milli": qty}]
+        self.assertEqual(self.api("POST", f"/api/v1/sales/{sale_id}/return",
+                                  {"items": item(1000), "refund_method": "store_credit", "reason": "Troca"}).status_code, 400)
+        self.assertEqual(self.api("POST", f"/api/v1/sales/{sale_id}/return",
+                                  {"items": item(1000), "refund_method": "cash", "reason": "x"}).status_code, 400)
+        done = self.api("POST", f"/api/v1/sales/{sale_id}/return",
+                        {"items": item(2000), "refund_method": "external", "reason": "Pix devolvido ao cliente"})
+        self.assertEqual(done.status_code, 201, done.content)
+        self.assertEqual(done.json()["total_cents"], 1998)
+        ret = SaleReturn.objects.get(pk=done.json()["id"])
+        self.assertIsNone(ret.terminal_id)
+        self.assertEqual(ret.created_by, self.owner)
+        self.assertFalse(CustomerCredit.objects.exists())
+        self.assertEqual(balance(self.tenant, self.shop, self.product), 0)  # -2 sold +2 returned
+        self.assertEqual(self.api("POST", f"/api/v1/sales/{sale_id}/return",
+                                  {"items": item(1000), "refund_method": "external", "reason": "De novo"}).status_code, 409)
+        # The same item returned offline at the counter afterwards: accepted, flagged as a conflict.
+        late = {"event_id": uuid.uuid4().hex, "type": "sale.returned", "aggregate_id": str(uuid.uuid4()), "identity": identity,
+                "data": {"sale_id": sale_id, "refund_method": "cash", "reason": "Avaria", "operator_id": str(self.member.id),
+                         "created_at": int(time.time() * 1000), "total_cents": 999,
+                         "items": [{"product_id": str(self.product.id), "quantity_milli": 1000, "amount_cents": 999}]}}
+        response = self.api("POST", "/api/v1/terminal/sync", {"events": [late]}, tenant=False, **headers)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(SyncConflict.objects.get(event_id=late["event_id"]).reason, "return_exceeds_sold")
 
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex

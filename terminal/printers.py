@@ -251,7 +251,67 @@ def receipt_layout(sale, width=80):
 
 def receipt_bytes(sale, width=80):
     """Render the shared receipt with explicit Epson width, font and alignment."""
-    layout = receipt_layout(sale, width)
+    return layout_bytes(receipt_layout(sale, width))
+
+
+def voucher_layout(doc, width=80):
+    """Non-fiscal voucher (return, fiado payment) sharing the receipt look.
+
+    doc: {"title", "issuer", "created_at", "reference", "rows": [["pair", label, value] |
+    ["text", value] | ["rule"]], "customer_name", "signature": bool}
+    """
+    width = 58 if width == 58 else 80
+    columns = 32 if width == 58 else 48
+    blocks = []
+
+    def text(value, align="left", bold=False, tall=False, wide=False):
+        lines = textwrap.wrap(_receipt_text(value), columns // 2 if wide else columns, break_long_words=True,
+                              break_on_hyphens=False) or [""]
+        blocks.append({"kind": "text", "align": align, "bold": bold, "tall": tall, "wide": wide, "lines": lines})
+
+    def pair(label, value, bold=False):
+        label, value = _receipt_text(label), _receipt_text(value)
+        if len(label) + len(value) + 1 > columns:
+            text(label, bold=bold)
+            text(value, align="right", bold=bold)
+        else:
+            blocks.append({"kind": "text", "align": "left", "bold": bold, "tall": False,
+                           "lines": [label.ljust(columns - len(value)) + value]})
+
+    issuer = doc.get("issuer") or {}
+    text(issuer.get("trade_name") or issuer.get("legal_name") or "PDV2", "center", bold=True, tall=True)
+    document = _document(issuer.get("document"))
+    if document:
+        text(f"CNPJ/CPF: {document}", "center")
+    blocks.append({"kind": "rule"})
+    text(doc["title"], "center", bold=True, tall=True)
+    text("COMPROVANTE NAO FISCAL", "center")
+    if doc.get("created_at"):
+        text(_receipt_date(doc["created_at"]), "center")
+    if doc.get("reference"):
+        text(doc["reference"])
+    blocks.append({"kind": "rule"})
+    for row in doc.get("rows", []):
+        if row[0] == "pair":
+            pair(row[1], row[2], bold=len(row) > 3 and row[3])
+        elif row[0] == "rule":
+            blocks.append({"kind": "rule"})
+        else:
+            text(row[1])
+    if doc.get("customer_name"):
+        blocks.append({"kind": "rule"})
+        text(f"Cliente: {doc['customer_name']}", "center")
+    if doc.get("signature"):
+        text("")
+        text("")
+        text("_" * min(columns, 36), "center")
+        text("Assinatura do cliente", "center")
+    text("")
+    return {"paper_width_mm": width, "printable_width_mm": 48 if width == 58 else 72,
+            "columns": columns, "bottom_feed_mm": 20, "blocks": blocks}
+
+
+def layout_bytes(layout):
     dots = layout['columns'] * 12
     output = bytearray(b"\x1b@")  # initialize before selecting the area/font
     output.extend(b"\x1dP\xcb\xcb")  # 203 dpi motion units

@@ -1035,7 +1035,8 @@ async function saleDetail(id) {
     }
     if (canSales() && sale.status === "completed") {
       const actions = el("div", "form-actions");
-      actions.append(button("Cancelar venda comercial", () => cancelSale(sale), "danger"));
+      if (can("owner", "admin", "manager", "finance")) actions.append(button("Registrar devolução", () => panelReturn(sale, items, payments, returns).catch(handleError), "ghost"));
+      if (!returns.length) actions.append(button("Cancelar venda comercial", () => cancelSale(sale), "danger"));
       content.append(actions);
     }
     loading.replaceChildren(content);
@@ -1043,6 +1044,55 @@ async function saleDetail(id) {
     loading.replaceChildren(empty("Não foi possível abrir a venda", errorText(error), "!"));
     handleError(error);
   }
+}
+async function panelReturn(sale, items, payments, returns) {
+  const returned = {};
+  returns.forEach(r => r.items.forEach(i => { returned[i.product_id] = (returned[i.product_id] || 0) + i.quantity_milli; }));
+  const lines = items.map(i => ({ ...i, available: i.quantity_milli - (returned[i.product_id] || 0) })).filter(i => i.available > 0);
+  if (!lines.length) { toast("Todos os itens desta venda já foram devolvidos."); return; }
+  const onAccount = payments.some(p => p.method === "credit_account");
+  const body = el("div");
+  body.append(info("Use para devoluções que não passaram pelo caixa. O estoque volta para a loja da venda e a comissão é ajustada."));
+  const rows = lines.map(line => {
+    const field = el("div", "field"), label = el("label", "", `${line.name} (disponível ${quantity(line.available, line.unit)})`), input = el("input");
+    input.inputMode = "decimal"; input.value = "0"; field.append(label, input); body.append(field);
+    return { line, input };
+  });
+  const refundField = el("div", "field"), refundLabel = el("label", "", "Como o valor volta ao cliente"), refund = el("select");
+  refund.id = "panel-refund"; refundLabel.htmlFor = refund.id;
+  refund.innerHTML = `<option value="external">Devolvido fora do PDV (Pix ou estorno no cartão)</option><option value="store_credit">Crédito na loja</option>${onAccount ? '<option value="account">Abater do fiado</option>' : ""}`;
+  refundField.append(refundLabel, refund);
+  const customerField = el("div", "field"), customerLabel = el("label", "", "Cliente que recebe o crédito"), customer = el("select");
+  customer.id = "panel-return-customer"; customerLabel.htmlFor = customer.id;
+  customerField.append(customerLabel, customer); customerField.hidden = true;
+  if (!sale.customer_id) {
+    const list = records(await api.get("/customers?limit=100"));
+    customer.innerHTML = '<option value="">Escolha o cliente</option>' + list.map(c => `<option value="${c.id}">${c.name.replace(/</g, "&lt;")}</option>`).join("");
+  }
+  refund.addEventListener("change", () => { customerField.hidden = refund.value !== "store_credit" || !!sale.customer_id; });
+  const reasonField = el("div", "field"), reasonLabel = el("label", "", "Motivo"), reason = el("input");
+  reason.id = "panel-return-reason"; reason.maxLength = 240; reasonLabel.htmlFor = reason.id; reasonField.append(reasonLabel, reason);
+  const message = el("p", "feedback error"); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("Voltar", closeDialog, "ghost"));
+  const submit = button("Registrar devolução", async () => {
+    message.hidden = true;
+    try {
+      const chosen = rows.map(({ line, input }) => ({ line, qty: Math.round(Number(input.value.replace(",", ".")) * 1000) }))
+        .filter(r => r.qty);
+      if (!chosen.length) throw new Error("Informe a quantidade de ao menos um item.");
+      for (const r of chosen) if (!Number.isSafeInteger(r.qty) || r.qty < 0 || r.qty > r.line.available) throw new Error(`${r.line.name}: quantidade inválida.`);
+      if (reason.value.trim().length < 3) throw new Error("Informe o motivo da devolução.");
+      const data = { refund_method: refund.value, reason: reason.value.trim(), items: chosen.map(r => ({ product_id: r.line.product_id, quantity_milli: r.qty })) };
+      if (refund.value === "store_credit" && !sale.customer_id) { if (!customer.value) throw new Error("Escolha o cliente que recebe o crédito."); data.customer_id = customer.value; }
+      submit.disabled = true;
+      const result = await api.post(`/sales/${sale.id}/return`, data);
+      closeDialog(); toast(`Devolução registrada: ${money(result.total_cents)}.`); renderRoute();
+    } catch (error) { message.textContent = errorText(error); message.hidden = false; submit.disabled = false; }
+  });
+  actions.append(submit);
+  body.append(refundField, customerField, reasonField, message, actions);
+  openDialog("Registrar devolução", `Venda ${String(sale.id).slice(0, 8)}`, body);
 }
 function cancelSale(sale) {
   const body = el("div");
@@ -1155,7 +1205,7 @@ function personSelect(id, labelText, allText) {
 }
 
 const creditSources = { return: "Devolução", sale: "Usado em venda", sale_cancel: "Venda cancelada", account_overpaid: "Devolução de fiado pago", manual: "Ajuste" };
-const refundNames = { cash: "Dinheiro", store_credit: "Crédito na loja", account: "Abatido do fiado" };
+const refundNames = { cash: "Dinheiro", store_credit: "Crédito na loja", account: "Abatido do fiado", external: "Fora do PDV (Pix/cartão)" };
 async function customerStatement(customer) {
   const loading = el("div");
   loading.append(loadingSurface("Carregando extrato…"));
@@ -2604,7 +2654,7 @@ async function syncConflictsPage() {
     box.append(pagedContent(response, "/sync/conflicts?status=open", [
       { label: "Data", render: row => dateTime(row.created_at) },
       { label: "Terminal", render: row => row.terminal_name || "—" },
-      { label: "Motivo", render: row => row.reason === "negative_stock" ? "Estoque negativo" : row.reason },
+      { label: "Motivo", render: row => ({ negative_stock: "Estoque negativo", return_exceeds_sold: "Devolução no caixa acima do disponível" })[row.reason] || row.reason },
       { label: "Itens", render: row => (row.detail?.items || []).map(item => `${item.product_name} (${Number(item.central_balance_milli || 0) / 1000})`).join(" · ") || "Ver detalhes" },
       { label: "Estado", render: row => statusBadge(row.status) }
     ], row => [{ label: "Resolver", onClick: () => resolveSyncConflict(row) }],

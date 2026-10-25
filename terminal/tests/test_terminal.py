@@ -424,6 +424,38 @@ class TerminalTests(unittest.TestCase):
                                               "payments": [{"method": "cash", "amount_cents": 4990}]})
         self.assertEqual(sale["items"][0]["name"], "Camiseta - Azul / M")
 
+    def test_receive_fiado_at_counter_enters_drawer_and_prints_vouchers(self):
+        customer_id = str(uuid.uuid4())
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[{"id": customer_id, "name": "Seu Zé", "document": "",
+            "credit_limit_cents": 5000, "open_credit_cents": 1500, "store_credit_cents": 0}]))
+        self.store.open_cash(self.cashier_id, 1000)
+        with self.assertRaisesRegex(TerminalError, "maior que o fiado"):
+            self.store.receive_credit(self.cashier, {"receipt_id": "r0", "customer_id": customer_id, "amount_cents": 1600, "method": "cash"})
+        result = self.store.receive_credit(self.cashier, {"receipt_id": "r1", "customer_id": customer_id,
+                                                          "amount_cents": 1000, "method": "cash"})
+        self.assertEqual(result["open_credit_cents"], 500)
+        self.assertIn("RECEBIMENTO DE FIADO", json.dumps(result["receipt"]))
+        self.assertTrue(self.store.receive_credit(self.cashier, {"receipt_id": "r1", "customer_id": customer_id,
+                                                                 "amount_cents": 1000, "method": "cash"})["replayed"])
+        self.store.receive_credit(self.cashier, {"receipt_id": "r2", "customer_id": customer_id, "amount_cents": 200, "method": "pix"})
+        summary = self.store.cash_summary()
+        self.assertEqual((summary["categories"]["credit_received_cash_cents"], summary["categories"]["credit_received_other_cents"],
+                          summary["expected_cents"]), (1000, 200, 2000))
+        self.assertEqual(self.store.customers("Zé")[0]["open_credit_cents"], 300)
+        # Refreshing the catalog keeps the unsynced payments on top of the cloud balance.
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[{"id": customer_id, "name": "Seu Zé", "document": "",
+            "credit_limit_cents": 5000, "open_credit_cents": 1500, "store_credit_cents": 0}]))
+        self.assertEqual(self.store.customers("Zé")[0]["open_credit_cents"], 300)
+        events = [e["data"]["amount_cents"] for e in self.store.pending_events() if e["type"] == "credit.received"]
+        self.assertEqual(events, [1000, 200])
+        sale = self.store.sale(self.cashier, {"request_id": "v", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+                                              "payments": [{"method": "cash", "amount_cents": 700}]})
+        back = self.store.return_sale(self.manager, sale["id"], {"return_id": "d1", "refund_method": "cash", "reason": "Avaria",
+                                      "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        printed = json.dumps(back["receipt"])
+        self.assertIn("DEVOLUCAO", printed)
+        self.assertIn("Assinatura do cliente", printed)
+
     def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
         production_id = str(uuid.uuid4())
         production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",

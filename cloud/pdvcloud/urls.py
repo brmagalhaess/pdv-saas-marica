@@ -60,6 +60,7 @@ urlpatterns = [
     path("api/v1/sales/people", sales.sale_people),
     path("api/v1/sales/<uuid:pk>/cancel", sales.sale_reverse, {"action": "cancel"}),
     path("api/v1/sales/<uuid:pk>/refund", sales.sale_reverse, {"action": "refund"}),
+    path("api/v1/sales/<uuid:pk>/return", sales.sale_return),
     path("api/v1/sales/<uuid:pk>", sales.sale_detail),
     path("api/v1/dashboard", sales.dashboard),
     path("api/v1/customers/credit-summary", customer_credit.credit_summary),

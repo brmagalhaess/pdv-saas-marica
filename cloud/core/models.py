@@ -333,6 +333,21 @@ class Commission(models.Model):
         indexes = [models.Index(fields=["tenant", "seller", "status"])]
 
 
+class CreditReceipt(models.Model):
+    """Fiado paid at the terminal; settles the oldest open receivables."""
+    id = models.UUIDField(primary_key=True, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
+    shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
+    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT)
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name="credit_receipts")
+    operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    method = models.CharField(max_length=20)
+    amount_cents = models.PositiveBigIntegerField()
+    cash_session_id = models.CharField(max_length=160, blank=True)
+    created_at = models.DateTimeField()
+    received_at = models.DateTimeField(auto_now_add=True)
+
+
 class SupplierProductCode(models.Model):
     """Remembers how a supplier's item code maps to our product (NF-e import)."""
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
@@ -349,14 +364,19 @@ class SupplierProductCode(models.Model):
 
 
 class SaleReturn(models.Model):
-    """Partial or total return registered at the terminal after the sale."""
-    REFUNDS = [(s, s) for s in ("cash", "store_credit", "account")]
+    """Partial or total return, registered at the terminal or in the web panel.
+
+    `external` = refunded outside the PDV (Pix sent back, card chargeback); panel only.
+    """
+    REFUNDS = [(s, s) for s in ("cash", "store_credit", "account", "external")]
     id = models.UUIDField(primary_key=True, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="sale_returns")
     shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
-    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT)
+    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT, null=True, blank=True)
     sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="returns")
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, null=True, blank=True)
+    # Null terminal = registered in the web panel (created_by is then set).
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     supervisor = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     cash_session_id = models.CharField(max_length=160, blank=True)

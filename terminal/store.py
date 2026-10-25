@@ -12,7 +12,7 @@ from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-from .printers import LABEL_PRINTER_REQUIRED, label_bytes, receipt_bytes, receipt_layout
+from .printers import LABEL_PRINTER_REQUIRED, label_bytes, layout_bytes, receipt_bytes, receipt_layout, voucher_layout
 
 
 # The cloud issues a normal offline lease for 72h (past_due is 24h).
@@ -25,6 +25,13 @@ BUILTIN_NAMES = {"cash": "Dinheiro", "pix": "Pix", "card_credit": "Crédito", "c
                  "credit_account": "A prazo (fiado)", "store_credit": "Crédito na loja"}
 BUILTIN_PAYMENTS = tuple(BUILTIN_NAMES)
 REFUND_METHODS = ("cash", "store_credit", "account")
+REFUND_LABELS = {"cash": "Dinheiro", "store_credit": "Credito na loja", "account": "Abatido do fiado"}
+
+
+def _qty_text(milli, unit):
+    if unit == "UN":
+        return str(milli // 1000)
+    return f"{milli / 1000:.3f}".rstrip("0").rstrip(".").replace(".", ",") + " " + unit
 
 
 def _brl(cents):
@@ -143,6 +150,9 @@ class Store:
                     refund_method TEXT NOT NULL,total_cents INTEGER NOT NULL,items TEXT NOT NULL,
                     reason TEXT NOT NULL,created_at INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS sale_returns_sale ON sale_returns(sale_id);
+                CREATE TABLE IF NOT EXISTS credit_receipts(
+                    id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,session_id TEXT NOT NULL,method TEXT NOT NULL,
+                    amount_cents INTEGER NOT NULL,operator_id TEXT NOT NULL,created_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS suspended_carts(
                     id TEXT PRIMARY KEY,label TEXT NOT NULL,cart TEXT NOT NULL,
                     operator_id TEXT NOT NULL,created_at INTEGER NOT NULL);
@@ -696,6 +706,8 @@ class Store:
                         effects[sale["customer_id"]][0] -= int(payment["amount_cents"])
                     elif payment.get("method") == "store_credit":
                         effects[sale["customer_id"]][1] += int(payment["amount_cents"])
+            elif kind == "credit.received":
+                effects[data["customer_id"]][0] -= int(data["amount_cents"])
             elif kind == "sale.returned" and data.get("customer_id"):
                 if data.get("refund_method") == "account":
                     effects[data["customer_id"]][0] -= int(data["total_cents"])
@@ -922,6 +934,11 @@ class Store:
         categories["cash_refunds_cents"] = conn.execute(
             "SELECT COALESCE(SUM(total_cents),0) FROM sale_returns WHERE session_id=? AND refund_method='cash'",
             (cash["id"],)).fetchone()[0]
+        categories["credit_received_cash_cents"] = categories["credit_received_other_cents"] = 0
+        for method, amount in conn.execute(
+                "SELECT method,COALESCE(SUM(amount_cents),0) FROM credit_receipts WHERE session_id=? GROUP BY method",
+                (cash["id"],)):
+            categories["credit_received_cash_cents" if method == "cash" else "credit_received_other_cents"] += amount
         movements = conn.execute(
             "SELECT kind,COALESCE(SUM(amount_cents),0) amount FROM cash_movements "
             "WHERE session_id=? GROUP BY kind", (cash["id"],))
@@ -931,7 +948,8 @@ class Store:
             elif row["kind"] == "withdrawn":
                 categories["withdrawn_cents"] = row["amount"]
         expected = (cash["opening_cents"] + categories["cash_sales_net_cents"] +
-                    categories["supplied_cents"] - categories["withdrawn_cents"] - categories["cash_refunds_cents"])
+                    categories["supplied_cents"] - categories["withdrawn_cents"] - categories["cash_refunds_cents"]
+                    + categories["credit_received_cash_cents"])
         return {
             "id": cash["id"], "opened_at": cash["opened_at"],
             "opening_cents": cash["opening_cents"], "sales_count": sales_count,
@@ -1355,7 +1373,80 @@ class Store:
                 data["cash_session_id"] = session_id
             self._event(conn, "sale.returned", return_id, data)
             self._audit(conn, operator["id"], "sale.returned", sale_id, f"{refund}; {total}; supervisor={supervisor}")
-            return {"id": return_id, "sale_id": sale_id, "refund_method": refund, "total_cents": total, "items": items}
+            names = {row["id"]: row["name"] for row in conn.execute("SELECT id,name FROM operators")}
+            rows = [["pair", "Venda original", sale_id[:8]], ["rule"]]
+            for item in items:
+                line = lines[item["product_id"]]
+                rows.append(["text", line["name"]])
+                rows.append(["pair", f"  {_qty_text(item['quantity_milli'], line['unit'])} x devolvido", _brl(item["amount_cents"])])
+            rows += [["rule"], ["pair", "TOTAL DEVOLVIDO", _brl(total), True],
+                     ["pair", "Devolvido em", REFUND_LABELS[refund]], ["text", f"Motivo: {reason}"]]
+            customer = (conn.execute("SELECT name,store_credit_cents,open_credit_cents FROM customers WHERE id=?",
+                                     (customer_id,)).fetchone() if customer_id else None)
+            if customer and refund == "store_credit":
+                rows.append(["pair", "Credito na loja disponivel", _brl(customer["store_credit_cents"])])
+            if customer and refund == "account":
+                rows.append(["pair", "Fiado em aberto", _brl(customer["open_credit_cents"])])
+            rows += [["pair", "Operador", names.get(operator["id"], "")], ["pair", "Autorizado por", names.get(supervisor, "")]]
+            layout, job = self._queue_voucher(conn, {"title": "DEVOLUCAO", "created_at": timestamp, "rows": rows,
+                                                     "reference": f"Devolucao: {return_id[:16]}",
+                                                     "customer_name": customer["name"] if customer else snapshot.get("customer_name"),
+                                                     "signature": refund == "cash"})
+            return {"id": return_id, "sale_id": sale_id, "refund_method": refund, "total_cents": total, "items": items,
+                    "receipt": layout, "print_job_id": job}
+
+    def _queue_voucher(self, conn, doc):
+        """Layout for the on-screen preview, plus a print job when a receipt printer is set."""
+        raw = self._meta(conn, "issuer_profile")
+        doc = {**doc, "issuer": json.loads(raw) if raw else {"legal_name": self._meta(conn, "tenant_name") or ""}}
+        setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
+        width = 58 if setting and setting["format"] == "escpos58" else 80
+        layout = voucher_layout(doc, width)
+        job = self._queue_print(conn, "receipt", layout_bytes(layout), setting) if setting else None
+        return layout, job
+
+    def receive_credit(self, operator, request):
+        """Customer pays fiado at the counter; cash goes into the drawer."""
+        self.ensure_sale_allowed()
+        if operator["role"] not in SELL_ROLES:
+            raise TerminalError("Papel sem permissão de recebimento", 403)
+        receipt_id = _str(request.get("receipt_id"), "Identificador do recebimento")
+        customer_id = _str(request.get("customer_id"), "Cliente")
+        method = request.get("method")
+        if method not in ("cash", "pix", "card_credit", "card_debit"):
+            raise TerminalError("Forma de recebimento inválida")
+        amount = _positive_int(request.get("amount_cents"), "Valor recebido")
+        with self.transaction() as conn:
+            old = conn.execute("SELECT * FROM credit_receipts WHERE id=?", (receipt_id,)).fetchone()
+            if old:
+                if (old["customer_id"], old["amount_cents"], old["method"]) != (customer_id, amount, method):
+                    raise TerminalError("Identificador já usado para outro recebimento", 409)
+                return {"id": receipt_id, "amount_cents": amount, "replayed": True}
+            cash = self._open_cash(conn)
+            customer = conn.execute("SELECT * FROM customers WHERE id=? AND active=1", (customer_id,)).fetchone()
+            if not customer:
+                raise TerminalError("Cliente não encontrado", 404)
+            if amount > customer["open_credit_cents"]:
+                raise TerminalError(f"Valor maior que o fiado em aberto ({_brl(customer['open_credit_cents'])})", 409)
+            timestamp = _now_ms()
+            conn.execute("INSERT INTO credit_receipts VALUES (?,?,?,?,?,?,?)",
+                         (receipt_id, customer_id, cash["id"], method, amount, operator["id"], timestamp))
+            conn.execute("UPDATE customers SET open_credit_cents=open_credit_cents-? WHERE id=?", (amount, customer_id))
+            self._event(conn, "credit.received", receipt_id,
+                        {"customer_id": customer_id, "amount_cents": amount, "method": method,
+                         "operator_id": operator["id"], "cash_session_id": cash["id"], "created_at": timestamp})
+            self._audit(conn, operator["id"], "credit.received", customer_id, f"{method}; {amount}")
+            remaining = customer["open_credit_cents"] - amount
+            layout, job = self._queue_voucher(conn, {
+                "title": "RECEBIMENTO DE FIADO", "created_at": timestamp, "reference": f"Recibo: {receipt_id[:16]}",
+                "customer_name": customer["name"],
+                "rows": [["pair", "Fiado anterior", _brl(customer["open_credit_cents"])],
+                         ["pair", "VALOR RECEBIDO", _brl(amount), True],
+                         ["pair", "Forma", BUILTIN_NAMES.get(method, method)],
+                         ["pair", "Saldo em aberto", _brl(remaining)],
+                         ["pair", "Operador", operator.get("name", "")]]})
+            return {"id": receipt_id, "amount_cents": amount, "open_credit_cents": remaining,
+                    "receipt": layout, "print_job_id": job}
 
     def adjust_stock(self, operator, product_id, delta_milli, reason):
         self.ensure_sale_allowed()

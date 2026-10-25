@@ -14,7 +14,7 @@ from shared.licensing import LicenseError, load_private_key, load_public_key, pa
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, product_quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
 from .models import Customer, Membership, Product, Sale, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .cash_logic import CASH_EVENTS, apply_cash_event
-from .credit_logic import apply_return, balances as credit_balances
+from .credit_logic import apply_credit_receipt, apply_return, balances as credit_balances
 from .payment_methods import ensure as ensure_payment_methods, method_data
 from .stock_balance import balances as stock_balances
 from .sale_logic import event_time, persist_sale, reverse_sale
@@ -22,7 +22,7 @@ from .serializers import plan as plan_data, sync_conflict as sync_conflict_data,
 from .stock_balance import balance
 
 DEVICE_ROLES = {"owner", "admin"}
-EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "stock.adjusted", "cash.opened", "cash.closed",
+EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "credit.received", "stock.adjusted", "cash.opened", "cash.closed",
                "cash.withdrawn", "cash.supplied"}
 
 
@@ -372,7 +372,17 @@ def _validate_event(event, terminal):
         raise APIError("Identidade do evento não corresponde ao terminal", 403)
     if not isinstance(event["data"], dict):
         raise APIError("Dados do evento inválidos")
-    if event["type"] == "sale.returned":
+    if event["type"] == "credit.received":
+        data = event["data"]
+        fields(data, ("customer_id", "amount_cents", "method", "operator_id", "cash_session_id", "created_at"),
+               ("customer_id", "amount_cents", "method", "operator_id", "created_at"))
+        uuid_value(aggregate_id, "Recebimento")
+        uuid_value(data["customer_id"], "Cliente")
+        money(data["amount_cents"], "Valor recebido", allow_zero=False)
+        if data["method"] not in ("cash", "pix", "card_credit", "card_debit"):
+            raise APIError("Forma de recebimento inválida")
+        event_time(data["created_at"])
+    elif event["type"] == "sale.returned":
         # Full validation needs the original sale, which may arrive earlier in
         # this same batch; credit_logic.apply_return validates inside the transaction.
         fields(event["data"], ("sale_id", "items", "total_cents", "refund_method", "reason", "operator_id",
@@ -493,7 +503,11 @@ def sync(request):
             elif event["type"] in CASH_EVENTS:
                 apply_cash_event(terminal, event)
             elif event["type"] == "sale.returned":
-                apply_return(terminal, event)
+                _, conflict = apply_return(terminal, event)
+                if conflict:
+                    conflicts.append(sync_conflict_data(conflict))
+            elif event["type"] == "credit.received":
+                apply_credit_receipt(terminal, event)
             accepted.append(event["event_id"])
     return JsonResponse({"accepted_event_ids": accepted, "conflicts": conflicts})
 

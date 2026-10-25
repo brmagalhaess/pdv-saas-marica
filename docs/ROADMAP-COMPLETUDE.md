@@ -22,7 +22,8 @@ Os itens P0 fiscais e de pagamento continuam no plano de 90 dias da auditoria e 
 | 4.4 Compras pelo XML da NF-e | ✅ entregue (custo real com desconto/frete/IPI/ST, memória de códigos por fornecedor, fator de embalagem, duplicatas → contas a pagar). Falta: pedido de compra e recebimento parcial, manifestação/DF-e automático |
 | 4.3 Inventário guiado | ✅ entregue (contagem pelo celular com leitor/câmera, modo cego, ajuste pelo saldo do momento da contagem) |
 | 4.5 Transferência entre lojas | ✅ entregue (em trânsito, recebimento com divergência, cancelamento) |
-| Próximos | recebimento de fiado no caixa, comprovante impresso de devolução, devolução pelo painel, lote e validade (4.7), promoções (Onda 6) |
+| Fiado no caixa, comprovantes e devolução pelo painel | ✅ entregue (recebimento entra na gaveta e quita as parcelas mais antigas; comprovantes ESC/POS de devolução e recebimento; devolução no painel com reembolso fora do PDV; devolução offline excedente vira conflito) |
+| Próximos | promoções e fidelidade (Onda 6), lote e validade (4.7), DRE e gráficos no painel (Onda 3), importador de planilha para migração |
 
 ---
 

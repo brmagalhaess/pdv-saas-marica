@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from .api_common import APIError, endpoint, iso, membership_context, method, page, payload, require_feature, scoped, text, uuid_value
 from .models import AuditEvent, FinanceEntry, Membership, Product, Sale, Shop
+from .credit_logic import panel_return
 from .sale_logic import reverse_sale
 from .stock_balance import balances as stock_balances
 from .serializers import sale as sale_data
@@ -58,6 +59,20 @@ def sale_detail(request, pk):
     member = membership_context(request)
     row = _sale(member.tenant, pk)
     return JsonResponse(sale_data(row, detail=True))
+
+
+@endpoint
+def sale_return(request, pk):
+    """Partial return from the web panel (refund in store credit, fiado or outside the PDV)."""
+    method(request, "POST")
+    member = membership_context(request, roles={"owner", "admin", "manager", "finance"}, write=True)
+    with transaction.atomic():
+        row = Sale.objects.select_for_update().filter(tenant=member.tenant, pk=uuid_value(pk)).first()
+        if row is None:
+            raise APIError("Venda não encontrada", 404)
+        ret = panel_return(member, row, payload(request))
+    return JsonResponse({"id": str(ret.id), "total_cents": ret.total_cents, "refund_method": ret.refund_method,
+                         "sale": sale_data(row, detail=True)}, status=201)
 
 
 @endpoint

@@ -8,7 +8,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone as utc_timezone
 
-from .models import CashMovement, CashSession, Membership, Sale, SalePayment, SaleReturn
+from .models import CashMovement, CashSession, CreditReceipt, Membership, Sale, SalePayment, SaleReturn
 
 CASH_EVENTS = ("cash.opened", "cash.closed", "cash.withdrawn", "cash.supplied")
 
@@ -76,6 +76,11 @@ def session_summary(session):
                                             cash_session_id__in=(str(session.id), session.id.hex))
                   .values_list("total_cents", flat=True))
     by_method["cash"] = by_method.get("cash", 0) - change - refunds
+    credit_received = defaultdict(int)
+    for method, amount in (CreditReceipt.objects.filter(tenant=session.tenant, terminal=session.terminal,
+                                                        cash_session_id__in=(str(session.id), session.id.hex))
+                           .values_list("method", "amount_cents")):
+        credit_received[method] += amount
     movements = defaultdict(int)
     for kind, amount in session.movements.values_list("kind", "amount_cents"):
         movements[kind] += amount
@@ -83,4 +88,4 @@ def session_summary(session):
             "sales_total_cents": sum(sales.values_list("total_cents", flat=True)),
             "by_method": {key: value for key, value in by_method.items() if value},
             "supplied_cents": movements["supplied"], "withdrawn_cents": movements["withdrawn"],
-            "cash_refunds_cents": refunds}
+            "cash_refunds_cents": refunds, "credit_received": dict(credit_received)}
