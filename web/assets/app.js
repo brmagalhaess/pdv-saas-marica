@@ -1650,7 +1650,7 @@ async function inventoryPage() {
   async function renderIdle() {
     content.append(empty("Nenhum inventário aberto nesta loja", opener ? "Abra um inventário para começar a contar." : "Peça ao gerente para abrir o inventário."));
     if (opener) {
-      const actions = el("div", "form-actions");
+      const actions = el("div", "form-actions inventory-actions");
       actions.append(button("Abrir inventário", () => openForm().catch(handleError)));
       content.append(actions);
     }
@@ -1742,7 +1742,7 @@ async function inventoryPage() {
         { label: "Saldo atual", render: p => quantity(p.balance_milli, p.unit) }], count.pending.slice(0, 50)));
     }
     if (manager) {
-      const actions = el("div", "form-actions");
+      const actions = el("div", "form-actions inventory-actions");
       actions.append(button("Cancelar inventário", () => confirmAction("Cancelar inventário", "As contagens serão descartadas e nenhum ajuste será feito.", async () => {
         await api.post(`/inventories/${count.id}/cancel`, {}); toast("Inventário cancelado."); load(); }, "Cancelar inventário"), "ghost"));
       actions.append(button("Encerrar e ajustar estoque", () => closeForm(count)));

@@ -398,3 +398,5 @@ td.actions { white-space: nowrap; text-align: right; }
 .transfer-line { display: grid; grid-template-columns: 2fr 1fr auto; gap: 8px; }
 .transfer-line select, .transfer-line input { min-height: 38px; }
 @media (max-width: 640px) { .transfer-line { grid-template-columns: 1fr 1fr; } .transfer-line select { grid-column: 1 / -1; } }
+
+.inventory-actions { padding: 0 18px 18px; }
