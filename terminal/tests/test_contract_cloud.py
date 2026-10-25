@@ -166,6 +166,19 @@ class CloudContractTests(unittest.TestCase):
         self.assertEqual(SaleReturn.objects.get(sale_id=fiado["id"]).total_cents, 1299)
         self.assertEqual(store.customers("Rosa")[0]["open_credit_cents"], 1299)
 
+        # Promotion created in the cloud, priced offline by the terminal, accepted back by the cloud.
+        from core.models import Promotion, SaleItem
+        promo = Promotion.objects.create(tenant=tenant, name="Queijo em oferta", kind="price", product=product, price_cents=999)
+        with patch("terminal.sync._request", side_effect=django_request):
+            refresh_bootstrap(store)
+        offer = store.sale(operator, {"request_id": "contract-promo", "items": [{"product_id": str(product.id), "quantity_milli": 1000}],
+                                      "payments": [{"method": "cash", "amount_cents": 999}]})
+        self.assertEqual(offer["promo_discount_cents"], 300)
+        with patch("terminal.sync._request", side_effect=django_request):
+            self.assertEqual(sync_once(store)["remaining"], 0)
+        line = SaleItem.objects.get(sale_id=offer["id"])
+        self.assertEqual((line.promo_discount_cents, line.promotion_id, line.line_total_cents), (300, promo.id, 999))
+
 
 if __name__ == "__main__":
     unittest.main()

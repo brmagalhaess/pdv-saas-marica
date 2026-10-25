@@ -82,23 +82,25 @@ def _line_gross(price_cents, quantity_milli):
         Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _allocate_discount(lines, discount, gross_total):
-    """Apportion cents proportionally without discounting a line below zero."""
-    shares = [divmod(discount * line["gross_cents"], gross_total) for line in lines]
+def _allocate_discount(lines, discount, base_total):
+    """Apportion the manual discount over the promotional price of each line,
+    proportionally and without taking a line below zero."""
+    net = [line["gross_cents"] - line.get("promo_discount_cents", 0) for line in lines]
+    shares = [divmod(discount * value, base_total) for value in net]
     allocated = [share[0] for share in shares]
     remaining = discount - sum(allocated)
     order = sorted(range(len(lines)), key=lambda index: (-shares[index][1], index))
     for index in order:
         if not remaining:
             break
-        if allocated[index] < lines[index]["gross_cents"]:
+        if allocated[index] < net[index]:
             allocated[index] += 1
             remaining -= 1
     if remaining:
         raise TerminalError("Não foi possível distribuir o desconto")
-    for line, portion in zip(lines, allocated):
+    for line, value, portion in zip(lines, net, allocated):
         line["discount_cents"] = portion
-        line["line_total_cents"] = line["gross_cents"] - portion
+        line["line_total_cents"] = value - portion
 
 
 class Store:
@@ -663,6 +665,11 @@ class Store:
             customers = response.get("customers")
             if isinstance(customers, list):
                 self._apply_customers(conn, customers)
+            if isinstance(response.get("promotions"), list):
+                for rule in response["promotions"]:
+                    if not isinstance(rule, dict) or rule.get("kind") not in ("price", "wholesale", "buy_x_pay_y"):
+                        raise TerminalError("Promoção recebida inválida")
+                self._set_meta(conn, "promotions", _json(response["promotions"]))
             if isinstance(response.get("payment_methods"), list):
                 self._set_meta(conn, "payment_methods", _json(self._validated_payment_methods(response["payment_methods"])))
             for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
@@ -755,6 +762,43 @@ class Store:
     def payment_methods(self):
         with self.connection() as conn:
             return self._payment_config(conn)
+
+    def _promotions(self, conn):
+        raw = self._meta(conn, "promotions")
+        return json.loads(raw) if raw else []
+
+    def _line_promotion(self, conn, row, quantity_milli, now_ms, label=False):
+        from shared.promotions import best_promotion, describe
+
+        product = {"id": row["id"], "category": row["category"], "unit": row["unit"], "price_cents": row["price_cents"]}
+        discount, promotion = best_promotion(product, quantity_milli, self._promotions(conn), now_ms)
+        if not promotion:
+            return {"promo_discount_cents": 0, "promotion_id": None, "promotion_name": ""}
+        result = {"promo_discount_cents": discount, "promotion_id": promotion["id"],
+                  "promotion_name": promotion["name"][:80]}
+        if label:  # screen only: the sale event carries exactly the fields the cloud accepts
+            result["promotion_label"] = describe(promotion)
+        return result
+
+    def quote(self, item_requests):
+        """Price a cart with the same engine the sale uses (works offline)."""
+        if not isinstance(item_requests, list):
+            raise TerminalError("Itens inválidos")
+        now, lines = _now_ms(), []
+        with self.connection() as conn:
+            for item in item_requests[:200]:
+                if not isinstance(item, dict):
+                    raise TerminalError("Item inválido")
+                row = conn.execute("SELECT * FROM products WHERE id=? AND active=1", (str(item.get("product_id")),)).fetchone()
+                qty = item.get("quantity_milli")
+                if not row or type(qty) is not int or qty <= 0:
+                    continue
+                promo = self._line_promotion(conn, row, qty, now, label=True)
+                gross = _line_gross(row["price_cents"], qty)
+                lines.append({"product_id": row["id"], "gross_cents": gross, **promo,
+                              "net_cents": gross - promo["promo_discount_cents"]})
+        return {"lines": lines, "gross_cents": sum(l["gross_cents"] for l in lines),
+                "promo_discount_cents": sum(l["promo_discount_cents"] for l in lines)}
 
     def customers(self, query=""):
         query = f"%{str(query or '').strip()[:60]}%"
@@ -1101,7 +1145,7 @@ class Store:
                 if not seller:
                     raise TerminalError("Vendedor não encontrado", 404)
                 seller_name = seller["name"]
-            lines, seen = [], set()
+            lines, seen, priced_at = [], set(), _now_ms()
             for item in item_requests:
                 if not isinstance(item, dict):
                     raise TerminalError("Item inválido")
@@ -1122,20 +1166,22 @@ class Store:
                               "ncm": row["ncm"] or "", "unit": row["unit"],
                               "stock_controlled": bool(row["stock_controlled"]),
                               "quantity_milli": qty, "unit_price_cents": row["price_cents"],
-                              "gross_cents": gross})
+                              "gross_cents": gross, **self._line_promotion(conn, row, qty, priced_at)})
             gross_total = sum(line["gross_cents"] for line in lines)
-            if gross_total <= 0 or discount >= gross_total:
+            promo_total = sum(line["promo_discount_cents"] for line in lines)
+            base_total = gross_total - promo_total  # manual discount and its limits apply to the promotional price
+            if base_total <= 0 or discount >= base_total:
                 raise TerminalError("Desconto ou total inválido")
             configured_limit = int(self._meta(conn, "discount_max_bps") or 10000)
             if not 0 <= configured_limit <= 10000:
                 configured_limit = 10000
-            if discount * 10000 > gross_total * configured_limit:
+            if discount * 10000 > base_total * configured_limit:
                 raise TerminalError("Desconto acima do limite configurado pela administração", 403)
             role_limit = DISCOUNT_BPS.get(operator["role"], 0)
-            if discount * 10000 > gross_total * role_limit and not override_id:
+            if discount * 10000 > base_total * role_limit and not override_id:
                 raise TerminalError("PIN de gerente necessário para este desconto", 403)
-            _allocate_discount(lines, discount, gross_total)
-            total = gross_total - discount
+            _allocate_discount(lines, discount, base_total)
+            total = base_total - discount
             normalized_payments = []
             config = self._payment_config(conn)
             enabled = {row["kind"] for row in config if row["active"] and row["kind"] != "other"} | {"card"}
@@ -1184,7 +1230,7 @@ class Store:
                         "customer_name": customer_name,
                         "customer_document": customer_document,
                         "customer_id": customer_id, "gross_cents": gross_total,
-                        "discount_cents": discount, "total_cents": total, "change_cents": change,
+                        "promo_discount_cents": promo_total, "discount_cents": discount, "total_cents": total, "change_cents": change,
                         "items": lines, "payments": normalized_payments, "created_at": timestamp,
                         "status": "completed"}
             if payment_names:
@@ -1204,7 +1250,7 @@ class Store:
                           customer_id, gross_total, discount, total, change, _json(snapshot),
                           "completed", timestamp, customer_document))
             event_data = {key: snapshot[key] for key in ("request_id", "cash_session_id", "created_at",
-                                                       "gross_cents", "discount_cents", "total_cents",
+                                                       "gross_cents", "promo_discount_cents", "discount_cents", "total_cents",
                                                        "change_cents", "customer_id", "customer_name",
                                                        "customer_document", "operator_id", "seller_id",
                                                        "items", "payments")}

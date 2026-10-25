@@ -8,7 +8,7 @@ from django.utils import timezone
 from . import commission_logic
 from .credit_logic import CREDIT_METHODS, apply_sale_payments, reverse_sale_credit
 from .api_common import APIError, audit, digest, fields, money, quantity, scoped, text, uuid_value
-from .models import Customer, FiscalDocument, Membership, PaymentMethod, Product, Sale, SaleItem, SalePayment, StockMovement
+from .models import Customer, FiscalDocument, Membership, PaymentMethod, Product, Promotion, Sale, SaleItem, SalePayment, StockMovement
 from .stock_balance import balance
 
 
@@ -36,7 +36,7 @@ def validate_sale(data, tenant):
     required = ("request_id", "cash_session_id", "created_at", "gross_cents",
                 "discount_cents", "total_cents", "change_cents", "items", "payments")
     fields(data, required + ("customer_id", "customer_name", "customer_document",
-                             "operator_id", "seller_id"), required)
+                             "operator_id", "seller_id", "promo_discount_cents"), required)
     request_id = text(data["request_id"], "Identificador da venda", 160)
     cash_session_id = text(data["cash_session_id"], "Sessão de caixa", 160)
     created_at = event_time(data["created_at"])
@@ -51,7 +51,7 @@ def validate_sale(data, tenant):
     if not isinstance(payments, list) or not 1 <= len(payments) <= 20:
         raise APIError("Pagamentos inválidos")
     normalized_items = []
-    gross_sum = discount_sum = total_sum = 0
+    gross_sum = discount_sum = total_sum = promo_sum = 0
     for item in items:
         if not isinstance(item, dict):
             raise APIError("Item inválido")
@@ -59,7 +59,8 @@ def validate_sale(data, tenant):
                          "gross_cents", "discount_cents", "line_total_cents")
         # stock_controlled is the terminal's catalog snapshot; the central
         # product record stays authoritative for stock effects.
-        fields(item, required_item + ("ncm", "sku", "stock_controlled"), required_item)
+        fields(item, required_item + ("ncm", "sku", "stock_controlled", "promo_discount_cents",
+                                      "promotion_id", "promotion_name"), required_item)
         product = scoped(Product, tenant, item["product_id"])
         name = text(item["name"], "Nome do item", 180)
         if item["unit"] != product.unit:
@@ -71,20 +72,31 @@ def validate_sale(data, tenant):
         gross = money(item["gross_cents"], "Bruto")
         discount = money(item["discount_cents"], "Desconto")
         line_total = money(item["line_total_cents"], "Total da linha")
+        # Promotion applied offline by the terminal. Accepted even if the rule was
+        # edited or ended since: the sale already happened at that price.
+        promo = money(item.get("promo_discount_cents", 0), "Desconto de promoção")
+        promotion = scoped(Promotion, tenant, item["promotion_id"]) if item.get("promotion_id") else None
+        if bool(promo) != bool(promotion):
+            raise APIError("Desconto de promoção sem promoção correspondente")
         expected = int((Decimal(price) * Decimal(qty) / Decimal(1000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-        if gross != expected or discount > gross or line_total != gross - discount:
+        if gross != expected or promo + discount > gross or line_total != gross - promo - discount:
             raise APIError("Totais do item não conferem")
         gross_sum += gross
+        promo_sum += promo
         discount_sum += discount
         total_sum += line_total
-        normalized_items.append((product, name, qty, price, gross, discount, line_total))
+        normalized_items.append((product, name, qty, price, gross, discount, line_total,
+                                 (promo, promotion, text(item.get("promotion_name") or (promotion.name if promotion else ""),
+                                                         "Promoção", 80, optional=True))))
     gross_sale = money(data["gross_cents"], "Bruto da venda")
     discount_sale = money(data["discount_cents"], "Desconto da venda")
     total_sale = money(data["total_cents"], "Total da venda", allow_zero=False)
     change = money(data["change_cents"], "Troco")
-    if (gross_sale, discount_sale, total_sale) != (gross_sum, discount_sum, total_sum):
+    promo_sale = money(data.get("promo_discount_cents", 0), "Promoções da venda")
+    if (gross_sale, discount_sale, total_sale, promo_sale) != (gross_sum, discount_sum, total_sum, promo_sum):
         raise APIError("Totais da venda não conferem")
-    if discount_sale * 10000 > gross_sale * tenant.max_discount_bps:
+    # The administration limit applies to the operator's manual discount over the promotional price.
+    if discount_sale * 10000 > (gross_sale - promo_sale) * tenant.max_discount_bps:
         raise APIError("Desconto acima do limite configurado pela administração", 403)
     normalized_payments = []
     paid = cash_paid = 0
@@ -114,7 +126,7 @@ def validate_sale(data, tenant):
             "created_at": created_at, "customer": customer,
             "gross_cents": gross_sale, "discount_cents": discount_sale,
             "total_cents": total_sale, "change_cents": change,
-            "items": normalized_items, "payments": normalized_payments,
+            "items": normalized_items, "payments": normalized_payments, "promo_discount_cents": promo_sale,
             "customer_name": customer_name, "customer_document": customer_document,
             "operator": operator, "seller": seller}
 
@@ -150,12 +162,14 @@ def persist_sale(terminal, event):
                                cash_session_id=validated["cash_session_id"],
                                content_hash=content_hash, gross_cents=validated["gross_cents"],
                                discount_cents=validated["discount_cents"], total_cents=validated["total_cents"],
+                               promo_discount_cents=validated["promo_discount_cents"],
                                change_cents=validated["change_cents"], stock_status=stock_status,
                                created_at=validated["created_at"])
-    for number, (product, name, qty, price, gross, discount, line_total) in enumerate(validated["items"]):
+    for number, (product, name, qty, price, gross, discount, line_total, (promo, promotion, promo_name)) in enumerate(validated["items"]):
         SaleItem.objects.create(sale=sale, line_number=number, product=product, name=name,
                                 unit=product.unit, quantity_milli=qty, unit_price_cents=price,
-                                gross_cents=gross, discount_cents=discount, line_total_cents=line_total)
+                                gross_cents=gross, promo_discount_cents=promo, promotion=promotion,
+                                promotion_name=promo_name, discount_cents=discount, line_total_cents=line_total)
     for number, (method, amount, configured) in enumerate(validated["payments"]):
         SalePayment.objects.create(sale=sale, line_number=number, method=method, amount_cents=amount,
                                    payment_method=configured)

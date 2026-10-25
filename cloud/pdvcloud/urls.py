@@ -5,7 +5,7 @@ from core import views_auth as auth, views_finance as finance, views_pages as pa
 from core import views_platform as platform, views_resources as resources
 from core import views_customer_credit as customer_credit, views_payment_methods as payment_methods
 from core import product_groups, views_purchases as purchases
-from core import views_inventory as inventory, views_transfers as transfers
+from core import views_inventory as inventory, views_transfers as transfers, views_promotions as promotions
 from core import views_cash as cash, views_commissions as commissions, views_reports as reports
 from core import views_sales as sales, views_stock as stock, views_terminal as terminal
 from core import views_users as users
@@ -66,6 +66,8 @@ urlpatterns = [
     path("api/v1/customers/credit-summary", customer_credit.credit_summary),
     path("api/v1/customers/<uuid:pk>/statement", customer_credit.statement),
     path("api/v1/customers/<uuid:pk>/receive", customer_credit.receive),
+    path("api/v1/promotions", promotions.promotions),
+    path("api/v1/promotions/<uuid:pk>", promotions.promotion_detail),
     path("api/v1/inventories", inventory.inventories),
     path("api/v1/inventories/<uuid:pk>", inventory.inventory_detail),
     path("api/v1/inventories/<uuid:pk>/count", inventory.inventory_count),

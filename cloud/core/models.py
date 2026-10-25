@@ -215,6 +215,31 @@ class Terminal(models.Model):
         constraints = [models.UniqueConstraint(fields=["tenant", "device_id"], condition=~Q(device_id=""), name="terminal_tenant_device_unique")]
 
 
+class Promotion(models.Model):
+    """Price rule evaluated by the terminal, offline included.
+
+    price: promotional unit price in a period · wholesale: unit price from
+    `min_quantity_milli` up · buy_x_pay_y: every `buy_quantity` units, pay
+    `pay_quantity` (UN only). The best rule for the customer wins; no stacking.
+    """
+    KINDS = [(s, s) for s in ("price", "wholesale", "buy_x_pay_y")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="promotions")
+    name = models.CharField(max_length=80)
+    kind = models.CharField(max_length=20, choices=KINDS)
+    product = models.ForeignKey("Product", on_delete=models.PROTECT, null=True, blank=True)
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, null=True, blank=True)
+    price_cents = models.PositiveBigIntegerField(null=True, blank=True)
+    min_quantity_milli = models.PositiveBigIntegerField(null=True, blank=True)
+    buy_quantity = models.PositiveIntegerField(null=True, blank=True)
+    pay_quantity = models.PositiveIntegerField(null=True, blank=True)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class Sale(models.Model):
     STATUS = [(s, s) for s in ("completed", "cancelled", "refunded")]
     id = models.UUIDField(primary_key=True, editable=False)
@@ -238,6 +263,8 @@ class Sale(models.Model):
     cash_session_id = models.CharField(max_length=160, blank=True, db_index=True)
     content_hash = models.CharField(max_length=64)
     gross_cents = models.PositiveBigIntegerField()
+    # Promotions applied by the terminal, kept apart from the operator's manual discount.
+    promo_discount_cents = models.PositiveBigIntegerField(default=0)
     discount_cents = models.PositiveBigIntegerField(default=0)
     total_cents = models.PositiveBigIntegerField()
     change_cents = models.PositiveBigIntegerField(default=0)
@@ -264,6 +291,9 @@ class SaleItem(models.Model):
     quantity_milli = models.PositiveBigIntegerField()
     unit_price_cents = models.PositiveBigIntegerField()
     gross_cents = models.PositiveBigIntegerField()
+    promo_discount_cents = models.PositiveBigIntegerField(default=0)
+    promotion = models.ForeignKey(Promotion, on_delete=models.PROTECT, null=True, blank=True)
+    promotion_name = models.CharField(max_length=80, blank=True)
     discount_cents = models.PositiveBigIntegerField()
     line_total_cents = models.PositiveBigIntegerField()
 

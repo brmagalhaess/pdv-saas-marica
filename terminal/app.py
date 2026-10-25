@@ -313,6 +313,11 @@ def create_app(config=None):
     def return_sale(operator, sale_id):
         return jsonify(store.return_sale(operator, sale_id, body()))
 
+    @app.post("/api/cart/quote")
+    @authenticated(*SELL_ROLES)
+    def cart_quote(operator):
+        return jsonify(store.quote(body().get("items")))
+
     @app.post("/api/customers/receive")
     @authenticated(*SELL_ROLES)
     def receive_credit(operator):

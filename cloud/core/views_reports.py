@@ -237,6 +237,18 @@ def cash_flow(tenant, shop, start, end):
              _col("due_out", "A pagar (previsto)", "money")], data, totals)
 
 
+def promotions_report(tenant, shop, start, end):
+    rows = (SaleItem.objects.filter(sale__in=_sales(tenant, shop, start, end), promo_discount_cents__gt=0)
+            .values("promotion_name").annotate(uses=Count("sale", distinct=True), qty=Sum("quantity_milli"),
+                                               discount=Sum("promo_discount_cents"), revenue=Sum("line_total_cents"))
+            .order_by("-discount"))
+    data = [{"promotion": r["promotion_name"] or "Promoção", "uses": r["uses"], "qty": r["qty"],
+             "discount": r["discount"], "revenue": r["revenue"]} for r in rows]
+    return ([_col("promotion", "Promoção"), _col("uses", "Vendas", "int"), _col("qty", "Quantidade", "milli"),
+             _col("discount", "Desconto concedido", "money"), _col("revenue", "Faturamento com promoção", "money")], data,
+            {"discount": sum(r["discount"] for r in data), "revenue": sum(r["revenue"] for r in data)})
+
+
 REPORTS = {
     "sales_by_day": ("Vendas por dia", sales_by_day),
     "sales_by_hour": ("Vendas por hora", sales_by_hour),
@@ -245,6 +257,7 @@ REPORTS = {
     "sales_by_seller": ("Vendas por vendedor", _by_person("seller", "Vendedor")),
     "products_abc": ("Curva ABC e lucro por produto", products_abc),
     "profit_by_day": ("Lucro bruto por dia", profit_by_day),
+    "promotions": ("Promoções: desconto concedido e faturamento", promotions_report),
     "cash_flow": ("Fluxo de caixa", cash_flow),
     "low_stock": ("Estoque baixo e sugestão de compra", low_stock),
     "stock_losses": ("Perdas e ajustes de estoque", stock_losses),

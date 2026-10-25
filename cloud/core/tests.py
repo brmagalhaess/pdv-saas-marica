@@ -1101,6 +1101,48 @@ class CloudAPITests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(SyncConflict.objects.get(event_id=late["event_id"]).reason, "return_exceeds_sold")
 
+    def test_promotions_crud_sync_and_report(self):
+        from .models import Promotion, SaleItem
+        self.client.force_login(self.owner)
+        bad = self.api("POST", "/api/v1/promotions", {"name": "X", "kind": "buy_x_pay_y", "product_id": str(self.product.id),
+                                                      "buy_quantity": 2, "pay_quantity": 2})
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(self.api("POST", "/api/v1/promotions", {"name": "X", "kind": "price", "product_id": str(self.product.id),
+                                                                 "price_cents": 1200}).status_code, 400)  # not cheaper
+        created = self.api("POST", "/api/v1/promotions", {"name": "Arroz 3x2", "kind": "buy_x_pay_y", "product_id": str(self.product.id),
+                                                          "buy_quantity": 3, "pay_quantity": 2, "ends_at": "2099-01-01T00:00"})
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertEqual((created.json()["label"], created.json()["status"]), ("Leve 3 pague 2", "running"))
+        promo = Promotion.objects.get(pk=created.json()["id"])
+        self.tenant.max_discount_bps = 1000
+        self.tenant.save(update_fields=["max_discount_bps"])
+        token = "terminal-token-" + uuid.uuid4().hex
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+            device_id="promo-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
+        identity = {"tenant_id": str(self.tenant.id), "shop_id": str(self.shop.id), "terminal_id": str(terminal.id)}
+
+        def sale(promo_cents, discount):
+            total = 2997 - promo_cents - discount
+            return {"event_id": uuid.uuid4().hex, "type": "sale.completed", "aggregate_id": str(uuid.uuid4()), "identity": identity,
+                    "data": {"request_id": uuid.uuid4().hex, "cash_session_id": uuid.uuid4().hex, "created_at": int(time.time() * 1000),
+                             "customer_id": None, "customer_name": "", "customer_document": "", "gross_cents": 2997,
+                             "promo_discount_cents": promo_cents, "discount_cents": discount, "total_cents": total, "change_cents": 0,
+                             "items": [{"product_id": str(self.product.id), "name": "Arroz", "unit": "UN", "quantity_milli": 3000,
+                                        "unit_price_cents": 999, "gross_cents": 2997, "promo_discount_cents": promo_cents,
+                                        "promotion_id": str(promo.id), "promotion_name": "Arroz 3x2",
+                                        "discount_cents": discount, "line_total_cents": total}],
+                             "payments": [{"method": "cash", "amount_cents": total}]}}
+
+        sync = lambda e: self.api("POST", "/api/v1/terminal/sync", {"events": [e]}, tenant=False, HTTP_AUTHORIZATION=f"Bearer {token}")
+        ok = sale(999, 199)  # promo of 33% is fine; the 10% limit is checked on the 19.98 promotional price
+        self.assertEqual(sync(ok).status_code, 200, sync(ok).content)
+        self.assertEqual(sync(sale(999, 201)).status_code, 403)  # manual discount above 10% of the promo price
+        line = SaleItem.objects.get(sale_id=ok["aggregate_id"])
+        self.assertEqual((line.promo_discount_cents, line.promotion_id, line.line_total_cents), (999, promo.id, 1799))
+        Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
+        report = self.api("GET", "/api/v1/reports/promotions").json()
+        self.assertEqual([(r["promotion"], r["uses"], r["discount"]) for r in report["rows"]], [("Arroz 3x2", 1, 999)])
+
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",

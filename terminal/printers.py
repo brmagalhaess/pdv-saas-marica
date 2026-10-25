@@ -172,6 +172,8 @@ def receipt_layout(sale, width=80):
         if item.get("ncm"):
             description += f" | NCM: {item['ncm']}"
         text(description, bold=True)
+        if item.get("promo_discount_cents"):
+            pair(f"  Promocao: {item.get('promotion_name') or ''}", f"-{_money(item['promo_discount_cents'])}")
         qty = (_quantity(item['quantity_milli']) if item['unit'] == "UN"
                else f"{item['quantity_milli'] // 1000},{item['quantity_milli'] % 1000:03d}")
         unit_label = f"{qty} {item['unit']} | Unit:"
@@ -188,6 +190,8 @@ def receipt_layout(sale, width=80):
     rule()
     pair("Quantidade de itens", str(len(sale.get("items", []))))
     pair("Subtotal", _money(sale['gross_cents']))
+    if sale.get("promo_discount_cents"):
+        pair("Promocoes", f"-{_money(sale['promo_discount_cents'])}")
     pair("Descontos", _money(sale['discount_cents']))
     text("")
     pair("TOTAL A PAGAR", _money(sale['total_cents']), bold=True, tall=True)

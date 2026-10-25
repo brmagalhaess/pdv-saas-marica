@@ -16,6 +16,7 @@ from .models import Customer, Membership, Product, Sale, Shop, StockMovement, Su
 from .cash_logic import CASH_EVENTS, apply_cash_event
 from .credit_logic import apply_credit_receipt, apply_return, balances as credit_balances
 from .payment_methods import ensure as ensure_payment_methods, method_data
+from .views_promotions import for_terminal as promotions_for_terminal
 from .stock_balance import balances as stock_balances
 from .sale_logic import event_time, persist_sale, reverse_sale
 from .serializers import plan as plan_data, sync_conflict as sync_conflict_data, terminal as terminal_data
@@ -289,9 +290,10 @@ def bootstrap(request):
                  "group_id": str(p.group_id) if p.group_id else None,
                  "group_name": p.group.name if p.group_id else None, "variant": p.variant}
             for p in shown]
-    customers = payment_config = None
+    customers = payment_config = promotion_rules = None
     if offset == 0:  # non-catalog data travels on the first page only
         payment_config = [method_data(row) for row in ensure_payment_methods(terminal.tenant)]
+        promotion_rules = promotions_for_terminal(terminal.tenant)
         rows_c = list(Customer.objects.filter(tenant=terminal.tenant, active=True).order_by("name", "id")[:20000])
         totals = credit_balances(terminal.tenant, [c.id for c in rows_c])
         customers = [{"id": str(c.id), "name": c.name, "document": c.document,
@@ -300,7 +302,7 @@ def bootstrap(request):
                       "store_credit_cents": totals.get(c.id, (0, 0))[1]} for c in rows_c]
     return JsonResponse({"tenant": {"id": str(terminal.tenant_id), "name": terminal.tenant.name},
                          "shop": {"id": str(terminal.shop_id), "name": terminal.shop.name},
-                         "customers": customers, "payment_methods": payment_config,
+                         "customers": customers, "payment_methods": payment_config, "promotions": promotion_rules,
                          "terminal": terminal_data(terminal), "issuer": _issuer_profile(terminal.tenant), "products": products,
                          "next_cursor": str(offset + limit) if len(rows) > limit else None,
                          "operators": operators, "lease": lease, "public_key": public_key,

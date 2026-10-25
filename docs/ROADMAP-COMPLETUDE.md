@@ -23,7 +23,8 @@ Os itens P0 fiscais e de pagamento continuam no plano de 90 dias da auditoria e 
 | 4.3 Inventário guiado | ✅ entregue (contagem pelo celular com leitor/câmera, modo cego, ajuste pelo saldo do momento da contagem) |
 | 4.5 Transferência entre lojas | ✅ entregue (em trânsito, recebimento com divergência, cancelamento) |
 | Fiado no caixa, comprovantes e devolução pelo painel | ✅ entregue (recebimento entra na gaveta e quita as parcelas mais antigas; comprovantes ESC/POS de devolução e recebimento; devolução no painel com reembolso fora do PDV; devolução offline excedente vira conflito) |
-| Próximos | promoções e fidelidade (Onda 6), lote e validade (4.7), DRE e gráficos no painel (Onda 3), importador de planilha para migração |
+| Promoções (Onda 6) | ✅ entregue (preço por período, leve X pague Y, atacado; motor único no terminal, offline; limite de desconto manual sobre o preço promocional; relatório) |
+| Próximos | fidelidade/cashback, importador de planilha para migração, lote e validade (4.7), DRE e gráficos no painel (Onda 3) |
 
 ---
 

@@ -456,6 +456,31 @@ class TerminalTests(unittest.TestCase):
         self.assertIn("DEVOLUCAO", printed)
         self.assertIn("Assinatura do cliente", printed)
 
+    def test_promotions_priced_offline_and_manual_discount_over_promo_price(self):
+        rules = [{"id": str(uuid.uuid4()), "name": "Leve 3 pague 2 Arroz", "kind": "buy_x_pay_y",
+                  "product_id": self.unit_product_id, "buy_quantity": 3, "pay_quantity": 2, "active": True}]
+        self.store.apply_bootstrap(dict(self.bootstrap, promotions=rules))
+        quote = self.store.quote([{"product_id": self.unit_product_id, "quantity_milli": 3000}])
+        self.assertEqual((quote["gross_cents"], quote["promo_discount_cents"]), (2100, 700))
+        self.assertEqual(quote["lines"][0]["promotion_label"], "Leve 3 pague 2")
+        self.store.open_cash(self.cashier_id, 0)
+        with self.assertRaisesRegex(TerminalError, "PIN de gerente"):
+            self.store.sale(self.cashier, {"request_id": "promo-2", "discount_cents": 150,
+                "items": [{"product_id": self.unit_product_id, "quantity_milli": 3000}],
+                "payments": [{"method": "cash", "amount_cents": 1250}]})
+        # 10% manual discount (cashier limit) applies on the 14.00 promotional price, not on 21.00.
+        sale = self.store.sale(self.cashier, {"request_id": "promo", "discount_cents": 140,
+            "items": [{"product_id": self.unit_product_id, "quantity_milli": 3000}],
+            "payments": [{"method": "cash", "amount_cents": 1260}]})
+        self.assertEqual((sale["gross_cents"], sale["promo_discount_cents"], sale["discount_cents"], sale["total_cents"]),
+                         (2100, 700, 140, 1260))
+        self.assertEqual(sale["items"][0]["line_total_cents"], 1260)
+        self.assertIn(b"Promocao: Leve 3 pague 2 Arroz", receipt_bytes(sale))
+        item = [e for e in self.store.pending_events() if e["type"] == "sale.completed"][0]["data"]["items"][0]
+        self.assertEqual((item["promo_discount_cents"], item["promotion_id"], item["promotion_name"]),
+                         (700, rules[0]["id"], "Leve 3 pague 2 Arroz"))
+        self.assertNotIn("promotion_label", item)  # screen-only field never reaches the cloud
+
     def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
         production_id = str(uuid.uuid4())
         production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",

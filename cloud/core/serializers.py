@@ -116,7 +116,8 @@ def sale(row, detail=False):
                             "unit": x.unit,
                             "quantity_milli": x.quantity_milli,
                             "unit_price_cents": x.unit_price_cents,
-                            "gross_cents": x.gross_cents, "discount_cents": x.discount_cents,
+                            "gross_cents": x.gross_cents, "promo_discount_cents": x.promo_discount_cents,
+                            "promotion_name": x.promotion_name, "discount_cents": x.discount_cents,
                             "line_total_cents": x.line_total_cents}
                            for x in row.items.all().order_by("line_number")]
         result["payments"] = [{"method": x.method, "amount_cents": x.amount_cents,

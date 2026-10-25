@@ -37,6 +37,7 @@ const tenantNav = [
   { group: "Operação", id: "cash", label: "Caixas", icon: "▢", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Operação", id: "products", label: "Produtos", icon: "▦", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
   { group: "Operação", id: "inventory", label: "Inventário", icon: "☑", feature:"stock", roles: ["owner","admin","manager","inventory","cashier"] },
+  { group: "Operação", id: "promotions", label: "Promoções", icon: "★", roles: ["owner","admin","manager","inventory","cashier","finance","viewer"] },
   { group: "Operação", id: "categories", label: "Categorias", icon: "◈", roles: ["owner","admin","manager","inventory","viewer"] },
   { group: "Operação", id: "stock", label: "Estoque", icon: "▣", feature:"stock", roles: ["owner","admin","manager","inventory","finance","viewer"] },
   { group: "Relacionamento", id: "customers", label: "Clientes", icon: "♧", roles: ["owner","admin","manager","cashier","finance"] },
@@ -1900,6 +1901,69 @@ function receiveTransfer(transfer) {
   openDialog("Receber transferência", `${transfer.from_shop_name} → ${transfer.to_shop_name}`, body);
 }
 
+const promotionStatus = { running: ["Em vigor", ""], scheduled: ["Agendada", "warn"], ended: ["Encerrada", "neutral"], inactive: ["Inativa", "neutral"] };
+const localInput = iso => { if (!iso) return ""; const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
+async function promotionsPage() {
+  const current = ++state.renderId;
+  const view = page("Promoções", "Preço promocional por período, leve X pague Y e preço de atacado. O caixa aplica sozinho, mesmo sem internet.", "Operação");
+  view.outer.append(info("Quando mais de uma promoção vale para o mesmo item, o caixa aplica a mais vantajosa para o cliente (não acumula). Mudanças chegam ao caixa na próxima atualização do catálogo do terminal."));
+  const canEdit = can("owner", "admin", "manager", "inventory");
+  if (canEdit) view.actions.append(button("+ Nova promoção", () => promotionForm(null).catch(handleError)));
+  const box = el("section", "surface");
+  view.outer.append(box);
+  try {
+    const rows = records(await api.get("/promotions?limit=100"));
+    if (current !== state.renderId) return;
+    box.append(rows.length ? table([
+      { label: "Promoção", render: r => r.name },
+      { label: "Regra", render: r => r.kind === "buy_x_pay_y" ? r.label : `${r.label}: ${money(r.price_cents)}` },
+      { label: "Vale para", render: r => r.product_name || (r.category_name ? "Categoria " + r.category_name : "—") },
+      { label: "Período", render: r => r.starts_at || r.ends_at ? `${r.starts_at ? dateTime(r.starts_at) : "agora"} → ${r.ends_at ? dateTime(r.ends_at) : "sem fim"}` : "Sem data de fim" },
+      { label: "Estado", render: r => el("span", "badge " + promotionStatus[r.status][1], promotionStatus[r.status][0]) }
+    ], rows, canEdit ? r => [{ label: "Editar", onClick: () => promotionForm(r).catch(handleError) }] : null)
+      : empty("Nenhuma promoção", canEdit ? "Crie a primeira promoção para atrair clientes." : "Nenhuma promoção cadastrada."));
+  } catch (error) { box.append(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
+}
+async function promotionForm(row) {
+  const fields = [
+    { key: "name", label: "Nome da promoção", required: true, max: 80, full: true, placeholder: "Ex.: Semana do arroz" },
+    { key: "kind", label: "Tipo", type: "select", required: true, choices: [["price", "Preço promocional"], ["wholesale", "Atacado (a partir de N unidades)"], ["buy_x_pay_y", "Leve X pague Y"]], default: "price" },
+    { key: "product_id", label: "Produto", type: "source", source: "/products", valueKey: "id", labelKey: "name" },
+    { key: "category_id", label: "…ou toda uma categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
+    { key: "price_cents", label: "Preço promocional por unidade (R$)", type: "money", min: 0 },
+    { key: "min_quantity_milli", label: "Quantidade mínima (atacado)", type: "milli", min: 0 },
+    { key: "buy_quantity", label: "Leve (X)", type: "number" },
+    { key: "pay_quantity", label: "Pague (Y)", type: "number" },
+    { key: "starts_at", label: "Início (opcional)", type: "datetime-local" },
+    { key: "ends_at", label: "Fim (opcional)", type: "datetime-local" },
+    { key: "active", label: "Promoção ativa", type: "checkbox", default: true }
+  ];
+  const record = row ? { ...row, starts_at: localInput(row.starts_at), ends_at: localInput(row.ends_at) } : null;
+  const form = await formFor(fields, record);
+  const kind = form.elements.namedItem("kind");
+  const show = () => {
+    const k = kind.value;
+    const visible = { price_cents: k !== "buy_x_pay_y", min_quantity_milli: k === "wholesale", buy_quantity: k === "buy_x_pay_y", pay_quantity: k === "buy_x_pay_y" };
+    Object.entries(visible).forEach(([key, on]) => { const node = form.elements.namedItem(key)?.closest(".field"); if (node) node.hidden = !on; });
+  };
+  kind.addEventListener("change", show); show();
+  const message = formMessage(form), submit = formButtons(form, row ? "Salvar promoção" : "Criar promoção");
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    submit.disabled = true;
+    try {
+      const data = formPayload(form, fields);
+      for (const key of ["buy_quantity", "pay_quantity"]) data[key] = data[key] === undefined || data[key] === "" ? null : Number(data[key]);
+      for (const key of ["product_id", "category_id", "starts_at", "ends_at"]) if (data[key] === undefined) data[key] = null;
+      if (data.kind === "buy_x_pay_y") { data.price_cents = null; data.min_quantity_milli = null; }
+      else { data.buy_quantity = null; data.pay_quantity = null; if (data.kind === "price") data.min_quantity_milli = null; }
+      if (row) await api.patch("/promotions/" + row.id, data); else await api.post("/promotions", data);
+      closeDialog(); toast("Promoção salva."); renderRoute();
+    } catch (error) { handleError(error, message); submit.disabled = false; }
+  });
+  openDialog(row ? "Editar promoção" : "Nova promoção", "Escolha um produto ou uma categoria. O preço é por unidade (ou por kg/litro).", form);
+}
+
 function idempotency(form, payload) {
   const signature = JSON.stringify(payload);
   if (form.dataset.signature !== signature) {
@@ -3579,7 +3643,7 @@ async function printersPage() {
 }
 
 const tenantRoutes = {
-  dashboard:dashboardPage,sales:salesPage,cash:cashPage,inventory:inventoryPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
+  dashboard:dashboardPage,sales:salesPage,cash:cashPage,inventory:inventoryPage,promotions:promotionsPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,

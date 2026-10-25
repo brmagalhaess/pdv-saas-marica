@@ -237,3 +237,7 @@ html,body{width:100%;max-width:100%;overflow:hidden}
 .variant-option:hover:not(:disabled) { border-color: #14ae8b; }
 .variant-option small { color: #6f878f; }
 .variant-option.out { opacity: .5; }
+
+/* Promoções */
+.promo-tag { display: block; color: #0b8f6f !important; font-weight: 700; margin-top: 2px; }
+.promo-total { text-align: right; color: #0b8f6f; font-weight: 800; font-size: 12px; margin-top: 10px; }
