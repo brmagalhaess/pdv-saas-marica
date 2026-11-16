@@ -6,12 +6,14 @@ Contract of POST /api/v1/terminal/sync: every received event comes back in
 """
 import hashlib
 import json
+import re
 import time
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import DataError, connection
 from django.test import TestCase
 from django.utils import timezone
 
@@ -67,6 +69,18 @@ class SyncResilienteTests(TestCase):
         self.client.force_login(self.owner)
         return self.client.generic(verb, path, data=json.dumps(body) if body is not None else None,
                                    content_type="application/json", HTTP_X_TENANT_ID=str(self.tenant.id))
+
+    def jsonb(self):
+        """SQLite stores anything; make JSON columns refuse what PostgreSQL's jsonb refuses."""
+        real = connection.ops.adapt_json_value
+
+        def adapt(value, encoder):
+            dumped = json.dumps(value, ensure_ascii=False)
+            if re.search(r"(?<!\\)(?:\\\\)*\\u0000", dumped):  # an escaped backslash before it is plain text
+                raise DataError("unsupported Unicode escape sequence")
+            dumped.encode("utf-8")  # lone surrogate: UnicodeEncodeError, as the driver raises
+            return real(value, encoder)
+        return patch.object(connection.ops, "adapt_json_value", adapt)
 
     def event(self, kind, aggregate, data):
         return {"event_id": uuid.uuid4().hex, "type": kind, "aggregate_id": aggregate,
@@ -221,6 +235,36 @@ class SyncResilienteTests(TestCase):
         self.assertFalse(Sale.objects.filter(pk=poisoned["aggregate_id"]).exists())
         self.assertEqual(SyncEvent.objects.count(), 3)
         self.assertIn("unserializable", SyncConflict.objects.get(event_id=invalid["event_id"]).detail["payload"])
+
+    def test_text_refused_by_postgres_is_quarantined_as_escaped_text(self):
+        nul = self.voided(self.sale(), reason="Cliente\u0000desistiu")
+        surrogate = self.voided(self.sale(), reason="Cliente \ud800 desistiu")
+        emoji = self.sale(customer_name="Dona Rosa \U0001f600")  # a valid pair is not a lone surrogate
+        with self.jsonb(), self.assertLogs("core.views_terminal", level="ERROR"):
+            first = self.sync(nul, surrogate, emoji)
+            again = self.sync(nul, surrogate, emoji)
+        for body in (first, again):
+            self.assertEqual([row["event_id"] for row in body["quarantined"]], [nul["event_id"], surrogate["event_id"]])
+        self.assertTrue(Sale.objects.filter(pk=emoji["aggregate_id"]).exists())
+        for event, escaped in ((nul, "\\u0000"), (surrogate, "\\ud800")):
+            payload = SyncConflict.objects.get(event_id=event["event_id"], reason="rejected_event").detail["payload"]
+            self.assertIn(escaped, payload["unserializable"])
+            self.assertEqual(json.loads(payload["unserializable"]), event)
+            self.assertEqual(SyncEvent.objects.get(event_id=event["event_id"]).payload, payload)
+
+    def test_quarantine_falls_back_when_the_database_refuses_the_original_payload(self):
+        poisoned = self.voided(self.sale(), reason="Cliente\u0000desistiu")
+        poisoned["type"] = "sale.voided\u0000"
+        good = self.sale()
+        with self.jsonb(), patch("core.views_terminal._storable", return_value=True), \
+                self.assertLogs("core.views_terminal", level="ERROR"):
+            body = self.sync(poisoned, good)
+        self.assertEqual([row["event_id"] for row in body["quarantined"]], [poisoned["event_id"]])
+        self.assertTrue(Sale.objects.filter(pk=good["aggregate_id"]).exists())
+        conflict = SyncConflict.objects.get(event_id=poisoned["event_id"])
+        self.assertIn("unserializable", conflict.detail["payload"])
+        self.assertNotIn("\x00", conflict.event_type)
+        self.assertEqual(SyncEvent.objects.filter(event_id=poisoned["event_id"]).count(), 1)
 
     # 1. Resend is recognized before any validation ---------------------------
 

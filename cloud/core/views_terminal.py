@@ -532,21 +532,52 @@ def _intake(terminal, event, conflicts):
         apply_credit_receipt(terminal, event, conflicts)
 
 
+# PostgreSQL refuses NUL and lone surrogates in text and jsonb (and NaN/Infinity in jsonb).
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _clean(value, limit):
+    return _UNSTORABLE.sub("\ufffd", str(value))[:limit]
+
+
+def _storable(event):
+    try:
+        dumped = json.dumps(event, ensure_ascii=False, allow_nan=False)
+    except ValueError:
+        return False
+    return "\\u0000" not in dumped and not _UNSTORABLE.search(dumped)
+
+
 def _quarantine(terminal, event, error, status):
     """Keep an event that could not be applied (raw SyncEvent plus a conflict
-    for the administrator) so the terminal can drop it and move on."""
-    try:
-        json.dumps(event, allow_nan=False)
-        stored = event
-    except ValueError:
-        stored = {"unserializable": json.dumps(event, sort_keys=True)}
-    if not SyncEvent.objects.filter(event_id=event["event_id"]).exists():
-        SyncEvent.objects.create(event_id=event["event_id"], tenant=terminal.tenant, shop=terminal.shop,
-                                 terminal=terminal, event_type=str(event.get("type"))[:40],
-                                 aggregate_id=str(event.get("aggregate_id"))[:160],
-                                 payload=stored, payload_hash=_event_hash(event))
-    return open_conflict(terminal, event, "rejected_event", f"Evento do caixa recusado pela nuvem: {error}",
-                         type=str(event.get("type"))[:40], error=error, status=status, payload=stored)
+    for the administrator) so the terminal can drop it and move on. Runs in its
+    own savepoint: a payload the database refuses falls back to escaped text
+    instead of aborting the whole batch."""
+    event_id = event["event_id"]
+    if _UNSTORABLE.search(event_id):
+        event_id = "x" + hashlib.sha256(event_id.encode("utf-8", "backslashreplace")).hexdigest()[:63]
+    header = {"event_id": event_id, "type": _clean(event.get("type"), 40),
+              "aggregate_id": _clean(event.get("aggregate_id"), 160)}
+    error = _clean(error, 500)
+    escaped = {"unserializable": json.dumps(event, sort_keys=True)}
+    attempts = ([event] if _storable(event) else []) + [escaped]
+    for stored in attempts:
+        try:
+            with transaction.atomic():
+                if not SyncEvent.objects.filter(event_id=event_id).exists():
+                    SyncEvent.objects.create(event_id=event_id, tenant=terminal.tenant, shop=terminal.shop,
+                                             terminal=terminal, event_type=header["type"],
+                                             aggregate_id=header["aggregate_id"],
+                                             payload=stored, payload_hash=_event_hash(event))
+                return open_conflict(terminal, header, "rejected_event",
+                                     f"Evento do caixa recusado pela nuvem: {error}",
+                                     type=header["type"], error=error, status=status, payload=stored)
+        except (OperationalError, InterfaceError):
+            raise
+        except Exception:
+            if stored is escaped:
+                raise
+            logger.exception("Quarentena do evento %s não pôde guardar o payload original", event_id)
 
 
 def _conflict_response(conflict):
