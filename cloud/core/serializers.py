@@ -125,9 +125,12 @@ def sale(row, detail=False):
         result["payments"] = [{"method": x.method, "amount_cents": x.amount_cents,
                                "name": x.payment_method.name if x.payment_method_id else None}
                               for x in row.payments.select_related("payment_method").order_by("line_number")]
+        # A return line has no unit of its own: it is the unit the product was sold in.
+        sold_units = {x["product_id"]: x["unit"] for x in result["items"]}
         result["returns"] = [{"id": str(r.id), "total_cents": r.total_cents, "refund_method": r.refund_method,
                               "reason": r.reason, "created_at": iso(r.created_at),
                               "items": [{"product_id": str(i.product_id), "name": i.product.name,
+                                         "unit": sold_units.get(str(i.product_id), i.product.unit),
                                          "quantity_milli": i.quantity_milli, "amount_cents": i.amount_cents}
                                         for i in r.items.select_related("product")]}
                              for r in row.returns.prefetch_related("items").order_by("created_at")]

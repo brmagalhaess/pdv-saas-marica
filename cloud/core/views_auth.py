@@ -330,7 +330,8 @@ def me(request):
             not request.session.get(MFA_VERIFIED)):
         logout(request)
         raise APIError("Entre novamente e conclua a autenticação multifator", 401)
-    return JsonResponse({"user": user_dict(user), "memberships": memberships_for(user)})
+    return JsonResponse({"user": user_dict(user), "memberships": memberships_for(user),
+                         "version": settings.PDV_VERSION})
 
 
 @endpoint

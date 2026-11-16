@@ -1,4 +1,6 @@
-# PDV2 — SaaS, gestão e terminal local
+# PDV2 · um produto CrownTech
+
+SaaS de gestão e terminal de caixa local, que vende sem internet.
 
 V2.0.0 para validação em mercados, mercearias e varejo de produtos. Django/PostgreSQL na nuvem e Flask/SQLite no terminal, com aplicações executáveis, containers e testes integrados. **A instalação local é demonstração; a liberação comercial depende de [STATUS-V2.md](docs/STATUS-V2.md).** PDV2 é um produto CrownTech ([crowntech.com.br](https://crowntech.com.br)).
 
@@ -12,6 +14,8 @@ sh scripts/start-local.sh
 - Administração SaaS: http://127.0.0.1:8000/platform/
 - Gestão da empresa: http://127.0.0.1:8000/app/
 - Terminal: http://127.0.0.1:8010/
+
+Para ver só a tela do caixa, sem Docker e com dados fictícios: `python scripts/demo_terminal.py` (abre em http://127.0.0.1:8099; `--offline` simula a queda da internet).
 
 ### Impressão automática no Docker Desktop (macOS)
 
@@ -46,7 +50,7 @@ Se a prévia antiga ocupar a porta 8000, pare apenas `pdv-saas-phase1-pdv-previe
 - Empresa: lojas, produtos/variações, categorias, clientes, fornecedores, estoque/entradas, contas a pagar/receber, equipe/PIN, vendas e auditoria.
 - Papéis: proprietário, administrador, gerente, caixa, estoque, financeiro e consulta; permissões separadas da equipe SaaS.
 - Terminal: código/nome, quantidade fracionária, desconto autorizado, pagamento dividido informado pelo operador, troco, abrir/fechar caixa, sangria/suprimento, suspensão, histórico, cancelamento e reimpressão.
-- Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque.
+- Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque. A nuvem aceita evento por evento: o que aconteceu no balcão é fato, divergência vira conflito para o administrador e evento inválido vai para a quarentena sem travar a fila.
 - **Modo offline:** o painel web em `8000` depende da nuvem; o caixa deve ser aberto em `http://127.0.0.1:8010/`. Depois do pareamento e de uma carga inicial de catálogo, login, produtos, caixa, vendas e recibo usam o SQLite local. A fila é enviada à nuvem quando a conexão volta. O painel mostra um atalho para o terminal local quando a nuvem não responde.
 - Comprovante não fiscal ESC/POS 58/80 mm. No painel da empresa, Produtos → Imprimir etiquetas oferece prévia e quantidade em páginas de 50×30 mm para o driver de uma impressora de etiquetas com sensor de intervalo. O terminal imprime somente recibos de venda; a fila de etiquetas fica no painel da empresa. O antigo envio de etiquetas ESC/POS à fila de recibos foi desabilitado: a TM-T20 usa bobinas de recibo de 58/80 mm e não alinha etiquetas pré-cortadas de 50×30 mm. Hardware físico exige validação.
 - Conectores Focus NFe e Asaas com credenciais criptografadas, fila e confirmação pelo provedor. Não há credenciais reais configuradas.
@@ -103,11 +107,16 @@ As regressões de marca, landing, login, tela offline e manifesto ficam em `clou
 
 ## Documentação
 
-- [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md)
+- [Auditoria de novembro/2026 e plano por ondas](docs/AUDITORIA-2026-11.md) (detalhes em [docs/auditoria-2026-11/](docs/auditoria-2026-11/))
+- [Arquitetura offline local: servidor da loja, estações e nuvem](docs/ARQUITETURA-OFFLINE-LOCAL.md)
+- [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md) (outubro/2026)
+- [Roadmap de completude e andamento](docs/ROADMAP-COMPLETUDE.md)
 - [Checklist de teste e promoção](docs/RELEASE-CHECKLIST.md)
 - [Estado e critérios de lançamento](docs/STATUS-V2.md)
 - [Dokploy](docs/DEPLOY-DOKPLOY.md)
 - [API](docs/API-V2.md)
+- [Sincronização do caixa: aceitação por evento, conflitos e quarentena](docs/SYNC-VENDAS.md)
+- [Terminal e Caixa Rápido: teclas, modos, temas e demonstração](docs/TERMINAL-V2.md)
 - [Cobrança, fiscal e versões](docs/OPERACOES-V2.md)
 - [Pesquisa de mercado e equipamentos](docs/PESQUISA-MERCADO-V2.md)
 - [Meta comercial de R$ 1 milhão/ano](docs/PLANO-COMERCIAL.md)

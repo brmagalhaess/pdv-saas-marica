@@ -20,6 +20,8 @@ urlpatterns = [
     path("manifest.webmanifest", lambda request: pages.public_asset(request, "manifest")),
     path("sw.js", lambda request: pages.public_asset(request, "sw")),
     path("offline/", lambda request: pages.public_asset(request, "offline")),
+    path("robots.txt", pages.robots),
+    path("sitemap.xml", pages.sitemap),
     path("health", pages.health), path("health/", pages.health),
     path("api/v1/csrf", auth.csrf),
     path("api/v1/auth/register", auth.register),
