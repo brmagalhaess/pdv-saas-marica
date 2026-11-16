@@ -1,4 +1,6 @@
-# Terminal PDV2 local — prévia funcional
+# Terminal PDV2 local (Caixa Rápido) — prévia funcional
+
+Atualizado em 16/11/2026.
 
 `terminal/` é uma aplicação Flask/Waitress independente do navegador do painel SaaS. O navegador acessa **o serviço local** em `http://127.0.0.1:8010`; SQLite é o armazenamento do caixa e `WAL`+`synchronous=FULL` protegem transações confirmadas. Cada computador de caixa pode usar essa mesma porta: a licença, o código de pareamento, o `device_id` e o banco local identificam o equipamento. Somente duas instâncias no mesmo computador precisam de portas diferentes. O código anterior em `local_pdv/` permanece como protótipo legado e não é usado por este serviço.
 
@@ -28,15 +30,153 @@ Um banco local não pode ser reaproveitado por outra empresa depois que existem 
 
 - PIN local e papéis vindos do cloud; sessão HttpOnly/SameSite Strict, token CSRF em mutações, validação de Host e Origin.
 - Busca por nome, SKU e código de barras; preço, categoria, estoque local e carrinho em UN/KG/L com milésimos. `UN` exige quantidade inteira. Cada linha arredonda `preço_cents × quantidade_milli ÷ 1000` com `ROUND_HALF_UP`.
+- Produtos de produção própria podem ser marcados no admin da empresa com **Controlar estoque** desativado. Eles aparecem no caixa mesmo com saldo zero, aceitam venda por KG ou unidade conforme o cadastro e não reduzem o saldo nem geram conflitos de estoque. Produtos normais continuam bloqueados quando não há saldo.
 - Venda por peso: produtos `KG` pedem o peso em quilogramas com até três casas decimais e calculam o valor proporcional ao preço por kg. O cadastro aceita um `scale_code`/PLU opcional para etiquetas de balança.
 - Balanças: o terminal pode receber peso automaticamente pelo Web Serial em Chrome/Edge (USB/COM, 9600/4800/19200 bps, protocolo textual com peso em kg ou g). Também interpreta etiquetas EAN-13 de balanças com prefixo `2`, PLU de cinco dígitos e payload configurável como peso em gramas ou preço total. O botão **Conectar balança** fica no caixa; sem equipamento conectado, o peso pode ser digitado.
 - Desconto por venda: operador de caixa até 10%, gerente até 50%, proprietário/admin até 100%; acima do limite do operador requer PIN de gerente. Os limites são constantes desta prévia.
 - Pagamento dividido entre dinheiro, Pix e cartão, com troco apenas sobre dinheiro. Pix/cartão são **declarações manuais**, sem TEF, captura, confirmação ou estorno automático.
 - Abertura/fechamento de caixa, sangria e suprimento, suspensão/retomada de carrinho, histórico local, reimpressão e cancelamento comercial com motivo e autorização de gerente. Ajustes de estoque exigem papel autorizado. Todos geram auditoria local relevante.
 - Venda, baixa de estoque, snapshot financeiro e evento de outbox são atômicos no SQLite. Reenvio da mesma requisição retorna a venda original; dados diferentes com a mesma chave são rejeitados.
-- O worker envia lotes pendentes para `/api/v1/terminal/sync` com backoff. Só marca eventos locais após ACK integral e ordenado; perda de resposta faz reenvio idempotente. `sale.completed` não gera ajuste de estoque separado. Histórico, exportação e fechamento de caixa continuam disponíveis depois que a lease expira; novas vendas ficam bloqueadas. A política atual do cloud permite **até 72 horas** de uso offline em uma licença normal, podendo reduzir o prazo para assinatura atrasada; não há prazo adicional após `expires_at`. Relógio que retrocede mais de cinco minutos bloqueia novas vendas. O valor de 72 horas deve permanecer alinhado entre backend, terminal, planos e documentação.
-- Após cada carga bem-sucedida, o terminal consulta a versão estável publicada. O manifesto de release é verificado com a **chave Ed25519 fixada no pareamento** e aparece na tela Sistema. O terminal não baixa nem executa o pacote automaticamente; a instalação e checagem do SHA-256 são etapas manuais do suporte.
+- O worker envia lotes pendentes para `/api/v1/terminal/sync` com backoff. Só marca eventos locais após ACK integral e ordenado; perda de resposta faz reenvio idempotente. A nuvem confirma todos os eventos recebidos: os que ela não conseguiu aplicar voltam em `quarantined`, são guardados no SQLite (`sync_quarantine`) e saem da fila, para que um evento ruim nunca trave os seguintes; as divergências voltam em `conflicts` e ficam visíveis para o gerente. Contrato em [SYNC-VENDAS.md](SYNC-VENDAS.md). `sale.completed` não gera ajuste de estoque separado. Histórico, exportação e fechamento de caixa continuam disponíveis depois que a lease expira; novas vendas ficam bloqueadas. O prazo de uso offline é o do plano (`Plan.offline_days`, padrão 30 dias) para o terminal que anuncia `long-lease`; terminais antigos continuam com 72 horas. Assinatura atrasada reduz o prazo para 24 horas. Vencida a licença, o caixa que já estava aberto ainda vende por 24 horas; um caixa novo exige renovar. Relógio que retrocede mais de cinco minutos bloqueia novas vendas.
+- Após cada carga bem-sucedida, o terminal consulta a versão estável publicada. O manifesto de release é verificado com a **chave Ed25519 fixada no pareamento** e aparece na tela Sistema. Na instalação com o atualizador, o pacote assinado é baixado e conferido sozinho e a troca é feita com o caixa fechado, com volta à versão anterior se a nova não subir ([INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md)); sem o atualizador, a tela só avisa que há versão nova.
 - O serviço faz uma cópia SQLite consistente após o pareamento e, depois, no máximo uma vez a cada 24 horas; um gerente pode acionar **Criar backup agora**. Até sete cópias rotativas ficam em `data/backups`, com permissões locais restritas. A API mostra nomes e estado, sem servir o arquivo bruto pela web. O arquivo contém token, hashes de PIN e vendas: guarde cópia externa protegida. A restauração ainda é manual, com o serviço parado, e deve ser testada no piloto.
+
+## Cópia de segurança em outro disco (réplica)
+
+Além do backup diário em `data/backups` (que fica no mesmo disco do caixa), o terminal mantém uma **réplica cifrada em um segundo disco**: pendrive, HD externo ou pasta de rede. É o que salva as vendas que ainda não subiram para a nuvem quando o computador do caixa quebra. Detalhes de formato em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md).
+
+- **Ligar:** gerente, aba **Sistema → Cópia de segurança em outro disco → Escolher disco**. O terminal tenta a primeira cópia na hora; se não der (sem chave, disco cheio), `configure` não levanta: devolve o status com `state` `no_key` ou `error`, e a tela mostra o motivo em vez de "A primeira cópia já foi feita". O terminal recusa pasta no mesmo disco do banco ("Escolha outro disco ou um pendrive: esta pasta fica no mesmo disco do caixa."); só `PDV_ENV=development` ou `test` liberam.
+- **O que vai para o disco:** uma cópia verificada do banco (SQLite `backup` + `integrity_check`, relida e conferida por SHA-256 depois de gravada) e um diário com cada evento da fila. Tudo cifrado com a chave da cópia de segurança da empresa, que o terminal recebe da nuvem no pareamento e na renovação da licença. A cópia não leva o token do terminal.
+- **Quando:** diário a cada evento e no máximo 5 s depois; cópia do banco a cada 15 min com movimento, a cada 24 h sem, em todo fechamento de caixa e em **Copiar agora**. Ficam as 3 últimas cópias.
+- **Estados na tela:** "Cópia de segurança em dia", "Cópia de segurança atrasada", aviso de disco não encontrado ou cheio, e "Conecte este caixa à internet uma vez para liberar a cópia de segurança" quando o terminal ainda não recebeu a chave. Enquanto a cópia estiver parada, atrasada ou sem chave, a barra de estado da tela de venda mostra o aviso (com o motivo e quantos registros estão só neste computador), não só a aba Sistema.
+- **Disco ausente, cheio ou removido nunca derruba a venda.** A gravação acontece em uma thread separada; a falha vira estado na tela e a cópia se põe em dia quando o disco volta.
+- **Onde fica a configuração:** `mirror.json`, ao lado do banco. Não contém a chave.
+- **Rotas locais:** `GET /api/mirror/status` (qualquer operador), `GET /api/mirror/drives`, `POST /api/mirror/config {"directory": "E:\\" | null}` e `POST /api/mirror/snapshot` (gerente). Sem o módulo, `status` responde `{"supported": false, …}` e as demais 409 "Cópia em segundo disco indisponível nesta instalação".
+- **Rotas locais da recuperação:** `POST /api/restore/start`, `GET /api/restore/status`, `POST /api/restore/step`, `POST /api/restore/retry`, `POST /api/restore/abandon {confirm, manager_pin}`, `GET /api/restore/backups?directory=`, `POST /api/restore/import-backup {directory, replica_id}` e `POST /api/restore/skip-backup`. Corpos e respostas em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md) §4.2.
+
+### Recuperar minha loja (troca de computador)
+
+Na tela de pareamento, **Recuperar minha loja (troquei de computador)** pede a chave da licença e o código de recuperação gerado no painel em **Terminais → Trocar de computador**. O terminal pareia com o mesmo `Terminal.id`, baixa os dados por `GET /api/v1/terminal/restore` em páginas retomáveis e só libera a venda quando os totais conferem com os da nuvem. Sem internet no meio, continua sozinho quando a conexão volta.
+
+Depois dos dados da nuvem, a tela pergunta **Você tem uma cópia de segurança?** Com o pendrive do computador antigo, o terminal lê a réplica, reenvia a fila que não tinha subido (preservando o `event_id` de cada evento, então a nuvem não duplica) e traz o resultado em uma segunda passada. Se parte da cópia não puder ser lida, o aviso fica na tela e outra cópia pode ser lida antes de continuar. Carrinhos suspensos e fila de impressão não voltam.
+
+**Desistir da recuperação** (PIN de gerente; recusada enquanto houver registros da cópia de segurança esperando para subir) apaga o que voltou, despareia este computador e pede à nuvem que devolva o caixa ao computador antigo.
+
+O computador antigo, se ainda ligar, mostra "Este caixa foi transferido": não vende mais e segue enviando o que faltava até a data informada pela nuvem, mostrada na tela. O caixa que estava aberto é fechado no computador novo. Vencido o prazo com registros na fila, a tela avisa que eles ficaram só ali e orienta a usar a cópia de segurança ou chamar o suporte.
+
+## Mais de um caixa na loja (estações)
+
+Uma loja pode ter um **caixa principal** (o computador que guarda o banco e fala com a nuvem) e **caixas adicionais** (outros computadores da mesma rede que vendem através dele). No código: `server` e `station`. Esta seção descreve o que o núcleo do terminal (`terminal/store.py`, `terminal/app.py`, `terminal/sync.py` e a tela) faz; a rede entre os caixas (`terminal/lan.py`, `terminal/station.py`: rotas `/lan/v1`, tela e rotas do caixa adicional, estados e códigos de recusa) está na seção 6 de [ESTACOES.md](ESTACOES.md#6-parte-técnica-rede-e-tela-do-caixa-adicional), e a cópia pela rede e a promoção assistida nas seções 2 e 3 do mesmo documento.
+
+**Regras que não mudam**
+
+- Um só escritor: só o processo do caixa principal abre o SQLite. O caixa adicional nunca abre `Store` nem `terminal.sqlite3` (uma instalação nova sobe como caixa principal e cria o banco vazio antes de a tela trocar o modo; esse banco fica parado).
+- O navegador de cada computador continua falando só com `127.0.0.1`. As requisições do caixa adicional entram no mesmo app Flask do principal com `environ["pdv2.station"] = {"id", "name"}`, chave que só a escuta da rede consegue criar (um cliente HTTP só cria chaves `HTTP_*`).
+- Com o caixa principal fora do ar, o caixa adicional **para de vender**, mostra "O caixa principal está fora do ar" e tenta de novo a cada 2 segundos. O que estava na tela fica: a venda em andamento repete com o mesmo `request_id` e o carrinho continua no rascunho. O `request_id` é guardado junto do rascunho antes do envio, então vale também depois de a página recarregar ("Ver o que aconteceu", promoção). Um caixa removido só volta a se vincular com vaga livre no plano; e cada promoção apresenta à nuvem um `device_id` novo.
+- A quantidade de caixas adicionais vem da licença assinada (claim `max_stations`) e só vale com a nuvem que anuncia a capacidade `stations`. Sem os dois o limite é 0. O limite não conta o caixa principal.
+
+**Modelo local**
+
+- Tabelas novas `stations` (uma linha fixa `server`, "Caixa principal") e `station_enroll_codes`. `cash_sessions`, `sales`, `sale_returns`, `credit_receipts` e `print_jobs` ganharam `station_id` (padrão `server`); `print_settings` passou a ter uma configuração por caixa (`PRIMARY KEY(station_id, kind)`); o índice "um só caixa aberto" passou a ser por estação (`cash_one_open_station`). A migração (`Store._migrate_stations`) roda na partida e é idempotente: o banco existente inteiro vira do caixa `server`.
+- Quem está pedindo fica no contexto da thread (`Store.set_station`, `current_station`, `with store.station(id)`), nunca em parâmetro de método. O Worker e a cópia em segundo disco rodam sempre como `server`.
+- Cada caixa abre, movimenta e fecha o **seu** caixa; a venda baixa o mesmo estoque e respeita o mesmo fiado, dentro de uma transação por vez. Carrinhos em espera continuam compartilhados. A lista de vendas mostra a loja inteira, com o nome do caixa. **Cancelar** uma venda só no caixa que a fez (409 `other_station` nos outros, e a tela desabilita o botão): o dinheiro devolvido sai da gaveta que o recebeu. A **devolução** pode ser feita em qualquer caixa e sai da gaveta de quem devolve.
+- Idempotência não mudou: repetir `request_id`, `return_id` ou `receipt_id` devolve o mesmo resultado, venha de qual caixa vier.
+- PIN errado trava só aquele operador naquele caixa (chave `<operador>|<estação>`); a autorização de gerente e o teto de 30 erros em 15 minutos também são por caixa. PIN trocado no painel destrava em todos.
+- Impressão: o recibo da venda feita no caixa adicional entra na fila dele e sai na impressora dele; o Worker do principal só imprime a fila `server`. `POST /api/print/flush` vindo de um caixa adicional responde `{"status": "delegated"}`.
+- Evento da fila: com a capacidade `stations` o envelope ganha `"station": {"id", "name"}` fora de `data` (o `event_id` e o conteúdo conferido pela nuvem não mudam). `terminal.config` leva só as impressoras do principal e a lista `stations` (sem token).
+- Segredos (token do caixa adicional, código de 6 dígitos, chave da cópia) nunca vão para auditoria, exportação, `terminal.config` ou mensagem de erro. Do token só o SHA-256 fica no banco.
+
+**Vínculo de um caixa adicional**
+
+No principal, o gerente abre **Sistema → Caixas da loja → Adicionar caixa**. A tela mostra um código de 6 números ("483 920") que vale 5 minutos e uma vez; cinco erros invalidam o código. No outro computador, na primeira tela, **Este é um caixa adicional (a loja já tem um caixa principal)**. Um computador que já foi vinculado volta com a mesma identidade (mantém o caixa aberto e o histórico) e não ocupa outro lugar do plano; por isso o código também é liberado, com o plano cheio, quando existe um caixa conhecido sem vínculo válido (depois de uma promoção ou de uma recuperação). "Remover caixa" faz o computador deixar de ser aceito na hora; o caixa dele, se estava aberto, fica aberto até o gerente contar o dinheiro e usar **Fechar o caixa deste computador**.
+
+**Rotas locais novas (só no caixa principal)**
+
+| Rota | Quem | Resposta |
+|---|---|---|
+| `GET /api/stations` | gerente | `{"supported", "limit": {"limit","used","available","hub"}, "lan", "replica", "stations": [...], "version"}`. `hub` falso: o plano pode incluir caixas, mas outro terminal é o principal da loja no painel. |
+| `POST /api/stations/code` `{"name"?}` | gerente | 201 `{"code","expires_at","expires_in":300,"server":{"addresses","port","hostname","running","error"}}` (`running` falso: a escuta não abriu e a tela avisa junto do código); 409 `station_limit` |
+| `POST /api/stations/<id>/rename` `{"name"}` | gerente | o caixa; 404 "Caixa não encontrado" |
+| `POST /api/stations/<id>/revoke` `{"confirm": true}` | gerente | o caixa, com `cash_open` |
+| `POST /api/stations/<id>/cash/close` `{"counted_cents","manager_pin"}` | gerente | resumo do fechamento |
+| `POST /api/mode/station` `{"confirm": true}` | sem login, só em computador sem loja | `{"mode":"station","restart": bool}` |
+| `POST /api/promotion/regularize` `{"license_key","code","cloud_url"?,"manager_pin"?}` | gerente logado ou PIN | `{"regularized": true, "promotion", "bootstrap", "warning"?}` |
+
+`/api/session` ganhou `station` (`id`, `name`, `is_server` e, num caixa adicional, `version`: a versão do PDV2 dele), `promotion` e `stations_limit`; `/health` ganhou `"mode": "server"`. Erros com motivo estável trazem `code` (`server_only`, `station_limit`, `invalid_code`, `other_terminal`...).
+
+Um caixa adicional recebe 403 `{"error": "Esta operação só pode ser feita no caixa principal da loja.", "code": "server_only"}` em pareamento, carga do catálogo (`/api/bootstrap`), `/api/unpair`, `/api/new-profile`, recuperação, exportação, backup local, escolha de disco, aplicação de atualização, `/api/stations`, `/api/promotion/` e `/api/mode/station` (lista `SERVER_ONLY_ENDPOINTS` em `terminal/app.py`). A tela do caixa adicional esconde o que só o principal faz (atualizar operadores e catálogo, cópia em outro disco, atualização, manutenção do terminal) e mostra em "Sobre" a versão dele. A sessão do operador vale só no caixa em que ele entrou: o cookie copiado de um computador não vale em outro. Host, Origin e CSRF continuam exigidos como antes.
+
+A atualização automática e "Criar novo perfil" só acontecem com o caixa fechado **em todos os computadores** ("Feche o caixa em todos os computadores para atualizar").
+
+**Quando um caixa adicional assume como principal**
+
+O assistente da promoção reconstrói o banco no caixa adicional a partir da cópia e chama `Store.apply_journal_events` (reaplica o que aconteceu depois da última cópia completa, com o mesmo `event_id` e `seq`, sem criar evento nem impressão) e `Store.finish_promotion` (o caixa promovido vira `server`; o principal anterior vira a estação "Caixa principal anterior", com o caixa dele ainda aberto para o gerente fechar; os outros caixas precisam ser conectados de novo). O computador continua vendendo com a licença que veio na cópia e mostra o cartão fixo "Este computador assumiu como caixa principal". Com internet, o gerente digita a chave da licença e o código de **Terminais → Trocar de computador**: `sync.regularize_promotion` pareia de novo com o mesmo terminal (`Store.adopt_pairing`) sem apagar nem baixar nada. Código de outro terminal é recusado (`other_terminal`) e devolvido à nuvem.
+
+**Limites conhecidos**
+
+- Depois da migração da fase 3, o executável da versão anterior não consegue abrir caixa nem vender neste banco. Por isso a fase 3 sobe a versão para **2.1.0** e o bundle de atualização leva `min_version: 2.1.0`: um terminal 2.0.x não recebe a troca automática e precisa do instalador completo. A volta automática de versão do atualizador não restaura o banco: voltar exige o backup feito antes da atualização.
+- O estoque e o fiado podem contar em dobro por instantes entre a primeira carga depois da promoção e o envio completo da fila; corrigem-se sozinhos.
+- Tablet ou celular como caixa adicional está fora desta fase.
+
+## Caixa Rápido: a tela de venda
+
+A frente de caixa foi refeita em novembro/2026 para ser operada só pelo teclado e pelo leitor. O código está em `terminal/static/terminal.js` (tela) e `terminal/static/terminal-core.js` (regras puras, onde fica o mapa de teclas `SHORTCUTS`).
+
+### Régua de teclas
+
+A régua fica sempre visível no rodapé e cada tecla também pode ser tocada ou clicada. Tecla sem uso no momento aparece apagada, com o motivo na dica.
+
+| Tecla | Ação |
+|---|---|
+| F1 | Ajuda e lista de atalhos |
+| F2 | Buscar produto no catálogo |
+| F3 | Alterar quantidade ou peso do item |
+| F4 | Cliente e CPF na nota |
+| F5 | Desconto na venda |
+| F6 | Vendas em espera: guardar ou retomar (mostra quantas há) |
+| F7 | Sangria ou suprimento (exige caixa aberto) |
+| F8 | Cancelar o item selecionado |
+| F9 | Reimprimir comprovante |
+| F10 | Pagar a venda |
+| F11 | Modo foco (tela cheia) |
+| F12 | Abrir caixa, ou fechar o caixa aberto |
+| Esc | Voltar um passo |
+| Ctrl+K | Paleta de comandos: busca qualquer ação pelo nome |
+
+Leitura e lista de itens:
+
+| Tecla | Ação |
+|---|---|
+| Enter | Lança o código digitado ou lido |
+| `3*código` | Lança 3 unidades do código |
+| ↑ ↓ | Seleciona o item da lista |
+| Delete | Cancela o item selecionado |
+| qualquer letra ou número | Vai direto para o campo de leitura |
+
+As teclas com cadeado (desconto, cancelar item, cancelar a venda, fechar caixa) podem pedir PIN de gerente. As ações sem tecla própria ficam na paleta (Ctrl+K), na ajuda (F1) e no menu do operador: receber fiado, devolução ou troca, cancelar a venda atual, balança e etiquetas, atualizar catálogo, trocar operador e sair.
+
+### Modos
+
+- **Venda** (padrão): o leitor está sempre pronto; a régua mostra F1 a F12.
+- **Pagamento** (depois do F10): a régua troca para as formas de pagamento. `1` Dinheiro, `2` Pix, `3` Débito, `4` Crédito, `5` A prazo (fiado), `6` Crédito na loja, `7` a `9` formas próprias da empresa, `0` dividir o pagamento, Enter confirma, Esc volta um passo. Só aparecem as formas ativas no painel. Nesse modo continuam valendo F1, F4, F5, F11, Esc e Ctrl+K; as outras teclas F pedem para voltar à venda antes. Uma leitura do leitor de código durante o pagamento é ignorada, para não confirmar a venda por engano.
+- **Foco** (F11): tela cheia, sem as abas, só a venda. A escolha fica salva no navegador daquele caixa.
+- **Conexão**: o indicador mostra se o caixa está online ou offline e se há registros na fila ou para revisão. Sem internet a venda continua igual.
+
+### Temas e preferências
+
+No menu do operador (ou pela paleta): tema **Claro**, **Escuro** ou **Alto contraste**. O tema fica salvo no navegador do caixa e é aplicado antes de a tela aparecer (`terminal/static/theme.js`). No mesmo menu: som de leitura ligado ou desligado e abrir o comprovante depois de cada venda.
+
+### Caixa de demonstração
+
+Para ver a tela sem parear nem tocar em dados reais:
+
+```sh
+./.venv/bin/python scripts/demo_terminal.py              # http://127.0.0.1:8099, online simulado
+./.venv/bin/python scripts/demo_terminal.py --offline    # simula a queda da internet (fila pendente)
+./.venv/bin/python scripts/demo_terminal.py --port 8098  # outra porta
+```
+
+O script cria um diretório temporário, já pareado com uma empresa fictícia, com catálogo de mercado, um operador de caixa e um gerente, uma promoção "leve 3 pague 2" e uma impressora de recibos que grava em arquivo. Ao subir, ele imprime os PINs de demonstração, um código de barras de teste e uma etiqueta de balança. Nunca lê nem grava o banco real do terminal, nunca fala com a nuvem, e apaga os dados ao encerrar (Ctrl+C).
 
 ## Impressão
 
@@ -56,4 +196,4 @@ Os testes cobrem autenticação, CSRF/Origin/Host, venda fracionária e dinheiro
 
 ## Limites comerciais e fiscais
 
-Esta prévia **não emite NFC-e nem DANFE**, não assina XML, não implementa contingência fiscal ou homologação na SEFAZ-RJ. Uma venda local não é documento fiscal. Não houve teste físico de balança, gaveta, leitor, impressora ou energia em loja. O backup local não substitui backup externo; não há recuperação remota, atualização assinada do binário ou instalador comercial homologado. O SaaS ainda precisa de conciliação operacional de estoque e assinatura/cobrança automática antes de venda como produto completo.
+Esta prévia **não emite NFC-e nem DANFE**, não assina XML, não implementa contingência fiscal ou homologação na SEFAZ-RJ. Uma venda local não é documento fiscal. Não houve teste físico de balança, gaveta, leitor, impressora ou energia em loja. O backup local não substitui backup externo; a réplica em segundo disco e a recuperação pela nuvem (fase 2) ainda não foram validadas em loja; o instalador Windows com atualização automática assinada existe ([INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md)), mas ainda não foi validado em Windows físico. O SaaS ainda precisa de conciliação operacional de estoque e assinatura/cobrança automática antes de venda como produto completo.

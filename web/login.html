@@ -6,10 +6,14 @@
   <meta name="theme-color" content="#102630">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" href="/assets/icon-192.png">
+  <link rel="icon" type="image/svg+xml" href="/assets/pdv2-simbolo.svg">
   <link rel="apple-touch-icon" href="/assets/icon-192.png">
-  <meta name="description" content="Entre ou crie sua conta PDV2.">
-  <title>Acessar · PDV2</title>
+  <meta name="robots" content="noindex">
+  <meta name="author" content="CrownTech">
+  <meta name="description" content="Entre ou crie sua conta no PDV2, um produto CrownTech.">
+  <title>Acessar · PDV2 por CrownTech</title>
   <link rel="stylesheet" href="/assets/ui.css">
+  <style>.auth-aside .brand img{display:block;width:auto;height:42px}.auth-aside-foot a{color:#e6ac43;font-weight:800;text-decoration:none}.auth-aside-foot a:hover{text-decoration:underline}@media(max-width:850px){.auth-aside .brand img{height:34px}.auth-aside-foot{display:block}}</style>
   <script type="module" src="/assets/auth.js"></script>
   <script type="module" src="/assets/pwa.js"></script>
 </head>
@@ -17,27 +21,26 @@
   <a class="skip" href="#auth-content">Pular para o formulário</a>
   <div class="auth-page">
     <aside class="auth-aside">
-      <a class="brand" href="/" aria-label="PDV2, voltar ao início">
-        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M8 28V8h11a7 7 0 0 1 0 14H8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span>
-        <span>PDV<strong>2</strong></span>
+      <a class="brand" href="/" aria-label="PDV2 por CrownTech, voltar ao início">
+        <img src="/assets/pdv2-por-crowntech-negativo.svg" alt="" width="249" height="42">
       </a>
       <div class="auth-aside-content">
         <span class="eyebrow" style="color:#a2eab7">Seu negócio, mais claro</span>
         <h1>Uma operação leve começa por uma <em>boa visão.</em></h1>
-        <p>Organize lojas, produtos, estoque e equipe em um só lugar. O caixa local segue em validação técnica para uso no varejo.</p>
+        <p>Organize lojas, produtos, estoque e equipe em um só lugar, com o caixa da loja vendendo mesmo sem internet.</p>
         <div class="auth-preview" aria-hidden="true">
           <div class="auth-preview-top"><strong>Visão do negócio</strong><span>Exemplo visual</span></div>
           <div class="auth-preview-bars"><span style="height:30%"></span><span></span><span></span><span></span><span></span><span style="height:59%"></span></div>
         </div>
       </div>
-      <small class="auth-aside-foot">PDV2 é nome provisório. Marca e domínio serão verificados antes do lançamento.</small>
+      <small class="auth-aside-foot">PDV2 é um produto <a href="https://crowntech.com.br" target="_blank" rel="noopener">CrownTech</a> © 2026</small>
     </aside>
     <main class="auth-main" id="auth-content">
       <a class="auth-back" href="/">← Voltar ao site</a>
       <div class="auth-center">
-        <span class="eyebrow">Acesso antecipado</span>
+        <span class="eyebrow">Painel de gestão</span>
         <h2 id="auth-title">Boas-vindas ao PDV2</h2>
-        <p id="auth-description">Acesse seu espaço de gestão ou crie uma conta para testar as funções disponíveis.</p>
+        <p id="auth-description">Acesse seu painel de gestão ou crie uma conta para testar o PDV2 por 14 dias.</p>
         <div class="auth-tabs" role="tablist" aria-label="Escolha como acessar">
           <button type="button" role="tab" id="tab-login" aria-controls="panel-login" aria-selected="true">Entrar</button>
           <button type="button" role="tab" id="tab-register" aria-controls="panel-register" aria-selected="false">Criar conta</button>
@@ -53,6 +56,8 @@
           <div class="feedback info" id="mfa-setup-copy" hidden>
             <strong>Proteja a administração SaaS</strong>
             <p>Adicione esta conta ao seu aplicativo autenticador usando a chave abaixo. A chave aparece somente durante esta configuração.</p>
+            <img id="mfa-qr" class="mfa-qr" alt="QR Code para configurar o autenticador" hidden>
+            <small class="mfa-qr-help">Aponte a câmera do Google Authenticator, Microsoft Authenticator ou outro app compatível para este QR Code.</small>
             <code id="mfa-secret" class="auth-secret"></code>
             <small id="mfa-uri" class="auth-secret-uri"></small>
           </div>
@@ -68,18 +73,22 @@
             <button class="button" type="button" id="mfa-continue" hidden>Continuar para o painel <span aria-hidden="true">→</span></button>
           </div>
         </section>
+        <section id="panel-account-choice" role="region" aria-labelledby="auth-title" hidden>
+          <div class="account-choice-copy">Este login tem mais de um tipo de acesso. Escolha onde deseja continuar.</div>
+          <div id="account-choice-list" class="account-choice-list"></div>
+        </section>
         <section id="panel-register" role="tabpanel" aria-labelledby="tab-register" hidden>
           <form class="auth-form" id="register-form">
             <div class="field"><label for="company">Nome da empresa</label><input id="company" name="company" autocomplete="organization" maxlength="120" placeholder="Ex.: Mercado da Praça" required></div>
             <div class="field"><label for="name">Seu nome</label><input id="name" name="name" autocomplete="name" maxlength="120" required></div>
             <div class="field"><label for="register-email">E-mail de acesso</label><input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" required></div>
             <div class="field"><label for="register-password">Crie uma senha</label><input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" aria-describedby="password-help" required><small id="password-help">Use de 8 a 128 caracteres, com letra maiúscula, minúscula, número e símbolo.</small><button class="password-toggle" type="button" data-toggle-password="register-password" aria-pressed="false">Mostrar senha</button></div>
-            <div class="feedback info">A conta começa com acesso de teste. Os planos exibidos no site ainda não geram cobrança automática.</div>
+            <div class="feedback info">A conta começa com 14 dias de teste no plano Essencial, sem cartão. Criar a conta não gera cobrança.</div>
             <button class="button" type="submit">Criar minha conta <span aria-hidden="true">→</span></button>
           </form>
         </section>
         <p id="auth-message" class="auth-message" role="status" aria-live="polite" hidden></p>
-        <p class="auth-footnote">O painel de gestão está em acesso antecipado. A operação fiscal e os periféricos ainda exigem validação antes de uso comercial.</p>
+        <p class="auth-footnote">A emissão de NFC-e ainda depende da integração e da homologação fiscal; até lá, o caixa imprime o comprovante de venda não fiscal.</p>
       </div>
     </main>
   </div>

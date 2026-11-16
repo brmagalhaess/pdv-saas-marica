@@ -1,139 +1,365 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#132434">
+  <meta name="theme-color" content="#102630">
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.svg') }}">
-  <title>PDV2 Terminal · Caixa local</title>
+  <title>PDV2 por CrownTech · Caixa</title>
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}">
 </head>
 <body>
+  <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-mark" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#102630"/><rect x="9" y="9" width="46" height="46" rx="12" fill="#148765"/><path d="M21 43V21h11c7 0 11 4 11 9s-4 9-11 9h-5" fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M35 45c4-5 10-4 10 0 0 3-5 5-10 8h10" fill="none" stroke="#E6AC43" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-cash" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6.5 9.5v5M17.5 9.5v5"/></symbol>
+    <symbol id="i-pix" viewBox="0 0 24 24"><path d="m12 3 9 9-9 9-9-9z"/><path d="m8 12 4-4 4 4-4 4z"/></symbol>
+    <symbol id="i-card" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h4"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M6 4h11a1 1 0 0 1 1 1v15H7a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1Z"/><path d="M9 9h6M9 13h6M5 17.5A1.5 1.5 0 0 1 6.5 16H18"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 8h13l-3-3M20 16H7l3 3"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/></symbol>
+    <symbol id="i-printer" viewBox="0 0 24 24"><path d="M7 9V4h10v5M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><rect x="7" y="14" width="10" height="6" rx="1"/></symbol>
+    <symbol id="i-scale" viewBox="0 0 24 24"><path d="M5 9h14l1.5 10a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1z"/><path d="M8 9a4 4 0 0 1 8 0M12 9l2-3"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.5M12 17.2v.1"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
+    <symbol id="i-split" viewBox="0 0 24 24"><path d="M4 12h6l4-5h6M10 12l4 5h6"/></symbol>
+    <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2V3Z"/><path d="M8 7h8M8 11h8M8 15h5"/></symbol>
+  </svg>
+
   <div id="toast" role="status" aria-live="polite"></div>
-  <header class="topbar">
-    <div class="brand"><span class="brand-mark">▣</span><span><strong>PDV<span class="accent">2</span></strong><small>TERMINAL LOCAL</small></span></div>
-    <div class="top-status"><span id="connectionBadge" class="badge">Empresa não vinculada</span><span id="networkBadge" class="badge">Verificando…</span><span id="leaseBadge" class="badge">Licença…</span><span id="pendingBadge" class="badge">Fila: —</span><span id="releaseBadge" class="badge hidden">Versão disponível</span></div>
-    <div class="operator"><span id="operatorName">Sem operador</span><button id="logoutBtn" class="text-button hidden">Sair</button></div>
-  </header>
 
   <section id="pairView" class="gate hidden">
     <div class="gate-card">
-      <span class="eyebrow">ATIVAÇÃO DESTE COMPUTADOR</span>
-      <h1>Conecte o caixa à empresa</h1>
-      <p>Esta configuração é feita uma vez. No painel da empresa, abra <strong>Assinatura</strong> para copiar a chave da licença e <strong>Terminais</strong> para criar este caixa e gerar o código de pareamento.</p>
-      <form id="pairForm">
-        <label>Endereço do servidor da empresa <input id="cloudUrl" type="url" placeholder="https://suaempresa.com" required></label>
-        <label>Chave da licença <input id="licenseKey" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PDV2-…" required></label>
-        <label>Código de pareamento deste caixa <input id="pairCode" autocomplete="off" spellcheck="false" placeholder="Código temporário do painel" required></label>
-        <button class="primary" type="submit">Conectar este terminal</button>
-      </form>
-      <p class="hint">A licença identifica a assinatura; o código de pareamento autoriza este dispositivo por uma única vez. Depois, cada operador entra com seu próprio PIN.</p>
-      <p class="hint">No Docker local, use <code>http://cloud:8080</code>. Em outro computador, use o endereço HTTPS informado no painel. ID deste dispositivo: <code id="deviceId"></code></p>
-      <button id="newProfileBtn" class="text-button danger-link" type="button">Criar novo perfil para outra empresa</button>
-      <p class="hint">Isso preserva o banco atual em um backup e cria um diretório de dados separado para o próximo pareamento.</p>
+      <div class="gate-main">
+        <div class="lockup lockup-lg"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+        <span class="eyebrow">Ativação deste computador</span>
+        <h1>Conecte o caixa à empresa</h1>
+        <p>Esta configuração é feita uma vez. No painel da empresa, abra <strong>Assinatura</strong> para copiar a chave da licença e <strong>Terminais</strong> para criar este caixa e gerar o código de pareamento.</p>
+        <form id="pairForm" class="form-stack">
+          <label class="field"><span>Endereço do servidor da empresa</span><input id="cloudUrl" type="url" placeholder="Endereço HTTPS informado no painel" required></label>
+          <label class="field"><span>Chave da licença</span><input id="licenseKey" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PDV2-…" required></label>
+          <label class="field"><span>Código de pareamento deste caixa</span><input id="pairCode" autocomplete="off" spellcheck="false" placeholder="Código temporário do painel" required></label>
+          <button class="btn primary big" type="submit">Conectar este terminal</button>
+        </form>
+        <button id="restoreOpenBtn" class="btn big" type="button">Recuperar minha loja (troquei de computador)</button>
+        <button id="stationModeBtn" class="btn big" type="button">Este é um caixa adicional (a loja já tem um caixa principal)</button>
+        <p id="stationModeStatus" class="hint hidden" role="status" aria-live="polite"></p>
+        <p class="hint">A licença identifica a assinatura; o código de pareamento autoriza este dispositivo por uma única vez. Depois, cada operador entra com o próprio PIN.</p>
+        <p class="hint">Identificação deste dispositivo: <code id="deviceId"></code></p>
+        <details class="maintenance">
+          <summary>Manutenção deste terminal</summary>
+          <button id="newProfileBtn" class="btn ghost danger" type="button">Criar novo perfil para outra empresa</button>
+          <p class="hint">Preserva o banco atual em um backup e cria um diretório de dados separado para o próximo pareamento.</p>
+        </details>
+      </div>
     </div>
+    <footer class="brand-footer">PDV2 · um produto CrownTech · crowntech.com.br</footer>
+  </section>
+
+  <section id="restoreView" class="gate hidden">
+    <div class="gate-card">
+      <div class="gate-main">
+        <div class="lockup lockup-lg"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+        <div id="restoreStart" class="restore-step">
+          <span class="eyebrow">Passo 1 de 4</span>
+          <h1>Recuperar minha loja</h1>
+          <p>Use quando o computador do caixa foi trocado. No painel da empresa, abra <strong>Terminais</strong>, toque em <strong>Trocar de computador</strong> e copie os dois dados abaixo.</p>
+          <form id="restoreForm" class="form-stack">
+            <label id="restoreCloudField" class="field"><span>Endereço do servidor da empresa</span><input id="restoreCloudUrl" type="url" placeholder="Endereço HTTPS informado no painel"></label>
+            <label class="field"><span>Chave da licença</span><input id="restoreLicenseKey" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PDV2-…" required></label>
+            <label class="field"><span>Código de recuperação</span><input id="restoreCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" required></label>
+            <button class="btn primary big" type="submit">Recuperar minha loja</button>
+          </form>
+          <button id="restoreBackBtn" class="btn ghost" type="button">Voltar: este é um caixa novo</button>
+          <p class="hint">O código de recuperação vale 30 minutos e só funciona uma vez.</p>
+        </div>
+        <div id="restoreProgress" class="restore-step hidden">
+          <span class="eyebrow">Passo 2 de 4</span>
+          <h1>Trazendo seus dados</h1>
+          <div id="restoreBar" class="restore-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Andamento da recuperação"><span id="restoreBarFill"></span></div>
+          <p id="restoreLine" class="restore-line" aria-live="polite">Começando…</p>
+          <p id="restoreNotice" class="restore-notice hidden" role="status"></p>
+          <button id="restoreRetryBtn" class="btn primary big hidden" type="button">Tentar de novo</button>
+          <p class="hint">As vendas dos últimos 90 dias e o fiado em aberto voltam para este computador. O caixa só libera a venda quando tudo estiver conferido.</p>
+        </div>
+        <div id="restoreBackup" class="restore-step hidden">
+          <span class="eyebrow">Passo 3 de 4</span>
+          <h1>Você tem uma cópia de segurança?</h1>
+          <p>Os dados que estavam no servidor já voltaram. Se o computador antigo guardava uma cópia em pendrive ou em outro disco, ela pode trazer as últimas vendas que ainda não tinham sido enviadas.</p>
+          <div class="inline-controls"><button id="restoreHasBackupBtn" class="btn primary big" type="button">Tenho uma cópia de segurança</button><button id="restoreSkipBtn" class="btn big" type="button">Não tenho, continuar</button></div>
+          <p id="restoreImportNotice" class="restore-notice hidden" role="alert"></p>
+          <div id="restoreBackupPanel" class="hidden">
+            <p id="restoreBackupInfo" class="hint" aria-live="polite">Procurando cópias de segurança…</p>
+            <div id="restoreBackupList" class="mini-list"></div>
+            <form id="restoreFolderForm" class="form-stack">
+              <label class="field"><span>Ou informe a pasta onde está a cópia</span><input id="restoreFolder" type="text" autocomplete="off" spellcheck="false" placeholder="Ex.: E:\ ou /Volumes/PENDRIVE"></label>
+              <button class="btn" type="submit">Procurar nesta pasta</button>
+            </form>
+          </div>
+        </div>
+        <div id="restoreDone" class="restore-step hidden">
+          <span class="eyebrow">Passo 4 de 4</span>
+          <h1>Tudo pronto</h1>
+          <p id="restoreSummary" class="restore-line"></p>
+          <p class="hint">Os números acima foram conferidos com o servidor da empresa. Carrinhos em espera e a fila de impressão do computador antigo não voltam.</p>
+          <button id="restoreEnterBtn" class="btn primary big" type="button">Entrar no caixa</button>
+        </div>
+        <p id="restoreAbandon" class="hint hidden">A recuperação não termina ou este não é o computador certo? <button id="restoreAbandonBtn" class="btn ghost" type="button">Desistir da recuperação</button></p>
+      </div>
+    </div>
+    <footer class="brand-footer">PDV2 · um produto CrownTech · crowntech.com.br</footer>
   </section>
 
   <section id="loginView" class="gate hidden">
-    <div class="gate-card narrow">
-      <span class="eyebrow">ACESSO DO OPERADOR</span>
-      <h1>Pronto para vender</h1>
-      <div id="connectionIdentity" class="connection-card" aria-live="polite"></div>
-      <p>Selecione seu nome e digite sua <strong>chave de operador (PIN)</strong> cadastrada em Equipe no painel da empresa. Ela é diferente da senha web.</p>
-      <form id="loginForm">
-        <label>Operador <select id="operatorSelect" required></select></label>
-        <label>PIN <input id="operatorPin" type="password" inputmode="numeric" autocomplete="off" required></label>
-        <button class="primary" type="submit">Entrar no caixa</button>
-      </form>
-      <button id="refreshBootstrap" class="text-button">Atualizar operadores</button>
-      <p id="operatorSyncStatus" class="hint" aria-live="polite"></p>
-      <button id="changeConnection" class="text-button danger-link">Corrigir pareamento sem operações</button>
-      <button id="newProfileLoginBtn" class="text-button danger-link" type="button">Criar novo perfil para outra empresa</button>
-      <p id="operatorEmptyHint" class="hint hidden">Nenhum operador com PIN está disponível para este terminal. Cadastre um PIN no painel da empresa e clique em “Atualizar operadores”.</p>
-      <p class="hint">Com vendas, caixa ou movimentações neste computador, preserve este banco e use uma instalação ou diretório de dados novo para outra empresa.</p>
+    <div class="gate-card login-card">
+      <div class="gate-main">
+        <div class="lockup lockup-lg"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+        <span class="eyebrow">Acesso do operador</span>
+        <h1 id="loginTitle">Pronto para vender</h1>
+        <div id="connectionIdentity" class="connection-card" aria-live="polite"></div>
+        <form id="loginForm" class="form-stack">
+          <label class="field"><span>Operador</span><select id="operatorSelect" required></select></label>
+          <label class="field"><span>PIN do operador</span><input id="operatorPin" type="password" inputmode="numeric" autocomplete="off" placeholder="Digite seu PIN" required></label>
+          <button class="btn primary big" type="submit">Entrar no caixa</button>
+        </form>
+        <p id="operatorEmptyHint" class="hint hidden">Nenhum operador com PIN está disponível para este terminal. Cadastre um PIN em Equipe, no painel da empresa, e toque em “Atualizar operadores”.</p>
+        <p id="operatorSyncStatus" class="hint" aria-live="polite"></p>
+        <button id="refreshBootstrap" class="btn ghost" type="button">Atualizar operadores</button>
+        <details id="loginMaintenance" class="maintenance">
+          <summary>Manutenção deste terminal</summary>
+          <button id="changeConnection" class="btn ghost danger" type="button">Corrigir pareamento sem operações</button>
+          <button id="newProfileLoginBtn" class="btn ghost danger" type="button">Criar novo perfil para outra empresa</button>
+          <p class="hint">Com vendas, caixa ou movimentações neste computador, preserve este banco e use um perfil novo para outra empresa.</p>
+        </details>
+      </div>
+      <div id="pinPad" class="pin-pad" role="group" aria-label="Teclado numérico para o PIN">
+        <button type="button" data-pin="1">1</button><button type="button" data-pin="2">2</button><button type="button" data-pin="3">3</button>
+        <button type="button" data-pin="4">4</button><button type="button" data-pin="5">5</button><button type="button" data-pin="6">6</button>
+        <button type="button" data-pin="7">7</button><button type="button" data-pin="8">8</button><button type="button" data-pin="9">9</button>
+        <button type="button" data-pin="clear" class="pin-aux">Limpar</button><button type="button" data-pin="0">0</button><button type="button" data-pin="back" class="pin-aux" aria-label="Apagar último dígito">⌫</button>
+      </div>
+    </div>
+    <footer class="brand-footer">PDV2 · um produto CrownTech · crowntech.com.br</footer>
+  </section>
+
+  <section id="damagedView" class="gate hidden">
+    <div class="gate-card">
+      <div class="gate-main">
+        <div class="lockup lockup-lg"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+        <span class="eyebrow">Vendas paradas</span>
+        <h1>O banco de dados deste caixa está danificado</h1>
+        <p>O arquivo onde ficam as vendas deste computador não passou na verificação de integridade. Para não piorar o problema, o caixa não vende enquanto ele não for restaurado. O que já foi enviado ao servidor da empresa continua salvo no painel.</p>
+        <ol class="guide-steps">
+          <li>Não reinstale o programa nem apague arquivos. Se puder, chame o suporte antes de continuar.</li>
+          <li>Feche o PDV2 e pare o serviço <strong>PDV2</strong> (ou encerre a janela do terminal).</li>
+          <li>Guarde o arquivo danificado: renomeie <code id="damagedDatabase"></code> para <code>terminal-danificado.sqlite3</code>.</li>
+          <li>Copie o backup mais recente da lista abaixo para a mesma pasta, com o nome <code>terminal.sqlite3</code>.</li>
+          <li>Abra o PDV2 de novo e confira as últimas vendas. As que foram feitas depois do backup e ainda não tinham sido enviadas precisam ser lançadas outra vez.</li>
+        </ol>
+        <h2 class="guide-title">Backups locais encontrados</h2>
+        <div id="damagedBackups" class="mini-list"></div>
+        <p class="hint">Detalhe técnico para o suporte: <code id="damagedProblem"></code></p>
+        <button id="damagedRetryBtn" class="btn primary big" type="button">Verificar de novo</button>
+      </div>
     </div>
   </section>
 
-  <div id="appView" class="shell hidden">
-    <aside class="sidebar">
-      <nav aria-label="Seções do terminal">
-        <button class="nav-item active" data-tab="checkout"><span>▣</span> Caixa</button>
-        <button class="nav-item" data-tab="sales"><span>▤</span> Vendas</button>
-        <button class="nav-item" data-tab="stock"><span>▦</span> Estoque</button>
-        <button class="nav-item" data-tab="printers"><span>▥</span> Impressoras</button>
-        <button class="nav-item" data-tab="system"><span>◉</span> Sistema</button>
-      </nav>
-      <div class="sidebar-bottom"><span class="online-dot"></span> Dados neste computador<br><small>Venda continua sem internet</small></div>
-    </aside>
+  <div id="serverDownView" class="server-down hidden" role="alertdialog" aria-modal="true" aria-labelledby="serverDownTitle" aria-describedby="serverDownText">
+    <div class="server-down-card">
+      <svg class="ico server-down-icon" aria-hidden="true"><use href="#i-alert"/></svg>
+      <h1 id="serverDownTitle">O caixa principal está fora do ar</h1>
+      <p id="serverDownText">Este caixa volta sozinho quando a conexão voltar. O que você já lançou continua na tela.</p>
+      <p id="serverDownStatus" class="hint" role="status" aria-live="polite">Tentando de novo a cada 2 segundos…</p>
+      <a id="serverDownLink" class="btn link-button" href="/station/">Ver o que aconteceu</a>
+    </div>
+  </div>
+
+  <div id="appView" class="app hidden">
+    <header id="statusBar" class="statusbar" data-tone="ok">
+      <div class="lockup" title="PDV2 por CrownTech"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+      <div id="identityText" class="sb-identity"><span id="identityPlace" class="sb-place">Loja · Caixa</span><span id="identityOperator" class="sb-operator">Operador</span></div>
+      <div class="sb-chips">
+        <button type="button" id="netChip" class="chip" data-state="muted"><span class="dot"></span><span class="chip-text">Verificando…</span></button>
+        <button type="button" id="queueChip" class="chip" data-state="ok"><span class="dot"></span><span class="chip-text">Fila —</span></button>
+        <button type="button" id="reviewChip" class="chip hidden" data-state="warn"><span class="dot"></span><span class="chip-text"></span></button>
+        <span id="leaseChip" class="chip" data-state="muted"><span class="dot"></span><span class="chip-text">Licença…</span></span>
+        <span id="cashChip" class="chip" data-state="muted"><span class="dot"></span><span class="chip-text">Caixa…</span></span>
+        <button type="button" id="printerChip" class="chip" data-state="muted"><span class="dot"></span><span class="chip-text">Impressora…</span></button>
+        <button type="button" id="scaleChip" class="chip" data-state="muted"><span class="dot"></span><span class="chip-text">Balança manual</span></button>
+        <span id="hoursChip" class="chip hidden" data-state="warn" role="status"><span class="dot"></span><span class="chip-text"></span></span>
+        <span id="releaseChip" class="chip hidden" data-state="warn"><span class="dot"></span><span class="chip-text"></span></span>
+        <span id="mirrorChip" class="chip hidden" data-state="warn" role="status"><span class="dot"></span><span class="chip-text"></span></span>
+      </div>
+      <time id="clock" class="sb-clock">--:--</time>
+      <button type="button" id="operatorMenuBtn" class="sb-menu" aria-haspopup="dialog"><svg class="ico"><use href="#i-menu"/></svg><span>Menu</span></button>
+    </header>
+
+    <nav id="tabsBar" class="tabs" aria-label="Seções do terminal">
+      <button class="tab active" data-tab="checkout">Caixa</button>
+      <button class="tab" data-tab="sales">Vendas</button>
+      <button class="tab" data-tab="stock">Estoque</button>
+      <button class="tab admin-only" data-tab="printers">Impressoras</button>
+      <button class="tab admin-only" data-tab="system">Sistema</button>
+    </nav>
+
+    <section id="promotionCard" class="promotion-card hidden" aria-live="polite">
+      <div class="promotion-text">
+        <strong>Este computador assumiu como caixa principal.</strong>
+        <p id="promotionText"></p>
+        <p id="promotionWarning" class="promotion-warning hidden"></p>
+      </div>
+      <form id="promotionForm" class="promotion-form">
+        <label class="field"><span>Chave da licença</span><input id="promotionLicenseKey" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PDV2-…" required></label>
+        <label class="field"><span>Código do painel (Trocar de computador)</span><input id="promotionCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" required></label>
+        <button class="btn primary" type="submit">Regularizar agora</button>
+      </form>
+    </section>
+
     <main class="workspace">
-      <section id="checkoutTab" class="tab-panel">
-        <div class="section-head"><div><span class="eyebrow">OPERAÇÃO · CAIXA</span><h1>Frente de caixa</h1><p class="section-subtitle">Leia o código, confira o pedido e finalize em poucos toques.</p></div><div class="register-head-actions"><span id="cashChip" class="chip">Caixa fechado</span><span class="shortcut-hint"><kbd>F2</kbd> buscar <kbd>Enter</kbd> adicionar</span></div></div>
-        <div class="checkout-grid">
-          <div class="catalog card">
-            <div class="card-head"><div><span class="card-kicker">CATÁLOGO LOCAL</span><h2>Produtos</h2><p>Busque por nome, SKU ou leia o código de barras</p></div><button id="refreshCatalogBtn" class="secondary small" type="button">Atualizar</button></div>
-            <div class="search-row"><label class="search"><span>⌕</span><input id="productSearch" placeholder="Leia ou digite o código do produto" autocomplete="off" autofocus></label><button id="focusScannerBtn" class="secondary scanner-focus" type="button" title="Focar o leitor de código de barras">Focar leitor</button></div>
-            <div id="scannerStatus" class="scanner-status" aria-live="polite"><span class="scanner-dot"></span> Leitor USB pronto · aponte para o código e aguarde Enter ou Tab</div>
-            <details class="optional-tools"><summary>Pesagem e etiqueta de balança</summary><div class="scale-controls" aria-label="Integração com balança">
-              <button id="scaleConnectBtn" class="secondary small" type="button">Conectar balança</button>
-              <label>Etiqueta EAN<select id="scaleBarcodeMode"><option value="weight">Peso em gramas</option><option value="price">Preço total</option></select></label>
-              <label>Serial<select id="scaleBaud"><option value="9600">9600 bps</option><option value="4800">4800 bps</option><option value="19200">19200 bps</option></select></label>
-            </div><div id="scaleStatus" class="scanner-status" aria-live="polite"><span class="scanner-dot"></span> Balança manual · use o peso digitado ou uma etiqueta EAN-13</div></details>
-            <div id="categories" class="categories"></div>
-            <div id="productsGrid" class="products-grid"></div>
-          </div>
-          <div class="cart card">
-            <div class="card-head"><div><span class="card-kicker">PEDIDO ATUAL</span><h2>Venda atual</h2><p id="cartCount">Nenhum item</p></div><div class="cart-actions"><button id="newSaleBtn" class="secondary small" type="button">Nova venda</button><button id="suspendBtn" class="secondary small" type="button">Suspender</button></div></div>
-            <div id="cartItems" class="cart-items empty-state">Adicione produtos para iniciar a venda.</div>
-            <div class="cart-fields">
-              <label>Cliente (opcional) <input id="customerName" placeholder="Nome para identificação"></label>
-              <label>CPF/CNPJ do consumidor (opcional) <input id="customerDocument" inputmode="numeric" maxlength="30" placeholder="Somente se o cliente solicitar"></label>
-              <div class="field-row discount-controls"><label>Desconto (%) <input id="discountInput" type="text" inputmode="decimal" value="0" placeholder="0,00"></label><button id="applyDiscountBtn" class="secondary" type="button">Aplicar desconto</button></div><small id="discountStatus" class="discount-status">Digite o percentual e clique em Aplicar desconto.</small>
+      <section id="checkoutTab" class="tab-panel sale-panel">
+        <h1 class="sr-only">Frente de caixa</h1>
+        <div class="sale-grid">
+          <section class="zone zone-items" aria-label="Itens da venda">
+            <div class="scan-row">
+              <label class="scan-field">
+                <svg class="ico"><use href="#i-search"/></svg>
+                <input id="productSearch" placeholder="Leia o código de barras ou digite código, nome ou 3*código" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" aria-label="Leitura de produto">
+                <span id="pendingQtyBadge" class="pending-qty hidden"></span>
+              </label>
+              <button id="openSearchBtn" class="btn ghost scan-catalog" type="button">Catálogo <kbd>F2</kbd></button>
             </div>
-            <div class="total"><span>Total da venda</span><strong id="cartTotal">R$ 0,00</strong></div>
-            <div class="payment-heading"><span>Pagamento</span><small>Escolha como o cliente pagou</small></div>
-            <div id="paymentMethods" class="payment-methods" role="group" aria-label="Forma de pagamento">
-              <button type="button" class="payment-method" data-payment-method="cash"><span class="payment-method-icon">▣</span><strong>Dinheiro</strong><small>Informe o recebido</small></button>
-              <button type="button" class="payment-method" data-payment-method="pix"><span class="payment-method-icon">⌁</span><strong>Pix</strong><small>Confirmar no app</small></button>
-              <button type="button" class="payment-method" data-payment-method="card"><span class="payment-method-icon">▤</span><strong>Cartão</strong><small>Crédito ou débito</small></button>
+            <div id="scanStatus" class="scan-status" role="status" aria-live="polite"><span class="dot"></span><span>Leitor pronto</span></div>
+            <div id="lastItem" class="last-item empty"></div>
+            <div class="items-head" aria-hidden="true"><span>#</span><span>Item</span><span>Qtd</span><span>Total</span><span></span></div>
+            <div id="cartItems" class="items-list" role="listbox" aria-label="Itens lançados" tabindex="-1"></div>
+          </section>
+
+          <aside class="zone zone-value" aria-label="Total e pagamento">
+            <div class="total-block">
+              <div class="total-label"><span>TOTAL</span><span id="cartCount">Nenhum item</span></div>
+              <strong id="cartTotal" class="total-value"><span class="cur">R$</span>0,00</strong>
+              <div id="totalsMeta" class="totals-meta"></div>
             </div>
-            <div id="cashPaymentPanel" class="payment-panel hidden"><label>Valor recebido em dinheiro<input id="payCash" class="money-input" type="text" inputmode="decimal" placeholder="Ex.: 50,00" autocomplete="off"></label><small class="payment-helper">O troco é calculado automaticamente.</small></div>
-            <div id="cardPaymentPanel" class="payment-panel card-payment-panel hidden"><span class="payment-panel-title">Tipo de cartão</span><div class="card-choice-row"><button type="button" class="card-choice" data-card-method="card_credit"><strong>Crédito</strong><small>Venda no crédito</small></button><button type="button" class="card-choice" data-card-method="card_debit"><strong>Débito</strong><small>Venda no débito</small></button></div></div>
-            <div id="paymentSelectionSummary" class="payment-selection-summary" aria-live="polite">Selecione uma forma de pagamento.</div>
-            <button id="splitPaymentToggle" class="payment-advanced-toggle" type="button" aria-expanded="false">Dividir pagamento</button>
-            <div id="advancedPaymentPanel" class="payment-advanced-panel hidden"><div class="payment-advanced-title"><strong>Pagamento dividido</strong><small>Use somente quando o cliente combinar formas.</small></div><div class="payment-grid"><label><span>Dinheiro</span><input id="paySplitCash" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label><label><span>Pix</span><input id="paySplitPix" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label><label><span>Crédito</span><input id="paySplitCredit" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label><label><span>Débito</span><input id="paySplitDebit" class="money-input" type="text" inputmode="decimal" placeholder="0,00"></label></div></div>
-            <div class="payment-values" hidden aria-hidden="true"><input id="payPix" type="hidden"><input id="payCredit" type="hidden"><input id="payDebit" type="hidden"></div>
-            <div class="cart-foot"><span id="changeText">Troco: R$ 0,00</span><button id="sellBtn" class="primary">Finalizar venda</button></div>
-            <p class="legal-note">Pix e cartão são confirmados pelo operador. Integrações TEF e Pix bancário podem automatizar essa confirmação.</p>
-          </div>
-        </div>
-        <div class="bottom-grid">
-          <section class="card compact cash-control-card"><div class="card-head"><div><span class="card-kicker">CONTROLE DE TURNO</span><h2>Caixa e fechamento</h2><p id="cashInfo" class="hint"></p></div><span id="cashStatus" class="cash-status">Fechado</span></div><div id="cashOpeningPrompt" class="cash-opening"><label>Dinheiro disponível no início (R$)<input id="cashOpeningAmount" class="money-input" type="text" inputmode="decimal" placeholder="Informe o saldo inicial"></label><button id="openCashBtn" class="primary" type="button">Abrir caixa</button></div><div id="cashMovementControls" class="inline-controls hidden"><input id="cashAmount" class="money-input" type="text" inputmode="decimal" placeholder="Valor do movimento"><input id="cashReason" placeholder="Motivo do suprimento ou sangria"><button id="supplyBtn" class="secondary" type="button">Suprimento</button><button id="withdrawBtn" class="secondary" type="button">Sangria</button><button id="closeCashBtn" class="secondary" type="button">Fechar e conferir</button></div><p class="cash-control-note">Antes da primeira venda, informe o dinheiro físico disponível. No fechamento, o sistema mostra PIX, crédito, débito, dinheiro esperado e a diferença encontrada.</p></section>
-          <section class="card compact"><div class="card-head"><h2>Vendas suspensas</h2></div><div id="suspendedList" class="mini-list">Nenhuma venda suspensa.</div></section>
+
+            <div id="payPanel" class="pay-panel">
+              <div class="pay-head"><span>Pagamento</span><span id="payHint">F10 para pagar</span></div>
+              <div class="pay-scroll">
+              <div id="paymentMethods" class="pay-methods" role="group" aria-label="Forma de pagamento" tabindex="-1"></div>
+              <div id="payDetail" class="pay-detail">
+                <p id="payInfo" class="pay-info">Lance os itens e tecle F10 para receber.</p>
+                <div id="payCashBox" class="pay-cash hidden">
+                  <label class="field"><span class="sr-only">Valor recebido em dinheiro</span><input id="payCash" class="money-input big" type="text" inputmode="decimal" placeholder="Valor recebido · Enter = exato" autocomplete="off"></label>
+                  <div id="quickValues" class="quick-values" role="group" aria-label="Valores rápidos">
+                    <button type="button" data-quick="1000">R$ 10</button><button type="button" data-quick="2000">R$ 20</button><button type="button" data-quick="5000">R$ 50</button><button type="button" data-quick="10000">R$ 100</button><button type="button" data-quick="exact">Exato</button>
+                  </div>
+                </div>
+                <div id="paySplitBox" class="pay-split hidden">
+                  <label class="field"><span>Dinheiro</span><input id="paySplitCash" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+                  <label class="field"><span>Pix</span><input id="paySplitPix" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+                  <label class="field"><span>Débito</span><input id="paySplitDebit" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+                  <label class="field"><span>Crédito</span><input id="paySplitCredit" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+                </div>
+              </div>
+              </div>
+              <div id="changeBlock" class="change-block" aria-live="polite"><span id="changeLabel">Troco</span><strong id="changeValue">R$ 0,00</strong></div>
+              <p id="payError" class="inline-error" role="alert"></p>
+              <button id="sellBtn" class="btn primary big sell-button" type="button"></button>
+            </div>
+
+            <div id="donePanel" class="done-panel hidden" role="status" aria-live="polite"></div>
+            <div id="blockedPanel" class="blocked-panel hidden"></div>
+          </aside>
         </div>
       </section>
 
-      <section id="salesTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">HISTÓRICO LOCAL</span><h1>Vendas</h1></div><button id="reloadSales" class="secondary">Atualizar</button></div><div id="salesList" class="card list-card"></div></section>
-      <section id="stockTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">CATÁLOGO LOCAL</span><h1>Estoque</h1></div></div><div class="card compact"><label class="search"><span>⌕</span><input id="stockSearch" placeholder="Buscar produto por nome, SKU ou código de barras" autocomplete="off"></label><div class="inline-controls"><select id="stockProduct"></select><input id="stockDelta" inputmode="decimal" placeholder="Ajuste (+/-)"><input id="stockReason" placeholder="Motivo do ajuste"><button id="adjustStockBtn" class="secondary">Registrar ajuste</button></div><p class="hint">Quantidades em unidade, kg ou litro conforme o produto. Ajustes ficam auditados e aguardam sincronização.</p></div><div id="stockList" class="card list-card"></div></section>
-      <section id="printersTab" class="tab-panel hidden">
-        <div class="section-head"><div><span class="eyebrow">PERIFÉRICOS</span><h1>Impressoras</h1></div></div>
-        <div class="card compact">
+      <section id="salesTab" class="tab-panel page hidden">
+        <div class="page-head"><div><span class="eyebrow">Histórico local</span><h1>Vendas</h1></div><button id="reloadSales" class="btn">Atualizar</button></div>
+        <div id="salesList" class="card list-card"></div>
+      </section>
+
+      <section id="stockTab" class="tab-panel page hidden">
+        <div class="page-head"><div><span class="eyebrow">Catálogo local</span><h1>Estoque</h1></div></div>
+        <div class="card">
+          <label class="search-field"><svg class="ico"><use href="#i-search"/></svg><input id="stockSearch" placeholder="Buscar produto por nome, SKU ou código de barras" autocomplete="off"></label>
+          <div id="stockAdjustRow" class="inline-controls">
+            <select id="stockProduct" aria-label="Produto"></select>
+            <input id="stockDelta" inputmode="decimal" placeholder="Ajuste (+/-)" aria-label="Quantidade do ajuste">
+            <input id="stockReason" placeholder="Motivo do ajuste" aria-label="Motivo do ajuste">
+            <button id="adjustStockBtn" class="btn">Registrar ajuste</button>
+          </div>
+          <p class="hint">Quantidades em unidade, kg ou litro conforme o produto. Ajustes ficam auditados e aguardam sincronização.</p>
+        </div>
+        <p id="stockCount" class="hint" role="status"></p>
+        <div id="stockList" class="card list-card"></div>
+      </section>
+
+      <section id="printersTab" class="tab-panel page hidden">
+        <div class="page-head"><div><span class="eyebrow">Periféricos</span><h1>Impressoras</h1></div></div>
+        <div class="card">
           <h2>Impressora de recibos</h2>
+          <p id="stationPrinterHint" class="hint hidden"><strong>Impressora deste caixa.</strong> Ela fica ligada neste computador; cada caixa da loja tem a sua.</p>
           <p class="hint">Configure aqui somente a impressora térmica do caixa. A impressão de etiquetas fica no painel da empresa, em Produtos → Imprimir etiquetas.</p>
           <form id="printerForm" class="printer-form">
             <input id="printerKind" type="hidden" value="receipt">
-            <label>Conexão<select id="printerDriver"><option value="file">Arquivo de teste</option><option value="cups">CUPS · macOS/Linux</option><option value="tcp">TCP 9100</option><option value="windows_raw">Spool RAW Windows</option></select></label>
-            <label>Formato<select id="printerFormat"><option value="escpos58">ESC/POS 58 mm</option><option value="escpos80">ESC/POS 80 mm</option></select></label>
-            <label class="printer-target-field">Fila ou destino<input id="printerTarget" placeholder="Ex.: TM-T20 ou host:9100" required></label>
-            <button id="discoverPrintersBtn" class="secondary printer-discover" type="button">Detectar filas</button><button class="primary" type="submit">Salvar impressora</button>
+            <label class="field"><span>Conexão</span><select id="printerDriver"><option value="file">Arquivo de teste</option><option value="cups">CUPS · macOS/Linux</option><option value="tcp">TCP 9100</option><option value="windows_raw">Spool RAW Windows</option></select></label>
+            <label class="field"><span>Formato</span><select id="printerFormat"><option value="escpos58">ESC/POS 58 mm</option><option value="escpos80">ESC/POS 80 mm</option></select></label>
+            <label class="field printer-target-field"><span>Fila ou destino</span><input id="printerTarget" placeholder="Ex.: TM-T20 ou host:9100" required></label>
+            <button id="discoverPrintersBtn" class="btn" type="button">Detectar filas</button><button class="btn primary" type="submit">Salvar impressora</button>
           </form>
           <p id="printerDiscoveryStatus" class="hint">Configure a fila correspondente ao equipamento instalado.</p>
         </div>
-        <div id="printerSettings" class="card list-card"></div><div class="section-head subhead"><h2>Fila de impressão</h2><button id="flushPrintBtn" class="secondary">Processar fila</button></div><div id="printJobs" class="card list-card"></div>
+        <div id="printerSettings" class="card list-card"></div>
+        <div class="page-head subhead"><h2>Fila de impressão</h2><button id="flushPrintBtn" class="btn">Processar fila</button></div>
+        <div id="printJobs" class="card list-card"></div>
       </section>
-      <section id="systemTab" class="tab-panel hidden"><div class="section-head"><div><span class="eyebrow">DIAGNÓSTICO</span><h1>Sistema</h1></div></div><div class="metric-grid"><div class="metric card"><small>Eventos pendentes</small><strong id="systemPending">—</strong></div><div class="metric card"><small>Conflitos offline</small><strong id="systemConflicts">—</strong></div><div class="metric card"><small>Última sincronização</small><strong id="systemLastSync">—</strong></div><div class="metric card"><small>Licença offline</small><strong id="systemLease">—</strong></div></div><div class="card compact"><h2>Sincronização</h2><p id="systemError" class="hint"></p><div class="inline-controls"><button id="syncNowBtn" class="primary">Sincronizar agora</button><button id="bootstrapBtn" class="secondary">Atualizar catálogo e licença</button><a href="/api/export" class="secondary link-button">Exportar dados locais</a></div></div><div class="card compact"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="secondary">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div><div class="card compact"><h2>Versão publicada</h2><p id="releaseInfo" class="hint">Nenhuma versão consultada.</p><a id="releaseLink" class="secondary link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">O terminal apenas verifica o manifesto assinado. A instalação é manual.</p></div><div class="card compact"><h2>Identificação</h2><pre id="identityInfo" class="identity"></pre></div><div class="card compact"><h2>Conflitos offline</h2><div id="conflictList" class="mini-list"></div></div><div class="card compact"><h2>Auditoria recente</h2><div id="auditList" class="mini-list"></div></div></section>
+
+      <section id="systemTab" class="tab-panel page hidden">
+        <div class="page-head"><div><span class="eyebrow">Diagnóstico</span><h1>Sistema</h1></div></div>
+        <div class="metric-grid">
+          <div class="metric card"><small>Eventos pendentes</small><strong id="systemPending">—</strong></div>
+          <div class="metric card"><small>Em revisão</small><strong id="systemReview">—</strong></div>
+          <div class="metric card"><small>Conflitos offline</small><strong id="systemConflicts">—</strong></div>
+          <div class="metric card"><small>Última sincronização</small><strong id="systemLastSync">—</strong></div>
+          <div class="metric card"><small>Licença offline</small><strong id="systemLease">—</strong></div>
+        </div>
+        <div class="card"><h2>Sincronização</h2><p id="systemError" class="hint"></p><div class="inline-controls"><button id="syncNowBtn" class="btn primary">Sincronizar agora</button><button id="bootstrapBtn" class="btn">Atualizar catálogo e licença</button><a href="/api/export" id="exportLink" class="btn link-button">Exportar dados locais</a></div></div>
+        <div id="stationsCard" class="card">
+          <h2>Caixas da loja</h2>
+          <p id="stationsInfo" class="hint">Consultando os caixas da loja…</p>
+          <p id="stationsWarning" class="hint stations-warning hidden" role="status"></p>
+          <div id="stationsList" class="mini-list"></div>
+          <div class="inline-controls"><button id="stationAddBtn" class="btn primary" type="button">Adicionar caixa</button></div>
+          <p class="hint">Um caixa adicional é outro computador da loja que vende junto com este. Ele precisa estar na mesma rede e depende deste computador ligado.</p>
+        </div>
+        <div id="backupCard" class="card"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="btn">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div>
+        <div id="mirrorCard" class="card"><h2>Cópia de segurança em outro disco</h2><p id="mirrorInfo" class="hint">Consultando a cópia de segurança…</p><p id="mirrorDetail" class="hint"></p><div class="inline-controls"><button id="mirrorChooseBtn" class="btn" type="button">Escolher disco</button><button id="mirrorSnapshotBtn" class="btn" type="button">Copiar agora</button></div><p class="hint">Um pendrive ou segundo disco guarda uma cópia protegida de tudo o que este caixa registra. Se este computador quebrar, as vendas que ainda não tinham ido para a internet voltam por ela.</p></div>
+        <div id="leaseCard" class="card"><h2>Licença offline</h2><p id="leaseInfo" class="hint">Consultando a licença…</p><button id="leaseRenewBtn" class="btn" type="button">Renovar licença agora</button><p class="hint">A licença é renovada sozinha sempre que o caixa fala com o servidor. Sem internet, este caixa continua vendendo até a data acima.</p></div>
+        <div id="updateCard" class="card"><h2>Atualização</h2><p id="currentVersion" class="hint">Versão instalada: —</p><p id="updateAvailable" class="hint">Versão disponível: —</p><p id="updateState" class="hint">Estado: —</p><button id="updateApplyBtn" class="btn primary" type="button" disabled>Atualizar agora</button><p id="updateBlocked" class="hint" role="status"></p><a id="releaseLink" class="btn link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">A nova versão é baixada e conferida sozinha. A instalação só acontece com o caixa fechado, depois de um backup; se algo der errado, a versão anterior volta.</p></div>
+        <div class="card"><h2>Identificação</h2><pre id="identityInfo" class="identity"></pre></div>
+        <div class="card"><h2>Em revisão</h2><p class="hint">Registros que o servidor recebeu e separou para o gestor conferir, e itens do catálogo que este caixa não pôde usar.</p><div id="reviewList" class="mini-list review-list"></div></div>
+        <div class="card"><h2>Conflitos offline</h2><div id="conflictList" class="mini-list"></div></div>
+        <div class="card"><h2>Auditoria recente</h2><div id="auditList" class="mini-list"></div></div>
+        <div class="card about-card">
+          <h2>Sobre</h2>
+          <div class="lockup lockup-lg"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+          <p>Frente de caixa que continua vendendo sem internet e sincroniza quando a conexão volta.</p>
+          <p id="aboutVersion" class="hint">Versão instalada: —</p>
+          <p class="hint">PDV2 · um produto CrownTech · crowntech.com.br</p>
+        </div>
+      </section>
     </main>
+
+    <footer id="keyBar" class="keybar" role="toolbar" aria-label="Atalhos do teclado"></footer>
   </div>
+
+  <script src="{{ url_for('static', filename='terminal-core.js') }}" defer></script>
   <script src="{{ url_for('static', filename='terminal.js') }}" defer></script>
 </body>
 </html>

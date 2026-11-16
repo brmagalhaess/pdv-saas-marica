@@ -6,9 +6,44 @@
   <meta name="theme-color" content="#102630">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" href="/assets/icon-192.png">
+  <link rel="icon" type="image/svg+xml" href="/assets/pdv2-simbolo.svg">
   <link rel="apple-touch-icon" href="/assets/icon-192.png">
-  <meta name="description" content="PDV2 para mercados, conveniências, hortifrútis, padarias de balcão, papelarias e lojas de varejo. Venda por código de barras ou peso, controle estoque e feche o caixa.">
-  <title>PDV2 · Gestão que acompanha o ritmo do seu comércio</title>
+  <title>PDV2 — Sistema PDV e frente de caixa offline | CrownTech</title>
+  <meta name="description" content="PDV2: sistema de caixa (PDV) que vende mesmo sem internet. Estoque, fiado, conferência de caixa, comissões e relatórios para o varejo, a partir de R$ 149/mês. Um produto CrownTech.">
+  <meta name="author" content="CrownTech">
+  <link rel="canonical" href="https://pdv2.crowntech.com.br/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="pt_BR">
+  <meta property="og:site_name" content="PDV2 · CrownTech">
+  <meta property="og:title" content="PDV2 — Sistema PDV e frente de caixa offline | CrownTech">
+  <meta property="og:description" content="Sistema de caixa (PDV) que vende mesmo sem internet. Estoque, fiado, conferência de caixa e relatórios para o varejo, a partir de R$ 149/mês.">
+  <meta property="og:url" content="https://pdv2.crowntech.com.br/">
+  <meta property="og:image" content="https://pdv2.crowntech.com.br/assets/og-pdv2.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="PDV2 por CrownTech: sistema de caixa (PDV) que vende mesmo sem internet">
+  <meta name="twitter:card" content="summary_large_image">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "PDV2",
+    "alternateName": "PDV2 por CrownTech",
+    "description": "Sistema de caixa (PDV) e frente de caixa que vende mesmo sem internet, com estoque, fiado, conferência de caixa, comissões e relatórios para o varejo.",
+    "url": "https://pdv2.crowntech.com.br/",
+    "image": "https://pdv2.crowntech.com.br/assets/og-pdv2.png",
+    "applicationCategory": "BusinessApplication",
+    "operatingSystem": "Web",
+    "inLanguage": "pt-BR",
+    "publisher": { "@type": "Organization", "name": "CrownTech", "url": "https://crowntech.com.br" },
+    "offers": [
+      { "@type": "Offer", "name": "Essencial", "price": "149.00", "priceCurrency": "BRL", "description": "Assinatura mensal do sistema: 1 terminal, 1 loja", "url": "https://pdv2.crowntech.com.br/#planos" },
+      { "@type": "Offer", "name": "Gestão", "price": "229.00", "priceCurrency": "BRL", "description": "Assinatura mensal do sistema: 1 terminal, 1 loja", "url": "https://pdv2.crowntech.com.br/#planos" },
+      { "@type": "Offer", "name": "Avançado", "price": "349.00", "priceCurrency": "BRL", "description": "Assinatura mensal do sistema: até 3 terminais, até 2 lojas", "url": "https://pdv2.crowntech.com.br/#planos" }
+    ]
+  }
+  </script>
   <link rel="stylesheet" href="/assets/ui.css">
   <link rel="stylesheet" href="/assets/landing.css">
   <script type="module" src="/assets/landing.js"></script>
@@ -18,21 +53,21 @@
   <a class="skip" href="#conteudo">Pular para o conteúdo</a>
   <header class="site-header">
     <div class="container header-inner">
-      <a class="brand" href="/" aria-label="PDV2, início">
+      <a class="brand" href="/" aria-label="PDV2 por CrownTech, início">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M8 28V8h11a7 7 0 0 1 0 14H8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span>
-        <span>PDV<strong>2</strong></span>
+        <span class="brand-lockup"><span>PDV<strong>2</strong></span><small>por CrownTech</small></span>
       </a>
       <button class="menu-toggle" id="site-menu-button" type="button" aria-expanded="false" aria-controls="site-navigation" aria-label="Abrir menu">☰</button>
       <nav class="site-nav" id="site-navigation" aria-label="Navegação principal">
         <a href="#segmentos">Para quem é</a>
         <a href="#produto">Recursos</a>
-        <a href="#aplicativo">App do gestor</a>
+        <a href="#aplicativo">App de gestão</a>
         <a href="#planos">Planos</a>
         <a href="#perguntas">Perguntas</a>
       </nav>
       <div class="header-actions">
         <a href="/login/">Entrar</a>
-        <a class="button small" href="/login/?mode=register">Criar conta</a>
+        <a class="button small" href="/login/?mode=register">Testar grátis</a>
       </div>
     </div>
   </header>
@@ -40,51 +75,53 @@
     <section class="hero">
       <div class="container hero-grid">
         <div class="hero-copy">
-          <span class="hero-kicker"><span class="pulse"></span> Começando em Maricá · feito para o varejo local</span>
-          <h1>Seu comércio no ritmo de quem está <em>no balcão.</em></h1>
-          <p>Do mercado à papelaria: venda no balcão, controle o estoque e feche o caixa com clareza. Uma gestão para o dono da loja, um terminal para quem atende e a opção de contratar o sistema com os equipamentos.</p>
+          <span class="hero-kicker"><span class="pulse"></span> Um produto CrownTech · começando em Maricá</span>
+          <h1>Sistema de caixa (PDV) que vende <em>mesmo sem internet.</em></h1>
+          <p>Venda por código de barras ou peso, registre dinheiro, Pix, cartão e fiado, confira cada caixa e acompanhe estoque, comissões e lucro pelo painel. Planos a partir de <strong data-price-from>R$ 149</strong>/mês, com suporte ao sistema incluso.</p>
           <div class="hero-actions">
-            <a class="button hero-primary" href="/login/?mode=register">Criar minha conta <span aria-hidden="true">↗</span></a>
-            <a class="hero-link" href="#segmentos">Encontrar meu tipo de negócio <span aria-hidden="true">↓</span></a>
+            <a class="button hero-primary" href="/login/?mode=register">Testar grátis <span aria-hidden="true">↗</span></a>
+            <a class="hero-link" href="https://crowntech.com.br" target="_blank" rel="noopener">Falar com a CrownTech <span aria-hidden="true">↗</span></a>
           </div>
-          <div class="hero-proof" aria-label="Destaques">
-            <span><b>01</b> Venda por código ou peso</span>
-            <span><b>02</b> Estoque por loja</span>
-            <span><b>03</b> Abertura e fechamento de caixa</span>
+          <p class="hero-note">14 dias de teste, sem cartão.</p>
+          <div class="hero-proof" role="group" aria-label="Destaques">
+            <span><b>01</b> Venda por código ou peso, até offline</span>
+            <span><b>02</b> Conferência de caixa e quebra</span>
+            <span><b>03</b> Comissão, lucro e curva ABC</span>
           </div>
         </div>
-        <div class="hero-visual" aria-label="Exemplo ilustrativo da interface de gestão PDV2">
+        <div class="hero-visual" role="img" aria-label="Exemplo ilustrativo da interface de gestão PDV2">
           <div class="visual-glow"></div>
           <div class="preview-shell">
-            <div class="preview-top"><span class="preview-dots"><i></i><i></i><i></i></span><span class="preview-url">Painel PDV2 · exemplo de interface</span><span class="preview-online">Acesso antecipado</span></div>
+            <div class="preview-top"><span class="preview-dots"><i></i><i></i><i></i></span><span class="preview-url">Painel PDV2 · exemplo de interface</span><span class="preview-online">Demonstração</span></div>
             <div class="preview-content">
               <div class="preview-sidebar">
-                <div class="preview-mini-brand"><span>2</span> PDV2</div>
+                <div class="preview-mini-brand"><img src="/assets/pdv2-simbolo.svg" alt="" width="19" height="19"> PDV2</div>
                 <small>ACOMPANHAR</small>
                 <div class="preview-menu selected">▣ <span>Visão geral</span></div>
-                <div class="preview-menu">▤ <span>Vendas</span></div>
+                <div class="preview-menu">▧ <span>Relatórios</span></div>
                 <small>OPERAÇÃO</small>
-                <div class="preview-menu">▦ <span>Produtos</span></div>
+                <div class="preview-menu">▤ <span>Vendas</span></div>
+                <div class="preview-menu">▢ <span>Caixas</span></div>
                 <div class="preview-menu">◈ <span>Estoque</span></div>
-                <div class="preview-menu">◎ <span>Financeiro</span></div>
+                <div class="preview-menu">% <span>Comissões</span></div>
               </div>
               <div class="preview-main">
                 <div class="preview-heading"><div><small>VISÃO GERAL</small><h2>Um dia mais organizado.</h2></div><span>☼</span></div>
                 <div class="preview-cards"><div><small>Vendas recebidas</small><strong>—</strong><i></i></div><div><small>Produtos ativos</small><strong>—</strong><i></i></div><div><small>Estoque por loja</small><strong>—</strong><i></i></div></div>
                 <div class="preview-list"><div class="preview-list-head"><strong>Sua operação, em um só lugar</strong><span>Ver no painel ↗</span></div>
-                  <div><span class="preview-icon">▦</span><span>Catálogo com SKU, unidade e preço</span><b>›</b></div>
-                  <div><span class="preview-icon">▣</span><span>Saldo e entradas de mercadoria</span><b>›</b></div>
-                  <div><span class="preview-icon">♙</span><span>Papéis e acessos da equipe</span><b>›</b></div>
+                  <div><span class="preview-icon">▢</span><span>Caixa conferido: falta, sobra e sangrias</span><b>›</b></div>
+                  <div><span class="preview-icon">%</span><span>Comissão por vendedor e por categoria</span><b>›</b></div>
+                  <div><span class="preview-icon">▧</span><span>Curva ABC e sugestão de compra</span><b>›</b></div>
                 </div>
               </div>
             </div>
           </div>
-          <div class="floating-card"><span class="floating-mark">✓</span><div><strong>Controle em primeiro lugar</strong><small>Dados e acessos organizados por empresa</small></div></div>
+          <div class="floating-card"><span class="floating-mark">✓</span><div><strong>Cada centavo explicado</strong><small>Quem vendeu, quem fechou o caixa e quem autorizou</small></div></div>
         </div>
       </div>
     </section>
 
-    <section class="intro-band" aria-label="Foco do produto"><div class="container intro-inner"><span>FEITO PARA A ROTINA DO VAREJO LOCAL</span><p>Uma base de gestão simples de usar, com espaço para sua operação crescer.</p></div></section>
+    <section class="intro-band" aria-label="Quem desenvolve o PDV2"><div class="container intro-inner"><span>Desenvolvido e suportado pela CrownTech</span><ul class="trust-list"><li>Vende mesmo sem internet</li><li>Suporte ao sistema incluso</li><li>14 dias de teste, sem cartão</li></ul></div></section>
 
     <section class="section segments-section" id="segmentos" aria-labelledby="segments-title">
       <div class="container">
@@ -94,13 +131,13 @@
             <div class="segment-main-top"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h18M4 10v10h16V10M3 10l2-6h14l2 6M8 4l-1 6m5-6v6m4-6 1 6M8 20v-6h5v6"/></svg></span><span class="segment-badge">Nosso ponto de partida</span></div>
             <h3>Mercados e mercearias</h3>
             <p>Do primeiro produto ao fechamento do caixa: encontre pelo código de barras, venda por unidade ou peso e acompanhe o que entra e sai do estoque.</p>
-            <ul class="segment-highlights"><li>Leitor de código de barras</li><li>Venda por unidade e quilo</li><li>Conferência do dinheiro no caixa</li><li>Entradas e custo médio de compra</li></ul>
+            <ul class="segment-highlights"><li>Leitor de código de barras</li><li>Venda por unidade e quilo</li><li>Fiado com limite por cliente</li><li>Entrada pelo XML da NF-e</li></ul>
           </article>
           <article class="segment-card"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h4v5l2 3v10H3V11l2-3V3Zm-2 12h8M16 3v3m-2 0h6l-1 8h-4l-1-8Zm3 8v7m-3 0h6"/></svg></span><h3>Conveniências e bebidas</h3><p>Atendimento direto no caixa para itens de giro rápido, bebidas e snacks.</p><span class="segment-use">Código de barras · Caixa · Estoque</span></article>
           <article class="segment-card"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14v9H5zM3 21l2-7h14l2 7H3Zm5-15h8M12 6v4m-4 8h8"/></svg></span><h3>Hortifrútis e granel</h3><p>Venda por unidade ou quilo, com peso informado e preço calculado proporcionalmente.</p><span class="segment-use">Peso fracionado · Preço por kg</span></article>
           <article class="segment-card"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M7 20a3 3 0 0 1-3-3v-6a4 4 0 0 1-1-3c0-3 4-5 9-5s9 2 9 5a4 4 0 0 1-1 3v6a3 3 0 0 1-3 3H7Zm1-9 2 2m3-4 2 2"/></svg></span><h3>Padarias de balcão</h3><p>Venda pães, bebidas e produtos prontos por unidade ou peso no atendimento de balcão.</p><span class="segment-use">Produtos prontos · Venda por peso</span></article>
           <article class="segment-card"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h11l3 3v15H5V3Zm11 0v4h3M8 11h8m-8 4h8M3 7h4m-4 5h4m-4 5h4"/></svg></span><h3>Papelarias e variedades</h3><p>Organize materiais escolares, presentes e pequenos artigos por produto e categoria.</p><span class="segment-use">Categorias · Etiquetas · Inventário</span></article>
-          <article class="segment-card"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3-6 4 3 5 3-2v11h8V10l3 2 3-5-6-4a4 4 0 0 1-8 0Z"/></svg></span><h3>Moda e acessórios</h3><p>Cadastre cada combinação de tamanho e cor como um produto, com preço e estoque próprios.</p><span class="segment-use">SKU por variação · Estoque individual</span></article>
+          <article class="segment-card"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3-6 4 3 5 3-2v11h8V10l3 2 3-5-6-4a4 4 0 0 1-8 0Z"/></svg></span><h3>Moda e acessórios</h3><p>Monte a grade de cor e tamanho uma vez: o sistema gera cada variação com SKU, código de barras e estoque próprios, e o caixa mostra a escolha da variação.</p><span class="segment-use">Grade cor × tamanho · Estoque por variação</span></article>
           <article class="segment-card"><span class="segment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7M5 9v12h14V9M9 21v-7h6v7"/></svg></span><h3>Limpeza e utilidades</h3><p>Controle a venda de produtos de limpeza, artigos domésticos e itens para a casa.</p><span class="segment-use">Fornecedores · Entradas · Custo médio</span></article>
         </div>
         <div class="segments-next-step"><div><strong>Reconheceu a rotina da sua loja?</strong><p>Conheça os recursos e escolha o plano pelo número de lojas, terminais e funções de gestão.</p></div><a class="button ghost" href="#planos">Ver planos <span aria-hidden="true">↗</span></a></div>
@@ -111,21 +148,24 @@
       <div class="container">
         <div class="section-heading"><div><span class="eyebrow">O produto</span><h2>Menos tempo procurando.<br><em>Mais tempo vendendo.</em></h2></div><p>Os segmentos usam os recursos de venda e gestão disponíveis hoje. O acesso às funções e os limites de lojas e terminais dependem do plano.</p></div>
         <div class="feature-grid">
-          <article class="feature feature-featured"><span class="feature-number">01 / CATÁLOGO</span><div class="feature-art"><span class="art-tag">SKU 0001</span><span class="art-card">Arroz integral <b>UN</b></span><span class="art-card lower">Óleo de soja <b>UN</b></span><span class="art-plus">+</span></div><h3>Produtos fáceis de encontrar.</h3><p>Cadastre nome, preço, código de barras, categoria, variação e unidade. O catálogo pode ser consultado pelo time com acesso autorizado.</p></article>
-          <article class="feature"><span class="feature-number">02 / ESTOQUE</span><div class="feature-icon">▣</div><h3>Saldo por loja, com histórico.</h3><p>Registre entradas com o custo de cada compra, acompanhe o custo médio dos produtos e consulte saldos e itens abaixo do estoque mínimo.</p><span class="feature-foot">Histórico de movimentações por loja.</span></article>
+          <article class="feature feature-featured"><span class="feature-number">01 / CAIXA</span><div class="feature-art" aria-hidden="true"><span class="art-tag">F2 Buscar</span><span class="art-card">Arroz integral <b>UN</b></span><span class="art-card lower">Total da venda <b>F10 Pagar</b></span><span class="art-plus">+</span></div><h3>Um caixa rápido, feito para o teclado.</h3><p>O novo caixa mostra total e troco em destaque e uma régua de teclas sempre à vista, de F1 a F12: F2 busca o produto pelo código ou pelo nome, F10 abre o pagamento. Bipe, receba e imprima sem tirar a mão do teclado, mesmo sem internet.</p></article>
+          <article class="feature"><span class="feature-number">02 / ESTOQUE</span><div class="feature-icon">▣</div><h3>Saldo por loja, com histórico.</h3><p>Importe o XML da NF-e do fornecedor: cada item entra com o custo real (desconto, frete, IPI e ST), o custo médio é atualizado e as duplicatas viram contas a pagar. O sistema lembra os códigos de cada fornecedor.</p><span class="feature-foot">Também por planilha ou lançamento manual.</span></article>
           <article class="feature"><span class="feature-number">03 / EQUIPE</span><div class="feature-icon">♙</div><h3>Cada pessoa no seu papel.</h3><p>Permissões por função, PIN separado para o terminal local e trilha de auditoria para alterações importantes.</p><span class="feature-foot">Mais clareza para crescer com segurança.</span></article>
+          <article class="feature feature-compact"><span class="feature-number">04 / CAIXAS</span><div class="feature-icon">▢</div><h3>Conferência sem planilha.</h3><p>Cada turno chega ao painel com abertura, vendas por forma de pagamento, sangrias, suprimentos, valor contado e a quebra. Você vê quem abriu, quem fechou e quem autorizou.</p><span class="feature-foot">Filtro de caixas com falta em um clique.</span></article>
+          <article class="feature feature-compact"><span class="feature-number">05 / COMISSÃO</span><div class="feature-icon">%</div><h3>Comissão calculada sozinha.</h3><p>Defina o percentual de cada vendedor e, se quiser, por categoria. O caixa indica quem vendeu, cancelamentos estornam a comissão e o pagamento vira uma conta a pagar.</p><span class="feature-foot">Nos planos com Financeiro.</span></article>
+          <article class="feature feature-compact"><span class="feature-number">06 / RELATÓRIOS</span><div class="feature-icon">▧</div><h3>Decida com números.</h3><p>Vendas por dia, hora, forma de pagamento, operador e vendedor; curva ABC com lucro bruto; fluxo de caixa; perdas; e sugestão de compra pelo giro dos últimos 30 dias.</p><span class="feature-foot">Exporta para Excel (CSV).</span></article>
         </div>
-        <div class="operation-strip" aria-label="Recursos do terminal disponíveis"><div><span>NO CAIXA</span><strong>Abertura, venda e fechamento</strong><p>Saldo inicial, sangria, suprimento, conferência do dinheiro e diferença de caixa.</p></div><div><span>NO ATENDIMENTO</span><strong>Controle em cada venda</strong><p>Desconto autorizado, venda suspensa, cancelamento e comprovante térmico organizado.</p></div><div><span>NA GESTÃO</span><strong>Vendas por terminal</strong><p>O painel acompanha as vendas recebidas dos terminais e as formas de pagamento registradas.</p></div></div>
+        <div class="operation-strip" aria-label="Recursos do terminal disponíveis"><div><span>NO CAIXA</span><strong>Abertura, venda e fechamento</strong><p>Saldo inicial, sangria, suprimento, conferência do dinheiro e diferença de caixa.</p></div><div><span>NO ATENDIMENTO</span><strong>Promoções, fiado e trocas</strong><p>Leve X pague Y e preço de atacado aplicados sozinhos, venda a prazo com limite por cliente, devolução parcial em dinheiro ou crédito na loja.</p></div><div><span>NA GESTÃO</span><strong>Tudo conferido no painel</strong><p>Vendas por operador e vendedor, turnos de caixa com quebra, comissões e relatórios com os dados que chegam dos terminais.</p></div></div>
       </div>
     </section>
 
     <section class="section flow-section" id="como-funciona">
       <div class="container flow-grid">
-        <div class="flow-copy"><span class="eyebrow">Como funciona</span><h2>Uma empresa.<br>Suas lojas.<br><em>Um painel.</em></h2><p>O painel web organiza os dados de cada empresa. O terminal local envia eventos de venda quando conectado; a equipe acompanha tudo que já foi recebido pelo servidor.</p><a class="text-link" href="/login/?mode=register">Conhecer o acesso antecipado ↗</a></div>
+        <div class="flow-copy"><span class="eyebrow">Como funciona</span><h2>Uma empresa.<br>Suas lojas.<br><em>Um painel.</em></h2><p>O painel web organiza os dados de cada empresa. O terminal local envia eventos de venda quando conectado; a equipe acompanha tudo que já foi recebido pelo servidor.</p><a class="text-link" href="/login/?mode=register">Testar grátis ↗</a></div>
         <div class="flow-steps">
           <div><span>01</span><section><h3>Crie a empresa</h3><p>Cadastre sua conta e defina quem pode acessar cada área do painel.</p></section></div>
           <div><span>02</span><section><h3>Monte a operação</h3><p>Adicione lojas, produtos, fornecedores, estoque e terminais.</p></section></div>
-          <div><span>03</span><section><h3>Acompanhe os registros</h3><p>Consulte vendas sincronizadas, títulos financeiros e eventos de auditoria.</p></section></div>
+          <div><span>03</span><section><h3>Acompanhe e decida</h3><p>Confira os caixas, pague comissões e use os relatórios para saber o que vende, o que dá lucro e o que repor.</p></section></div>
         </div>
       </div>
     </section>
@@ -133,19 +173,19 @@
     <section class="section owner-app-section" id="aplicativo" aria-labelledby="owner-app-title">
       <div class="container owner-app-grid">
         <div class="owner-app-copy">
-          <span class="eyebrow">PDV2 Monitor</span>
+          <span class="eyebrow">App de gestão</span>
           <h2 id="owner-app-title">Perto do seu negócio.<br><em>Mesmo fora da loja.</em></h2>
-          <p>Acompanhe a empresa pelo iPhone com o mesmo login do proprietário. Vendas, recebimentos e terminais em uma visão feita para quem precisa tomar decisões.</p>
+          <p>Um app de gestão gratuito para iPhone e Android, em breve nas lojas de aplicativos. Com o mesmo login do proprietário, você acompanha vendas, recebimentos e terminais em uma visão feita para quem precisa tomar decisões.</p>
           <ul class="owner-app-benefits"><li><strong>O movimento do dia</strong><span>Faturamento, quantidade de vendas e ticket médio.</span></li><li><strong>Os resultados de cada terminal</strong><span>Vendas por caixa, status de conexão e último contato.</span></li><li><strong>Uma visão dos recebimentos</strong><span>Dinheiro, Pix, crédito e débito. Contas a pagar e receber nos planos com financeiro.</span></li></ul>
-          <div class="app-platforms" aria-label="Disponibilidade dos aplicativos">
-            <div class="app-platform app-platform-ios"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4m-3 14h2"/></svg><span><small>App Store</small><strong>Aplicativo para iPhone</strong></span></div>
-            <div class="app-platform app-platform-android"><span class="development-dot" aria-hidden="true"></span><span><small>Android</small><strong>Em desenvolvimento</strong></span></div>
-          </div>
-          <p class="owner-app-note">Acesso de consulta para o proprietário. Os dados são atualizados conforme as vendas chegam dos terminais ao servidor.</p>
+          <ul class="app-platforms" aria-label="Disponibilidade dos aplicativos">
+            <li class="app-platform"><span class="development-dot" aria-hidden="true"></span><span><small>iPhone</small><strong>Em breve na App Store</strong></span></li>
+            <li class="app-platform"><span class="development-dot" aria-hidden="true"></span><span><small>Android</small><strong>Em breve no Google Play</strong></span></li>
+          </ul>
+          <p class="owner-app-note">Enquanto o app não chega às lojas, o painel de gestão funciona no navegador do celular e pode ser instalado na tela inicial. Os dados são atualizados conforme as vendas chegam dos terminais ao servidor.</p>
         </div>
-        <div class="owner-app-visual" aria-label="Representação ilustrativa do aplicativo PDV2 Monitor">
+        <div class="owner-app-visual" role="img" aria-label="Representação ilustrativa do app de gestão do PDV2">
           <div class="monitor-phone"><div class="monitor-phone-speaker" aria-hidden="true"></div><div class="monitor-phone-body">
-            <div class="monitor-brand"><span>2</span> PDV2 Monitor <small>HOJE</small></div>
+            <div class="monitor-brand"><img src="/assets/pdv2-simbolo.svg" alt="" width="23" height="23" loading="lazy"> PDV2 Gestão <small>HOJE</small></div>
             <p class="monitor-eyebrow">VISÃO DO PROPRIETÁRIO</p><h3>Sua loja, por perto.</h3>
             <div class="monitor-revenue"><span>Vendas recebidas no dia</span><strong>R$ —</strong><small>Resumo da sua empresa</small><div class="monitor-chart" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
             <div class="monitor-metrics"><div><span>Vendas</span><strong>—</strong></div><div><span>Ticket médio</span><strong>R$ —</strong></div></div>
@@ -162,14 +202,14 @@
         <div class="plans-heading"><div><span class="eyebrow">Planos para a sua operação</span><h2 id="plans-title">O sistema. Ou o caixa completo.<br><em>Você escolhe como começar.</em></h2></div></div>
         <div class="offer-switch" role="group" aria-label="Tipo de plano"><button type="button" id="offer-software" aria-pressed="true" aria-controls="software-offer">Somente sistema</button><button type="button" id="offer-equipment" aria-pressed="false" aria-controls="equipamentos">Sistema + equipamentos</button></div>
         <div id="software-offer">
-          <div class="software-billing"><p>Assinatura para usar nos equipamentos da sua loja, com suporte ao sistema incluso.</p><div class="billing-switch" role="group" aria-label="Período de cobrança do sistema"><button id="billing-month" type="button" aria-pressed="true">Mensal</button><button id="billing-year" type="button" aria-pressed="false">Anual <span>2 meses de referência</span></button></div></div>
-          <p class="plans-lead">Preços de referência do acesso antecipado. A contratação depende da configuração de cobrança e confirmação da assinatura.</p>
+          <div class="software-billing"><p>Assinatura para usar nos equipamentos da sua loja, com suporte ao sistema incluso.</p><div class="billing-switch" role="group" aria-label="Período de cobrança do sistema"><button id="billing-month" type="button" aria-pressed="true">Mensal</button><button id="billing-year" type="button" aria-pressed="false">Anual <span>2 meses grátis</span></button></div></div>
+          <p class="plans-lead">Teste grátis por 14 dias, sem cartão. A cobrança só começa depois que você confirma a assinatura.</p>
         <div class="plan-grid" id="plan-grid">
-          <article class="plan-card" data-plan="essential"><div class="plan-top"><span>Para começar</span><h3>Essencial</h3><p>A base para organizar a primeira operação.</p></div><div class="plan-price"><strong data-price>R$ 149</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Catálogo de produtos</li><li>Visão geral da operação</li><li>Estoque por loja</li><li data-system-support>Suporte ao sistema incluso</li></ul><a class="button ghost" href="/login/?mode=register">Criar conta de teste</a></article>
-          <article class="plan-card featured-plan" data-plan="management"><div class="popular">Mais espaço para gerir</div><div class="plan-top"><span>Para acompanhar de perto</span><h3>Gestão</h3><p>Mais controle para a rotina da loja.</p></div><div class="plan-price"><strong data-price>R$ 229</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Tudo do Essencial</li><li>Financeiro e títulos</li><li>Relatórios em implantação</li><li data-system-support>Suporte ao sistema incluso</li></ul><a class="button" href="/login/?mode=register">Criar conta de teste</a></article>
-          <article class="plan-card" data-plan="advanced"><div class="plan-top"><span>Para expandir</span><h3>Avançado</h3><p>Uma estrutura maior para a sua operação.</p></div><div class="plan-price"><strong data-price>R$ 349</strong><small data-cycle>/mês</small></div><div class="plan-meta">Até 3 terminais · até 2 lojas</div><ul><li>Tudo do Gestão</li><li>Mais uma loja</li><li>Prioridade de suporte prevista</li><li data-system-support>Suporte ao sistema incluso</li></ul><a class="button ghost" href="/login/?mode=register">Criar conta de teste</a></article>
+          <article class="plan-card" data-plan="essential"><div class="plan-top"><span>Para começar</span><h3>Essencial</h3><p>A base para organizar a primeira operação.</p></div><div class="plan-price"><strong data-price>R$ 149</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Frente de caixa local (funciona offline)</li><li>Fiado com limite, troca e crédito na loja</li><li>Painel de gestão e conferência de caixas</li><li>Estoque por loja</li><li data-system-support>Suporte ao sistema incluso</li></ul><a class="button ghost" href="/login/?mode=register&amp;plan=essential">Testar grátis</a></article>
+          <article class="plan-card featured-plan" data-plan="management"><div class="popular">Mais espaço para gerir</div><div class="plan-top"><span>Para acompanhar de perto</span><h3>Gestão</h3><p>Mais controle para a rotina da loja.</p></div><div class="plan-price"><strong data-price>R$ 229</strong><small data-cycle>/mês</small></div><div class="plan-meta">1 terminal · 1 loja</div><ul><li>Tudo do Essencial</li><li>Financeiro e comissão de vendedores</li><li>Relatórios, curva ABC e exportação CSV</li><li data-system-support>Suporte ao sistema incluso</li></ul><a class="button" href="/login/?mode=register&amp;plan=management">Testar grátis</a></article>
+          <article class="plan-card" data-plan="advanced"><div class="plan-top"><span>Para expandir</span><h3>Avançado</h3><p>Uma estrutura maior para a sua operação.</p></div><div class="plan-price"><strong data-price>R$ 349</strong><small data-cycle>/mês</small></div><div class="plan-meta">Até 3 terminais · até 2 lojas</div><ul><li>Tudo do Gestão</li><li>Mais uma loja</li><li>Prioridade de suporte prevista</li><li data-system-support>Suporte ao sistema incluso</li></ul><a class="button ghost" href="/login/?mode=register&amp;plan=advanced">Testar grátis</a></article>
         </div>
-        <p class="plan-footnote" id="price-source" role="status">Valores de referência para a assinatura do sistema.</p>
+        <p class="plan-footnote">Criar a conta de teste não gera cobrança. O teste de 14 dias começa no plano Essencial.</p>
 
         </div>
         <div id="equipamentos" hidden>
@@ -179,38 +219,57 @@
               <article class="equipment-plan"><span class="equipment-plan-kicker">Para dividir o atendimento</span><h3>2 caixas completos</h3><div class="equipment-price"><strong>R$ 1.299</strong><span>/mês</span></div><p>2 computadores · 2 terminais</p><ul><li>Sistema PDV2</li><li>2 computadores com monitor</li><li>2 impressoras térmicas</li><li>2 leitores de código de barras</li><li>2 nobreaks</li><li>Reposição de bobinas inclusa</li><li>Suporte ao sistema e aos equipamentos incluso</li><li>Manutenção inclusa por nossa conta</li></ul></article>
               <article class="equipment-plan"><span class="equipment-plan-kicker">Para uma operação maior</span><h3>3 caixas completos</h3><div class="equipment-price"><strong>R$ 1.899</strong><span>/mês</span></div><p>3 computadores · 3 terminais</p><ul><li>Sistema PDV2</li><li>3 computadores com monitor</li><li>3 impressoras térmicas</li><li>3 leitores de código de barras</li><li>3 nobreaks</li><li>Reposição de bobinas inclusa</li><li>Suporte ao sistema e aos equipamentos incluso</li><li>Manutenção inclusa por nossa conta</li></ul></article>
           </div>
-          <div class="equipment-bottom"><div><strong>Mensalidades sugeridas para os pacotes completos.</strong><p>Modelos, prazo de contratação e volume de reposição de bobinas são definidos na proposta. Os valores desta modalidade incluem o sistema, os equipamentos indicados, todo o suporte e a manutenção por nossa equipe.</p></div><a class="button" href="/login/?mode=register">Conhecer o sistema ↗</a></div>
-          <p class="plan-footnote">A conta de teste permite conhecer o sistema. O pacote com equipamentos é contratado mediante proposta.</p>
+          <div class="equipment-bottom"><div><strong>Pacotes completos contratados por proposta da CrownTech.</strong><p>Modelos, prazo de contratação e volume de reposição de bobinas são definidos na proposta. Os valores desta modalidade incluem o sistema, os equipamentos indicados, todo o suporte e a manutenção por nossa equipe.</p></div><a class="button" href="https://crowntech.com.br" target="_blank" rel="noopener">Falar com a CrownTech ↗</a></div>
+          <p class="plan-footnote">A conta de teste permite conhecer o sistema antes de pedir a proposta do pacote com equipamentos.</p>
         </div>
       </div>
     </section>
 
-    <section class="section honesty-section" aria-labelledby="setup-title">
-      <div class="container"><div class="honesty-grid"><div><span class="eyebrow">Implantação na sua loja</span><h2 id="setup-title">Os recursos de hoje,<br>com o alcance bem definido.</h2></div><p>O caixa local já registra vendas e imprime comprovantes. A implantação considera os equipamentos da loja e a conclusão da configuração fiscal antes da operação comercial.</p></div>
-        <div class="setup-grid">
-          <article><span>01 / EQUIPAMENTOS</span><h3>Conexões configuradas</h3><p>Leitores que funcionam como teclado e impressão térmica configurada no terminal. Balanças e impressoras de etiquetas precisam ser verificadas por modelo e protocolo; o peso pode ser digitado.</p></article>
-          <article><span>02 / PAGAMENTOS</span><h3>Registro pelo operador</h3><p>Dinheiro, Pix, crédito e débito, incluindo pagamento dividido. A confirmação do Pix e a transação na maquininha são feitas fora do PDV.</p></article>
-          <article><span>03 / FISCAL</span><h3>Comprovante de venda</h3><p>O comprovante térmico já está disponível. A emissão de NFC-e em produção ainda depende da integração fiscal e da homologação.</p></article>
-        </div>
+    <section class="section maker-section" id="quem-faz" aria-labelledby="maker-title">
+      <div class="container maker-grid">
+        <img class="maker-logo" src="/assets/pdv2-por-crowntech-empilhado.svg" alt="PDV2 por CrownTech" width="220" height="256" loading="lazy">
+        <div class="maker-copy"><span class="eyebrow">Quem faz o PDV2</span><h2 id="maker-title">Um produto CrownTech.</h2><p>O PDV2 é desenvolvido, mantido e suportado pela CrownTech. Quem evolui o sistema é a mesma empresa que atende a sua loja, do pareamento do primeiro caixa às atualizações de cada versão.</p><p>O suporte ao sistema está incluso em todos os planos. Nos pacotes com equipamentos, a manutenção dos equipamentos também fica por nossa conta.</p><a class="text-link" href="https://crowntech.com.br" target="_blank" rel="noopener">Falar com a CrownTech ↗</a></div>
       </div>
     </section>
 
     <section class="section faq-section" id="perguntas"><div class="container faq-grid"><div><span class="eyebrow">Perguntas comuns</span><h2>Para começar com clareza.</h2></div><div class="faq-list">
+      <details><summary>Quem desenvolve e dá suporte ao PDV2?</summary><p>A CrownTech. O PDV2 é um produto CrownTech, e o suporte ao sistema é prestado pela mesma equipe que o desenvolve. Conheça a empresa em <a href="https://crowntech.com.br" target="_blank" rel="noopener">crowntech.com.br</a>.</p></details>
       <details><summary>Qual suporte está incluído nos planos somente sistema?</summary><p>Todos os planos somente sistema incluem suporte técnico ao PDV2. O suporte e a manutenção de computadores, impressoras, leitores e nobreaks não estão incluídos nessa modalidade; fazem parte dos pacotes Sistema + equipamentos.</p></details>
       <details><summary>O que está incluído no plano com equipamentos?</summary><p>Sistema PDV2, computadores com monitor, impressoras térmicas de cupons, leitores de código de barras, nobreaks e reposição de bobinas, além de todo o suporte e a manutenção do sistema e dos equipamentos. A quantidade de kits acompanha os caixas contratados; a proposta detalha os equipamentos, o prazo e a reposição.</p></details>
       <details><summary>Quem cuida do suporte e da manutenção dos pacotes com equipamentos?</summary><p>Nossa equipe é responsável por todo o suporte técnico e pela manutenção do sistema e dos equipamentos fornecidos. Esses serviços estão incluídos na mensalidade de todos os pacotes com equipamentos.</p></details>
       <details><summary>Como os computadores influenciam a quantidade de terminais?</summary><p>Cada computador de caixa fornecido corresponde a um terminal no pacote: um computador para um caixa, dois para dois caixas e assim por diante. A quantidade aparece na proposta e na licença contratada.</p></details>
-      <details><summary>Posso acompanhar a empresa pelo celular?</summary><p>Sim. O PDV2 Monitor para iPhone permite ao proprietário acompanhar vendas, recebimentos e terminais com o mesmo login. O app usa os dados sincronizados pela empresa. A versão para Android está em desenvolvimento.</p></details>
+      <details><summary>Consigo fazer promoções?</summary><p>Sim. Em Promoções, crie preço promocional por período, "leve 3 pague 2" ou preço de atacado a partir de uma quantidade, para um produto ou uma categoria inteira. O caixa aplica sozinho, mesmo sem internet, mostra a promoção no carrinho e no comprovante e escolhe a melhor para o cliente quando mais de uma vale. O relatório de promoções mostra quanto cada uma vendeu e quanto foi concedido de desconto.</p></details>
+      <details><summary>Como faço inventário?</summary><p>Em Inventário, o gerente abre a contagem da loja (toda ou por categoria). A equipe conta pelo celular, bipando com leitor, usando a câmera ou digitando o código; no modo cego, quem conta não vê o saldo esperado. A loja pode continuar vendendo: o ajuste considera o saldo do momento em que cada item foi contado. No fechamento, o gerente vê sobras e faltas em quantidade e em valor e aplica o ajuste em lote.</p></details>
+      <details><summary>Tenho mais de uma loja. Posso transferir mercadoria?</summary><p>Sim, no plano com mais de uma loja. Em Estoque, use "Transferir": o estoque sai da origem e fica em trânsito até a loja de destino confirmar o recebimento, informando o que chegou de fato. Divergências ficam registradas e a transferência pode ser cancelada antes do recebimento.</p></details>
+      <details><summary>Consigo dar entrada pelo XML da nota do fornecedor?</summary><p>Sim. Em Estoque, use "Importar XML da NF-e". O sistema reconhece o fornecedor pelo CNPJ, sugere o produto de cada item pelo código já usado antes ou pelo código de barras, converte embalagens (um fardo com 12 vira 12 unidades), calcula o custo real com desconto, frete, IPI e ST, e cria as contas a pagar das duplicatas. A mesma nota não entra duas vezes.</p></details>
+      <details><summary>Vendo roupas e calçados. Como cadastro tamanhos e cores?</summary><p>Em Produtos, use "Nova grade": informe o nome, o preço e os atributos (por exemplo Cor: Azul, Preto e Tamanho: P, M, G). Cada combinação vira um produto com SKU, código de barras e estoque próprios. No caixa, a grade aparece como um único card e o operador escolhe a variação; o leitor de código de barras vai direto na variação certa.</p></details>
+      <details><summary>Posso vender fiado?</summary><p>Sim, em todos os planos. Defina o limite de fiado de cada cliente no cadastro. No caixa, escolha o cliente e a forma "A prazo": o sistema mostra quanto ainda está disponível e pede o PIN de um gerente se a compra passar do limite, mesmo sem internet. Cada venda vira uma parcela no extrato do cliente, com vencimento, e o recebimento é registrado pelo painel.</p></details>
+      <details><summary>Como funcionam trocas e devoluções?</summary><p>No histórico de vendas do caixa, escolha "Devolver", informe os itens e as quantidades e como devolver o valor: em dinheiro (sai do caixa), em crédito na loja ou abatido do fiado. O estoque volta automaticamente e a comissão é ajustada. Para uma troca, devolva em crédito na loja e use esse crédito como pagamento na nova venda. A devolução exige o PIN de um gerente.</p></details>
+      <details><summary>Como funciona a comissão dos vendedores?</summary><p>Você define o percentual de cada pessoa em Equipe e, se quiser, um percentual diferente por categoria. No caixa, o operador escolhe quem vendeu (ou a comissão fica com o próprio operador). A comissão é calculada quando a venda chega ao painel, é estornada se a venda for cancelada e, ao pagar, vira uma conta a pagar no Financeiro. Disponível nos planos com Financeiro.</p></details>
+      <details><summary>Quais relatórios estão disponíveis?</summary><p>Vendas por dia, hora, forma de pagamento, operador e vendedor; curva ABC com lucro bruto por produto; lucro por dia; fluxo de caixa realizado e previsto; perdas e ajustes de estoque; e estoque baixo com sugestão de compra pelo giro dos últimos 30 dias. Todos podem ser exportados em CSV para Excel. O lucro usa o custo médio cadastrado nas entradas de estoque. Disponível nos planos com Relatórios.</p></details>
+      <details><summary>Como confiro o caixa no fim do dia?</summary><p>O fechamento no terminal exige o PIN de um gerente. No painel, a tela Caixas mostra cada turno com abertura, vendas por forma de pagamento, sangrias, suprimentos, valor esperado, valor contado e a diferença, com o nome de quem abriu, fechou e autorizou.</p></details>
+      <details><summary>Posso acompanhar a empresa pelo celular?</summary><p>Sim. O painel de gestão funciona no navegador do celular e pode ser instalado na tela inicial. O app de gestão, gratuito para iPhone e Android, chega em breve às lojas de aplicativos: com o mesmo login, o proprietário acompanha vendas, recebimentos e terminais com os dados sincronizados pela empresa.</p></details>
+      <details><summary>Quais equipamentos funcionam com o PDV2?</summary><p>Leitores de código de barras que funcionam como teclado e impressão térmica de 58 ou 80 mm configurada no terminal. Balanças e impressoras de etiquetas precisam ser verificadas por modelo e protocolo; enquanto isso, o peso pode ser digitado no caixa.</p></details>
+      <details><summary>Como o caixa registra os pagamentos?</summary><p>O operador registra dinheiro, Pix, crédito, débito e fiado, inclusive com pagamento dividido. A confirmação do Pix e a transação na maquininha são feitas fora do PDV2.</p></details>
+      <details><summary>O PDV2 emite NFC-e?</summary><p>O caixa já imprime o comprovante de venda não fiscal. A emissão de NFC-e ainda depende da integração e da homologação fiscal; a implantação na loja considera a conclusão dessa configuração antes da operação comercial.</p></details>
       <details><summary>Quais tipos de empresa podem usar o PDV2 hoje?</summary><p>O foco é o varejo de produtos no balcão: mercados, mercearias, conveniências, bebidas, hortifrútis, granel, padarias de balcão, papelarias, variedades, moda, acessórios, limpeza e utilidades. Os exemplos acima representam rotinas atendidas pelos recursos atuais, com implantação conforme a necessidade de cada loja.</p></details>
-      <details><summary>E se minha empresa precisar de funções específicas?</summary><p>Mesas, comandas, cozinha, delivery, agendamento, ordens de serviço, produção e controle de lote ou validade ainda precisam de módulos próprios. Farmácias e outras operações com processos especializados também exigem desenvolvimento específico.</p></details>
+      <details><summary>E se minha empresa precisar de funções específicas?</summary><p>Mesas, comandas, cozinha, delivery, agendamento, ordens de serviço, produção e controle de lote ou validade ainda precisam de módulos próprios. A emissão de NFC-e de venda depende da homologação fiscal. Farmácias e outras operações com processos especializados também exigem desenvolvimento específico.</p></details>
       <details><summary>Já posso escolher meu segmento na contratação?</summary><p>Essa é uma evolução planejada: escolher o tipo de empresa e receber uma configuração adequada à sua rotina. Hoje, você cria a conta e configura o catálogo, a equipe e os terminais nas funções disponíveis.</p></details>
       <details><summary>O caixa funciona sem internet?</summary><p>O terminal instalado e conectado previamente à empresa pode registrar vendas localmente enquanto a licença offline estiver válida. Os registros são enviados quando a conexão volta; o painel e o aplicativo mostram os dados já sincronizados.</p></details>
       <details><summary>Posso ter mais de uma loja ou terminal?</summary><p>Os limites dependem do plano e aparecem na assinatura. O painel organiza as lojas e os terminais vinculados à empresa, com acesso separado por operador. Nos pacotes com equipamentos, a quantidade de computadores de caixa define os terminais contratados.</p></details>
-      <details><summary>Como funciona a assinatura?</summary><p>Os planos de sistema mostram os valores cadastrados na plataforma. Os pacotes com equipamentos têm mensalidades de referência e contratação por proposta. A cobrança depende da confirmação da assinatura; criar uma conta de teste não realiza um pagamento.</p></details>
+      <details><summary>Como funciona a assinatura?</summary><p>Os planos de sistema têm os valores exibidos nesta página, no mensal ou no anual. Os pacotes com equipamentos são contratados por proposta da CrownTech. O teste dura 14 dias e não pede cartão; a cobrança depende da confirmação da assinatura, e criar uma conta de teste não realiza um pagamento.</p></details>
     </div></div></section>
 
-    <section class="closing"><div class="container closing-inner"><div><span class="eyebrow">PDV2 · Maricá</span><h2>Seu próximo passo começa aqui.</h2><p>Conheça o caixa e a gestão com os produtos e a rotina da sua loja.</p></div><a class="button closing-button" href="/login/?mode=register">Criar conta de teste ↗</a></div></section>
+    <section class="closing"><div class="container closing-inner"><div><span class="eyebrow">PDV2 por CrownTech</span><h2>Seu próximo passo começa aqui.</h2><p>Conheça o caixa e a gestão com os produtos e a rotina da sua loja.</p></div><div class="closing-actions"><a class="button closing-button" href="/login/?mode=register">Testar grátis ↗</a><a class="closing-link" href="https://crowntech.com.br" target="_blank" rel="noopener">Falar com a CrownTech ↗</a></div></div></section>
   </main>
-  <footer class="site-footer"><div class="container footer-inner"><a class="brand" href="/" aria-label="PDV2, início"><span class="brand-mark" aria-hidden="true">2</span><span>PDV<strong>2</strong></span></a><p>Gestão para o varejo local. Acesso antecipado.</p><a href="/login/">Acessar painel ↗</a></div></footer>
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-brand"><a href="/" aria-label="PDV2 por CrownTech, início"><img src="/assets/pdv2-por-crowntech-negativo.svg" alt="" width="214" height="36" loading="lazy"></a><p>Sistema de caixa e gestão para o varejo local.</p></div>
+      <nav class="footer-column" aria-labelledby="footer-product"><h2 id="footer-product">Produto</h2><a href="#segmentos">Para quem é</a><a href="#produto">Recursos</a><a href="#aplicativo">App de gestão</a><a href="#planos">Planos</a><a href="#perguntas">Perguntas</a><a href="/login/">Acessar painel</a></nav>
+      <nav class="footer-column" aria-labelledby="footer-company"><h2 id="footer-company">CrownTech</h2><a href="#quem-faz">Quem faz o PDV2</a><a href="https://crowntech.com.br" target="_blank" rel="noopener">crowntech.com.br</a><a href="https://crowntech.com.br" target="_blank" rel="noopener">Falar com a CrownTech</a></nav>
+      <div class="footer-column"><h2>Legal</h2><p>© 2026 CrownTech. Todos os direitos reservados.</p><p>Criar uma conta de teste não gera cobrança.</p><p>A emissão de NFC-e depende de integração e homologação fiscal.</p></div>
+    </div>
+    <div class="container footer-bottom"><p>PDV2 · um produto CrownTech · <a href="https://crowntech.com.br" target="_blank" rel="noopener">crowntech.com.br</a></p></div>
+  </footer>
 </body>
 </html>

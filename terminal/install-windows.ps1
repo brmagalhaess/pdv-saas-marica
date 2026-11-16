@@ -1,3 +1,8 @@
+# LEGADO - instalador de DESENVOLVIMENTO. Não use em cliente.
+# Exige Python 3.12 e internet, instala por usuário em %LOCALAPPDATA%\PDV2, sem serviço
+# e sem atualização automática. O instalador comercial é gerado por installer\build.ps1
+# (PDV2-Instalar-<versão>.exe) e migra os dados desta instalação para %ProgramData%\PDV2.
+# Consulte docs\INSTALADOR-WINDOWS.md.
 param(
     [string]$SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")),
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "PDV2"),
@@ -5,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Write-Warning "Instalador de desenvolvimento (legado). Para clientes use o PDV2-Instalar.exe gerado por installer\build.ps1."
 $Python = Get-Command py -ErrorAction SilentlyContinue
 if (-not $Python) { throw "Python 3.12 não encontrado. Instale Python e execute novamente." }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null

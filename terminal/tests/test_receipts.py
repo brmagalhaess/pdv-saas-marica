@@ -32,7 +32,7 @@ class ReceiptLayoutTests(unittest.TestCase):
                 self.assertIn("123.456.789-09", text)
                 self.assertIn("0,350 KG", text)
                 self.assertIn("03/10/2026 14:33:23", text)  # Sao Paulo; independent of host TZ
-                self.assertTrue(any(line.startswith("Troco") and line.endswith("R$ 7,40") for line in lines))
+                self.assertTrue(any(line.startswith("Troco R$") and line.endswith(" 7,40") for line in lines))
 
     def test_thermal_output_uses_the_same_lines_and_full_print_area(self):
         for width, dots in ((80, 576), (58, 384)):
@@ -40,7 +40,8 @@ class ReceiptLayoutTests(unittest.TestCase):
             self.assertIn(b"\x1dW" + dots.to_bytes(2, "little"), payload)
             self.assertIn(b"\x1bM\x00", payload)  # font A
             self.assertIn(b"\x1bt\x02", payload)  # CP850, including Portuguese accents
-            self.assertIn(b"\x1ba\x01\x1bE\x01\x1d!\x11Mercado", payload)
+            # Double width only on 80 mm; 58 mm would be left with 16 columns.
+            self.assertIn(b"\x1ba\x01\x1bE\x01\x1d!" + (b"\x11" if width == 80 else b"\x01") + b"Mercado", payload)
             self.assertTrue(payload.endswith(b"\x1dVB\xa0"))  # 20 mm before cut
             for block in receipt_layout(self.sale, width)["blocks"]:
                 for line in block.get("lines", []):
@@ -53,7 +54,7 @@ class ReceiptLayoutTests(unittest.TestCase):
         self.assertNotIn(b"None", payload)
         self.assertNotIn(b"CNPJ/CPF:", payload)
         self.assertNotIn(b"\x1d(k", payload)
-        self.assertIn(b"COMPROVANTE NAO FISCAL", payload)
+        self.assertIn("NÃO É DOCUMENTO FISCAL".encode("cp850"), payload)
 
     def test_authorized_key_is_complete_and_qr_prints(self):
         self.sale["fiscal"] = {"authorized": True, "access_key": "12345678901" * 4,
@@ -72,7 +73,8 @@ class ReceiptLayoutTests(unittest.TestCase):
         for width, columns in ((58, 32), (80, 48)):
             layout = receipt_layout(self.sale, width)
             title = layout["blocks"][0]
-            self.assertTrue(all(len(line) * 2 <= columns for line in title["lines"]))
+            scale = 2 if title["wide"] else 1
+            self.assertTrue(all(len(line) * scale <= columns for line in title["lines"]))
             qr = next(b for b in layout["blocks"] if b["kind"] == "qr")
             self.assertLessEqual(qr["width_mm"], layout["printable_width_mm"] + 0.1)
             self.assertGreaterEqual(qr["module_size"], 1)

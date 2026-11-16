@@ -11,6 +11,20 @@ from shared.licensing import generate_keypair
 root=Path(__file__).resolve().parents[1]
 runtime=root/'.runtime'
 runtime.mkdir(exist_ok=True,mode=0o700)
+def write_secret(name,contents):
+    target=runtime/name
+    with target.open('x') as stream:stream.write(contents)
+    # Compose file secrets retain host mode. The private parent is 0700 on the host;
+    # mounted files must be readable by the unprivileged UID inside the container.
+    target.chmod(0o444 if name.endswith('.pem') else 0o600)
+
+# Release manifests are signed with their own key pair. Installations created
+# before it existed get one here; nothing already present is overwritten.
+release_files=[runtime/'release-private.pem',runtime/'release-public.pem']
+if not any(path.exists() for path in release_files):
+    for name,contents in zip(('release-private.pem','release-public.pem'),generate_keypair()):write_secret(name,contents)
+elif not all(path.exists() for path in release_files):
+    raise SystemExit('Par de chaves de versões incompleto em .runtime; restaure ou remova os dois arquivos release-*.pem.')
 env=runtime/'local.env'
 if env.exists():
     print('Configuração local já existe; preservada. Acessos em .runtime/access.txt')
@@ -29,9 +43,5 @@ values={
 for name,contents in [('license-private.pem',private),('license-public.pem',public),
                       ('local.env',''.join(f'{k}={v}\n' for k,v in values.items())),
                       ('access.txt',f"PDV2 — apenas esta instalação local\n\nSaaS: http://127.0.0.1:8000/platform/\nUsuário: admin@pdv2.local\nSenha: {values['PDV_ADMIN_PASSWORD']}\n\nEmpresa: http://127.0.0.1:8000/app/\nUsuário: gestor@pdv2.local\nSenha: {values['PDV_DEMO_PASSWORD']}\nPIN do gestor no terminal: {values['PDV_DEMO_PIN']}\n\nTerminal: http://127.0.0.1:8010/\nServidor no Docker local: http://cloud:8080\nCadastre um terminal na empresa e use o código de pareamento.\n")]:
-    target=runtime/name
-    with target.open('x') as stream:stream.write(contents)
-    # Compose file secrets retain host mode. The private parent is 0700 on the host;
-    # mounted files must be readable by the unprivileged UID inside the container.
-    target.chmod(0o444 if name.endswith('.pem') else 0o600)
+    write_secret(name,contents)
 print('Segredos criados. Acessos gravados em .runtime/access.txt; nenhum segredo foi impresso.')

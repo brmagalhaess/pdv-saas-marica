@@ -215,10 +215,10 @@ def platform_plans(request):
     method(request, "GET", "POST")
     user = platform_user(request, roles={"platform_billing"})
     if request.method == "GET":
-        return page(request, Plan.objects.all().order_by("price_month_cents", "id"), plan_data)
+        return page(request, Plan.objects.all().order_by("price_month_cents", "id"), _plan)
     data = payload(request)
     required = ("slug", "name", "price_month_cents", "price_year_cents", "terminal_limit", "shop_limit", "features")
-    fields(data, required + ("active",), required)
+    fields(data, required + ("active", "offline_days", "max_stations"), required)
     values = _plan_values(data)
     try:
         with transaction.atomic():
@@ -226,7 +226,11 @@ def platform_plans(request):
             audit(None, user, "platform.plan_created", row)
     except IntegrityError:
         raise APIError("Plano duplicado", 409)
-    return JsonResponse(plan_data(row), status=201)
+    return JsonResponse(_plan(row), status=201)
+
+
+def _plan(row):
+    return {**plan_data(row), "offline_days": row.offline_days}
 
 
 def _plan_values(data):
@@ -243,6 +247,12 @@ def _plan_values(data):
         elif key in ("terminal_limit", "shop_limit"):
             if type(value) is not int or not 1 <= value <= 1000:
                 raise APIError("Limite inválido")
+        elif key == "offline_days":
+            if type(value) is not int or not 1 <= value <= 45:
+                raise APIError("Dias sem internet deve ficar entre 1 e 45")
+        elif key == "max_stations":
+            if type(value) is not int or not 0 <= value <= 50:
+                raise APIError("Caixas adicionais por loja deve ficar entre 0 e 50")
         elif key == "features":
             if not isinstance(value, list) or len(value) > 100 or any(not isinstance(x, str) or len(x) > 80 for x in value):
                 raise APIError("Recursos inválidos")
@@ -261,9 +271,9 @@ def platform_plan_detail(request, pk):
     if not row:
         raise APIError("Plano não encontrado", 404)
     if request.method == "GET":
-        return JsonResponse(plan_data(row))
+        return JsonResponse(_plan(row))
     data = payload(request)
-    fields(data, ("name", "price_month_cents", "price_year_cents", "terminal_limit", "shop_limit", "features", "active"))
+    fields(data, ("name", "price_month_cents", "price_year_cents", "terminal_limit", "shop_limit", "offline_days", "max_stations", "features", "active"))
     if not data:
         raise APIError("Informe ao menos um campo")
     values = _plan_values(data)
@@ -280,7 +290,7 @@ def platform_plan_detail(request, pk):
             setattr(row, key, value)
         row.save()
         audit(None, user, "platform.plan_updated", row, {"fields": list(values)})
-    return JsonResponse(plan_data(row))
+    return JsonResponse(_plan(row))
 
 
 @endpoint

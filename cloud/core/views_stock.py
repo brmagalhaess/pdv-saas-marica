@@ -4,17 +4,14 @@ from django.db.models import Q, Sum
 from django.http import JsonResponse
 
 from .api_common import APIError, audit, digest, endpoint, fields, membership_context, method, money, page, payload, product_quantity, scoped, text
-from .models import Product, Shop, StockMovement, StockReceipt, StockReceiptItem, Supplier
+from .models import Product, Shop, StockMovement, StockReceipt, StockReceiptItem, StockTransferItem, Supplier
 from .serializers import movement as movement_data, receipt as receipt_data
+from .stock_balance import balance, balances, tenant_quantity
 
 
 STOCK_READ = {"owner", "admin", "manager", "inventory", "finance", "viewer"}
 STOCK_WRITE = {"owner", "admin", "manager", "inventory"}
 
-
-def balance(tenant, shop, product):
-    return (StockMovement.objects.filter(tenant=tenant, shop=shop, product=product)
-            .aggregate(value=Sum("delta_milli"))["value"] or 0)
 
 
 def _paging(request):
@@ -31,7 +28,8 @@ def _paging(request):
 @endpoint
 def stock(request):
     method(request, "GET")
-    member = membership_context(request)
+    # Not for the cashier: the balance would defeat the blind inventory count.
+    member = membership_context(request, roles=STOCK_READ)
     shop = scoped(Shop, member.tenant, request.GET.get("shop_id"))
     query = request.GET.get("q", "").strip()
     if len(query) > 120:
@@ -42,13 +40,12 @@ def stock(request):
     limit, offset = _paging(request)
     rows = list(products.order_by("name", "id")[offset:offset + limit + 1])
     shown = rows[:limit]
-    values = (StockMovement.objects.filter(tenant=member.tenant, shop=shop, product_id__in=[p.id for p in shown])
-              .values("product_id").annotate(value=Sum("delta_milli")))
-    quantities = {row["product_id"]: row["value"] for row in values}
+    quantities = balances(member.tenant, shop, [p.id for p in shown])
     return JsonResponse({"results": [{"product_id": str(p.id), "sku": p.sku, "name": p.name,
                                       "unit": p.unit, "quantity_milli": quantities.get(p.id, 0),
+                                      "stock_controlled": p.stock_controlled,
                                       "stock_minimum_milli": p.stock_minimum_milli,
-                                      "below_minimum": quantities.get(p.id, 0) < p.stock_minimum_milli}
+                                      "below_minimum": p.stock_controlled and quantities.get(p.id, 0) < p.stock_minimum_milli}
                                      for p in shown],
                          "next_cursor": str(offset + limit) if len(rows) > limit else None})
 
@@ -61,7 +58,7 @@ def movements(request):
     tenant = member.tenant
     if request.method == "GET":
         shop = scoped(Shop, tenant, request.GET.get("shop_id"))
-        rows = StockMovement.objects.filter(tenant=tenant, shop=shop)
+        rows = StockMovement.objects.filter(tenant=tenant, shop=shop).select_related("product")
         product_id = request.GET.get("product_id")
         if product_id:
             product = scoped(Product, tenant, product_id)
@@ -72,6 +69,8 @@ def movements(request):
            ("shop_id", "product_id", "delta_milli", "reason", "idempotency_key"))
     shop = scoped(Shop, tenant, data["shop_id"])
     product = scoped(Product, tenant, data["product_id"])
+    if not product.stock_controlled:
+        raise APIError("Produto de produção própria não usa controle de estoque")
     delta = product_quantity(product, data["delta_milli"], allow_negative=True)
     reason = text(data["reason"], "Motivo", 240)
     key = text(data["idempotency_key"], "Chave de repetição", 160)
@@ -100,7 +99,7 @@ def receipts(request):
                                 write=request.method == "POST")
     tenant = member.tenant
     if request.method == "GET":
-        rows = StockReceipt.objects.filter(tenant=tenant).prefetch_related("items__product")
+        rows = StockReceipt.objects.filter(tenant=tenant).select_related("supplier").prefetch_related("items__product")
         shop_id = request.GET.get("shop_id")
         if shop_id:
             rows = rows.filter(shop=scoped(Shop, tenant, shop_id))
@@ -139,6 +138,8 @@ def receipts(request):
         product = scoped(Product, tenant, item["product_id"])
         if product.id in seen or not product.active:
             raise APIError("Produto repetido ou inativo")
+        if not product.stock_controlled:
+            raise APIError("Produto de produção própria não usa entrada de estoque")
         seen.add(product.id)
         prepared.append((product, product_quantity(product, item["quantity_milli"]),
                          money(item["unit_cost_cents"], "Custo da entrada")))
@@ -146,24 +147,38 @@ def receipts(request):
                            "reference": reference, "source_file": {"name": source_name, "mime": source_mime,
                                                                       "size": source_size, "sha256": source_hash},
                            "items": sorted([(str(p.id), qty, cost) for p, qty, cost in prepared])})
+    row, created = record_receipt(tenant, member.user, shop, supplier, reference, key, content_hash, prepared,
+                                  (source_name, source_mime, source_size, source_hash))
+    return JsonResponse(receipt_data(row), status=201 if created else 200)
+
+
+def record_receipt(tenant, actor, shop, supplier, reference, key, content_hash, prepared, source=("", "", 0, "")):
+    """Stock entry with weighted-average cost; idempotent by `key`.
+
+    `prepared` is [(product, quantity_milli, unit_cost_cents)] with one line per
+    product. Returns (receipt, created).
+    """
+    source_name, source_mime, source_size, source_hash = source
     with transaction.atomic():
         type(tenant).objects.select_for_update().get(pk=tenant.pk)
         previous = StockReceipt.objects.filter(tenant=tenant, idempotency_key=key).first()
         if previous:
             if previous.content_hash != content_hash:
                 raise APIError("Chave já usada com outros dados", 409)
-            return JsonResponse(receipt_data(previous))
+            return previous, False
         row = StockReceipt.objects.create(tenant=tenant, shop=shop, supplier=supplier,
                                           reference=reference, source_file_name=source_name,
                                           source_file_mime=source_mime, source_file_sha256=source_hash,
                                           source_file_size=source_size, idempotency_key=key,
-                                          content_hash=content_hash, created_by=member.user)
+                                          content_hash=content_hash, created_by=actor)
         for product, qty, cost in prepared:
             # Receipts are the only source of purchase cost.  Product.cost_cents
             # stores the weighted moving average used by margin reports.
             product = Product.objects.select_for_update().get(pk=product.pk)
-            previous_quantity = (StockMovement.objects.filter(tenant=tenant, product=product)
-                                 .aggregate(value=Sum("delta_milli"))["value"] or 0)
+            # Goods in transit between shops are in no balance but still owned at the old cost.
+            in_transit = (StockTransferItem.objects.filter(transfer__tenant=tenant, transfer__status="sent", product=product)
+                          .aggregate(v=Sum("quantity_milli"))["v"] or 0)
+            previous_quantity = tenant_quantity(tenant, product) + in_transit
             if previous_quantity > 0 and product.cost_cents not in (None, 0):
                 total_quantity = previous_quantity + qty
                 average = ((previous_quantity * product.cost_cents) + (qty * cost)
@@ -175,9 +190,9 @@ def receipts(request):
                                             average_cost_cents=average)
             StockMovement.objects.create(tenant=tenant, shop=shop, product=product,
                                          delta_milli=qty, source="receipt", reason="Entrada de mercadoria",
-                                         reference=reference or str(row.id), actor=member.user,
+                                         reference=reference or str(row.id), actor=actor,
                                          idempotency_key=f"receipt:{row.id}:{product.id}")
             product.cost_cents = average
             product.save(update_fields=["cost_cents", "updated_at"])
-        audit(tenant, member.user, "stock.received", row)
-    return JsonResponse(receipt_data(row), status=201)
+        audit(tenant, actor, "stock.received", row)
+    return row, True

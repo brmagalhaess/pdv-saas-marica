@@ -29,12 +29,37 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python cloud/manage.py makemigrations --check --dry-run
+      - name: Production settings load and pass the deploy check
+        run: python cloud/manage.py check --deploy
+        env:
+          PDV_ENV: production
+          PDV_DEBUG: '0'
+          PDV_SECRET_KEY: ci-only-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ
+          PDV_ALLOWED_HOSTS: pdv.example.test
+          PDV_LICENSE_PRIVATE_KEY: ci-only-not-a-real-key
       - run: python cloud/manage.py test core operations -v 2
       - run: python -m unittest discover -s shared/tests -v
       - run: python -m unittest discover -s integrations/tests -v
       - run: python -m unittest discover -s terminal/tests -v
         env:
           DATABASE_URL: ''
-      - run: node --input-type=module --check < web/assets/app.js && node --check terminal/static/terminal.js
+      - name: Backup script and dependency audit tests
+        run: python -m unittest discover -s tests -p 'test_infra_*.py' -v
+      - run: node --input-type=module --check < web/assets/app.js && node --check terminal/static/terminal.js && node --check terminal/static/station.js && node --check terminal/static/terminal-core.js
+      - run: node --input-type=module --check < web/assets/core.js && node --check web/sw.js
+      - name: Panel unit tests
+        run: node --test web/tests/painel-core.test.mjs
       - run: docker build -f infra/Dockerfile.cloud -t pdv2-cloud:ci .
       - run: docker build -f infra/Dockerfile.terminal -t pdv2-terminal:ci .
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install pip-audit==2.10.1
+      # Fails for vulnerabilities that already have a fixed release; those
+      # without one are reported as warnings (scripts/audit_dependencies.py).
+      - run: python scripts/audit_dependencies.py -r requirements.txt -r terminal/requirements.txt

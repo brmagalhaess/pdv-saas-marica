@@ -1,5 +1,32 @@
 # Estado real do PDV2 V2
 
+## Novembro/2026: o que mudou
+
+16/11/2026. A [auditoria de novembro/2026](AUDITORIA-2026-11.md) encontrou quatro defeitos críticos. Os quatro foram corrigidos no código, com teste de regressão. Nada disso foi para produção ainda: o ambiente continua local.
+
+| Defeito crítico | O que era | Como ficou |
+|---|---|---|
+| A fila do caixa podia travar para sempre | Um evento recusado pela nuvem derrubava o lote inteiro e o caixa reenviava os mesmos eventos sem fim | A nuvem aceita evento por evento. O que aconteceu no balcão é fato: divergência vira conflito para o administrador, e o que não pode ser aplicado vai para uma quarentena visível, sem bloquear os seguintes. Contrato em [SYNC-VENDAS.md](SYNC-VENDAS.md) |
+| O backup nunca acusava falha | `infra/backup.sh` gravava "último sucesso" mesmo com falha no `pg_dump` ou no envio | O script detecta a falha e não registra sucesso |
+| O caixa no Windows não concluía venda | O comprovante dependia de um fuso horário ausente no Windows, dentro da transação da venda | O fuso do comprovante passou a ser seguro no Windows |
+| `/control/` aceitava só senha | O admin do Django ficava publicado sem a verificação em duas etapas | O admin fica desligado em produção, a não ser com `PDV_ENABLE_DJANGO_ADMIN=1`; ligado, só abre para superusuário com a MFA da plataforma concluída |
+
+Também entregue nesta rodada (Onda 0 e Onda 1 do plano da auditoria):
+
+- **Caixa Rápido**: nova frente de caixa com régua de teclas F, pagamento na tela, sangria e suprimento com botão, temas claro, escuro e alto contraste, e caixa de demonstração em `scripts/demo_terminal.py`. Ver [TERMINAL-V2.md](TERMINAL-V2.md).
+- **Terminal resiliente**: evento recusado, catálogo inválido e falha do sincronizador não param o caixa.
+- **Regras da nuvem**: o operador de caixa não altera mais o limite de fiado; código de barras de fábrica no cadastro; custo da venda e relatórios considerando devoluções.
+- **Painel**: paginação além de 100 cadastros, reativação de inativos, busca nos seletores, listas em ordem de nome.
+- **Logs de produção**: tudo em stdout com identificador do pedido; o worker registra o job, o tipo e a empresa de cada tarefa que falha.
+- **Marca CrownTech** na landing, no login, na tela offline, no manifesto e no cupom (leiaute do DANFE NFC-e, ainda **não fiscal**).
+- **Nuvem**: `/robots.txt` e `/sitemap.xml`; `auth/me` informa a versão em execução; a câmera é liberada para a contagem de inventário pelo celular (`Permissions-Policy: camera=(self)`) e o catálogo exibe fotos de produto por URL externa em HTTPS.
+
+Suítes executadas em 16/11/2026, todas sem falha: 161 testes da nuvem (`core` + `operations`), 124 do terminal, 1 contrato terminal-nuvem, 22 de infraestrutura, 11 do painel (`node --test`), e `makemigrations --check` sem migração pendente.
+
+O que **não** mudou: os bloqueios das seções abaixo (fiscal, pagamento, hardware, implantação) continuam valendo. Os defeitos graves de cobrança (Asaas) e fiscal (Focus NFe) listados na auditoria ainda estão abertos, assim como troca e recuperação de senha por e-mail. Próximos passos em [ROADMAP-COMPLETUDE.md](ROADMAP-COMPLETUDE.md).
+
+## Estado em 29/09/2026
+
 29/09/2026. Ambiente: Docker Desktop local. Nenhum domínio registrado, VPS alterada ou pagamento/documento fiscal real processado.
 
 ## Implementado

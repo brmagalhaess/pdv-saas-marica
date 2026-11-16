@@ -1,6 +1,8 @@
-# PDV2 — SaaS, gestão e terminal local
+# PDV2 · um produto CrownTech
 
-V2.0.0 para validação em mercados, mercearias e varejo de produtos. Django/PostgreSQL na nuvem e Flask/SQLite no terminal, com aplicações executáveis, containers e testes integrados. **A instalação local é demonstração; a liberação comercial depende de [STATUS-V2.md](docs/STATUS-V2.md).** PDV2 é nome provisório.
+SaaS de gestão e terminal de caixa local, que vende sem internet.
+
+V2.0.0 para validação em mercados, mercearias e varejo de produtos. Django/PostgreSQL na nuvem e Flask/SQLite no terminal, com aplicações executáveis, containers e testes integrados. **A instalação local é demonstração; a liberação comercial depende de [STATUS-V2.md](docs/STATUS-V2.md).** PDV2 é um produto CrownTech ([crowntech.com.br](https://crowntech.com.br)).
 
 ## Executar no Docker Desktop
 
@@ -12,6 +14,8 @@ sh scripts/start-local.sh
 - Administração SaaS: http://127.0.0.1:8000/platform/
 - Gestão da empresa: http://127.0.0.1:8000/app/
 - Terminal: http://127.0.0.1:8010/
+
+Para ver só a tela do caixa, sem Docker e com dados fictícios: `python scripts/demo_terminal.py` (abre em http://127.0.0.1:8099; `--offline` simula a queda da internet).
 
 ### Impressão automática no Docker Desktop (macOS)
 
@@ -46,7 +50,7 @@ Se a prévia antiga ocupar a porta 8000, pare apenas `pdv-saas-phase1-pdv-previe
 - Empresa: lojas, produtos/variações, categorias, clientes, fornecedores, estoque/entradas, contas a pagar/receber, equipe/PIN, vendas e auditoria.
 - Papéis: proprietário, administrador, gerente, caixa, estoque, financeiro e consulta; permissões separadas da equipe SaaS.
 - Terminal: código/nome, quantidade fracionária, desconto autorizado, pagamento dividido informado pelo operador, troco, abrir/fechar caixa, sangria/suprimento, suspensão, histórico, cancelamento e reimpressão.
-- Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque.
+- Offline com licença vinculada ao dispositivo, proteção contra retrocesso de relógio e fila persistente. Reenvio confirmado não duplica venda ou baixa de estoque. A nuvem aceita evento por evento: o que aconteceu no balcão é fato, divergência vira conflito para o administrador e evento inválido vai para a quarentena sem travar a fila.
 - **Modo offline:** o painel web em `8000` depende da nuvem; o caixa deve ser aberto em `http://127.0.0.1:8010/`. Depois do pareamento e de uma carga inicial de catálogo, login, produtos, caixa, vendas e recibo usam o SQLite local. A fila é enviada à nuvem quando a conexão volta. O painel mostra um atalho para o terminal local quando a nuvem não responde.
 - Comprovante não fiscal ESC/POS 58/80 mm. No painel da empresa, Produtos → Imprimir etiquetas oferece prévia e quantidade em páginas de 50×30 mm para o driver de uma impressora de etiquetas com sensor de intervalo. O terminal imprime somente recibos de venda; a fila de etiquetas fica no painel da empresa. O antigo envio de etiquetas ESC/POS à fila de recibos foi desabilitado: a TM-T20 usa bobinas de recibo de 58/80 mm e não alinha etiquetas pré-cortadas de 50×30 mm. Hardware físico exige validação.
 - Conectores Focus NFe e Asaas com credenciais criptografadas, fila e confirmação pelo provedor. Não há credenciais reais configuradas.
@@ -63,7 +67,7 @@ A chave empresarial não autoriza um dispositivo sozinha: o servidor também con
 
 Se um caixa foi conectado à empresa errada e ainda não contém operações nem backups, a opção **Corrigir conexão deste caixa** limpa os dados baixados e permite novo pareamento. Depois de registrar operações ou backups, preserve o banco local e use uma instalação ou diretório de dados separado para outra empresa.
 
-Em uma loja, cada computador de caixa executa seu próprio terminal e pode usar a mesma porta local `8010`. A licença, o código de pareamento, o `device_id` e o banco SQLite identificam o caixa; a porta não participa dessa identificação. A porta `8011` existe somente para testar duas instâncias no mesmo Docker Desktop, onde dois processos não conseguem escutar a mesma porta do mesmo computador. Para esse teste, use o perfil `multi-terminal`; em computadores diferentes, não é necessário mudar a porta.
+Em uma loja, cada computador de caixa executa seu próprio terminal e pode usar a mesma porta local `8010`. A licença, o código de pareamento, o `device_id` e o banco SQLite identificam o caixa; a porta não participa dessa identificação. Numa loja com mais de um caixa, um computador é o caixa principal e os outros são caixas adicionais que vendem por ele ([ESTACOES.md](docs/ESTACOES.md)): a porta `8011` é a rede entre caixas (TLS) do caixa principal e a `8012/UDP` é a busca. O perfil `multi-terminal` do Docker publica um segundo terminal na `8011` do host para testar duas instâncias independentes; não o rode junto com um terminal nativo que tenha caixas adicionais. O terminal em Docker (`compose.terminal.yaml`) não serve caixas adicionais.
 
 ## Testes
 
@@ -87,15 +91,35 @@ O primeiro interrompe apenas o cloud deste projeto, vende offline, religa, sincr
 
 Use `compose.production.yaml` para a nuvem Dokploy e `compose.terminal.yaml` para um terminal Docker na loja. Windows/Python e periféricos: [TERMINAL-V2.md](docs/TERMINAL-V2.md).
 
-`python scripts/package_terminal.py` gera ZIP sem segredos ou vendas. Hospede-o em HTTPS e cadastre versão, tamanho e SHA-256 na plataforma. O servidor assina o manifesto; o terminal avisa sobre versões verificadas. A atualização é manual. `scripts/verify_update.py` verifica o pacote baixado antes da instalação.
+`python scripts/package_terminal.py` gera ZIP sem segredos ou vendas. Hospede-o em HTTPS e cadastre versão, tamanho e SHA-256 na plataforma. O servidor assina o manifesto; o terminal instalado no Windows baixa a versão em segundo plano, confere assinatura, tamanho e SHA-256, e troca sozinho quando o caixa está fechado e a fila vazia, voltando à versão anterior se a nova não subir (veja [docs/INSTALADOR-WINDOWS.md](docs/INSTALADOR-WINDOWS.md)). Fora do instalador a atualização continua manual; `scripts/verify_update.py` verifica o pacote baixado antes da instalação.
+
+## Marca
+
+PDV2 é o produto; CrownTech é o selo de quem desenvolve e dá suporte. A assinatura aparece nas bordas (cabeçalho, rodapé, login, tela offline, link compartilhado), nunca na área de venda do caixa.
+
+- **Lockup:** "PDV2" seguido de "por CrownTech" em tamanho menor. Horizontal: `web/assets/pdv2-por-crowntech.svg` (fundo claro) e `web/assets/pdv2-por-crowntech-negativo.svg` (fundo escuro). Empilhado: `web/assets/pdv2-por-crowntech-empilhado.svg`. Só o produto: `logo-pdv2.svg`. Só o símbolo "P2": `web/assets/pdv2-simbolo.svg`.
+- **Paleta:** azul-noite `#102630`, verde `#148765`, menta `#d9f4e6` e dourado de destaque `#E6AC43` (em fundo escuro; não usar como cor de texto em fundo claro).
+- **Textos fixos:** rodapé de telas "PDV2 · um produto CrownTech · crowntech.com.br"; última linha do cupom impresso "PDV2 - crowntech.com.br"; login "PDV2 é um produto CrownTech © 2026".
+- **Ícones e compartilhamento:** `icon-192.png` e `icon-512.png` (uso geral), `icon-maskable-192.png` e `icon-maskable-512.png` (launchers com máscara) e `og-pdv2.png` (1200×630, gerada de `og-pdv2.svg`), todos em `web/assets/`. Os SVG usam só fontes do sistema; nada é carregado de fora.
+- **Não inventar:** CNPJ, telefone, endereço, depoimentos e números da CrownTech só entram nas páginas quando forem fornecidos.
+
+As regressões de marca, landing, login, tela offline e manifesto ficam em `cloud/core/tests_marca_landing.py`.
 
 ## Documentação
 
-- [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md)
+- [Auditoria de novembro/2026 e plano por ondas](docs/AUDITORIA-2026-11.md) (detalhes em [docs/auditoria-2026-11/](docs/auditoria-2026-11/))
+- [Arquitetura offline local: servidor da loja, estações e nuvem](docs/ARQUITETURA-OFFLINE-LOCAL.md)
+- [Recuperação e réplica em segundo disco (fase 2)](docs/RECUPERACAO-E-REPLICA.md)
+- [Vários caixas na mesma loja (fase 3)](docs/ESTACOES.md)
+- [Instalador Windows](docs/INSTALADOR-WINDOWS.md)
+- [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md) (outubro/2026)
+- [Roadmap de completude e andamento](docs/ROADMAP-COMPLETUDE.md)
 - [Checklist de teste e promoção](docs/RELEASE-CHECKLIST.md)
 - [Estado e critérios de lançamento](docs/STATUS-V2.md)
 - [Dokploy](docs/DEPLOY-DOKPLOY.md)
 - [API](docs/API-V2.md)
+- [Sincronização do caixa: aceitação por evento, conflitos e quarentena](docs/SYNC-VENDAS.md)
+- [Terminal e Caixa Rápido: teclas, modos, temas e demonstração](docs/TERMINAL-V2.md)
 - [Cobrança, fiscal e versões](docs/OPERACOES-V2.md)
 - [Pesquisa de mercado e equipamentos](docs/PESQUISA-MERCADO-V2.md)
 - [Meta comercial de R$ 1 milhão/ano](docs/PLANO-COMERCIAL.md)

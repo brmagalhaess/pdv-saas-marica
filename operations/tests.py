@@ -1,6 +1,8 @@
 """Integration boundaries: isolation, canonical payment state and safe recovery."""
 import json
 import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from datetime import timedelta
 from unittest.mock import Mock,patch
 from cryptography.fernet import Fernet
@@ -8,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase,Client
 from django.utils import timezone
 from core.models import Plan,Tenant,Subscription,Membership,BillingInvoice,BillingEvent,Shop
+from .models import ProductRelease
 from integrations.base import ProviderError
 from integrations.billing import Asaas
 from shared.secrets import encrypt_secret
@@ -155,6 +158,45 @@ class OperationsTests(TestCase):
         metrics=self.client.get('/api/v1/ops/platform/metrics').json()
         self.assertEqual(metrics['subscriptions_vip'],1)
         self.assertEqual(metrics['mrr_cents'],0)
+
+    def test_release_status_reports_running_cloud_and_published_terminal(self):
+        from django.contrib.auth.models import Group
+        self.user.is_staff=True;self.user.save();self.user.groups.add(Group.objects.get(name='platform_ops'))
+        ProductRelease.objects.create(component='terminal',channel='stable',version='2.0.1',
+            url='https://updates.example.test/terminal.zip',sha256='a'*64,size_bytes=10)
+        response=self.client.get('/api/v1/ops/releases/status')
+        self.assertEqual(response.status_code,200,response.content)
+        self.assertEqual(response.json()['terminal']['published_version'],'2.0.1')
+        self.assertTrue(response.json()['terminal']['manifest_available'])
+        self.assertIn('running_version',response.json()['cloud'])
+
+    def test_backup_status_requests_and_isolated_restore_marker(self):
+        from django.contrib.auth.models import Group
+        self.user.is_staff=True;self.user.save();self.user.groups.add(Group.objects.get(name='platform_ops'))
+        snapshot='a'*64
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {
+            'PDV_BACKUP_STATUS_DIR':directory,
+            'PDV_BACKUP_OFFSITE':'1',
+            'BACKUP_INTERVAL_SECONDS':'3600'
+        }, clear=False):
+            status_dir=Path(directory)
+            status_dir.joinpath('last-success').write_text('2000000000')
+            status_dir.joinpath('snapshots.json').write_text(json.dumps([{
+                'id':snapshot,'short_id':snapshot[:8],'time':'2026-10-09T00:00:00Z',
+                'hostname':'pdv2','tags':['pdv2-database'],'paths':['/tmp/pdv2.dump']
+            }]))
+            response=self.client.get('/api/v1/ops/backups')
+            self.assertEqual(response.status_code,200,response.content)
+            self.assertEqual(response.json()['snapshots'][0]['id'],snapshot)
+            requested=self.client.post('/api/v1/ops/backups',json.dumps({'action':'run'}),content_type='application/json')
+            self.assertEqual(requested.status_code,202,requested.content)
+            self.assertTrue(status_dir.joinpath('request-now').exists())
+            status_dir.joinpath('request-now').unlink()
+            restored=self.client.post('/api/v1/ops/backups',json.dumps({
+                'action':'restore_test','snapshot_id':snapshot,'confirm':True
+            }),content_type='application/json')
+            self.assertEqual(restored.status_code,202,restored.content)
+            self.assertEqual(status_dir.joinpath('restore-request').read_text().strip(),snapshot)
 
     def test_ambiguous_mutation_is_never_automatically_repeated(self):
         job=enqueue('billing.subscribe',self.tenant,'ambiguous',{})

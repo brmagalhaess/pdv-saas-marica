@@ -54,8 +54,12 @@ def main():
         raise SystemExit("RESTIC_REPOSITORY precisa apontar para um destino externo (S3/B2/compatível)")
 
     def run(command):
-        return subprocess.run(compose + command, cwd=ROOT, check=True,
-                              capture_output=True, text=True).stdout
+        result = subprocess.run(compose + command, cwd=ROOT, capture_output=True, text=True)
+        if result.returncode:
+            # The backup container explains on stderr which stage failed.
+            raise SystemExit(f"Falha em `{' '.join(command[:5])}` (código {result.returncode}): "
+                             f"{result.stderr.strip()[-1000:]}")
+        return result.stdout
 
     name = "pdv2_restore_" + secrets.token_hex(6)
     if not re.fullmatch(r"pdv2_restore_[a-f0-9]{12}", name):

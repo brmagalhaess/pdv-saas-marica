@@ -9,7 +9,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-MAX_LEASE_SECONDS = 7 * 24 * 60 * 60
+MAX_LEASE_SECONDS = 45 * 24 * 60 * 60
 CLOCK_TOLERANCE_SECONDS = 300
 
 class LicenseError(ValueError):

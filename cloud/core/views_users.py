@@ -7,7 +7,7 @@ from django.db.models import F
 from django.http import JsonResponse
 
 from shared.security import hash_pin
-from .api_common import APIError, audit, endpoint, fields, membership_context, method, page, password_policy, payload, text, uuid_value
+from .api_common import APIError, audit, bps, endpoint, fields, membership_context, method, page, password_policy, payload, text, uuid_value
 from .models import Membership, Tenant
 from .serializers import member as member_data
 
@@ -41,8 +41,9 @@ def users(request):
         rows = Membership.objects.select_related("user").filter(tenant=tenant).order_by("name", "id")
         return page(request, rows, member_data)
     data = payload(request)
-    fields(data, ("name", "email", "password", "role", "pin"),
+    fields(data, ("name", "email", "password", "role", "pin", "commission_bps"),
            ("name", "email", "password", "role"))
+    commission = bps(data.get("commission_bps", 0), "Comissão")
     name = text(data["name"], "Nome", 150)
     email = text(data["email"], "E-mail", 254).lower()
     try:
@@ -72,7 +73,7 @@ def users(request):
         with transaction.atomic():
             user = User.objects.create_user(username=email, email=email, password=password, first_name=name)
             row = Membership.objects.create(tenant=tenant, user=user, name=name, role=role,
-                                            pin_hash=pin_hash)
+                                            pin_hash=pin_hash, commission_bps=commission)
             Tenant.objects.filter(pk=tenant.pk).update(roles_version=F("roles_version") + 1)
             audit(tenant, member.user, "membership.created", row)
     except IntegrityError:
@@ -89,7 +90,9 @@ def user_detail(request, pk):
     if request.method == "GET":
         return JsonResponse(member_data(row))
     data = {"active": False} if request.method == "DELETE" else payload(request)
-    fields(data, ("name", "role", "active"))
+    fields(data, ("name", "role", "active", "commission_bps"))
+    if "commission_bps" in data:
+        data["commission_bps"] = bps(data["commission_bps"], "Comissão")
     if not data:
         raise APIError("Informe ao menos um campo")
     if "name" in data:

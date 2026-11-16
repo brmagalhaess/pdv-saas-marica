@@ -40,6 +40,12 @@ Cancelamento fiscal e estorno comercial são operações separadas. O payload tr
 
 `GET health` mostra quantidade de pendentes/revisões e instante do último backup. O webhook retorna sucesso após persistir o evento, não após completar o pagamento.
 
+`GET/POST backups` é restrito a `platform_ops` e superusuário. O GET acompanha
+estado, última cópia, snapshots e restauração; o POST aceita `{"action":"run"}`
+para solicitar uma cópia imediata ou `{"action":"restore_test","snapshot_id":"...","confirm":true}`
+para validar um snapshot em banco temporário isolado. A restauração não altera o
+banco ativo.
+
 ## Versões
 
 `GET/POST releases`: equipe platform_ops/superusuário administra metadados. Publicação exige `component` terminal/cloud, `channel` stable/pilot, versão semântica de três números, URL HTTPS, SHA-256, tamanho e notas. Versões publicadas são imutáveis; retirada via `POST releases/<id>/withdraw`.
@@ -47,6 +53,14 @@ Cancelamento fiscal e estorno comercial são operações separadas. O payload tr
 `GET releases/current?component=terminal&channel=stable` retorna manifesto Ed25519. Verifique com a chave pública previamente fixada no pareamento; não confie em uma chave nova recebida junto do pacote. O terminal mostra aviso, sem baixar/executar código automaticamente.
 
 Geração local: `python scripts/package_terminal.py`. Verificação antes de instalar: `python scripts/verify_update.py pacote.zip manifesto.json chave-confiavel.pem`. Hospedagem pública/privada do pacote, acesso de download e assinatura do instalador Windows ainda precisam ser definidos no ambiente final.
+
+O menu **Plataforma → Versões** mostra a versão realmente carregada pela nuvem
+(`PDV_VERSION`), a última versão cloud publicada e o manifesto estável do
+terminal. Publicar um registro cloud não reinicia a nuvem: o Dokploy precisa
+fazer o deploy do commit/imagem correspondente. O terminal consulta o
+manifesto assinado durante o bootstrap e periodicamente pelo worker, exibe o
+aviso de versão e só instala depois da validação manual do pacote e do backup
+local.
 
 Se a resposta incerta ocorreu ao criar o cliente (antes de existir `customer_id` salvo), a equipe financeira pode solicitar `POST jobs/<id>/reconcile` com `recover_customer: true`. A recuperação consulta a referência externa e confere o documento, sem criar outro cliente. Havendo um único cliente correspondente, continua a solicitação original a partir da etapa de assinatura.
 

@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import ANY, patch
 
@@ -96,6 +97,18 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(valid.status_code, 200, valid.json)
         self.assertEqual(valid.json, {"authorized": True})
 
+    def test_item_removal_requires_manager_pin_and_signed_hours_are_visible(self):
+        with self.assertRaisesRegex(TerminalError, "PIN"):
+            self.store.authorize_item_removal(self.cashier, "000000")
+        self.assertTrue(self.store.authorize_item_removal(self.cashier, "654321")["authorized"])
+        self.assertTrue(self.store.authorize_item_removal(self.manager)["authorized"])
+        claims = dict(self.claims, business_hours={"mon": {"enabled": True, "open": "08:00", "close": "18:00"}})
+        lease = sign_lease(claims, self.private)
+        with self.store.transaction() as conn:
+            self.store._set_meta(conn, "lease", json.dumps(lease))
+        self.assertTrue(self.store.business_hours_status(datetime(2026, 10, 5, 10, 0))["open"])
+        self.assertFalse(self.store.business_hours_status(datetime(2026, 10, 5, 20, 0))["open"])
+
     def test_license_key_and_one_time_pairing_do_not_store_full_key(self):
         fresh = Store(Path(self.temp.name) / "fresh.sqlite3")
         claims = dict(self.claims, device_id=fresh.identity()["device_id"])
@@ -165,7 +178,7 @@ class TerminalTests(unittest.TestCase):
             "customer_name": "Cliente antigo"})
         self.store.close_cash(self.cashier_id, 700, "654321")
         self.store.ack_events([event["event_id"] for event in self.store.pending_events()])
-        response = self.client.post("/api/unpair", json={"confirm": True},
+        response = self.client.post("/api/unpair", json={"confirm": True, "manager_pin": "654321"},
                                     headers={"X-CSRF-Token": self.csrf()})
         self.assertEqual(response.status_code, 409, response.json)
         self.assertIn("diretório de dados", response.json["error"])
@@ -180,7 +193,7 @@ class TerminalTests(unittest.TestCase):
     def test_new_profile_preserves_database_and_is_selected_after_restart(self):
         old_path = self.store.path
         old_device = self.store.identity()["device_id"]
-        response = self.client.post("/api/new-profile", json={"confirm": True},
+        response = self.client.post("/api/new-profile", json={"confirm": True, "manager_pin": "654321"},
                                     headers={"X-CSRF-Token": self.csrf()})
         self.assertEqual(response.status_code, 200, response.json)
         self.assertTrue(old_path.exists())
@@ -287,6 +300,201 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(len(reopened.pending_events()), 2)
         close = reopened.close_cash(self.cashier_id, 10400, "654321")
         self.assertEqual(close["expected_cents"], 10400)
+
+    def test_sale_event_carries_operator_and_optional_seller(self):
+        self.store.open_cash(self.cashier_id, 0)
+        request = {"request_id": "credited-sale", "seller_id": self.manager_id,
+                   "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+                   "payments": [{"method": "cash", "amount_cents": 700}]}
+        sale = self.store.sale(self.cashier, request)
+        self.assertEqual((sale["operator_name"], sale["seller_id"], sale["seller_name"]),
+                         ("Ana", self.manager_id, "Bruno"))
+        self.assertIn(b"Vendedor: Bruno", receipt_bytes(sale))
+        with self.assertRaisesRegex(TerminalError, "outra venda"):
+            self.store.sale(self.cashier, dict(request, seller_id=None))
+        plain = self.store.sale(self.cashier, {"request_id": "plain-sale",
+            "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+            "payments": [{"method": "cash", "amount_cents": 700}]})
+        self.assertIsNone(plain["seller_id"])
+        with self.assertRaisesRegex(TerminalError, "Vendedor não encontrado"):
+            self.store.sale(self.cashier, {"request_id": "ghost-seller", "seller_id": str(uuid.uuid4()),
+                "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+                "payments": [{"method": "cash", "amount_cents": 700}]})
+        events = [e["data"] for e in self.store.pending_events() if e["type"] == "sale.completed"]
+        self.assertEqual([(e["operator_id"], e["seller_id"]) for e in events],
+                         [(self.cashier_id, self.manager_id), (self.cashier_id, None)])
+        self.assertEqual(next(x for x in self.store.products() if x["id"] == self.unit_product_id)["stock_milli"], 1000)
+
+    def test_cash_close_event_names_closer_and_supervisor(self):
+        self.store.open_cash(self.cashier_id, 0)
+        self.store.close_cash(self.cashier_id, 0, "654321")
+        closed = [e["data"] for e in self.store.pending_events() if e["type"] == "cash.closed"]
+        self.assertEqual([(e["operator_id"], e["supervisor_id"]) for e in closed], [(self.cashier_id, self.manager_id)])
+
+    def test_fiado_limit_store_credit_and_partial_returns(self):
+        customer_id = str(uuid.uuid4())
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[
+            {"id": customer_id, "name": "Dona Rosa", "document": "", "credit_limit_cents": 1500,
+             "open_credit_cents": 100, "store_credit_cents": 0}]))
+        self.store.open_cash(self.cashier_id, 5000)
+        rice = lambda qty: [{"product_id": self.unit_product_id, "quantity_milli": qty * 1000}]
+        fiado = self.store.sale(self.cashier, {"request_id": "fiado-1", "customer_id": customer_id,
+                                               "items": rice(2), "payments": [{"method": "credit_account", "amount_cents": 1400}]})
+        self.assertEqual(fiado["customer_name"], "Dona Rosa")
+        self.assertEqual(self.store.sale(self.cashier, {"request_id": "fiado-1", "customer_id": customer_id,
+            "items": rice(2), "payments": [{"method": "credit_account", "amount_cents": 1400}]})["id"], fiado["id"])
+        with self.assertRaisesRegex(TerminalError, "Limite de fiado excedido"):
+            self.store.sale(self.cashier, {"request_id": "fiado-2", "customer_id": customer_id,
+                                           "items": rice(1), "payments": [{"method": "credit_account", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "exige cliente"):
+            self.store.sale(self.cashier, {"request_id": "fiado-3", "items": rice(1),
+                                           "payments": [{"method": "credit_account", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "PIN de gerente"):
+            self.store.return_sale(self.cashier, fiado["id"], {"return_id": "r0", "refund_method": "account",
+                                   "reason": "Avaria", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        abated = self.store.return_sale(self.cashier, fiado["id"], {"return_id": "r1", "refund_method": "account",
+            "reason": "Avaria", "manager_pin": "654321", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        self.assertEqual(abated["total_cents"], 700)
+        self.assertEqual(self.store.returnable(fiado["id"])["items"][0]["available_milli"], 1000)
+        with self.assertRaisesRegex(TerminalError, "não pode ser cancelada"):
+            self.store.void_sale(self.manager, fiado["id"], "Teste")
+        # Return in store credit, then pay a new sale with it (an exchange).
+        self.store.return_sale(self.manager, fiado["id"], {"return_id": "r2", "refund_method": "store_credit",
+            "reason": "Troca", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        with self.assertRaisesRegex(TerminalError, "disponível para devolução"):
+            self.store.return_sale(self.manager, fiado["id"], {"return_id": "r3", "refund_method": "cash",
+                "reason": "x", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        swap = self.store.sale(self.cashier, {"request_id": "swap", "customer_id": customer_id, "items": rice(1),
+                                              "payments": [{"method": "store_credit", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "Crédito na loja insuficiente"):
+            self.store.sale(self.cashier, {"request_id": "swap-2", "customer_id": customer_id, "items": rice(1),
+                                           "payments": [{"method": "store_credit", "amount_cents": 700}]})
+        cash_sale = self.store.sale(self.cashier, {"request_id": "cash", "items": rice(1),
+                                                   "payments": [{"method": "cash", "amount_cents": 700}]})
+        self.store.return_sale(self.manager, cash_sale["id"], {"return_id": "r4", "refund_method": "cash",
+            "reason": "Desistiu", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        summary = self.store.cash_summary()
+        self.assertEqual((summary["categories"]["cash_refunds_cents"], summary["expected_cents"]), (700, 5000))
+        customer = self.store.customers("Rosa")[0]
+        self.assertEqual((customer["open_credit_cents"], customer["store_credit_cents"], customer["available_credit_cents"]),
+                         (800, 0, 700))
+        self.assertEqual(next(p for p in self.store.products() if p["id"] == self.unit_product_id)["stock_milli"], 2000)
+        returns = [e["data"] for e in self.store.pending_events() if e["type"] == "sale.returned"]
+        self.assertEqual([(r["refund_method"], r["total_cents"]) for r in returns], [("account", 700), ("store_credit", 700), ("cash", 700)])
+        # A catalog refresh keeps unsynced effects on top of the cloud balance.
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[
+            {"id": customer_id, "name": "Dona Rosa", "document": "", "credit_limit_cents": 1500,
+             "open_credit_cents": 100, "store_credit_cents": 0}]))
+        refreshed = self.store.customers()[0]
+        self.assertEqual((refreshed["open_credit_cents"], refreshed["store_credit_cents"]), (800, 0))
+        self.assertTrue(swap["id"])
+
+    def test_payment_config_disables_methods_and_adds_custom(self):
+        voucher = str(uuid.uuid4())
+        config = [{"id": "c", "kind": "cash", "name": "Dinheiro", "active": True},
+                  {"id": "p", "kind": "pix", "name": "Pix", "active": False},
+                  {"id": voucher, "kind": "other", "name": "Vale-refeição", "active": True}]
+        self.store.apply_bootstrap(dict(self.bootstrap, payment_methods=config))
+        self.assertEqual([m["name"] for m in self.store.payment_methods()], ["Dinheiro", "Pix", "Vale-refeição"])
+        self.store.open_cash(self.cashier_id, 0)
+        item = [{"product_id": self.unit_product_id, "quantity_milli": 1000}]
+        with self.assertRaisesRegex(TerminalError, "desativada pela empresa"):
+            self.store.sale(self.cashier, {"request_id": "pix", "items": item, "payments": [{"method": "pix", "amount_cents": 700}]})
+        with self.assertRaisesRegex(TerminalError, "desconhecida"):
+            self.store.sale(self.cashier, {"request_id": "x", "items": item,
+                "payments": [{"method": "other", "payment_method_id": str(uuid.uuid4()), "amount_cents": 700}]})
+        request = {"request_id": "vale", "items": item,
+                   "payments": [{"method": "other", "payment_method_id": voucher, "amount_cents": 700}]}
+        sale = self.store.sale(self.cashier, request)
+        self.assertEqual(self.store.sale(self.cashier, request)["id"], sale["id"])
+        self.assertIn(b"Vale-refei", receipt_bytes(sale))
+        event = [e["data"] for e in self.store.pending_events() if e["type"] == "sale.completed"][0]
+        self.assertEqual(event["payments"], [{"method": "other", "payment_method_id": voucher, "amount_cents": 700}])
+
+    def test_bootstrap_keeps_variation_grid_fields(self):
+        group = str(uuid.uuid4())
+        shirt = {"id": str(uuid.uuid4()), "sku": "P1", "barcode": "2000000000015", "name": "Camiseta - Azul / M",
+                 "unit": "UN", "category": "Moda", "price_cents": 4990, "quantity_milli": 2000, "active": True,
+                 "group_id": group, "group_name": "Camiseta", "variant": "Azul / M"}
+        self.store.apply_bootstrap(dict(self.bootstrap, products=self.products + [shirt]))
+        row = next(p for p in self.store.products() if p["id"] == shirt["id"])
+        self.assertEqual((row["group_id"], row["group_name"], row["variant"]), (group, "Camiseta", "Azul / M"))
+        self.store.open_cash(self.cashier_id, 0)
+        sale = self.store.sale(self.cashier, {"request_id": "grade", "items": [{"product_id": shirt["id"], "quantity_milli": 1000}],
+                                              "payments": [{"method": "cash", "amount_cents": 4990}]})
+        self.assertEqual(sale["items"][0]["name"], "Camiseta - Azul / M")
+
+    def test_receive_fiado_at_counter_enters_drawer_and_prints_vouchers(self):
+        customer_id = str(uuid.uuid4())
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[{"id": customer_id, "name": "Seu Zé", "document": "",
+            "credit_limit_cents": 5000, "open_credit_cents": 1500, "store_credit_cents": 0}]))
+        self.store.open_cash(self.cashier_id, 1000)
+        with self.assertRaisesRegex(TerminalError, "maior que o fiado"):
+            self.store.receive_credit(self.cashier, {"receipt_id": "r0", "customer_id": customer_id, "amount_cents": 1600, "method": "cash"})
+        result = self.store.receive_credit(self.cashier, {"receipt_id": "r1", "customer_id": customer_id,
+                                                          "amount_cents": 1000, "method": "cash"})
+        self.assertEqual(result["open_credit_cents"], 500)
+        self.assertIn("RECEBIMENTO DE FIADO", json.dumps(result["receipt"]))
+        self.assertTrue(self.store.receive_credit(self.cashier, {"receipt_id": "r1", "customer_id": customer_id,
+                                                                 "amount_cents": 1000, "method": "cash"})["replayed"])
+        self.store.receive_credit(self.cashier, {"receipt_id": "r2", "customer_id": customer_id, "amount_cents": 200, "method": "pix"})
+        summary = self.store.cash_summary()
+        self.assertEqual((summary["categories"]["credit_received_cash_cents"], summary["categories"]["credit_received_other_cents"],
+                          summary["expected_cents"]), (1000, 200, 2000))
+        self.assertEqual(self.store.customers("Zé")[0]["open_credit_cents"], 300)
+        # Refreshing the catalog keeps the unsynced payments on top of the cloud balance.
+        self.store.apply_bootstrap(dict(self.bootstrap, customers=[{"id": customer_id, "name": "Seu Zé", "document": "",
+            "credit_limit_cents": 5000, "open_credit_cents": 1500, "store_credit_cents": 0}]))
+        self.assertEqual(self.store.customers("Zé")[0]["open_credit_cents"], 300)
+        events = [e["data"]["amount_cents"] for e in self.store.pending_events() if e["type"] == "credit.received"]
+        self.assertEqual(events, [1000, 200])
+        sale = self.store.sale(self.cashier, {"request_id": "v", "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}],
+                                              "payments": [{"method": "cash", "amount_cents": 700}]})
+        back = self.store.return_sale(self.manager, sale["id"], {"return_id": "d1", "refund_method": "cash", "reason": "Avaria",
+                                      "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
+        printed = json.dumps(back["receipt"], ensure_ascii=False)
+        self.assertIn("DEVOLUÇÃO", printed)
+        self.assertIn("Assinatura do cliente", printed)
+
+    def test_promotions_priced_offline_and_manual_discount_over_promo_price(self):
+        rules = [{"id": str(uuid.uuid4()), "name": "Leve 3 pague 2 Arroz", "kind": "buy_x_pay_y",
+                  "product_id": self.unit_product_id, "buy_quantity": 3, "pay_quantity": 2, "active": True}]
+        self.store.apply_bootstrap(dict(self.bootstrap, promotions=rules))
+        quote = self.store.quote([{"product_id": self.unit_product_id, "quantity_milli": 3000}])
+        self.assertEqual((quote["gross_cents"], quote["promo_discount_cents"]), (2100, 700))
+        self.assertEqual(quote["lines"][0]["promotion_label"], "Leve 3 pague 2")
+        self.store.open_cash(self.cashier_id, 0)
+        with self.assertRaisesRegex(TerminalError, "PIN de gerente"):
+            self.store.sale(self.cashier, {"request_id": "promo-2", "discount_cents": 150,
+                "items": [{"product_id": self.unit_product_id, "quantity_milli": 3000}],
+                "payments": [{"method": "cash", "amount_cents": 1250}]})
+        # 10% manual discount (cashier limit) applies on the 14.00 promotional price, not on 21.00.
+        sale = self.store.sale(self.cashier, {"request_id": "promo", "discount_cents": 140,
+            "items": [{"product_id": self.unit_product_id, "quantity_milli": 3000}],
+            "payments": [{"method": "cash", "amount_cents": 1260}]})
+        self.assertEqual((sale["gross_cents"], sale["promo_discount_cents"], sale["discount_cents"], sale["total_cents"]),
+                         (2100, 700, 140, 1260))
+        self.assertEqual(sale["items"][0]["line_total_cents"], 1260)
+        self.assertIn("Promoção: Leve 3 pague 2 Arroz".encode("cp850"), receipt_bytes(sale))
+        item = [e for e in self.store.pending_events() if e["type"] == "sale.completed"][0]["data"]["items"][0]
+        self.assertEqual((item["promo_discount_cents"], item["promotion_id"], item["promotion_name"]),
+                         (700, rules[0]["id"], "Leve 3 pague 2 Arroz"))
+        self.assertNotIn("promotion_label", item)  # screen-only field never reaches the cloud
+
+    def test_company_production_product_sells_without_stock_and_does_not_reduce_balance(self):
+        production_id = str(uuid.uuid4())
+        production = {"id": production_id, "sku": "PAO-KG", "barcode": "7890000000099",
+                       "name": "Pão francês", "unit": "KG", "category": "Padaria",
+                       "price_cents": 1290, "quantity_milli": 0, "stock_controlled": False,
+                       "active": True}
+        self.store.apply_bootstrap(dict(self.bootstrap, products=self.products + [production]))
+        self.store.open_cash(self.cashier_id, 0)
+        sale = self.store.sale(self.cashier, {"request_id": "production-sale",
+            "items": [{"product_id": production_id, "quantity_milli": 350}],
+            "payments": [{"method": "cash", "amount_cents": 452}]})
+        self.assertEqual(sale["total_cents"], 452)
+        self.assertFalse(sale["items"][0]["stock_controlled"])
+        self.assertEqual(next(row for row in self.store.products() if row["id"] == production_id)["stock_milli"], 0)
 
     def test_cash_close_requires_supervisor_pin_before_mutating_session(self):
         self.store.open_cash(self.cashier_id, 10000)
@@ -439,7 +647,7 @@ class TerminalTests(unittest.TestCase):
                 "quantity_milli": 1250, "unit": "KG", "unit_price_cents": 1299, "line_total_cents": 1624}],
                 "gross_cents": 1624, "discount_cents": 0, "total_cents": 1624,
                 "payments": [{"method": "cash", "amount_cents": 1700}], "change_cents": 76}
-        self.assertIn(b"COMPROVANTE NAO FISCAL", receipt_bytes(sale, 58))
+        self.assertIn("NÃO É DOCUMENTO FISCAL".encode("cp850"), receipt_bytes(sale, 58))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "zpl").startswith(b"^XA"))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "epl").startswith(b"N\n"))
         with self.assertRaisesRegex(ValueError, "TM-T20"):
@@ -480,7 +688,7 @@ class TerminalTests(unittest.TestCase):
             self.store.save_printer("label", "cups", "EPSON_TM_T20", "escpos50x30")
         with self.store.transaction() as conn:
             # Simulate an installation that saved this setting before the fix.
-            conn.execute("INSERT INTO print_settings VALUES (?,?,?,?)",
+            conn.execute("INSERT INTO print_settings(kind,driver,target,format) VALUES (?,?,?,?)",
                          ("label", "cups", "EPSON_TM_T20", "escpos50x30"))
             setting = {"driver": "file", "target": str(Path(self.temp.name) / "print")}
             blocked = self.store._queue_print(conn, "label", b"\x1b@old-label\x1dV\x00", setting)

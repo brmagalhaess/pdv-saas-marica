@@ -7,6 +7,7 @@ let mode = params.get("mode") === "register" ? "register" : "login";
 const safeNext = params.get("next");
 let mfaMode = "";
 let mfaCompletedResult = null;
+let accountChoiceResult = null;
 
 function showMessage(text, type = "error") {
   message.textContent = text;
@@ -26,11 +27,12 @@ function setMode(next, focus = false) {
   $("#panel-login").hidden = !login;
   $("#panel-register").hidden = login;
   $("#panel-mfa").hidden = true;
+  $("#panel-account-choice").hidden = true;
   $(".auth-tabs").hidden = false;
   $("#auth-title").textContent = login ? "Boas-vindas ao PDV2" : "Seu espaço começa aqui";
   $("#auth-description").textContent = login
-    ? "Acesse seu espaço de gestão ou crie uma conta para testar as funções disponíveis."
-    : "Crie uma conta de teste para conhecer a gestão de lojas, produtos, estoque e equipe.";
+    ? "Acesse seu painel de gestão ou crie uma conta para testar o PDV2 por 14 dias."
+    : "Teste o PDV2 por 14 dias, sem cartão: lojas, produtos, estoque, equipe e caixa.";
   showMessage("");
   if (focus) (login ? $("#login-email") : $("#company")).focus();
   const url = new URL(location.href);
@@ -59,6 +61,10 @@ async function showMfa(setupRequired) {
     const setup = await api.get("/auth/mfa/setup", { tenant: false });
     $("#mfa-secret").textContent = setup.secret;
     $("#mfa-uri").textContent = setup.otpauth_uri;
+    $("#mfa-qr").src = setup.qr_data_uri || "";
+    $("#mfa-qr").hidden = !setup.qr_data_uri;
+  } else {
+    $("#mfa-qr").hidden = true;
   }
   $("#mfa-code").focus();
 }
@@ -82,6 +88,53 @@ function destination(result) {
   if (safeNext === "/app/" && memberships.length) return safeNext;
   if (safeNext === "/platform/" && platformAccess) return safeNext;
   return platformAccess && !memberships.length ? "/platform/" : "/app/";
+}
+
+function hasMultipleAccountTypes(result) {
+  const user = result?.user || {};
+  const platformAccess = user.is_superuser || (user.platform_roles || []).length > 0;
+  return !safeNext && platformAccess && (result?.memberships || []).length > 0;
+}
+
+function continueAfterAuth(result) {
+  if (hasMultipleAccountTypes(result)) {
+    showAccountChoice(result);
+    return;
+  }
+  location.assign(destination(result));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'\"]/g, character => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+  }[character]));
+}
+
+function showAccountChoice(result) {
+  accountChoiceResult = result;
+  const user = result?.user || {};
+  const memberships = result?.memberships || [];
+  const list = $("#account-choice-list");
+  list.replaceChildren();
+  $(".auth-tabs").hidden = true;
+  $("#panel-login").hidden = true;
+  $("#panel-register").hidden = true;
+  $("#panel-mfa").hidden = true;
+  $("#panel-account-choice").hidden = false;
+  $("#auth-title").textContent = "Escolha sua área de acesso";
+  $("#auth-description").textContent = `${user.name || user.email || "Sua conta"} tem acesso à plataforma e a uma empresa.`;
+  const platformButton = document.createElement("a");
+  platformButton.className = "account-choice-card";
+  platformButton.href = "/platform/";
+  platformButton.innerHTML = '<span class="account-choice-icon" aria-hidden="true">⌘</span><span><strong>Administração SaaS</strong><small>Planos, licenças, usuários, versões e suporte da plataforma.</small></span><span class="account-choice-arrow" aria-hidden="true">→</span>';
+  list.append(platformButton);
+  memberships.forEach(membership => {
+    const link = document.createElement("a");
+    link.className = "account-choice-card";
+    link.href = "/app/?tenant=" + encodeURIComponent(membership.tenant_id);
+    link.innerHTML = `<span class="account-choice-icon" aria-hidden="true">⌂</span><span><strong>${escapeHtml(membership.tenant_name || "Painel da empresa")}</strong><small>Painel da empresa · ${escapeHtml(membership.role || "acesso")}</small></span><span class="account-choice-arrow" aria-hidden="true">→</span>`;
+    list.append(link);
+  });
 }
 
 $("#tab-login").addEventListener("click", () => setMode("login", true));
@@ -120,7 +173,7 @@ $("#login-form").addEventListener("submit", async event => {
       await showMfa(Boolean(result.mfa_setup_required));
       return;
     }
-    location.assign(destination(result));
+    continueAfterAuth(result);
   } catch (error) {
     showMessage(errorText(error));
     busy(form, false);
@@ -157,7 +210,7 @@ $("#mfa-form").addEventListener("submit", async event => {
       showMessage("MFA ativada. Guarde os códigos de recuperação antes de continuar.", "success");
       return;
     }
-    location.assign(destination(result));
+    continueAfterAuth(result);
   } catch (error) {
     showMessage(errorText(error));
     busy(form, false);
@@ -165,7 +218,7 @@ $("#mfa-form").addEventListener("submit", async event => {
 });
 
 $("#mfa-continue").addEventListener("click", () => {
-  if (mfaCompletedResult) location.assign(destination(mfaCompletedResult));
+  if (mfaCompletedResult) continueAfterAuth(mfaCompletedResult);
 });
 
 $("#register-form").addEventListener("submit", async event => {
@@ -196,7 +249,10 @@ $("#register-form").addEventListener("submit", async event => {
 setMode(mode);
 getCsrf();
 api.get("/auth/me", { tenant: false }).then(result => {
-  if (result?.user) location.replace(destination(result));
+  if (result?.user) {
+    if (hasMultipleAccountTypes(result)) showAccountChoice(result);
+    else location.replace(destination(result));
+  }
 }).catch(error => {
   if (error?.status !== 401) showMessage(errorText(error));
 });

@@ -1,14 +1,16 @@
-from django.contrib import admin
+from django.conf import settings
 from django.urls import include, path
 
 from core import views_auth as auth, views_finance as finance, views_pages as pages
 from core import views_platform as platform, views_resources as resources
+from core import views_customer_credit as customer_credit, views_payment_methods as payment_methods
+from core import product_groups, views_purchases as purchases
+from core import views_inventory as inventory, views_transfers as transfers, views_promotions as promotions
+from core import views_cash as cash, views_commissions as commissions, views_reports as reports
 from core import views_sales as sales, views_stock as stock, views_terminal as terminal
 from core import views_users as users
 from core import views_owner as owner
-
-admin.site.site_header = "PDV2 • Administração da plataforma"
-admin.site.site_title = "PDV2"
+from core import views_labels as labels
 
 urlpatterns = [
     path("", lambda request: pages.page(request, "landing")),
@@ -18,14 +20,18 @@ urlpatterns = [
     path("manifest.webmanifest", lambda request: pages.public_asset(request, "manifest")),
     path("sw.js", lambda request: pages.public_asset(request, "sw")),
     path("offline/", lambda request: pages.public_asset(request, "offline")),
+    path("robots.txt", pages.robots),
+    path("sitemap.xml", pages.sitemap),
     path("health", pages.health), path("health/", pages.health),
-    path("control/", admin.site.urls),
     path("api/v1/csrf", auth.csrf),
     path("api/v1/auth/register", auth.register),
     path("api/v1/auth/login", auth.login_view),
     path("api/v1/auth/mfa/setup", auth.mfa_setup),
+    path("api/v1/auth/mfa/status", auth.mfa_status),
+    path("api/v1/auth/mfa/enroll", auth.mfa_enroll),
     path("api/v1/auth/mfa/setup/confirm", auth.mfa_setup_confirm),
     path("api/v1/auth/mfa/verify", auth.mfa_verify),
+    path("api/v1/auth/mfa/recovery-codes", auth.mfa_recovery_codes),
     path("api/v1/auth/logout", auth.logout_view),
     path("api/v1/auth/me", auth.me),
     path("api/v1/plans", auth.plans),
@@ -41,17 +47,52 @@ urlpatterns = [
     path("api/v1/users/<uuid:pk>", users.user_detail),
     path("api/v1/terminals", terminal.terminals),
     path("api/v1/terminals/<uuid:pk>", terminal.terminal_detail),
+    path("api/v1/terminals/<uuid:pk>/transfer", terminal.terminal_transfer),
+    path("api/v1/backup-key", terminal.backup_key),
+    path("api/v1/backup-key/reveal", terminal.backup_key_reveal),
     path("api/v1/terminal/pair", terminal.pair),
     path("api/v1/terminal/bootstrap", terminal.bootstrap),
+    path("api/v1/terminal/lease", terminal.lease),
     path("api/v1/terminal/heartbeat", terminal.heartbeat),
     path("api/v1/terminal/sync", terminal.sync),
+    path("api/v1/terminal/restore", terminal.restore),
+    path("api/v1/terminal/release", terminal.release),
+    path("api/v1/label-settings", labels.label_settings),
     path("api/v1/sync/conflicts", terminal.conflicts),
     path("api/v1/sync/conflicts/<uuid:pk>", terminal.conflict_detail),
     path("api/v1/sales", sales.sales),
+    path("api/v1/sales/people", sales.sale_people),
     path("api/v1/sales/<uuid:pk>/cancel", sales.sale_reverse, {"action": "cancel"}),
     path("api/v1/sales/<uuid:pk>/refund", sales.sale_reverse, {"action": "refund"}),
+    path("api/v1/sales/<uuid:pk>/return", sales.sale_return),
     path("api/v1/sales/<uuid:pk>", sales.sale_detail),
     path("api/v1/dashboard", sales.dashboard),
+    path("api/v1/customers/credit-summary", customer_credit.credit_summary),
+    path("api/v1/customers/<uuid:pk>/statement", customer_credit.statement),
+    path("api/v1/customers/<uuid:pk>/receive", customer_credit.receive),
+    path("api/v1/promotions", promotions.promotions),
+    path("api/v1/promotions/<uuid:pk>", promotions.promotion_detail),
+    path("api/v1/inventories", inventory.inventories),
+    path("api/v1/inventories/<uuid:pk>", inventory.inventory_detail),
+    path("api/v1/inventories/<uuid:pk>/count", inventory.inventory_count),
+    path("api/v1/inventories/<uuid:pk>/close", inventory.inventory_close),
+    path("api/v1/inventories/<uuid:pk>/cancel", inventory.inventory_cancel),
+    path("api/v1/transfers", transfers.transfers),
+    path("api/v1/transfers/<uuid:pk>/receive", transfers.transfer_receive),
+    path("api/v1/transfers/<uuid:pk>/cancel", transfers.transfer_cancel),
+    path("api/v1/purchases/nfe/preview", purchases.nfe_preview),
+    path("api/v1/purchases/nfe/import", purchases.nfe_import),
+    path("api/v1/product-groups", product_groups.product_groups),
+    path("api/v1/product-groups/<uuid:pk>", product_groups.product_group_detail),
+    path("api/v1/payment-methods", payment_methods.payment_methods),
+    path("api/v1/payment-methods/<uuid:pk>", payment_methods.payment_method_detail),
+    path("api/v1/cash-sessions", cash.cash_sessions),
+    path("api/v1/reports", reports.report_catalog),
+    path("api/v1/reports/<slug:kind>", reports.report),
+    path("api/v1/commissions", commissions.commissions),
+    path("api/v1/commissions/summary", commissions.commission_summary),
+    path("api/v1/commissions/pay", commissions.commission_pay),
+    path("api/v1/cash-sessions/<uuid:pk>", cash.cash_session_detail),
     path("api/v1/owner/monitoring", owner.monitoring),
     path("api/v1/audit", sales.audit_events),
     path("api/v1/platform/tenants", platform.tenants),
@@ -71,3 +112,9 @@ urlpatterns = [
     path("api/v1/<str:kind>", resources.collection),
     path("api/v1/<str:kind>/<uuid:pk>", resources.detail),
 ]
+
+# Django admin is off in production unless PDV_ENABLE_DJANGO_ADMIN=1. When on,
+# it only opens for a superuser whose session passed the platform MFA.
+if settings.PDV_ENABLE_DJANGO_ADMIN:
+    from core.admin import platform_admin
+    urlpatterns.insert(0, path("control/", platform_admin.urls))

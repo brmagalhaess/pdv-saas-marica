@@ -27,11 +27,14 @@ valida o dump com `pg_restore --list`, cifra e envia para o repositório Restic
 configurado em `RESTIC_REPOSITORY`. O banco principal nunca é usado como alvo
 de restauração.
 
-Configure no arquivo de ambiente do Dokploy:
+A senha do repositório (`restic_password`) é gerada pelo próprio servidor no
+volume `pdv2_secrets` e entra no kit de recuperação (docs/DEPLOY-DOKPLOY.md).
+Sem destino externo, o padrão é um repositório local em `/status/restic`.
+Para o destino externo, configure no ambiente do Dokploy:
 
 ```dotenv
 RESTIC_REPOSITORY=s3:https://endpoint-do-provedor/bucket/pdv2
-RESTIC_PASSWORD=uma-senha-longa-e-aleatoria
+PDV_BACKUP_OFFSITE=1
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 AWS_DEFAULT_REGION=us-east-1
@@ -57,3 +60,17 @@ O teste local já foi validado no projeto com o repositório Restic do volume de
 desenvolvimento: a restauração isolada passou com 2 tenants, 9 produtos, 25
 vendas e 38 migrações. Essa evidência não substitui a execução final apontando
 para o bucket externo da VPS antes de aceitar clientes pagantes.
+
+## Menu de gerenciamento
+
+Usuários `platform_ops` e superusuários acessam **Plataforma → Backups e
+restauração**. O painel mostra o estado (saudável, atrasado ou com falha), a
+última cópia, o destino externo, os snapshots disponíveis e o último resultado
+de restauração. **Executar backup agora** cria uma solicitação consumida pelo
+container de backup. **Restaurar** faz uma validação em banco temporário e
+remove esse banco ao terminar; nunca substitui o banco ativo pela interface.
+
+As solicitações são pequenos marcadores no volume compartilhado
+`backup_status`. O cloud não acessa as credenciais Restic nem o arquivo de
+backup. O worker publica o inventário de snapshots e o relatório da última
+restauração no mesmo volume.

@@ -2,6 +2,8 @@ name: pdv2-local
 x-cloud-env: &cloud-env
   PDV_ENV: development
   PDV_DEBUG: "1"
+  PDV_VERSION: ${PDV_VERSION:-2.0.0}
+  PDV_PLATFORM_MFA_REQUIRED: ${PDV_PLATFORM_MFA_REQUIRED:-0}
   PDV_SECRET_KEY: ${PDV_SECRET_KEY:?Run scripts/init_local.py}
   DATABASE_URL: postgresql://pdv2:${POSTGRES_PASSWORD:?Run scripts/init_local.py}@db:5432/pdv2
   PDV_ALLOWED_HOSTS: localhost,127.0.0.1,cloud,testserver
@@ -10,6 +12,8 @@ x-cloud-env: &cloud-env
   PDV_TRUSTED_PROXY_CIDRS: 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
   PDV_LICENSE_PRIVATE_KEY_FILE: /run/secrets/license_private
   PDV_LICENSE_PUBLIC_KEY_FILE: /run/secrets/license_public
+  PDV_RELEASE_PRIVATE_KEY_FILE: /run/secrets/release_private
+  PDV_RELEASE_PUBLIC_KEY_FILE: /run/secrets/release_public
   PDV_ENCRYPTION_KEY: ${PDV_ENCRYPTION_KEY:?Run scripts/init_local.py}
   PDV_ADMIN_EMAIL: admin@pdv2.local
   PDV_ADMIN_PASSWORD: ${PDV_ADMIN_PASSWORD:?Run scripts/init_local.py}
@@ -36,15 +40,15 @@ services:
     command: [python, manage.py, migrate, --noinput]
     environment: *cloud-env
     depends_on: {db: {condition: service_healthy}}
-    secrets: [license_private, license_public]
+    secrets: [license_private, license_public, release_private, release_public]
     restart: "no"
   cloud:
     image: pdv2-cloud:local
     build: {context: ., dockerfile: infra/Dockerfile.cloud}
     environment: *cloud-env
     depends_on: {migrate: {condition: service_completed_successfully}}
-    secrets: [license_private, license_public]
-    volumes: [backup_status:/backup-status:ro]
+    secrets: [license_private, license_public, release_private, release_public]
+    volumes: [backup_status:/backup-status]
     expose: ["8080"]
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/', timeout=3)"]
@@ -59,7 +63,10 @@ services:
     command: [python, -m, operations.worker]
     environment: *cloud-env
     depends_on: {cloud: {condition: service_healthy}}
-    secrets: [license_private, license_public]
+    secrets: [license_private, license_public, release_private, release_public]
+    # The health marker is rewritten every ~2 s; keep it in memory instead of
+    # the Docker disk image (an external USB drive on the dev Mac).
+    tmpfs: [/tmp]
     restart: unless-stopped
   gateway:
     image: caddy:2-alpine
@@ -72,6 +79,7 @@ services:
     build: {context: ., dockerfile: infra/Dockerfile.terminal}
     environment:
       PDV_ENV: development
+      PDV_VERSION: ${PDV_VERSION:-2.0.0}
       PDV_TERMINAL_HOST: 0.0.0.0
       PDV_TERMINAL_PORT: "8010"
       PDV_TERMINAL_DB: /data/terminal.sqlite3
@@ -93,6 +101,7 @@ services:
     build: {context: ., dockerfile: infra/Dockerfile.terminal}
     environment:
       PDV_ENV: development
+      PDV_VERSION: ${PDV_VERSION:-2.0.0}
       PDV_TERMINAL_HOST: 0.0.0.0
       PDV_TERMINAL_PORT: "8010"
       PDV_TERMINAL_DB: /data/terminal.sqlite3
@@ -117,6 +126,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?Run scripts/init_local.py}
       RESTIC_REPOSITORY: /backups
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:?Run scripts/init_local.py}
+      PDV_BACKUP_OFFSITE: "0"
       BACKUP_INTERVAL_SECONDS: "3600"
     depends_on: {db: {condition: service_healthy}}
     volumes: [backup_data:/backups, backup_status:/status]
@@ -124,6 +134,8 @@ services:
 secrets:
   license_private: {file: ./.runtime/license-private.pem}
   license_public: {file: ./.runtime/license-public.pem}
+  release_private: {file: ./.runtime/release-private.pem}
+  release_public: {file: ./.runtime/release-public.pem}
 volumes:
   postgres_data:
   terminal_data:

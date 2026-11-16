@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -130,6 +131,9 @@ class CloudContractTests(unittest.TestCase):
         with patch("terminal.sync._request", side_effect=django_request):
             self.assertEqual(sync_once(store)["remaining"], 0)
         self.assertEqual(Sale.objects.filter(tenant=tenant).count(), 1)
+        synced = Sale.objects.get(pk=sale["id"])
+        self.assertEqual((str(synced.operator_id), synced.operator_name_snapshot), (operator["id"], "Gerente"))
+        self.assertIsNone(synced.seller_id)
         self.assertEqual(StockMovement.objects.filter(tenant=tenant, source="sale").count(), 1)
         self.assertEqual(StockMovement.objects.filter(tenant=tenant, product=product).aggregate(
             total=django.db.models.Sum("delta_milli"))["total"], 3750)
@@ -141,6 +145,39 @@ class CloudContractTests(unittest.TestCase):
         self.assertEqual(StockMovement.objects.filter(tenant=tenant, product=product).aggregate(
             total=django.db.models.Sum("delta_milli"))["total"], 5000)
         self.assertEqual(SyncEvent.objects.filter(tenant=tenant).count(), 3)
+
+        # Fiado sale and partial return, from the real terminal to the cloud ledger.
+        from core.models import Customer, FinanceEntry, SaleReturn
+        from terminal.sync import refresh_bootstrap
+        customer = Customer.objects.create(tenant=tenant, name="Dona Rosa", credit_limit_cents=5000)
+        with patch("terminal.sync._request", side_effect=django_request):
+            refresh_bootstrap(store)
+        self.assertEqual(store.customers("Rosa")[0]["available_credit_cents"], 5000)
+        fiado = store.sale(operator, {"request_id": "contract-fiado", "customer_id": str(customer.id),
+                                      "items": [{"product_id": str(product.id), "quantity_milli": 2000}],
+                                      "payments": [{"method": "credit_account", "amount_cents": 2598}]})
+        store.return_sale(operator, fiado["id"], {"return_id": str(uuid.uuid4()), "refund_method": "account",
+                          "reason": "Avaria", "items": [{"product_id": str(product.id), "quantity_milli": 1000}]})
+        with patch("terminal.sync._request", side_effect=django_request):
+            self.assertEqual(sync_once(store)["remaining"], 0)
+            refresh_bootstrap(store)
+        entry = FinanceEntry.objects.get(sale_id=fiado["id"])
+        self.assertEqual((entry.status, entry.amount_cents, entry.customer_id), ("open", 1299, customer.id))
+        self.assertEqual(SaleReturn.objects.get(sale_id=fiado["id"]).total_cents, 1299)
+        self.assertEqual(store.customers("Rosa")[0]["open_credit_cents"], 1299)
+
+        # Promotion created in the cloud, priced offline by the terminal, accepted back by the cloud.
+        from core.models import Promotion, SaleItem
+        promo = Promotion.objects.create(tenant=tenant, name="Queijo em oferta", kind="price", product=product, price_cents=999)
+        with patch("terminal.sync._request", side_effect=django_request):
+            refresh_bootstrap(store)
+        offer = store.sale(operator, {"request_id": "contract-promo", "items": [{"product_id": str(product.id), "quantity_milli": 1000}],
+                                      "payments": [{"method": "cash", "amount_cents": 999}]})
+        self.assertEqual(offer["promo_discount_cents"], 300)
+        with patch("terminal.sync._request", side_effect=django_request):
+            self.assertEqual(sync_once(store)["remaining"], 0)
+        line = SaleItem.objects.get(sale_id=offer["id"])
+        self.assertEqual((line.promo_discount_cents, line.promotion_id, line.line_total_cents), (300, promo.id, 999))
 
 
 if __name__ == "__main__":

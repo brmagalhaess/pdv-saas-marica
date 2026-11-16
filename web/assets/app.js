@@ -1,4 +1,9 @@
-import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, el, errorText } from "./core.js";
+import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, el, errorText,
+  APP_VERSION, VENDOR, editableMoney, parseMoneyInput, parseImportDecimal, scaledInteger, formPayload,
+  listPath, sortByLabel, taxIdValue, validTaxId, conflictReasonText, conflictView, customerFormFields,
+  productSaveErrorText, displayVersion, sendOnlyActive, terminalStateText, mirrorText, canTransferTerminal,
+  transferConfirmText, transferWarnings, transferSteps, backupKeyView, hubConfirmText, terminalStationsView,
+  canSetHub, stationLimitText, stationLabel, stationFilterOptions } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -16,33 +21,28 @@ const platformSuperuser = () => !!state.user?.is_superuser;
 const tenantOption = platform ? { tenant: false } : {};
 const roleNames = { owner: "Proprietário", admin: "Administrador", manager: "Gerente", cashier: "Operador de caixa", inventory: "Estoque", finance: "Financeiro", viewer: "Consulta" };
 const cancellationAccess = role => ["owner","admin","manager"].includes(role) ? "Autorizado" : role==="cashier" ? "Com PIN de gerente" : "Sem permissão";
-const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
-function editableMoney(cents) {
-  const value = Number(cents);
-  return Number.isFinite(value) ? (value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
-}
-function parseMoneyInput(raw) {
-  let value = String(raw ?? "").trim().replace(/R\$|\s/g, "");
-  if (!value) return NaN;
-  if (value.includes(",")) value = value.replace(/\./g, "").replace(",", ".");
-  else if (!/^\d+\.\d{1,2}$/.test(value)) value = value.replace(/\./g, "");
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.round(parsed * 100) : NaN;
-}
+const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", done:"Concluída", failed:"Falha", passed:"Aprovada", healthy:"Saudável", stale:"Atrasado", error:"Falha", unknown:"Aguardando", authorized:"Autorizada", rejected:"Rejeitada", denied:"Denegada", pending:"Pendente", processing:"Em processamento", overdue:"Vencida", disputed:"Em disputa", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
 
 const tenantNav = [
+  { group: "Acompanhar", id: "reports", label: "Relatórios", icon: "▧", feature:"reports", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Acompanhar", id: "dashboard", label: "Visão geral", icon: "◫", feature:"cloud_dashboard", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
   { group: "Operação", id: "sales", label: "Vendas", icon: "▤", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
+  { group: "Operação", id: "cash", label: "Caixas", icon: "▢", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Operação", id: "products", label: "Produtos", icon: "▦", roles: ["owner","admin","manager","cashier","inventory","finance","viewer"] },
+  { group: "Operação", id: "inventory", label: "Inventário", icon: "☑", feature:"stock", roles: ["owner","admin","manager","inventory","cashier"] },
+  { group: "Operação", id: "promotions", label: "Promoções", icon: "★", roles: ["owner","admin","manager","inventory","cashier","finance","viewer"] },
   { group: "Operação", id: "categories", label: "Categorias", icon: "◈", roles: ["owner","admin","manager","inventory","viewer"] },
   { group: "Operação", id: "stock", label: "Estoque", icon: "▣", feature:"stock", roles: ["owner","admin","manager","inventory","finance","viewer"] },
   { group: "Relacionamento", id: "customers", label: "Clientes", icon: "♧", roles: ["owner","admin","manager","cashier","finance"] },
   { group: "Relacionamento", id: "suppliers", label: "Fornecedores", icon: "▱", roles: ["owner","admin","manager","inventory","finance"] },
+  { group: "Relacionamento", id: "commissions", label: "Comissões", icon: "%", feature:"finance", roles: ["owner","admin","manager","finance"] },
   { group: "Relacionamento", id: "finance", label: "Financeiro", icon: "◎", feature:"finance", roles: ["owner","admin","manager","finance","viewer"] },
   { group: "Administração", id: "shops", label: "Lojas", icon: "⌂", roles: ["owner","admin","manager","viewer"] },
   { group: "Administração", id: "company", label: "Minha empresa", icon: "◧", roles: ["owner","admin"] },
   { group: "Administração", id: "users", label: "Equipe", icon: "♙", roles: ["owner","admin"] },
   { group: "Administração", id: "terminals", label: "Terminais", icon: "▥", roles: ["owner","admin"] },
+  { group: "Administração", id: "payment_methods", label: "Formas de pagamento", icon: "◈", roles: ["owner","admin"] },
+  { group: "Administração", id: "printers", label: "Impressoras", icon: "⎙", roles: ["owner","admin"] },
   { group: "Administração", id: "subscription", label: "Assinatura", icon: "◉", roles: ["owner","admin"] },
   { group: "Administração", id: "integrations", label: "Integrações", icon: "◇", roles: ["owner","admin"] },
   { group: "Administração", id: "audit", label: "Auditoria", icon: "≡", roles: ["owner","admin"] },
@@ -55,7 +55,9 @@ const platformNav = [
   { group: "Plataforma", id: "subscriptions", label: "Assinaturas", icon: "▤", roles:["platform_support","platform_billing"] },
   { group: "Plataforma", id: "devices", label: "Terminais", icon: "▥", roles:["platform_support","platform_ops"] },
   { group: "Plataforma", id: "platform_users", label: "Usuários e permissões", icon: "♙", roles:[], superuserOnly:true },
+  { group: "Plataforma", id: "security", label: "Segurança e MFA", icon: "⌑", roles:["platform_support","platform_billing","platform_ops"] },
   { group: "Plataforma", id: "services", label: "Serviços", icon: "◇", roles:["platform_support","platform_billing","platform_ops"] },
+  { group: "Plataforma", id: "backups", label: "Backups e restauração", icon: "◫", roles:["platform_ops"] },
   { group: "Plataforma", id: "releases", label: "Versões", icon: "↥", roles:["platform_ops"] },
   { group: "Plataforma", id: "invoices", label: "Cobranças", icon: "◎", roles:["platform_billing"] },
   { group: "Plataforma", id: "platform_audit", label: "Auditoria", icon: "≡", roles:["platform_support","platform_ops"] }
@@ -72,15 +74,16 @@ function handleError(error, target) {
     location.assign("/login/?next=" + encodeURIComponent(location.pathname + location.hash));
     return;
   }
-  if (error?.status === 0 || error?.status >= 500) {
-    toast("Sem conexão com a nuvem. Para continuar as vendas, abra o terminal local em http://127.0.0.1:8010/.", "error");
-  }
+  // Only a network failure in the store panel points to the local terminal; a 5xx is a server fault.
+  const offline = error?.status === 0 && !platform;
+  const offlineHint = "Sem conexão com a nuvem. Para continuar as vendas, abra o terminal local em http://127.0.0.1:8010/.";
   if (target) {
     target.textContent = errorText(error);
     target.className = "feedback error";
     target.hidden = false;
     target.setAttribute("role", "alert");
-  } else toast(errorText(error), "error");
+    if (offline) toast(offlineHint, "error");
+  } else toast(offline ? offlineHint : errorText(error), "error");
 }
 function loadingSurface(label = "Carregando dados…") {
   const surface = el("div", "surface pad");
@@ -169,14 +172,14 @@ function productFinancials(row) {
 function productStatus(row) {
   const wrap = el("div", "product-status-stack");
   wrap.append(statusBadge(row.active ? "Ativo" : "Inativo"));
-  wrap.append(el("small", "", row.stock_minimum_milli ? `Estoque mínimo: ${quantity(row.stock_minimum_milli, row.unit)}` : "Estoque mínimo não definido"));
+  wrap.append(el("small", "", row.stock_controlled === false ? "Produção própria · sem controle de saldo" : row.stock_minimum_milli ? `Estoque mínimo: ${quantity(row.stock_minimum_milli, row.unit)}` : "Estoque mínimo não definido"));
   return wrap;
 }
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
-  const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
-    : ["trial","past_due","pending","open","acknowledged","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
-    : ["active","settled","completed","succeeded","paid","resolved","ignored","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
+  const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","rejected","denied","overdue","error","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
+    : ["trial","past_due","pending","processing","disputed","stale","open","acknowledged","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
+    : ["active","settled","completed","succeeded","done","authorized","paid","resolved","ignored","passed","healthy","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
   return el("span", "badge " + tone, statusNames[normalized] || value || "—");
 }
 function table(columns, rows, actionsFor) {
@@ -213,11 +216,12 @@ function table(columns, rows, actionsFor) {
   wrap.append(node);
   return wrap;
 }
-function pagedContent(response, path, columns, actionsFor, emptyNode, options={}) {
+function pagedContent(response, path, columns, actionsFor, emptyNode, options={}, onDraw=null) {
   const host=el("div");
   const rows=[...records(response)];
   let next=response?.next_cursor||null;
   function draw() {
+    onDraw?.(rows,!!next);
     host.replaceChildren(rows.length?table(columns,rows,actionsFor):emptyNode);
     if(!next)return;
     const footer=el("div","table-footer");
@@ -305,20 +309,26 @@ function terminalAccessBox(license) {
   if(localDocker())grid.append(copyableValue("Servidor fora do Docker, no mesmo computador",location.origin,"Use apenas se o terminal estiver instalado fora do Docker nesta máquina."));
   grid.append(copyableValue("Link para abrir o terminal neste computador",terminalLink(),"O aplicativo local precisa estar em execução neste computador."));
   box.append(grid);
+  const stationLimit=stationLimitText(license);
+  if(stationLimit)box.append(info(stationLimit+". O caixa principal de cada loja liga os adicionais em Sistema → Caixas da loja."));
   const actions=el("div","connection-actions"),open=el("a","button secondary","Abrir terminal local");
   open.href=terminalLink();open.target="_blank";open.rel="noopener noreferrer";
   actions.append(open);box.append(actions);
   return box;
 }
 
-let dialogCleanup = null;
+let dialogCleanup = null, dialogPersistent = false;
 function closeDialog() {
   if (dialogCleanup) dialogCleanup();
   dialogCleanup = null;
+  dialogPersistent = false;
   $("#dialog-root").replaceChildren();
 }
-function openDialog(title, subtitle, content) {
+// options.persistent: shows something that cannot be shown again (Esc, the backdrop, × and a change of
+// section do not close it; only its own button does). options.dirty: asks before closing from the start.
+function openDialog(title, subtitle, content, options = {}) {
   closeDialog();
+  dialogPersistent = Boolean(options.persistent);
   const previous = document.activeElement;
   const overlay = el("div", "dialog-backdrop");
   const panel = el("section", "dialog");
@@ -331,16 +341,25 @@ function openDialog(title, subtitle, content) {
   titleNode.id = "dialog-title";
   text.append(titleNode);
   if (subtitle) text.append(el("p", "", subtitle));
-  const close = button("×", closeDialog, "ghost", "dialog-close");
+  const close = button("×", () => (options.dirty ? dismiss() : closeDialog()), "ghost", "dialog-close");
   close.setAttribute("aria-label", "Fechar janela");
+  close.hidden = dialogPersistent;
   head.append(text, close);
   const body = el("div", "dialog-body");
   body.append(content);
   panel.append(head, body);
   overlay.append(panel);
   $("#dialog-root").append(overlay);
+  // Escape or a click on the backdrop must not silently discard a filled form.
+  let dirty = Boolean(options.dirty), pressedBackdrop = false;
+  panel.addEventListener("input", () => { dirty = true; });
+  panel.addEventListener("change", () => { dirty = true; });
+  const dismiss = () => {
+    if (options.persistent) return;
+    if (!dirty || window.confirm(options.confirmText || "Fechar a janela e descartar o que foi preenchido?")) closeDialog();
+  };
   const keydown = event => {
-    if (event.key === "Escape") closeDialog();
+    if (event.key === "Escape") dismiss();
     if (event.key !== "Tab") return;
     const focusables = [...panel.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]')].filter(node => !node.hidden);
     if (!focusables.length) return;
@@ -348,10 +367,12 @@ function openDialog(title, subtitle, content) {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
-  overlay.addEventListener("click", event => { if (event.target === overlay) closeDialog(); });
+  // A drag that starts inside the panel and ends on the backdrop also fires "click" on the backdrop.
+  overlay.addEventListener("mousedown", event => { pressedBackdrop = event.target === overlay; });
+  overlay.addEventListener("click", event => { if (event.target === overlay && pressedBackdrop) dismiss(); pressedBackdrop = false; });
   document.addEventListener("keydown", keydown);
   dialogCleanup = () => { document.removeEventListener("keydown", keydown); previous?.focus?.(); };
-  const initial = panel.querySelector("input,select,textarea,button");
+  const initial = body.querySelector('input:not([type="hidden"]):not(:disabled),select,textarea,button');
   (initial || close).focus();
   return body;
 }
@@ -396,8 +417,25 @@ function renderProfileMenu() {
   menu.append(el("strong", "profile-menu-name", state.user?.name || "Conta"));
   menu.append(el("small", "profile-menu-email", state.user?.email || ""));
   const links = [];
-  if (canOpenPlatform()) links.push(["Administração SaaS", "/platform/"]);
-  if (state.memberships?.length) links.push(["Painel da empresa", "/app/"]);
+  const switches = [];
+  if (canOpenPlatform()) switches.push(["Administração SaaS", "/platform/", "Planos, licenças e operação da plataforma"]);
+  if (state.memberships?.length) {
+    state.memberships.forEach(membership => switches.push([
+      membership.tenant_name || "Painel da empresa",
+      "/app/?tenant=" + encodeURIComponent(membership.tenant_id),
+      `Empresa · ${roleNames[membership.role] || membership.role}`
+    ]));
+  }
+  if (switches.length > 1 || (platform && state.memberships?.length)) {
+    menu.append(el("small", "profile-menu-section-title", "Trocar área de acesso"));
+    switches.forEach(([label, href, description]) => {
+      const link = el("a", "profile-menu-link profile-menu-switch", label); link.href = href;
+      link.append(el("small", "profile-menu-link-note", description));
+      menu.append(link);
+    });
+    menu.append(el("div", "profile-menu-divider"));
+  }
+  if (canOpenPlatform()) links.push(["Segurança e MFA", "/platform/#security"]);
   if (links.length) {
     menu.append(el("div", "profile-menu-divider"));
     links.forEach(([label, href]) => {
@@ -443,30 +481,34 @@ const resourceSpecs = {
   },
   categories: {
     title: "Categorias", description: "Mantenha o catálogo organizado para encontrar produtos mais rápido.",
-    endpoint: "/categories", singular: "categoria", create: canCatalog, edit: canCatalog, remove: false,
+    endpoint: "/categories", singular: "categoria", create: canCatalog, edit: canCatalog, remove: false, search: "Buscar por nome",
     fields: [
       { key: "name", label: "Nome da categoria", required: true, max: 120 },
+      { key: "commission_bps", label: "Comissão da categoria (%) — opcional", type: "percent", help: "Se preenchida, substitui a comissão do vendedor nos itens desta categoria." },
       { key: "active", label: "Categoria ativa", type: "checkbox", default: true }
     ],
     columns: [
       { label: "Categoria", render: row => row.name },
+      { label: "Comissão", render: row => row.commission_bps == null ? "Do vendedor" : percentText(row.commission_bps) },
       { label: "Estado", render: row => statusBadge(row.active ? "Ativa" : "Inativa") }
     ]
   },
   products: {
     title: "Produtos", description: "Preços, unidades, variações e dados básicos de cada item.",
-    endpoint: "/products", singular: "produto", create: canCatalog, edit: canCatalog, remove: true, search: true,
+    endpoint: "/products", singular: "produto", create: canCatalog, edit: canCatalog, remove: true, saveErrorText: productSaveErrorText, search: "Buscar por nome, SKU ou código de barras",
     fields: [
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
       { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
-      { key: "barcode", label: "Código de barras", generated: true, max: 13, help: "Código interno EAN-13 gerado para esta empresa; bloqueado para edição." },
+      { key: "barcode", label: "Código de barras (EAN)", sendIfChanged: true, max: 14, inputMode: "numeric", pattern: "[0-9]{8}|[0-9]{12,14}", placeholder: "Vazio = gerar código interno", help: "Informe o EAN de fábrica (8, 12, 13 ou 14 dígitos). Deixe vazio para o sistema gerar um código interno EAN-13." },
       { key: "ncm", label: "NCM (opcional)", max: 8, inputMode: "numeric", pattern: "[0-9]{7,8}", help: "Informe o NCM do produto quando a empresa tiver a classificação fiscal definida." },
       { key: "scale_code", label: "Código PLU da balança (opcional)", max: 6, inputMode: "numeric", pattern: "[0-9]{1,6}", help: "Use o código numérico programado na balança para etiquetas EAN-13 com peso." },
       { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
       { key: "variant", label: "Variação", placeholder: "Ex.: Tamanho M ou sabor morango", max: 100 },
       { key: "unit", label: "Unidade", type: "select", required: true, choices: [["UN","Unidade"],["KG","Quilo"],["L","Litro"]], default: "UN" },
       { key: "price_cents", label: "Preço de venda (R$)", type: "money", required: true, min: 0 },
+      { key: "cost_cents", label: "Custo (R$)", type: "money", min: 0, default: 0, help: "Custo inicial, usado na margem e no lucro. Depois da primeira entrada de mercadoria, o custo médio é calculado pelas entradas." },
       { key: "stock_minimum_milli", label: "Estoque mínimo (alerta)", type: "milli", min: 0, default: 0, help: "Apenas sinaliza reposição. Para adicionar unidades, use Operação > Estoque > Registrar entrada ou Ajustar estoque." },
+      { key: "stock_controlled", label: "Controlar estoque", type: "checkbox", default: true, help: "Desative para produtos de produção própria, como pão, salgados e refeições vendidos por KG. O terminal permitirá vender mesmo sem saldo de entrada." },
       { key: "image_url", label: "Imagem do produto (URL opcional)", placeholder: "https://... ou /assets/product-images/...", max: 500, full: true, help: "Se ficar vazio, o PDV escolhe automaticamente uma imagem da categoria." },
       { key: "active", label: "Produto ativo", type: "checkbox", default: true }
     ],
@@ -481,26 +523,30 @@ const resourceSpecs = {
     ]
   },
   customers: {
-    title: "Clientes", description: "Contatos cadastrados para consultas e futuras operações.",
-    endpoint: "/customers", singular: "cliente", create: () => can("owner","admin","manager","cashier"), edit: () => can("owner","admin","manager","cashier"), remove: false,
+    title: "Clientes", description: "Cadastro, limite de fiado, crédito na loja e extrato de cada cliente.",
+    endpoint: "/customers", singular: "cliente", create: () => can("owner","admin","manager","cashier"), edit: () => can("owner","admin","manager","cashier","finance"), remove: false, search: "Buscar por nome",
+    toggleActive: () => can("owner","admin","manager"),
+    fieldsFor: editing => customerFormFields(resourceSpecs.customers.fields, state.role, editing),
     fields: [
       { key: "name", label: "Nome", required: true, max: 160, full: true },
       { key: "document", label: "CPF ou CNPJ", max: 18 },
       { key: "email", label: "E-mail", type: "email", max: 254 },
       { key: "phone", label: "Telefone", type: "tel", max: 30 },
+      { key: "credit_limit_cents", label: "Limite de fiado (R$)", type: "money", min: 0, default: 0, help: "Valor máximo em aberto para vendas a prazo. Deixe 0 para não liberar fiado; acima do limite o caixa exige PIN de gerente." },
       { key: "active", label: "Cliente ativo", type: "checkbox", default: true }
     ],
     columns: [
       { label: "Nome", render: row => row.name },
       { label: "Documento", render: row => row.document },
-      { label: "E-mail", render: row => row.email },
       { label: "Telefone", render: row => row.phone },
+      { label: "Fiado em aberto / limite", render: row => { const c = state.creditByCustomer?.[row.id]; const open = c?.open_credit_cents || 0; return row.credit_limit_cents || open ? `${money(open)} / ${money(row.credit_limit_cents || 0)}` : "—"; } },
+      { label: "Crédito na loja", render: row => { const v = state.creditByCustomer?.[row.id]?.store_credit_cents || 0; return v ? money(v) : "—"; } },
       { label: "Estado", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
     ]
   },
   suppliers: {
     title: "Fornecedores", description: "Dados de contato para compras e entrada de mercadorias.",
-    endpoint: "/suppliers", singular: "fornecedor", create: () => can("owner","admin","manager","inventory"), edit: () => can("owner","admin","manager","inventory"), remove: false,
+    endpoint: "/suppliers", singular: "fornecedor", create: () => can("owner","admin","manager","inventory"), edit: () => can("owner","admin","manager","inventory"), remove: false, search: "Buscar por nome",
     fields: [
       { key: "name", label: "Nome", required: true, max: 160, full: true },
       { key: "document", label: "CPF ou CNPJ", max: 18 },
@@ -549,36 +595,49 @@ const productLabelStyles = `
   .product-print-label-unit{font-size:8pt;font-weight:400}
   .product-print-label-barcode{width:37.29mm;height:15.18mm;justify-self:center}
   .product-print-label-barcode svg{display:block;width:37.29mm;height:15.18mm;max-width:none}
+  .product-print-page{box-sizing:border-box;margin:0;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
+  .product-print-page .product-print-label{flex:none}
 `;
+const defaultLabelSize = { width_mm: 50, height_mm: 30, gap_mm: 2, sensor: "gap" };
+// The 50 × 30 mm design is scaled to the configured label stock.
+function labelScale(size) { return Math.min(size.width_mm / 50, size.height_mm / 30); }
+function labelSizeText(size) { return `${String(size.width_mm).replace(".", ",")} × ${String(size.height_mm).replace(".", ",")} mm`; }
 function labelHtmlEscape(value) {
   return String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 }
 function productLabelMarkup(product) {
   return `<article class="product-print-label"><div class="product-print-label-name" title="${labelHtmlEscape(product.name)}">${labelHtmlEscape(product.name)}</div><div class="product-print-label-price"><span>${labelHtmlEscape(money(product.price_cents))}</span><span class="product-print-label-unit">/ ${labelHtmlEscape(product.unit || "UN")}</span></div><div class="product-print-label-barcode">${ean13Svg(product.barcode)}</div></article>`;
 }
-function productLabelPrintDocument(product, quantity) {
+function productLabelPageMarkup(product, size) {
+  return `<div class="product-print-page" style="width:${size.width_mm}mm;height:${size.height_mm}mm"><div style="transform:scale(${labelScale(size)})">${productLabelMarkup(product)}</div></div>`;
+}
+function productLabelPrintDocument(product, quantity, size = defaultLabelSize) {
   if (!validEan13(product.barcode)) throw new Error("O produto precisa ter um EAN-13 válido para imprimir etiquetas.");
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) throw new Error("Informe uma quantidade entre 1 e 999 etiquetas.");
-  const labels = Array.from({ length: quantity }, () => productLabelMarkup(product)).join("");
+  const labels = Array.from({ length: quantity }, () => productLabelPageMarkup(product, size)).join("");
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiquetas · ${labelHtmlEscape(product.name)}</title><style>
-    html,body{margin:0;padding:0;background:#fff}body{width:50mm}
+    html,body{margin:0;padding:0;background:#fff}body{width:${size.width_mm}mm}
     ${productLabelStyles}
-    @page{size:50mm 30mm;margin:0}
-    @media print{.product-print-label{break-after:page;page-break-after:always}.product-print-label:last-child{break-after:auto;page-break-after:auto}}
+    @page{size:${size.width_mm}mm ${size.height_mm}mm;margin:0}
+    @media print{.product-print-page{break-after:page;page-break-after:always}.product-print-page:last-child{break-after:auto;page-break-after:auto}}
   </style></head><body>${labels}</body></html>`;
 }
-function printProductBarcode(product, quantity) {
-  const markup = productLabelPrintDocument(product, quantity);
+function printProductBarcode(product, quantity, size) {
+  printLabelDocument(productLabelPrintDocument(product, quantity, size));
+}
+function printLabelDocument(markup) {
   const popup = window.open("", "_blank", "width=440,height=620");
   if (!popup) { toast("Permita pop-ups para imprimir a etiqueta.", "error"); return; }
   popup.document.open();
   popup.document.write(markup);
   popup.document.close();
   popup.focus();
-  // This function runs only after the user submits the label dialog.
+  // Callers run only after a user action (dialog submit or button click).
   popup.print();
 }
-function productLabelDialog(product) {
+async function productLabelDialog(product) {
+  const size = { ...defaultLabelSize, ...(await api.get("/label-settings")) };
+  const sizeText = labelSizeText(size);
   const form = el("form", "label-print-form");
   const style = el("style"); style.textContent = productLabelStyles; form.append(style);
   form.append(info("Use impressora de etiquetas com sensor de intervalo. A Epson TM-T20 utiliza bobinas de recibo de 58 ou 80 mm e não alinha etiquetas com espaços.", true));
@@ -589,18 +648,18 @@ function productLabelDialog(product) {
   quantityLabel.htmlFor = quantityInput.id;
   quantityField.append(quantityLabel, quantityInput, el("small", "", "De 1 a 999 cópias deste produto."));
   const sizeField = el("div", "field");
-  sizeField.append(el("span", "field-label", "Tamanho da etiqueta"), el("strong", "label-print-size", "50 × 30 mm"), el("small", "", "Uma etiqueta por página."));
+  sizeField.append(el("span", "field-label", "Tamanho da etiqueta"), el("strong", "label-print-size", sizeText), el("small", "", "Uma etiqueta por página. Altere em Administração → Impressoras."));
   controls.append(quantityField, sizeField); form.append(controls);
-  const preview = el("figure", "label-print-preview"), caption = el("figcaption", "", "Prévia · 50 × 30 mm");
+  const preview = el("figure", "label-print-preview"), caption = el("figcaption", "", "Prévia · " + sizeText);
   preview.append(caption);
   const barcodeValid = validEan13(product.barcode);
   if (barcodeValid) {
-    const sheet = el("div", "label-print-sheet"); sheet.innerHTML = productLabelMarkup(product); preview.append(sheet);
+    const sheet = el("div", "label-print-sheet"); sheet.innerHTML = productLabelPageMarkup(product, size); preview.append(sheet);
   } else {
     preview.append(el("p", "feedback error", "O código de barras deste produto não é um EAN-13 válido. Corrija o cadastro antes de imprimir."));
   }
   form.append(preview);
-  form.append(el("p", "label-print-help", "Na impressão do navegador, selecione papel 50 × 30 mm, escala 100%, margens zero e desative cabeçalhos e rodapés. Nas preferências da impressora, desative o corte automático."));
+  form.append(el("p", "label-print-help", "Na impressão do navegador, selecione papel " + sizeText + ", escala 100%, margens zero e desative cabeçalhos e rodapés. Nas preferências da impressora, desative o corte automático."));
   const message = el("p", "feedback error"); message.hidden = true; message.setAttribute("role", "alert"); form.append(message);
   const actions = el("div", "form-actions"), print = button("Imprimir etiquetas", null);
   print.type = "submit"; print.disabled = !barcodeValid;
@@ -608,24 +667,126 @@ function productLabelDialog(product) {
   form.addEventListener("submit", event => {
     event.preventDefault();
     if (!form.reportValidity()) return;
-    try { printProductBarcode(product, Number(quantityInput.value)); message.hidden = true; }
+    try { printProductBarcode(product, Number(quantityInput.value), size); message.hidden = true; }
     catch (error) { handleError(error, message); }
   });
   openDialog("Imprimir etiquetas", product.name, form);
 }
 
+const productLabel = row => row.name + (row.sku ? " · " + row.sku : "");
+const lookupLabels = { "/products": productLabel };
+// Combobox with server-side search (?q=). A plain <select> only reached the first
+// API page (50 rows in UUID order), hiding the rest of the catalog.
+function lookupControl({ id, name = "", source, labelOf = lookupLabels[source] || (row => row.name), placeholder = "Digite para buscar", required = false, filter = null }) {
+  const wrap = el("div", "combo");
+  const search = el("input"), hidden = el("input"), list = el("ul", "combo-list");
+  search.id = id; search.type = "search"; search.autocomplete = "off"; search.placeholder = placeholder; search.maxLength = 120;
+  search.setAttribute("role", "combobox"); search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-expanded", "false");
+  list.id = id + "-list"; list.setAttribute("role", "listbox"); list.hidden = true;
+  search.setAttribute("aria-controls", list.id);
+  hidden.type = "hidden"; if (name) hidden.name = name;
+  wrap.append(search, hidden, list);
+  let selected = null, picks = [], active = -1, serial = 0, timer;
+  const validity = () => search.setCustomValidity(required && !hidden.value ? "Escolha um item da lista." : "");
+  function close() {
+    list.hidden = true; active = -1;
+    search.setAttribute("aria-expanded", "false"); search.removeAttribute("aria-activedescendant");
+  }
+  function set(row) {
+    selected = row || null;
+    hidden.value = row ? String(row.id) : "";
+    search.value = row ? labelOf(row) : "";
+    validity();
+  }
+  function choose(row) { set(row); close(); }
+  function draw(rows, truncated) {
+    list.replaceChildren(); picks = [];
+    const add = (text, pick, extra = "") => {
+      const item = el("li", "combo-option" + extra, text);
+      item.setAttribute("role", "option"); item.id = `${id}-option-${picks.length}`;
+      item.addEventListener("mousedown", event => { event.preventDefault(); pick(); });
+      picks.push(pick); list.append(item);
+    };
+    if (!required && hidden.value) add("Limpar seleção", () => choose(null), " combo-clear");
+    rows.forEach(row => add(labelOf(row), () => choose(row)));
+    if (!rows.length) list.append(el("li", "combo-note", "Nenhum resultado. Tente outro termo."));
+    else if (truncated) list.append(el("li", "combo-note", "Há mais resultados. Continue digitando para refinar a busca."));
+    list.hidden = false; active = -1; search.setAttribute("aria-expanded", "true");
+  }
+  async function load() {
+    const token = ++serial;
+    try {
+      const typed = search.value.trim();
+      const result = await api.get(listPath(source, { q: selected && typed === labelOf(selected) ? "" : typed, limit: 100 }));
+      if (token !== serial) return;
+      const rows = sortByLabel(records(result).filter(row => row.active !== false && (!filter || filter(row))), labelOf);
+      draw(rows, !!result?.next_cursor);
+    } catch (error) {
+      if (token !== serial) return;
+      list.replaceChildren(el("li", "combo-note", errorText(error))); picks = [];
+      list.hidden = false; search.setAttribute("aria-expanded", "true");
+    }
+  }
+  search.addEventListener("input", () => {
+    // Emptying the text clears the choice right away, even if the form is submitted without leaving the field.
+    if (!search.value.trim() && hidden.value) { selected = null; hidden.value = ""; validity(); }
+    clearTimeout(timer); timer = setTimeout(load, 230);
+  });
+  search.addEventListener("click", () => { if (list.hidden) load(); });
+  search.addEventListener("focus", () => search.select());
+  search.addEventListener("keydown", event => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (list.hidden) { load(); return; }
+      if (!picks.length) return;
+      active = active < 0 ? (event.key === "ArrowDown" ? 0 : picks.length - 1)
+        : (active + (event.key === "ArrowDown" ? 1 : picks.length - 1)) % picks.length;
+      const items = [...list.querySelectorAll('[role="option"]')];
+      items.forEach((item, index) => item.classList.toggle("active", index === active));
+      search.setAttribute("aria-activedescendant", items[active].id);
+      items[active].scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Enter" && !list.hidden) {
+      // Enter picks an option; it must not submit the form while the list is open.
+      event.preventDefault();
+      const pick = picks[active] || (picks.length === 1 ? picks[0] : null);
+      if (pick) pick();
+    } else if (event.key === "Escape" && !list.hidden) {
+      event.stopPropagation();
+      close();
+    }
+  });
+  // Keep the focus (and the list) when the pointer lands on the list scrollbar or a note.
+  list.addEventListener("mousedown", event => event.preventDefault());
+  search.addEventListener("blur", () => {
+    clearTimeout(timer); serial++;
+    // Text that was typed but not picked is discarded: the field always shows the real choice.
+    search.value = selected ? labelOf(selected) : "";
+    close();
+  });
+  validity();
+  return { wrap, search, hidden, set, get selected() { return selected; } };
+}
+async function lookupRecord(source, id) {
+  try { return await api.get(source + "/" + encodeURIComponent(id)); }
+  catch { return { id, name: "Registro atual (não foi possível carregar o nome)" }; }
+}
 async function fieldNode(field, value, creating = false) {
   const wrap = el("div", "field" + (field.full ? " full" : ""));
   const id = "field-" + field.key;
   const label = el("label", "", field.label);
   label.htmlFor = id;
   wrap.append(label);
+  if (field.type === "source") {
+    const combo = lookupControl({ id, name: field.key, source: field.source, required: !!field.required, placeholder: field.placeholder });
+    if (value) combo.set(await lookupRecord(field.source, value));
+    wrap.append(combo.wrap);
+    wrap.append(el("small", "", field.help || (field.required ? "Digite para buscar pelo nome." : "Digite para buscar pelo nome. Deixe vazio se não quiser vincular.")));
+    return wrap;
+  }
   let input;
-  if (field.type === "select" || field.type === "source") {
+  if (field.type === "select") {
     input = el("select");
-    const choices = field.type === "source"
-      ? records(await api.get(field.source)).map(row => [row[field.valueKey], row[field.labelKey]])
-      : field.choices;
+    const choices = field.choices;
     if (!field.required) {
       const blank = el("option", "", "Selecione, se desejar");
       blank.value = "";
@@ -645,6 +806,7 @@ async function fieldNode(field, value, creating = false) {
     input = el("input");
     input.type = field.type === "money" ? "text" : field.type === "milli" ? "number" : field.type === "checkbox" ? "checkbox" : field.type || "text";
     if (field.type === "money") { input.inputMode = "decimal"; input.placeholder = "0,00"; input.value = value == null ? (field.default == null ? "" : editableMoney(field.default)) : editableMoney(value); input.addEventListener("blur", () => { const cents = parseMoneyInput(input.value); if (Number.isSafeInteger(cents) && cents >= 0) input.value = editableMoney(cents); }); }
+    else if (field.type === "percent") { input.type = "number"; input.step = "0.01"; input.min = "0"; input.max = "100"; input.value = value == null ? (field.default == null ? "" : String(field.default / 100)) : String(value / 100); }
     else if (field.type === "milli") { input.step = "0.001"; input.value = value == null ? (field.default == null ? "" : String(field.default / 1000)) : String(value / 1000); }
     else if (field.type === "checkbox") input.checked = value == null ? !!field.default : !!value;
     else input.value = value ?? field.default ?? "";
@@ -675,34 +837,13 @@ async function fieldNode(field, value, creating = false) {
 }
 async function formFor(fields, values = {}, creating = false) {
   const form = el("form", "form-grid");
+  values = values || {};  // callers pass null for "new record"
   for (const field of fields) form.append(await fieldNode(field, values[field.key], creating));
   return form;
 }
-function formPayload(form, fields) {
-  const payload = {};
-  for (const field of fields) {
-    if (field.generated) continue;
-    const input = form.elements.namedItem(field.key);
-    if (!input) continue;
-    let value;
-    if (field.type === "checkbox") value = input.checked;
-    else if (field.type === "money") value = parseMoneyInput(input.value);
-    else if (field.type === "milli") value = Math.round(Number(input.value) * 1000);
-    else if (field.type === "json") {
-      try { value = JSON.parse(input.value || "{}"); }
-      catch { throw new Error(field.label + ": JSON inválido."); }
-    } else value = input.value.trim();
-    if ((value === "" || value === null) && !field.required) continue;
-    if ((field.type === "money" || field.type === "milli") && (!Number.isSafeInteger(value) || value < 0)) {
-      throw new Error(field.label + ": informe um número válido.");
-    }
-    payload[field.key] = value;
-  }
-  return payload;
-}
 async function resourceForm(spec, record) {
   const editing = !!record;
-  const fields = editing ? (spec.editFields || spec.fields) : spec.fields;
+  const fields = spec.fieldsFor ? spec.fieldsFor(editing) : editing ? (spec.editFields || spec.fields) : spec.fields;
   const body = el("div");
   const formValues = editing && spec.endpoint === "/shops" ? { ...record, address: addressText(record.address) === "—" ? "" : addressText(record.address) } : record || {};
   const form = await formFor(fields, formValues, !editing);
@@ -718,7 +859,7 @@ async function resourceForm(spec, record) {
     event.preventDefault();
     if (!form.reportValidity()) return;
     let payload;
-    try { payload = formPayload(form, fields); }
+    try { payload = formPayload(form, fields, { editing, record }); }
     catch (error) { handleError(error, message); return; }
     if (spec.endpoint === "/shops" && typeof payload.address === "string") payload.address = { text: payload.address };
     save.disabled = true;
@@ -729,10 +870,14 @@ async function resourceForm(spec, record) {
       closeDialog();
       toast(editing ? "Alterações salvas." : "Cadastro concluído.");
       renderRoute();
-    } catch (error) { handleError(error, message); save.disabled = false; }
+    } catch (error) {
+      const shown = spec.saveErrorText && error?.status === 409 ? Object.assign(new Error(spec.saveErrorText(error)), { status: error.status }) : error;
+      handleError(shown, message); save.disabled = false;
+    }
   });
   body.append(form);
-  openDialog(editing ? "Editar " + spec.singular : "Novo " + spec.singular, editing ? "Atualize os dados e salve." : "Preencha os campos para cadastrar.", body);
+  const limitOnly = editing && fields.length === 1 && fields[0].key === "credit_limit_cents";
+  openDialog(editing ? "Editar " + spec.singular : "Novo " + spec.singular, limitOnly ? (record.name || "Cliente") + ": o financeiro altera apenas o limite de fiado." : editing ? "Atualize os dados e salve." : "Preencha os campos para cadastrar.", body);
 }
 async function resourcePage(key) {
   const spec = resourceSpecs[key];
@@ -746,90 +891,99 @@ async function resourcePage(key) {
   if (spec.create()) view.actions.append(button("+ Novo " + spec.singular, async () => {
     try { await resourceForm(spec); } catch (error) { handleError(error); }
   }));
+  if (key === "products" && spec.create()) {
+    view.actions.append(button("+ Nova grade", () => productGroupForm(null).catch(handleError), "ghost"));
+    view.actions.append(button("Grades", () => productGroupsDialog().catch(handleError), "ghost"));
+  }
   if (key === "products") {
     view.outer.append(info("O estoque mínimo é apenas um alerta. O saldo disponível do terminal é lançado por loja em Operação > Estoque, usando Registrar entrada, Importar compra CSV ou Ajustar estoque."));
+    view.outer.append(info("Para itens fabricados pela própria empresa, como pão e refeições vendidos por KG, desative Controlar estoque no cadastro. O terminal aceitará a venda pelo preço do quilo sem exigir entrada ou saldo, mantendo esses itens identificados como produção própria."));
     view.outer.append(info("A emissão fiscal depende de configuração tributária e homologação próprias. Este catálogo ainda não torna o PDV apto a emitir NFC-e.", true));
   }
   const box = el("section", "surface");
   if (key === "products") box.classList.add("products-surface");
   view.outer.append(box);
   const toolbar = el("div", "toolbar");
+  let query = "", showInactive = false, requests = 0, timer;
   if (spec.search) {
     const field = el("div", "field");
-    const label = el("label", "", "Buscar por nome, SKU ou código de barras");
+    const label = el("label", "", spec.search);
     label.htmlFor = "resource-search";
     const input = el("input");
-    input.id = "resource-search"; input.type = "search"; input.placeholder = "Digite para buscar produtos"; input.maxLength = 120;
+    input.id = "resource-search"; input.type = "search"; input.placeholder = "Digite para buscar"; input.maxLength = 120;
     field.append(label, input); toolbar.append(field);
-    let timer;
-    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => load(input.value.trim()), 250); });
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { query = input.value.trim(); load(); }, 250); });
   } else toolbar.append(el("span", "toolbar-meta", "Dados cadastrados nesta empresa"));
+  // The API never returns inactive rows to cashier/viewer, so the filter would be a no-op for them.
+  if (spec.edit() && !can("cashier", "viewer")) {
+    const line = el("label", "checkbox-line"), toggle = el("input");
+    toggle.type = "checkbox"; toggle.id = "resource-inactive";
+    line.append(toggle, el("span", "", "Mostrar inativos"));
+    toggle.addEventListener("change", () => { showInactive = toggle.checked; load(); });
+    toolbar.append(line);
+  }
   box.append(toolbar);
   const content = el("div", key === "products" ? "products-content" : "");
   box.append(content);
-  async function load(query = "") {
-    const token = ++state.renderId;
+  async function reactivate(row) {
+    try {
+      await api.patch(spec.endpoint + "/" + row.id, { active: true });
+      toast("Registro reativado.");
+      load();
+    } catch (error) { handleError(error); }
+  }
+  async function load() {
+    // A debounced search may fire after the user left; it must not touch the next page.
+    const stale = token => token !== requests || current !== state.renderId;
+    if (current !== state.renderId) return;
+    const token = ++requests;
     content.replaceChildren(loadingSurface());
     try {
-      const suffix = query ? "?q=" + encodeURIComponent(query) : "";
-      const result = await api.get(spec.endpoint + suffix);
-      if (token !== state.renderId) return;
-      const rows = records(result);
-      content.replaceChildren();
-      if (productOverview) {
-        const active = rows.filter(row => row.active !== false).length;
-        const weighted = rows.filter(row => row.unit === "KG").length;
-        const withCost = rows.filter(row => Number(row.cost_cents) > 0).length;
-        productOverview.replaceChildren(
-          metric("Produtos encontrados", String(rows.length), query ? "Resultado da busca atual" : "Catálogo da empresa"),
-          metric("Produtos ativos", String(active), "Disponíveis para operação"),
-          metric("Vendidos por peso", String(weighted), "Unidade KG"),
-          metric("Com custo médio", String(withCost), "Prontos para margem e lucro")
-        );
+      const path = listPath(spec.endpoint, { q: query, include_inactive: showInactive });
+      const result = await api.get(path);
+      if (stale(token)) return;
+      if (key === "customers" && records(result).length) {
+        try { state.creditByCustomer = Object.fromEntries(records(await api.get("/customers/credit-summary")).map(r => [r.customer_id, r])); }
+        catch { state.creditByCustomer = {}; }
+        if (stale(token)) return;
       }
-      if (!rows.length) {
-        content.append(empty(query ? "Nenhum resultado" : "Nada cadastrado ainda", query ? "Tente outro termo de busca." : "Use o botão acima para adicionar o primeiro registro."));
-        return;
-      }
-      const actionsFor = spec.edit() || (spec.remove && spec.edit()) ? row => {
+      const editable = spec.edit();
+      const toggles = editable && (!spec.toggleActive || spec.toggleActive());
+      // The statement is open to every role that can read customer credit, including Financeiro.
+      const statement = key === "customers" && can("owner", "admin", "manager", "finance", "cashier");
+      const actionsFor = editable || statement ? row => {
         const actions = [];
-        if (spec.edit()) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
-        if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row) });
-        if (spec.remove && spec.edit()) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria.", async () => {
+        if (statement) actions.push({ label: "Extrato", onClick: () => customerStatement(row).catch(handleError) });
+        if (editable) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
+        if (editable && key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row).catch(handleError) });
+        if (toggles && row.active === false) actions.push({ label: "Reativar", onClick: () => reactivate(row) });
+        else if (spec.remove && toggles) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria e ele pode ser reativado em Mostrar inativos.", async () => {
           await api.delete(spec.endpoint + "/" + row.id);
           toast("Registro desativado.");
-          renderRoute();
+          load();
         }, "Desativar") });
         return actions;
       } : null;
-      const draw = list => table(spec.columns, list, actionsFor);
-      content.append(draw(rows));
-      if (result?.next_cursor) {
-        const footer = el("div", "table-footer");
-        footer.append(el("span", "", "Mais registros disponíveis."));
-        const more = button("Carregar mais", async () => {
-          more.disabled = true;
-          try {
-            const next = await api.get(spec.endpoint + "?cursor=" + encodeURIComponent(result.next_cursor) + (query ? "&q=" + encodeURIComponent(query) : ""));
-            if (token !== state.renderId) return;
-            rows.push(...records(next));
-            content.replaceChildren(draw(rows));
-            if (next.next_cursor) {
-              result.next_cursor = next.next_cursor;
-              content.append(footer);
-            }
-          } catch (error) { handleError(error); more.disabled = false; }
-        }, "ghost", "small");
-        footer.append(more);
-        content.append(footer);
-      }
+      const overview = productOverview ? (rows, more) => {
+        const scope = more ? "Entre os itens carregados" : "";
+        productOverview.replaceChildren(
+          metric(more ? "Produtos carregados" : "Produtos encontrados", String(rows.length), more ? "Há mais itens: use Carregar mais ou a busca" : query ? "Resultado da busca atual" : "Catálogo da empresa"),
+          metric("Produtos ativos", String(rows.filter(row => row.active !== false).length), scope || "Disponíveis para operação"),
+          metric("Vendidos por peso", String(rows.filter(row => row.unit === "KG").length), scope || "Unidade KG"),
+          metric("Com custo médio", String(rows.filter(row => Number(row.cost_cents) > 0).length), scope || "Prontos para margem e lucro")
+        );
+      } : null;
+      // pagedContent builds a fresh "Carregar mais" button for every page.
+      content.replaceChildren(pagedContent(result, path, spec.columns, actionsFor,
+        empty(query ? "Nenhum resultado" : "Nada cadastrado ainda", query ? "Tente outro termo de busca." : showInactive ? "Não há registros ativos nem inativos." : "Use o botão acima para adicionar o primeiro registro."),
+        {}, overview));
     } catch (error) {
-      if (token !== state.renderId) return;
+      if (stale(token)) return;
       content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!"));
       handleError(error);
     }
   }
-  if (current === state.renderId) load();
+  load();
 }
 
 async function loadShops() {
@@ -893,7 +1047,8 @@ async function dashboardPage() {
     if (fromInput.value) params.set("from", fromInput.value);
     if (toInput.value) params.set("to", toInput.value);
     try {
-      const data = await api.get("/dashboard" + (params.size ? "?" + params : ""));
+      const filters = params.toString();
+      const data = await api.get("/dashboard" + (filters ? "?" + filters : ""));
       if (thisRequest !== state.renderId) return;
       results.replaceChildren();
       const metrics = el("div", "metric-grid");
@@ -942,6 +1097,8 @@ async function saleDetail(id) {
       ["Identificador", sale.id],
       ["Loja", shopName(sale.shop_id)],
       ["Terminal", sale.terminal_name || sale.terminal_id],
+      ["Operador", sale.operator_name || "—"],
+      ["Vendedor", sale.seller_name || "—"],
       ["Data", dateTime(sale.created_at)],
       ["Total", money(sale.total_cents)],
       ["Estado", statusBadge(sale.status)],
@@ -957,11 +1114,28 @@ async function saleDetail(id) {
     payTitle.style.marginTop = "23px";
     content.append(payTitle);
     content.append(payments.length
-      ? table([{ label: "Forma", render: row => row.method }, { label: "Valor", render: row => money(row.amount_cents) }], payments)
+      ? table([{ label: "Forma", render: row => row.name || paymentNames[row.method] || paymentKindNames[row.method] || row.method }, { label: "Valor", render: row => money(row.amount_cents) }], payments)
       : empty("Sem pagamentos disponíveis", "Não há detalhes de pagamento nesta resposta."));
-    if (canSales() && sale.status === "completed") {
+    const returns = response.returns || sale.returns || [];
+    if (returns.length) {
+      const returnTitle = el("h3", "", "Devoluções");
+      returnTitle.style.marginTop = "23px";
+      // Return lines carry no unit; take it from the sale item so weights are not shown as whole units.
+      const unitOf = Object.fromEntries(items.map(item => [item.product_id, item.unit]));
+      content.append(returnTitle, table([
+        { label: "Data", render: r => dateTime(r.created_at) },
+        { label: "Itens", render: r => r.items.map(i => `${i.name} × ${quantity(i.quantity_milli, i.unit || unitOf[i.product_id] || "")}`).join(", ") },
+        { label: "Valor", render: r => money(r.total_cents) },
+        { label: "Devolvido em", render: r => refundNames[r.refund_method] || r.refund_method },
+        { label: "Motivo", render: r => r.reason }
+      ], returns));
+    }
+    // Returns are open to Financeiro as well; cancelling stays with owner/admin/manager.
+    const canReturn = can("owner", "admin", "manager", "finance"), canCancel = canSales() && !returns.length;
+    if (sale.status === "completed" && (canReturn || canCancel)) {
       const actions = el("div", "form-actions");
-      actions.append(button("Cancelar venda comercial", () => cancelSale(sale), "danger"));
+      if (canReturn) actions.append(button("Registrar devolução", () => panelReturn(sale, items, payments, returns).catch(handleError), "ghost"));
+      if (canCancel) actions.append(button("Cancelar venda comercial", () => cancelSale(sale), "danger"));
       content.append(actions);
     }
     loading.replaceChildren(content);
@@ -969,6 +1143,53 @@ async function saleDetail(id) {
     loading.replaceChildren(empty("Não foi possível abrir a venda", errorText(error), "!"));
     handleError(error);
   }
+}
+async function panelReturn(sale, items, payments, returns) {
+  const returned = {};
+  returns.forEach(r => r.items.forEach(i => { returned[i.product_id] = (returned[i.product_id] || 0) + i.quantity_milli; }));
+  const lines = items.map(i => ({ ...i, available: i.quantity_milli - (returned[i.product_id] || 0) })).filter(i => i.available > 0);
+  if (!lines.length) { toast("Todos os itens desta venda já foram devolvidos."); return; }
+  const onAccount = payments.some(p => p.method === "credit_account");
+  const body = el("div");
+  body.append(info("Use para devoluções que não passaram pelo caixa. O estoque volta para a loja da venda e a comissão é ajustada."));
+  const rows = lines.map((line, index) => {
+    const field = el("div", "field"), label = el("label", "", `${line.name} (disponível ${quantity(line.available, line.unit)})`), input = el("input");
+    input.id = "panel-return-quantity-" + index; label.htmlFor = input.id;
+    input.inputMode = "decimal"; input.value = "0"; field.append(label, input); body.append(field);
+    return { line, input };
+  });
+  const refundField = el("div", "field"), refundLabel = el("label", "", "Como o valor volta ao cliente"), refund = el("select");
+  refund.id = "panel-refund"; refundLabel.htmlFor = refund.id;
+  refund.innerHTML = `<option value="external">Devolvido fora do PDV (Pix ou estorno no cartão)</option><option value="store_credit">Crédito na loja</option>${onAccount ? '<option value="account">Abater do fiado</option>' : ""}`;
+  refundField.append(refundLabel, refund);
+  const customerField = el("div", "field"), customerLabel = el("label", "", "Cliente que recebe o crédito");
+  const customer = lookupControl({ id: "panel-return-customer", source: "/customers", placeholder: "Digite o nome do cliente" });
+  customerLabel.htmlFor = "panel-return-customer";
+  customerField.append(customerLabel, customer.wrap); customerField.hidden = true;
+  refund.addEventListener("change", () => { customerField.hidden = refund.value !== "store_credit" || !!sale.customer_id; });
+  const reasonField = el("div", "field"), reasonLabel = el("label", "", "Motivo"), reason = el("input");
+  reason.id = "panel-return-reason"; reason.maxLength = 240; reasonLabel.htmlFor = reason.id; reasonField.append(reasonLabel, reason);
+  const message = el("p", "feedback error"); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("Voltar", closeDialog, "ghost"));
+  const submit = button("Registrar devolução", async () => {
+    message.hidden = true;
+    try {
+      const chosen = rows.map(({ line, input }) => ({ line, qty: Math.round(Number(input.value.replace(",", ".")) * 1000) }))
+        .filter(r => r.qty);
+      if (!chosen.length) throw new Error("Informe a quantidade de ao menos um item.");
+      for (const r of chosen) if (!Number.isSafeInteger(r.qty) || r.qty < 0 || r.qty > r.line.available) throw new Error(`${r.line.name}: quantidade inválida.`);
+      if (reason.value.trim().length < 3) throw new Error("Informe o motivo da devolução.");
+      const data = { refund_method: refund.value, reason: reason.value.trim(), items: chosen.map(r => ({ product_id: r.line.product_id, quantity_milli: r.qty })) };
+      if (refund.value === "store_credit" && !sale.customer_id) { if (!customer.hidden.value) throw new Error("Escolha o cliente que recebe o crédito."); data.customer_id = customer.hidden.value; }
+      submit.disabled = true;
+      const result = await api.post(`/sales/${sale.id}/return`, data);
+      closeDialog(); toast(`Devolução registrada: ${money(result.total_cents)}.`); renderRoute();
+    } catch (error) { message.textContent = errorText(error); message.hidden = false; submit.disabled = false; }
+  });
+  actions.append(submit);
+  body.append(refundField, customerField, reasonField, message, actions);
+  openDialog("Registrar devolução", `Venda ${String(sale.id).slice(0, 8)}`, body);
 }
 function cancelSale(sale) {
   const body = el("div");
@@ -1008,7 +1229,14 @@ async function salesPage() {
   const box = el("section", "surface");
   const toolbar = el("div", "toolbar");
   const shop = shopSelect("sales-shop", true);
-  toolbar.append(shop.field, el("span", "toolbar-meta", "Vendas recebidas pela nuvem"));
+  const operator = personSelect("sales-operator", "Operador", "Todos os operadores");
+  const seller = personSelect("sales-seller", "Vendedor", "Todos os vendedores");
+  toolbar.append(shop.field, operator.field, seller.field, el("span", "toolbar-meta", "Vendas recebidas pela nuvem"));
+  api.get("/sales/people").then(response => {
+    const people = records(response);
+    operator.fill(people.filter(row => row.operator));
+    seller.fill(people.filter(row => row.seller));
+  }).catch(handleError);
   box.append(toolbar);
   const content = el("div");
   box.append(content);
@@ -1018,6 +1246,8 @@ async function salesPage() {
     content.replaceChildren(loadingSurface());
     const params = new URLSearchParams({ limit: "30" });
     if (shop.select.value) params.set("shop_id", shop.select.value);
+    if (operator.select.value) params.set("operator_id", operator.select.value);
+    if (seller.select.value) params.set("seller_id", seller.select.value);
     if (cursor) params.set("cursor", cursor);
     try {
       const response = await api.get("/sales?" + params);
@@ -1032,6 +1262,7 @@ async function salesPage() {
         { label: "Venda", render: row => String(row.id).slice(0, 8) },
         { label: "Loja", render: row => shopName(row.shop_id) },
         { label: "Data", render: row => dateTime(row.created_at) },
+        { label: "Operador / vendedor", render: row => [row.operator_name, row.seller_name].filter(Boolean).join(" / ") || "—" },
         { label: "Total", render: row => money(row.total_cents) },
         { label: "Estado", render: row => statusBadge(row.status) },
         { label: "Fiscal", render: row => statusBadge(row.fiscal_state || row.fiscal_status || "not_issued") }
@@ -1049,7 +1280,856 @@ async function salesPage() {
     }
   }
   if (current === state.renderId) load();
-  shop.select.addEventListener("change", () => load());
+  [shop.select, operator.select, seller.select].forEach(input => input.addEventListener("change", () => load()));
+}
+function personSelect(id, labelText, allText) {
+  const field = el("div", "field");
+  const label = el("label", "", labelText);
+  label.htmlFor = id;
+  const select = el("select");
+  select.id = id;
+  const all = el("option", "", allText);
+  all.value = "";
+  select.append(all);
+  field.append(label, select);
+  return { field, select, fill(people) {
+    people.forEach(person => {
+      const option = el("option", "", person.name);
+      option.value = person.id;
+      select.append(option);
+    });
+  } };
+}
+
+const creditSources = { return: "Devolução", sale: "Usado em venda", sale_cancel: "Venda cancelada", account_overpaid: "Devolução de fiado pago", manual: "Ajuste" };
+const refundNames = { cash: "Dinheiro", store_credit: "Crédito na loja", account: "Abatido do fiado", external: "Fora do PDV (Pix/cartão)" };
+async function customerStatement(customer) {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando extrato…"));
+  openDialog("Extrato de " + customer.name, "Fiado, crédito na loja e devoluções do cliente.", loading);
+  const data = await api.get(`/customers/${customer.id}/statement`);
+  const content = el("div");
+  content.append(detailList([
+    ["Limite de fiado", money(data.customer.credit_limit_cents)],
+    ["Fiado em aberto", money(data.open_credit_cents)],
+    ["Disponível para fiado", money(data.available_credit_cents)],
+    ["Crédito na loja", money(data.store_credit_cents)]
+  ]));
+  const openEntries = data.entries.filter(e => e.status === "open");
+  const title = el("h3", "", "Vendas a prazo"); title.style.marginTop = "23px";
+  content.append(title, data.entries.length ? table([
+    { label: "Venda", render: e => e.description },
+    { label: "Valor", render: e => money(e.amount_cents) },
+    { label: "Vencimento", render: e => e.due_date.split("-").reverse().join("/") },
+    { label: "Estado", render: e => e.overdue ? el("span", "badge danger", "Vencido") : statusBadge(e.status) }
+  ], data.entries) : empty("Sem fiado", "Este cliente ainda não comprou a prazo."));
+  if (openEntries.length && can("owner", "admin", "manager", "finance")) {
+    const actions = el("div", "form-actions");
+    actions.append(button(`Receber tudo em aberto (${money(openEntries.reduce((s, e) => s + e.amount_cents, 0))})`, () => confirmAction(
+      "Receber fiado", "Confirme que o cliente pagou as parcelas em aberto. Elas serão baixadas como recebidas hoje.", async () => {
+        await api.post(`/customers/${customer.id}/receive`, { entry_ids: openEntries.map(e => e.id) });
+        toast("Fiado recebido."); renderRoute();
+      }, "Confirmar recebimento")));
+    content.append(actions);
+  }
+  const creditTitle = el("h3", "", "Crédito na loja"); creditTitle.style.marginTop = "23px";
+  content.append(creditTitle, data.credits.length ? table([
+    { label: "Data", render: c => dateTime(c.created_at) },
+    { label: "Origem", render: c => creditSources[c.source] || c.source },
+    { label: "Descrição", render: c => c.description },
+    { label: "Valor", render: c => el("span", c.delta_cents < 0 ? "badge danger" : "badge", (c.delta_cents < 0 ? "− " : "+ ") + money(Math.abs(c.delta_cents))) }
+  ], data.credits) : empty("Sem crédito na loja", "Devoluções em crédito aparecem aqui."));
+  if (data.returns.length) {
+    const returnTitle = el("h3", "", "Devoluções"); returnTitle.style.marginTop = "23px";
+    content.append(returnTitle, table([
+      { label: "Data", render: r => dateTime(r.created_at) }, { label: "Valor", render: r => money(r.total_cents) },
+      { label: "Devolvido em", render: r => refundNames[r.refund_method] || r.refund_method }, { label: "Motivo", render: r => r.reason }
+    ], data.returns));
+  }
+  loading.replaceChildren(content);
+}
+function percentText(bps) { return (Number(bps) / 100).toLocaleString("pt-BR", { maximumFractionDigits: 2 }) + "%"; }
+const paymentNames = { cash: "Dinheiro (líquido de troco)", pix: "Pix", card_credit: "Crédito", card_debit: "Débito", card: "Cartão", credit_account: "A prazo (fiado)", store_credit: "Crédito na loja" };
+function cashMethodName(method) {
+  return method === "other" ? "Formas próprias" : paymentNames[method] || paymentKindNames[method] || method;
+}
+function differenceBadge(cents) {
+  if (cents == null) return statusBadge("open");
+  const value = Number(cents);
+  return el("span", "badge " + (value < 0 ? "danger" : value > 0 ? "warn" : ""),
+    value === 0 ? "Sem diferença" : (value < 0 ? "Falta " : "Sobra ") + money(Math.abs(value)));
+}
+async function cashDetail(id) {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando caixa…"));
+  openDialog("Conferência de caixa", "Abertura, vendas por forma, movimentos e fechamento.", loading);
+  try {
+    const row = await api.get("/cash-sessions/" + encodeURIComponent(id));
+    const content = el("div");
+    if (row.incomplete) content.append(info("A abertura deste caixa não foi recebida pela nuvem; o valor de abertura pode estar incompleto.", true));
+    content.append(detailList([
+      ["Loja", shopName(row.shop_id)], ["Terminal", row.terminal_name], ["Aberto por", row.operator_name || "—"],
+      ["Abertura", dateTime(row.opened_at) + " · " + money(row.opening_cents)],
+      ["Fechamento", row.closed_at ? dateTime(row.closed_at) : "Caixa aberto"],
+      ["Fechado por", [row.closed_by_name, row.supervisor_name && "autorizado por " + row.supervisor_name].filter(Boolean).join(" · ") || "—"],
+      ["Vendas", `${row.sales_count} · ${money(row.sales_total_cents)}`],
+      ...(row.cash_refunds_cents ? [["Devoluções em dinheiro", "− " + money(row.cash_refunds_cents)]] : []),
+      ["Esperado em dinheiro", row.expected_cents == null ? "—" : money(row.expected_cents)],
+      ["Contado", row.counted_cents == null ? "—" : money(row.counted_cents)],
+      ["Diferença", differenceBadge(row.difference_cents)]
+    ]));
+    const methods = Object.entries(row.by_method || {});
+    const payTitle = el("h3", "", "Recebido por forma de pagamento");
+    payTitle.style.marginTop = "23px";
+    content.append(payTitle, methods.length
+      ? table([{ label: "Forma", render: r => cashMethodName(r[0]) }, { label: "Valor", render: r => money(r[1]) }], methods)
+      : empty("Sem vendas neste caixa", "Nenhuma venda concluída foi sincronizada para este turno."));
+    const creditReceived = Object.entries(row.credit_received || {});
+    if (creditReceived.length) {
+      const creditTitle = el("h3", "", "Fiado recebido no caixa");
+      creditTitle.style.marginTop = "23px";
+      content.append(creditTitle, table([{ label: "Forma", render: r => cashMethodName(r[0]) }, { label: "Valor", render: r => money(r[1]) }], creditReceived));
+    }
+    const moveTitle = el("h3", "", "Sangrias e suprimentos");
+    moveTitle.style.marginTop = "23px";
+    content.append(moveTitle, row.movements.length
+      ? table([{ label: "Tipo", render: m => m.kind === "withdrawn" ? "Sangria" : "Suprimento" },
+               { label: "Valor", render: m => money(m.amount_cents) }, { label: "Motivo", render: m => m.reason },
+               { label: "Operador", render: m => m.operator_name || "—" }, { label: "Hora", render: m => dateTime(m.created_at) }], row.movements)
+      : empty("Sem movimentos", "Não houve sangria nem suprimento neste turno."));
+    loading.replaceChildren(content);
+  } catch (error) {
+    loading.replaceChildren(empty("Não foi possível abrir o caixa", errorText(error), "!"));
+    handleError(error);
+  }
+}
+async function cashPage() {
+  const current = ++state.renderId;
+  const view = page("Caixas", "Confira abertura, vendas por forma de pagamento, sangrias e quebra de cada turno.", "Operação");
+  const box = el("section", "surface");
+  const toolbar = el("div", "toolbar");
+  const shop = shopSelect("cash-shop", true);
+  const statusField = el("div", "field");
+  const statusLabel = el("label", "", "Estado");
+  statusLabel.htmlFor = "cash-status";
+  const status = el("select");
+  status.id = "cash-status";
+  [["", "Todos"], ["open", "Abertos"], ["closed", "Fechados"], ["shortage", "Com falta"]].forEach(([value, text]) => {
+    const option = el("option", "", text); option.value = value; status.append(option);
+  });
+  statusField.append(statusLabel, status);
+  const stationField = el("div", "field");
+  const stationLabelNode = el("label", "", "Caixa");
+  stationLabelNode.htmlFor = "cash-station";
+  const station = el("select");
+  station.id = "cash-station";
+  stationField.append(stationLabelNode, station);
+  // Additional registers come from the terminals (owner/admin) and from the rows already seen.
+  let stationTerminals = [], stationRows = [];
+  const fillStations = () => {
+    const chosen = station.value;
+    // Only the registers of the shop chosen beside it (all of them with "every shop").
+    const inShop = item => !shop.select.value || item?.shop_id === shop.select.value;
+    station.replaceChildren(...stationFilterOptions(stationTerminals.filter(inShop), stationRows.filter(inShop)).map(([value, text]) => {
+      const option = el("option", "", text); option.value = value; return option;
+    }));
+    if ([...station.options].some(option => option.value === chosen)) station.value = chosen;
+  };
+  fillStations();
+  if (can("owner", "admin")) api.get("/terminals?limit=100").then(response => { stationTerminals = records(response); fillStations(); }).catch(() => {});
+  toolbar.append(shop.field, stationField, statusField);
+  box.append(toolbar);
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  async function load(cursor = "") {
+    const token = ++state.renderId;
+    content.replaceChildren(loadingSurface());
+    const params = new URLSearchParams({ limit: "30" });
+    if (shop.select.value) params.set("shop_id", shop.select.value);
+    if (status.value) params.set("status", status.value);
+    if (station.value) params.set("station_id", station.value);
+    if (cursor) params.set("cursor", cursor);
+    try {
+      const response = await api.get("/cash-sessions?" + params);
+      if (token !== state.renderId) return;
+      const rows = records(response);
+      stationRows = stationRows.concat(rows.filter(row => row.station_id)).slice(-200);
+      fillStations();
+      content.replaceChildren();
+      if (!rows.length) {
+        content.append(empty("Nenhum caixa encontrado", "Os turnos abertos e fechados nos terminais aparecerão aqui após a sincronização."));
+        return;
+      }
+      content.append(table([
+        { label: "Terminal", render: row => `${row.terminal_name} · ${shopName(row.shop_id)}` },
+        { label: "Caixa", render: row => stationLabel(row) },
+        { label: "Operador", render: row => row.operator_name || "—" },
+        { label: "Abertura", render: row => dateTime(row.opened_at) },
+        { label: "Fechamento", render: row => row.closed_at ? dateTime(row.closed_at) : statusBadge("open") },
+        { label: "Vendido", render: row => money(row.sales_total_cents) },
+        { label: "Sangrias", render: row => money(row.withdrawn_cents) },
+        { label: "Quebra", render: row => differenceBadge(row.difference_cents) }
+      ], rows, row => [{ label: "Conferir", onClick: () => cashDetail(row.id) }]));
+      if (response.next_cursor) {
+        const footer = el("div", "table-footer");
+        footer.append(el("span", "", "Há mais caixas para consultar."));
+        footer.append(button("Próxima página", () => load(response.next_cursor), "ghost", "small"));
+        content.append(footer);
+      }
+    } catch (error) {
+      if (token !== state.renderId) return;
+      content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!"));
+      handleError(error);
+    }
+  }
+  if (current === state.renderId) load();
+  shop.select.addEventListener("change", fillStations);
+  [shop.select, station, status].forEach(input => input.addEventListener("change", () => load()));
+}
+
+async function commissionsPage() {
+  const current = ++state.renderId;
+  const view = page("Comissões", "Comissão acumulada por vendedor a partir das vendas sincronizadas. Cancelamentos estornam automaticamente.", "Relacionamento");
+  view.outer.append(info("Defina o percentual de cada pessoa em Equipe e, se quiser, um percentual por categoria. O pagamento gera uma conta a pagar no Financeiro."));
+  const box = el("section", "surface");
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  const canPay = ["owner", "admin", "finance"].includes(state.role);
+  async function load() {
+    content.replaceChildren(loadingSurface());
+    try {
+      const rows = records(await api.get("/commissions/summary"));
+      if (current !== state.renderId) return;
+      content.replaceChildren();
+      if (!rows.length) {
+        content.append(empty("Nenhuma comissão ainda", "Configure percentuais em Equipe e escolha o vendedor no caixa."));
+        return;
+      }
+      content.append(table([
+        { label: "Vendedor", render: r => r.seller_name },
+        { label: "Percentual", render: r => percentText(r.commission_bps) },
+        { label: "Vendas", render: r => String(r.sales) },
+        { label: "Base", render: r => money(r.base_cents) },
+        { label: "A pagar", render: r => money(r.pending_cents) },
+        { label: "Pago", render: r => money(r.paid_cents) }
+      ], rows, r => canPay && r.pending_cents > 0 ? [{ label: "Pagar", onClick: () => payCommission(r) }] : []));
+    } catch (error) {
+      content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!"));
+      handleError(error);
+    }
+  }
+  async function payCommission(row) {
+    const fields = [{ key: "due_date", label: "Vencimento da conta a pagar", type: "date", required: true, default: new Date().toISOString().slice(0, 10) }];
+    const form = await formFor(fields, null);
+    form.prepend(info(`Fechar ${money(row.pending_cents)} de comissão de ${row.seller_name} em uma conta a pagar.`));
+    const message = formMessage(form), submit = formButtons(form, "Gerar conta a pagar");
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); if (!form.reportValidity()) return;
+      submit.disabled = true;
+      try {
+        await api.post("/commissions/pay", { seller_id: row.seller_id, ...formPayload(form, fields) });
+        closeDialog(); toast("Comissão fechada no Financeiro."); load();
+      } catch (error) { handleError(error, message); submit.disabled = false; }
+    });
+    openDialog("Pagar comissão", "As comissões pendentes viram uma conta a pagar.", form);
+  }
+  load();
+}
+
+function reportCell(value, type) {
+  if (value == null) return "—";
+  if (type === "money") return money(value);
+  if (type === "percent") return percentText(value);
+  if (type === "milli") return (Number(value) / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+  if (type === "int") return Number(value).toLocaleString("pt-BR");
+  return String(value);
+}
+async function reportsPage() {
+  const current = ++state.renderId;
+  const view = page("Relatórios", "Vendas, lucro, curva ABC, fluxo de caixa e reposição. Exporte em CSV para Excel ou contabilidade.", "Acompanhar");
+  view.outer.append(info("Lucro e custo usam o custo médio atual de cada produto; mantenha as entradas de estoque com custo para valores corretos."));
+  const box = el("section", "surface");
+  const toolbar = el("div", "toolbar");
+  const kindField = el("div", "field"), kindLabel = el("label", "", "Relatório"), kind = el("select");
+  kind.id = "report-kind"; kindLabel.htmlFor = kind.id; kindField.append(kindLabel, kind);
+  const today = new Date(), first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const dateField = (id, text, value) => {
+    const field = el("div", "field"), label = el("label", "", text), input = el("input");
+    input.type = "date"; input.id = id; input.value = value; label.htmlFor = id; field.append(label, input);
+    return { field, input };
+  };
+  const from = dateField("report-from", "De", iso(first)), to = dateField("report-to", "Até", iso(today));
+  const shop = shopSelect("report-shop", true);
+  const exportButton = button("Exportar CSV", () => exportCsv(), "ghost");
+  toolbar.append(kindField, from.field, to.field, shop.field, exportButton);
+  box.append(toolbar);
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  function params() {
+    const p = new URLSearchParams({ from: from.input.value, to: to.input.value });
+    if (shop.select.value) p.set("shop_id", shop.select.value);
+    return p;
+  }
+  async function load() {
+    const token = ++state.renderId;
+    content.replaceChildren(loadingSurface());
+    try {
+      const data = await api.get(`/reports/${encodeURIComponent(kind.value)}?` + params());
+      if (token !== state.renderId) return;
+      content.replaceChildren();
+      if (!data.rows.length) { content.append(empty("Sem dados no período", "Ajuste o período ou a loja.")); return; }
+      const rows = Object.keys(data.totals || {}).length ? [...data.rows, { __total: true, ...data.totals }] : data.rows;
+      content.append(table(data.columns.map((c, i) => ({ label: c.label,
+        render: row => row.__total ? (c.key in row ? el("strong", "", reportCell(row[c.key], c.type)) : i === 0 ? el("strong", "", "Total") : "")
+                                   : reportCell(row[c.key], c.type) })), rows));
+    } catch (error) {
+      if (token !== state.renderId) return;
+      content.replaceChildren(empty("Não foi possível gerar o relatório", errorText(error), "!"));
+      handleError(error);
+    }
+  }
+  async function exportCsv() {
+    const p = params(); p.set("format", "csv");
+    try {
+      const response = await fetch(`/api/v1/reports/${encodeURIComponent(kind.value)}?` + p,
+        { credentials: "same-origin", headers: { "X-Tenant-ID": state.tenantId } });
+      if (!response.ok) throw new Error("Não foi possível exportar o relatório.");
+      const url = URL.createObjectURL(await response.blob());
+      const link = el("a"); link.href = url; link.download = `${kind.value}_${from.input.value}_${to.input.value}.csv`;
+      document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+    } catch (error) { handleError(error); }
+  }
+  try {
+    const catalog = records(await api.get("/reports"));
+    if (current !== state.renderId) return;
+    catalog.forEach(r => { const option = el("option", "", r.title); option.value = r.id; kind.append(option); });
+  } catch (error) { content.replaceChildren(empty("Relatórios indisponíveis", errorText(error), "!")); handleError(error); return; }
+  [kind, from.input, to.input, shop.select].forEach(input => input.addEventListener("change", load));
+  load();
+}
+
+const paymentKindNames = { cash: "Dinheiro", pix: "Pix", card_credit: "Cartão de crédito", card_debit: "Cartão de débito", credit_account: "A prazo (fiado)", store_credit: "Crédito na loja", other: "Forma própria" };
+async function paymentMethodsPage() {
+  const current = ++state.renderId;
+  const view = page("Formas de pagamento", "Ative as formas aceitas no caixa, informe a taxa da maquininha e o prazo de recebimento, e crie formas próprias como vale-refeição.", "Administração");
+  view.outer.append(info("A taxa e o prazo entram nos relatórios como valor líquido estimado. Mudanças chegam ao caixa na próxima atualização do catálogo do terminal."));
+  const fields = [
+    { key: "name", label: "Nome exibido no caixa", required: true, max: 60, full: true },
+    { key: "fee_bps", label: "Taxa (%)", type: "percent", default: 0, help: "Percentual cobrado pela adquirente ou operadora." },
+    { key: "settlement_days", label: "Prazo de recebimento (dias)", type: "number", default: 0 },
+    { key: "active", label: "Ativa no caixa", type: "checkbox", default: true }
+  ];
+  const payloadOf = (form, editing) => { const data = formPayload(form, fields, { editing }); if (data.settlement_days !== undefined) data.settlement_days = Number(data.settlement_days); return data; };
+  async function edit(row) {
+    const form = await formFor(fields, row);
+    const message = formMessage(form), submit = formButtons(form, row ? "Salvar" : "Criar forma");
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); if (!form.reportValidity()) return;
+      submit.disabled = true;
+      try {
+        if (row) await api.patch("/payment-methods/" + row.id, payloadOf(form, true));
+        else await api.post("/payment-methods", payloadOf(form, false));
+        closeDialog(); toast("Forma de pagamento salva."); renderRoute();
+      } catch (error) { handleError(error, message); submit.disabled = false; }
+    });
+    openDialog(row ? "Editar " + row.name : "Nova forma de pagamento", row ? paymentKindNames[row.kind] : "Use para vale-refeição, voucher, cheque e outras formas aceitas pela loja.", form);
+  }
+  view.actions.append(button("+ Nova forma", () => edit(null).catch(handleError)));
+  const box = el("section", "surface");
+  view.outer.append(box);
+  try {
+    const rows = records(await api.get("/payment-methods"));
+    if (current !== state.renderId) return;
+    box.append(table([
+      { label: "Nome", render: r => r.name },
+      { label: "Tipo", render: r => paymentKindNames[r.kind] || r.kind },
+      { label: "Taxa", render: r => percentText(r.fee_bps) },
+      { label: "Recebimento", render: r => r.settlement_days ? `${r.settlement_days} dia(s)` : "Na hora" },
+      { label: "Estado", render: r => statusBadge(r.active ? "Ativa" : "Inativa") }
+    ], rows, r => [{ label: "Editar", onClick: () => edit(r).catch(handleError) }]));
+  } catch (error) { box.append(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
+}
+
+async function productGroupsDialog() {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando grades…"));
+  openDialog("Grades de variações", "Produtos com cor, tamanho ou sabor. Cada combinação tem SKU, código de barras e estoque próprios.", loading);
+  const response = await api.get("/product-groups?limit=100");
+  loading.replaceChildren(pagedContent(response, "/product-groups?limit=100", [
+    { label: "Grade", render: r => r.name },
+    { label: "Atributos", render: r => r.attributes.map(a => `${a.name}: ${a.values.join(", ")}`).join(" · ") },
+    { label: "Variações ativas", render: r => String(r.variants_count) }
+  ], r => [{ label: "Editar", onClick: () => productGroupForm(r).catch(handleError) }],
+    empty("Nenhuma grade", "Use “+ Nova grade” para cadastrar um produto com variações.")));
+}
+async function productGroupForm(group) {
+  const detail = group ? await api.get("/product-groups/" + group.id) : null;
+  const attrs = detail?.attributes || [];
+  const fields = [
+    { key: "name", label: "Nome do produto", required: true, max: 140, full: true, placeholder: "Ex.: Camiseta Básica" },
+    { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
+    { key: "price_cents", label: detail ? "Preço (novas variações)" : "Preço de cada variação (R$)", type: "money", required: !detail, min: 0 },
+    ...(detail ? [{ key: "apply_price_to_all", label: "Aplicar este preço a todas as variações", type: "checkbox", default: false }] : [
+      { key: "ncm", label: "NCM (opcional)", max: 8, inputMode: "numeric", pattern: "[0-9]{7,8}" }]),
+    { key: "attr1_name", label: "Atributo 1", required: true, max: 30, placeholder: "Ex.: Cor" },
+    { key: "attr1_values", label: "Valores do atributo 1", required: true, full: true, placeholder: "Separe por vírgula: Azul, Preto, Branco" },
+    { key: "attr2_name", label: "Atributo 2 (opcional)", max: 30, placeholder: "Ex.: Tamanho" },
+    { key: "attr2_values", label: "Valores do atributo 2", full: true, placeholder: "P, M, G, GG" }
+  ];
+  const record = detail ? { name: detail.name, category_id: detail.category_id,
+    attr1_name: attrs[0]?.name, attr1_values: attrs[0]?.values.join(", "),
+    attr2_name: attrs[1]?.name || "", attr2_values: attrs[1]?.values.join(", ") || "" } : null;
+  const form = await formFor(fields, record);
+  const preview = el("p", "feedback");
+  form.append(preview);
+  const split = value => String(value || "").split(",").map(v => v.trim()).filter(Boolean);
+  const attributesOf = () => {
+    const list = [{ name: form.elements.namedItem("attr1_name").value.trim(), values: split(form.elements.namedItem("attr1_values").value) }];
+    const second = form.elements.namedItem("attr2_name").value.trim();
+    if (second) list.push({ name: second, values: split(form.elements.namedItem("attr2_values").value) });
+    return list;
+  };
+  const refresh = () => { const total = attributesOf().reduce((n, a) => n * Math.max(a.values.length, 0), 1);
+    preview.textContent = total ? `Serão mantidas ${total} variações${total > 200 ? " — acima do limite de 200" : ""}.` : "Informe os valores dos atributos."; };
+  form.addEventListener("input", refresh); refresh();
+  const message = formMessage(form), submit = formButtons(form, detail ? "Salvar grade" : "Gerar variações");
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    submit.disabled = true;
+    try {
+      const data = formPayload(form, fields.filter(f => !f.key.startsWith("attr")), { editing: !!detail });
+      data.attributes = attributesOf();
+      // On edit the price is optional: without it the variations keep their own prices.
+      if (detail) { if (data.price_cents == null) { delete data.price_cents; delete data.apply_price_to_all; } await api.patch("/product-groups/" + detail.id, data); }
+      else await api.post("/product-groups", data);
+      closeDialog(); toast(detail ? "Grade atualizada." : "Variações geradas com SKU e código de barras."); renderRoute();
+    } catch (error) { handleError(error, message); submit.disabled = false; }
+  });
+  openDialog(detail ? "Editar grade" : "Nova grade de variações",
+    detail ? "Novos valores criam variações; valores removidos desativam a variação sem apagar o histórico." : "Cada combinação vira um produto com SKU, código de barras e estoque próprios.", form);
+}
+
+async function allProducts() {
+  const rows = [];
+  let cursor = "";
+  do {
+    const response = await api.get("/products?limit=100" + (cursor ? "&cursor=" + cursor : ""));
+    rows.push(...records(response));
+    cursor = response.next_cursor || "";
+  } while (cursor && rows.length < 5000);
+  return rows.sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+async function nfeImport(shopId) {
+  const body = el("div");
+  body.append(info("Envie o XML da NF-e que o fornecedor mandou. Vincule cada item a um produto, crie produtos novos ou ignore itens que não entram no estoque. O sistema lembra os códigos deste fornecedor para a próxima nota."));
+  const field = el("div", "field"), label = el("label", "", "Arquivo XML da NF-e"), file = el("input");
+  file.type = "file"; file.accept = ".xml,text/xml,application/xml"; file.id = "nfe-file"; label.htmlFor = file.id;
+  field.append(label, file);
+  const area = el("div");
+  body.append(field, area);
+  openDialog("Importar NF-e de compra", "Entrada de estoque com custo real, custo médio atualizado e contas a pagar das duplicatas.", body);
+  file.addEventListener("change", async () => {
+    if (!file.files[0]) return;
+    area.replaceChildren(loadingSurface("Lendo a NF-e…"));
+    try {
+      const xml = await file.files[0].text();
+      const [preview, products] = await Promise.all([api.post("/purchases/nfe/preview", { xml }), allProducts()]);
+      renderNfe(xml, preview, products.filter(p => p.active !== false && p.stock_controlled !== false));
+    } catch (error) { area.replaceChildren(empty("Não foi possível ler a NF-e", errorText(error), "!")); }
+  });
+  function renderNfe(xml, nfe, products) {
+    area.replaceChildren();
+    area.append(detailList([
+      ["Fornecedor", `${nfe.supplier.name} · ${nfe.supplier.document}${nfe.supplier_id ? "" : " (será cadastrado)"}`],
+      ["Nota", `Nº ${nfe.number} série ${nfe.series}${nfe.issued_on ? " · " + nfe.issued_on.split("-").reverse().join("/") : ""}`],
+      ["Total da nota", money(nfe.total_cents)],
+      ["Duplicatas", nfe.installments.length ? nfe.installments.map(d => `${d.due_date.split("-").reverse().join("/")}: ${money(d.amount_cents)}`).join(" · ") : "Sem duplicatas (vencimento em 30 dias)"]
+    ]));
+    nfe.warnings.forEach(text => area.append(info(text, true)));
+    if (nfe.already_imported) { area.append(info("Esta NF-e já foi importada. Nada será lançado de novo.", true)); return; }
+    const options = products.map(p => `<option value="${labelHtmlEscape(p.id)}">${labelHtmlEscape(p.name)} · ${labelHtmlEscape(p.sku)}</option>`).join("");
+    const rows = nfe.items.map(item => {
+      const wrap = el("div", "nfe-line");
+      const s = item.suggestion;
+      wrap.innerHTML = `<div class="nfe-line-head"><strong></strong><small></small></div>
+        <div class="nfe-line-controls">
+          <label>Destino<select data-k="action"><option value="map">Vincular a produto</option><option value="new">Criar produto novo</option><option value="skip">Ignorar (não entra no estoque)</option></select></label>
+          <label data-show="map">Produto<select data-k="product"><option value="">Escolha…</option>${options}</select></label>
+          <label data-show="new">Preço de venda (R$)<input data-k="price" inputmode="decimal" placeholder="0,00"></label>
+          <label data-show="map new">Unidades por ${labelHtmlEscape(item.unit || "unidade")} da nota<input data-k="factor" type="number" min="0.001" step="0.001" value="${Number(s.factor_milli || 1000) / 1000}"></label>
+        </div><small class="nfe-hint"></small>`;
+      wrap.querySelector("strong").textContent = item.name;
+      wrap.querySelector(".nfe-line-head small").textContent = `Cód. ${item.code}${item.ean ? " · EAN " + item.ean : ""} · ${item.quantity} ${item.unit} · custo ${money(item.total_cost_cents)}`;
+      const action = wrap.querySelector('[data-k="action"]'), product = wrap.querySelector('[data-k="product"]');
+      if (s.product_id) product.value = s.product_id; else action.value = "new";
+      const hint = wrap.querySelector(".nfe-hint");
+      hint.textContent = s.source === "memory" ? "Vínculo lembrado de notas anteriores deste fornecedor." : s.source === "barcode" ? "Encontrado pelo código de barras." : "";
+      const sync = () => wrap.querySelectorAll("[data-show]").forEach(node => node.hidden = !node.dataset.show.split(" ").includes(action.value));
+      action.addEventListener("change", sync); sync();
+      return { item, wrap, read() {
+        const line = { n_item: item.n_item, action: action.value };
+        if (line.action === "skip") return line;
+        const factor = Math.round(Number(wrap.querySelector('[data-k="factor"]').value.replace(",", ".")) * 1000);
+        if (!Number.isSafeInteger(factor) || factor <= 0) throw new Error(`${item.name}: informe as unidades por embalagem.`);
+        line.factor_milli = factor;
+        if (line.action === "map") { if (!product.value) throw new Error(`${item.name}: escolha o produto ou mude o destino.`); line.product_id = product.value; }
+        else { const price = parseMoneyInput(wrap.querySelector('[data-k="price"]').value); if (!Number.isSafeInteger(price) || price <= 0) throw new Error(`${item.name}: informe o preço de venda do produto novo.`); line.new_product = { price_cents: price }; }
+        return line;
+      } };
+    });
+    rows.forEach(r => area.append(r.wrap));
+    const payablesLabel = el("label", "checkbox-line"), payables = el("input");
+    payables.type = "checkbox"; payables.checked = true;
+    payablesLabel.append(payables, document.createTextNode(" Gerar contas a pagar das duplicatas"));
+    const message = el("p", "feedback error"); message.hidden = true;
+    const actions = el("div", "form-actions");
+    actions.append(button("Cancelar", closeDialog, "ghost"));
+    const submit = button("Importar entrada", async () => {
+      submit.disabled = true; message.hidden = true;
+      try {
+        const result = await api.post("/purchases/nfe/import", { xml, shop_id: shopId, create_payables: payables.checked, lines: rows.map(r => r.read()) });
+        closeDialog();
+        toast(`NF-e importada: ${result.items} produto(s) no estoque${result.payables.length ? `, ${result.payables.length} conta(s) a pagar` : ""}.`);
+        renderRoute();
+      } catch (error) { message.textContent = errorText(error); message.hidden = false; submit.disabled = false; }
+    });
+    actions.append(submit);
+    area.append(payablesLabel, message, actions);
+  }
+}
+
+let inventoryCamera = null;
+function stopInventoryCamera() { inventoryCamera?.stop(); inventoryCamera = null; }
+async function inventoryPage() {
+  const current = ++state.renderId;
+  stopInventoryCamera();
+  const view = page("Inventário", "Conte o estoque pelo celular com o leitor, a câmera ou digitando o código. O ajuste é feito no fechamento.", "Operação");
+  const manager = ["owner", "admin", "manager"].includes(state.role);
+  const opener = manager || state.role === "inventory";
+  const box = el("section", "surface");
+  const toolbar = el("div", "toolbar");
+  const shop = shopSelect("inventory-shop");
+  toolbar.append(shop.field);
+  box.append(toolbar);
+  const content = el("div");
+  box.append(content);
+  view.outer.append(box);
+  let requests = 0;
+  async function load() {
+    // Each load owns a token: a slow answer for a previous shop must never be drawn under the current one.
+    const token = ++requests;
+    const stale = () => token !== requests || current !== state.renderId;
+    const shopId = encodeURIComponent(shop.select.value);
+    stopInventoryCamera();
+    content.replaceChildren(loadingSurface());
+    try {
+      const open = records(await api.get(`/inventories?status=open&shop_id=${shopId}`))[0];
+      if (stale()) return;
+      if (!open) {
+        const history = records(await api.get(`/inventories?shop_id=${shopId}&limit=10`)).filter(r => r.status !== "open");
+        if (stale()) return;
+        content.replaceChildren();
+        renderIdle(history);
+        return;
+      }
+      const count = await api.get("/inventories/" + open.id);
+      if (stale()) return;
+      content.replaceChildren();
+      renderCounting(count);
+    } catch (error) {
+      if (stale()) return;
+      content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!")); handleError(error);
+    }
+  }
+  function renderIdle(history) {
+    content.append(empty("Nenhum inventário aberto nesta loja", opener ? "Abra um inventário para começar a contar." : "Peça ao gerente para abrir o inventário."));
+    if (opener) {
+      const actions = el("div", "form-actions inventory-actions");
+      actions.append(button("Abrir inventário", () => openForm().catch(handleError)));
+      content.append(actions);
+    }
+    if (history.length) {
+      const title = el("h3", "", "Inventários anteriores"); title.style.marginTop = "23px";
+      content.append(title, table([
+        { label: "Aberto em", render: r => dateTime(r.created_at) }, { label: "Escopo", render: r => r.category_name || "Todos os produtos" },
+        { label: "Itens contados", render: r => `${r.counted_items} de ${r.scope_items}` }, { label: "Estado", render: r => statusBadge(r.status) }
+      ], history));
+    }
+  }
+  async function openForm() {
+    const fields = [
+      { key: "category_id", label: "Categoria (vazio = todos os produtos)", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
+      { key: "blind", label: "Contagem cega (quem conta não vê o saldo esperado)", type: "checkbox", default: true },
+      { key: "note", label: "Observação", max: 240, full: true }
+    ];
+    const form = await formFor(fields, null);
+    const message = formMessage(form), submit = formButtons(form, "Abrir inventário");
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); submit.disabled = true;
+      try { await api.post("/inventories", { shop_id: shop.select.value, ...formPayload(form, fields) }); closeDialog(); toast("Inventário aberto. Pode começar a contar."); load(); }
+      catch (error) { handleError(error, message); submit.disabled = false; }
+    });
+    openDialog("Abrir inventário", "Vendas continuam normalmente: cada item guarda o saldo do momento em que foi contado.", form);
+  }
+  function renderCounting(count) {
+    const counted = new Set(count.items.map(item => item.product_id));
+    const progress = info("");
+    const showProgress = () => { progress.lastChild.textContent = `${count.category_name || "Todos os produtos"} · ${Math.max(counted.size, count.counted_items || 0)} de ${count.scope_items} itens contados${count.blind ? " · contagem cega" : ""}`; };
+    showProgress();
+    content.append(progress);
+    const scanner = el("form", "inventory-scanner");
+    scanner.innerHTML = `<label>Código de barras ou SKU<input name="code" inputmode="numeric" autocomplete="off" autofocus placeholder="Bipe ou digite e tecle Enter"></label>
+      <label>Quantidade<input name="qty" inputmode="decimal" value="1"></label>
+      <label>Modo<select name="mode"><option value="add">Somar à contagem</option><option value="set">Substituir contagem</option></select></label>
+      <button class="button" type="submit">Contar</button>`;
+    const feedback = el("p", "inventory-feedback");
+    content.append(scanner, feedback);
+    const code = scanner.elements.namedItem("code");
+    async function submitCode(value) {
+      const qty = Math.round(Number(String(scanner.elements.namedItem("qty").value).replace(",", ".")) * 1000);
+      if (!value) return;
+      try {
+        const item = await api.post(`/inventories/${count.id}/count`, { code: value, quantity_milli: qty, mode: scanner.elements.namedItem("mode").value });
+        feedback.className = "inventory-feedback ok";
+        feedback.textContent = `✓ ${item.name}: ${quantity(item.counted_milli, item.unit)} contados`;
+        navigator.vibrate?.(40);
+        prepend(item);
+        counted.add(item.product_id); showProgress();
+      } catch (error) { feedback.className = "inventory-feedback error"; feedback.textContent = errorText(error); navigator.vibrate?.([60, 40, 60]); }
+      code.value = ""; code.focus();
+    }
+    scanner.addEventListener("submit", event => { event.preventDefault(); submitCode(code.value.trim()); });
+    if ("BarcodeDetector" in window && navigator.mediaDevices?.getUserMedia) {
+      const camera = button("Usar câmera do celular", () => toggleCamera().catch(error => { feedback.className = "inventory-feedback error"; feedback.textContent = "Câmera indisponível: " + errorText(error); }), "ghost");
+      const video = el("video", "inventory-camera"); video.hidden = true; video.setAttribute("playsinline", ""); video.muted = true;
+      content.append(camera, video);
+      async function toggleCamera() {
+        if (inventoryCamera) { stopInventoryCamera(); video.hidden = true; camera.textContent = "Usar câmera do celular"; return; }
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
+        video.srcObject = stream; video.hidden = false; await video.play(); camera.textContent = "Desligar câmera";
+        let last = "", misses = 0, running = true;
+        inventoryCamera = { stop() { running = false; stream.getTracks().forEach(t => t.stop()); } };
+        (async function loop() {
+          while (running) {
+            try {
+              const [hit] = await detector.detect(video);
+              // The same code counts again only after it has left the frame; holding the
+              // phone on a product must not keep adding to the count.
+              if (!hit) { if (++misses >= 2) last = ""; }
+              else { misses = 0; if (hit.rawValue !== last) { last = hit.rawValue; await submitCode(hit.rawValue); } }
+            } catch { /* frame not ready */ }
+            await new Promise(r => setTimeout(r, 250));
+          }
+        })();
+      }
+    }
+    const listTitle = el("h3", "", "Itens contados"); listTitle.style.marginTop = "23px";
+    const list = el("div", "inventory-list");
+    const rowFor = item => {
+      const row = el("div", "inventory-row");
+      row.dataset.product = item.product_id;
+      row.append(el("span", "", item.name), el("strong", "", quantity(item.counted_milli, item.unit)));
+      if (item.difference_milli !== undefined && item.difference_milli !== 0)
+        row.append(el("span", "badge " + (item.difference_milli < 0 ? "danger" : "warn"), `${item.difference_milli > 0 ? "+" : ""}${quantity(item.difference_milli, item.unit)} · ${money(item.difference_cents)}`));
+      return row;
+    };
+    function prepend(item) { list.querySelector(`[data-product="${item.product_id}"]`)?.remove(); list.prepend(rowFor(item)); }
+    count.items.forEach(item => list.append(rowFor(item)));
+    content.append(listTitle, list);
+    if (count.shows_expected && count.pending?.length) {
+      const pendingTitle = el("h3", "", `Ainda não contados (${count.pending.length})`); pendingTitle.style.marginTop = "23px";
+      content.append(pendingTitle, table([{ label: "Produto", render: p => p.name }, { label: "SKU", render: p => p.sku },
+        { label: "Saldo atual", render: p => quantity(p.balance_milli, p.unit) }], count.pending.slice(0, 50)));
+    }
+    if (manager) {
+      const actions = el("div", "form-actions inventory-actions");
+      actions.append(button("Cancelar inventário", () => confirmAction("Cancelar inventário", "As contagens serão descartadas e nenhum ajuste será feito.", async () => {
+        await api.post(`/inventories/${count.id}/cancel`, {}); toast("Inventário cancelado."); load(); }, "Cancelar inventário"), "ghost"));
+      actions.append(button("Encerrar e ajustar estoque", () => closeForm(count.id).catch(handleError)));
+      content.append(actions);
+    }
+  }
+  async function closeForm(id) {
+    // Read the count again: the page object predates everything counted in this session.
+    const count = await api.get("/inventories/" + id);
+    const body = el("div");
+    body.append(detailList([["Itens contados", `${count.counted_items} de ${count.scope_items}`],
+      ["Sobras", money(count.totals?.gain_cents || 0)], ["Faltas", money(Math.abs(count.totals?.loss_cents || 0))]]));
+    const field = el("div", "field"), label = el("label", "", "Itens não contados"), select = el("select");
+    select.id = "inventory-uncounted"; label.htmlFor = select.id;
+    select.innerHTML = '<option value="ignore">Manter o saldo atual (contagem parcial)</option><option value="zero">Zerar o estoque (não foram encontrados)</option>';
+    field.append(label, select); body.append(field);
+    const actions = el("div", "form-actions");
+    actions.append(button("Voltar", closeDialog, "ghost"));
+    actions.append(button("Confirmar ajuste", async () => {
+      try {
+        const result = await api.post(`/inventories/${count.id}/close`, { uncounted: select.value });
+        closeDialog(); toast(`Inventário encerrado: ${result.adjustments} ajuste(s), sobras ${money(result.gain_cents)}, faltas ${money(Math.abs(result.loss_cents))}.`); load();
+      } catch (error) { handleError(error); }
+    }));
+    body.append(actions);
+    openDialog("Encerrar inventário", "Cada item é ajustado pela diferença entre o contado e o saldo do momento da contagem.", body);
+  }
+  shop.select.addEventListener("change", load);
+  if (state.shops.length) load(); else content.append(empty("Cadastre uma loja", "O inventário é feito por loja."));
+}
+
+async function transferForm(fromShopId) {
+  const targets = state.shops.filter(s => s.active !== false && String(s.id) !== String(fromShopId));
+  const body = el("div");
+  body.append(info(`Origem: ${shopName(fromShopId)}. O estoque sai da origem agora e entra no destino quando o recebimento for confirmado.`));
+  const head = el("div", "form-grid");
+  head.innerHTML = `<div class="field"><label for="transfer-to">Loja de destino</label><select id="transfer-to">${targets.map(s => `<option value="${s.id}">${s.name.replace(/</g, "&lt;")}</option>`).join("")}</select></div>
+    <div class="field"><label for="transfer-note">Observação</label><input id="transfer-note" maxlength="240"></div>`;
+  const lines = el("div", "transfer-lines");
+  let lineNumber = 0;
+  const addLine = () => {
+    const row = el("div", "transfer-line");
+    const product = lookupControl({ id: "transfer-product-" + (++lineNumber), source: "/products", placeholder: "Buscar produto por nome, SKU ou código", required: true, filter: item => item.stock_controlled !== false });
+    product.search.setAttribute("aria-label", "Produto");
+    const qty = el("input");
+    qty.inputMode = "decimal"; qty.placeholder = "Quantidade"; qty.setAttribute("aria-label", "Quantidade");
+    row.append(product.wrap, qty, button("Remover", () => row.remove(), "ghost", "small"));
+    row._read = () => {
+      const chosen = product.selected;
+      if (!chosen) throw new Error("Escolha o produto de cada linha.");
+      const amount = Math.round(Number(qty.value.replace(",", ".")) * 1000);
+      if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error(`${chosen.name}: informe a quantidade.`);
+      return { product_id: chosen.id, quantity_milli: amount };
+    };
+    lines.append(row);
+  };
+  addLine();
+  const message = el("p", "feedback error"); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("+ Item", addLine, "ghost"), button("Cancelar", closeDialog, "ghost"));
+  const key = globalThis.crypto?.randomUUID?.() || String(Date.now());
+  const submit = button("Enviar transferência", async () => {
+    message.hidden = true;
+    try {
+      const items = [...lines.children].map(row => row._read());
+      if (!items.length) throw new Error("Inclua ao menos um item.");
+      submit.disabled = true;
+      await api.post("/transfers", { from_shop_id: fromShopId, to_shop_id: head.querySelector("#transfer-to").value,
+        note: head.querySelector("#transfer-note").value.trim(), idempotency_key: key, items });
+      closeDialog(); toast("Transferência enviada. Confirme o recebimento na loja de destino."); renderRoute();
+    } catch (error) { message.textContent = errorText(error); message.hidden = false; submit.disabled = false; }
+  });
+  actions.append(submit);
+  body.append(head, lines, message, actions);
+  openDialog("Transferir entre lojas", "Envie mercadoria de uma loja para outra.", body);
+}
+async function transfersDialog() {
+  const loading = el("div");
+  loading.append(loadingSurface("Carregando transferências…"));
+  openDialog("Transferências", "Enviadas, recebidas e canceladas.", loading);
+  const response = await api.get("/transfers?limit=50");
+  loading.replaceChildren(pagedContent(response, "/transfers?limit=50", [
+    { label: "Data", render: r => dateTime(r.created_at) },
+    { label: "Rota", render: r => `${r.from_shop_name} → ${r.to_shop_name}` },
+    { label: "Itens", render: r => r.items.map(i => `${i.name} × ${quantity(i.quantity_milli, i.unit)}${i.received_milli != null && i.received_milli !== i.quantity_milli ? ` (recebido ${quantity(i.received_milli, i.unit)})` : ""}`).join(", ") },
+    { label: "Estado", render: r => r.status === "sent" ? el("span", "badge warn", "Em trânsito") : statusBadge(r.status === "received" ? "Recebida" : "Cancelada") }
+  ], r => r.status !== "sent" ? [] : [
+    { label: "Receber", onClick: () => receiveTransfer(r) },
+    { label: "Cancelar", danger: true, onClick: () => confirmAction("Cancelar transferência", "A mercadoria volta para o estoque da origem.", async () => {
+      await api.post(`/transfers/${r.id}/cancel`, {}); toast("Transferência cancelada."); closeDialog(); renderRoute(); }, "Cancelar transferência") }
+  ], empty("Nenhuma transferência", "Use “Transferir” para enviar mercadoria a outra loja.")));
+}
+function receiveTransfer(transfer) {
+  const body = el("div");
+  body.append(info(`Confira o que chegou em ${transfer.to_shop_name}. Se faltar algo, informe a quantidade recebida; a diferença fica registrada.`));
+  const inputs = transfer.items.map((item, index) => {
+    const field = el("div", "field"), label = el("label", "", `${item.name} (enviado ${quantity(item.quantity_milli, item.unit)})`), input = el("input");
+    input.id = "transfer-received-" + index; label.htmlFor = input.id;
+    input.inputMode = "decimal"; input.value = String(item.quantity_milli / 1000).replace(".", ",");
+    field.append(label, input); body.append(field);
+    return { item, input };
+  });
+  const actions = el("div", "form-actions");
+  actions.append(button("Voltar", closeDialog, "ghost"), button("Confirmar recebimento", async () => {
+    try {
+      const items = inputs.map(({ item, input }) => ({ product_id: item.product_id, received_milli: Math.round(Number(input.value.replace(",", ".")) * 1000) }));
+      await api.post(`/transfers/${transfer.id}/receive`, { items });
+      closeDialog(); toast("Recebimento confirmado."); renderRoute();
+    } catch (error) { handleError(error); }
+  }));
+  body.append(actions);
+  openDialog("Receber transferência", `${transfer.from_shop_name} → ${transfer.to_shop_name}`, body);
+}
+
+const promotionStatus = { running: ["Em vigor", ""], scheduled: ["Agendada", "warn"], ended: ["Encerrada", "neutral"], inactive: ["Inativa", "neutral"] };
+const localInput = iso => { if (!iso) return ""; const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
+async function promotionsPage() {
+  const current = ++state.renderId;
+  const view = page("Promoções", "Preço promocional por período, leve X pague Y e preço de atacado. O caixa aplica sozinho, mesmo sem internet.", "Operação");
+  view.outer.append(info("Quando mais de uma promoção vale para o mesmo item, o caixa aplica a mais vantajosa para o cliente (não acumula). Mudanças chegam ao caixa na próxima atualização do catálogo do terminal."));
+  const canEdit = can("owner", "admin", "manager", "inventory");
+  if (canEdit) view.actions.append(button("+ Nova promoção", () => promotionForm(null).catch(handleError)));
+  const box = el("section", "surface");
+  view.outer.append(box);
+  try {
+    const response = await api.get("/promotions?limit=100");
+    if (current !== state.renderId) return;
+    box.append(pagedContent(response, "/promotions?limit=100", [
+      { label: "Promoção", render: r => r.name },
+      { label: "Regra", render: r => r.kind === "buy_x_pay_y" ? r.label : `${r.label}: ${money(r.price_cents)}` },
+      { label: "Vale para", render: r => r.product_name || (r.category_name ? "Categoria " + r.category_name : "—") },
+      { label: "Período", render: r => r.starts_at || r.ends_at ? `${r.starts_at ? dateTime(r.starts_at) : "agora"} → ${r.ends_at ? dateTime(r.ends_at) : "sem fim"}` : "Sem data de fim" },
+      { label: "Estado", render: r => el("span", "badge " + promotionStatus[r.status][1], promotionStatus[r.status][0]) }
+    ], canEdit ? r => [{ label: "Editar", onClick: () => promotionForm(r).catch(handleError) }] : null,
+      empty("Nenhuma promoção", canEdit ? "Crie a primeira promoção para atrair clientes." : "Nenhuma promoção cadastrada.")));
+  } catch (error) { box.append(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
+}
+async function promotionForm(row) {
+  const fields = [
+    { key: "name", label: "Nome da promoção", required: true, max: 80, full: true, placeholder: "Ex.: Semana do arroz" },
+    { key: "kind", label: "Tipo", type: "select", required: true, choices: [["price", "Preço promocional"], ["wholesale", "Atacado (a partir de N unidades)"], ["buy_x_pay_y", "Leve X pague Y"]], default: "price" },
+    { key: "product_id", label: "Produto", type: "source", source: "/products", valueKey: "id", labelKey: "name" },
+    { key: "category_id", label: "…ou toda uma categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
+    { key: "price_cents", label: "Preço promocional por unidade (R$)", type: "money", min: 0 },
+    { key: "min_quantity_milli", label: "Quantidade mínima (atacado)", type: "milli", min: 0 },
+    { key: "buy_quantity", label: "Leve (X)", type: "number" },
+    { key: "pay_quantity", label: "Pague (Y)", type: "number" },
+    { key: "starts_at", label: "Início (opcional)", type: "datetime-local" },
+    { key: "ends_at", label: "Fim (opcional)", type: "datetime-local" },
+    { key: "active", label: "Promoção ativa", type: "checkbox", default: true }
+  ];
+  const record = row ? { ...row, starts_at: localInput(row.starts_at), ends_at: localInput(row.ends_at) } : null;
+  const form = await formFor(fields, record);
+  const kind = form.elements.namedItem("kind");
+  const show = () => {
+    const k = kind.value;
+    const visible = { price_cents: k !== "buy_x_pay_y", min_quantity_milli: k === "wholesale", buy_quantity: k === "buy_x_pay_y", pay_quantity: k === "buy_x_pay_y" };
+    Object.entries(visible).forEach(([key, on]) => { const node = form.elements.namedItem(key)?.closest(".field"); if (node) node.hidden = !on; });
+  };
+  kind.addEventListener("change", show); show();
+  const message = formMessage(form), submit = formButtons(form, row ? "Salvar promoção" : "Criar promoção");
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    submit.disabled = true;
+    try {
+      // Fields hidden for the chosen type are not read: an empty hidden price must not block "Leve X pague Y".
+      const data = formPayload(form, fields.filter(field => !form.elements.namedItem(field.key)?.closest(".field")?.hidden));
+      for (const key of ["buy_quantity", "pay_quantity"]) data[key] = data[key] === undefined || data[key] === "" ? null : Number(data[key]);
+      for (const key of ["product_id", "category_id"]) if (!data[key]) data[key] = null;
+      // datetime-local has no zone; send the instant so the period does not shift outside Brasília time.
+      for (const key of ["starts_at", "ends_at"]) data[key] = data[key] ? new Date(data[key]).toISOString() : null;
+      if (data.kind === "buy_x_pay_y") { data.price_cents = null; data.min_quantity_milli = null; }
+      else {
+        if (data.price_cents === undefined) throw new Error("Informe o preço promocional.");
+        if (data.kind === "wholesale" && !data.min_quantity_milli) throw new Error("Informe a quantidade mínima do atacado.");
+        data.buy_quantity = null; data.pay_quantity = null; if (data.kind === "price") data.min_quantity_milli = null;
+      }
+      if (row) await api.patch("/promotions/" + row.id, data); else await api.post("/promotions", data);
+      closeDialog(); toast("Promoção salva."); renderRoute();
+    } catch (error) { handleError(error, message); submit.disabled = false; }
+  });
+  openDialog(row ? "Editar promoção" : "Nova promoção", "Escolha um produto ou uma categoria. O preço é por unidade (ou por kg/litro).", form);
 }
 
 function idempotency(form, payload) {
@@ -1060,49 +2140,18 @@ function idempotency(form, payload) {
   }
   return form.dataset.key;
 }
-async function productPicker(idPrefix) {
+function productPicker(idPrefix) {
   const wrap = el("div", "field");
   const label = el("label", "", "Produto");
   label.htmlFor = idPrefix + "-product";
-  const search = el("input");
-  search.type = "search"; search.placeholder = "Buscar nome, SKU ou código"; search.maxLength = 120;
-  search.setAttribute("aria-label", "Buscar produto");
-  const select = el("select");
-  select.id = idPrefix + "-product";
-  select.required = true;
-  const helper = el("small", "", "Digite para encontrar itens em catálogos maiores.");
-  wrap.append(label, search, select, helper);
-  let serial = 0, timer, products = [];
-  async function load(query = "") {
-    const requestId = ++serial;
-    const result = await api.get("/products" + (query ? "?q=" + encodeURIComponent(query) : ""));
-    if (requestId !== serial) return;
-    const current = select.value;
-    select.replaceChildren();
-    products = records(result).filter(item => item.active !== false);
-    products.forEach(product => {
-      const option = el("option", "", product.name + " · " + product.sku);
-      option.value = product.id;
-      select.append(option);
-    });
-    if (products.some(item => String(item.id) === String(current))) select.value = current;
-    if (!products.length) {
-      const option = el("option", "", "Nenhum produto encontrado");
-      option.value = "";
-      select.append(option);
-    }
-  }
-  search.addEventListener("input", () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => load(search.value.trim()).catch(error => { helper.textContent = errorText(error); }), 230);
-  });
-  await load();
-  return { wrap, select, getSelected: () => products.find(item => String(item.id) === String(select.value)) || null };
+  const combo = lookupControl({ id: label.htmlFor, source: "/products", placeholder: "Buscar nome, SKU ou código", required: true });
+  wrap.append(label, combo.wrap, el("small", "", "Digite para encontrar o produto pelo nome, SKU ou código de barras."));
+  return { wrap, select: combo.hidden, getSelected: () => combo.selected };
 }
 async function stockAdjustment(shopId) {
   const body = el("div");
   const form = el("form", "form-grid");
-  const picker = await productPicker("adjust");
+  const picker = productPicker("adjust");
   picker.wrap.classList.add("full");
   const quantityField = el("div", "field");
   const quantityLabel = el("label", "", "Variação de quantidade");
@@ -1139,17 +2188,14 @@ async function stockAdjustment(shopId) {
   openDialog("Ajustar estoque", "A movimentação ficará registrada para auditoria.", body);
 }
 async function stockReceipt(shopId) {
-  const suppliers = records(await api.get("/suppliers"));
   const body = el("div");
   const form = el("form");
   const fields = el("div", "form-grid");
   const supplierField = el("div", "field");
   const supplierLabel = el("label", "", "Fornecedor");
   supplierLabel.htmlFor = "receipt-supplier";
-  const supplier = el("select"); supplier.id = "receipt-supplier";
-  const blank = el("option", "", "Sem fornecedor vinculado"); blank.value = ""; supplier.append(blank);
-  suppliers.forEach(item => { const option = el("option", "", item.name); option.value = item.id; supplier.append(option); });
-  supplierField.append(supplierLabel, supplier);
+  const supplier = lookupControl({ id: "receipt-supplier", source: "/suppliers", placeholder: "Digite o nome ou deixe vazio" });
+  supplierField.append(supplierLabel, supplier.wrap);
   const referenceField = el("div", "field");
   const referenceLabel = el("label", "", "Referência");
   referenceLabel.htmlFor = "receipt-reference";
@@ -1167,7 +2213,7 @@ async function stockReceipt(shopId) {
     const item = el("div", "surface pad");
     item.style.marginTop = "10px";
     const grid = el("div", "form-grid");
-    const picker = await productPicker("receipt-" + number);
+    const picker = productPicker("receipt-" + number);
     const qtyField = el("div", "field");
     const qtyLabel = el("label", "", "Quantidade");
     qtyLabel.htmlFor = "receipt-quantity-" + number;
@@ -1208,7 +2254,7 @@ async function stockReceipt(shopId) {
       handleError(new Error("Inclua pelo menos um item com quantidade e custo válidos."), message); return;
     }
     const payload = { shop_id: shopId, items };
-    if (supplier.value) payload.supplier_id = supplier.value;
+    if (supplier.hidden.value) payload.supplier_id = supplier.hidden.value;
     if (reference.value.trim()) payload.reference = reference.value.trim();
     payload.idempotency_key = idempotency(form, payload);
     submit.disabled = true;
@@ -1237,7 +2283,7 @@ function normalizedHeader(value) {
   return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
 function importMoney(raw) {
-  const cents = parseMoneyInput(raw);
+  const cents = scaledInteger(parseImportDecimal(raw), 100);
   if (!Number.isSafeInteger(cents) || cents < 0) throw new Error(`Valor de compra inválido: ${raw}`);
   return cents;
 }
@@ -1250,12 +2296,13 @@ async function stockReceiptImport(shopId) {
   const hint = el("small", "", "Colunas aceitas: SKU ou código de barras, quantidade e custo unitário. Use ponto e vírgula ou vírgula.");
   fileField.append(label, file, hint); form.append(fileField);
   const summary = el("div", "info-strip"); summary.textContent = "Escolha o arquivo para conferir os itens antes de registrar."; form.append(summary);
+  const preview = el("div", "full"); form.append(preview);
   const message = el("p", "feedback error full"); message.hidden = true;
   const actions = el("div", "form-actions full"); actions.append(button("Cancelar", closeDialog, "ghost"));
   const submit = el("button", "button", "Registrar compra"); submit.type = "submit"; submit.disabled = true; actions.append(submit); form.append(message, actions); body.append(form);
   let parsed = null;
   file.addEventListener("change", async () => {
-    parsed = null; submit.disabled = true; message.hidden = true;
+    parsed = null; submit.disabled = true; message.hidden = true; preview.replaceChildren();
     try {
       const selected = file.files?.[0];
       if (!selected) return;
@@ -1276,29 +2323,40 @@ async function stockReceiptImport(shopId) {
         products.push(...records(response)); cursor = response.next_cursor || "";
       } while (cursor);
       const byCode = new Map(products.flatMap(product => [[String(product.sku).toUpperCase(), product], [String(product.barcode), product]]));
-      const items = []; const unknown = [];
+      const items = []; const unknown = []; const checked = []; const lineOf = new Map();
       for (let rowIndex = 1; rowIndex < lines.length; rowIndex++) {
         const cells = csvCells(lines[rowIndex], delimiter); const code = String(cells[identityIndex] || "").trim();
         if (!code) continue;
         const product = byCode.get(code.toUpperCase());
         if (!product) { unknown.push(code); continue; }
-        const rawQuantity = String(cells[quantityIndex] || "").trim().replace(/\s/g, "").includes(",")
-          ? String(cells[quantityIndex] || "").trim().replace(/\./g, "").replace(",", ".")
-          : String(cells[quantityIndex] || "").trim();
-        const quantityMilli = Math.round(Number(rawQuantity) * 1000);
+        // The server refuses the whole entry for these cases; say which line to fix before sending.
+        if (product.stock_controlled === false) throw new Error(`Linha ${rowIndex + 1}: ${product.name} é de produção própria e não recebe entrada de estoque.`);
+        if (lineOf.has(product.id)) throw new Error(`Linha ${rowIndex + 1}: ${product.name} já aparece na linha ${lineOf.get(product.id)}. Some as quantidades em uma única linha.`);
+        lineOf.set(product.id, rowIndex + 1);
+        const quantityMilli = scaledInteger(parseImportDecimal(cells[quantityIndex]), 1000);
         if (!Number.isSafeInteger(quantityMilli) || quantityMilli <= 0) throw new Error(`Quantidade inválida na linha ${rowIndex + 1}.`);
         const item = { product_id: product.id, quantity_milli: quantityMilli };
         if (!String(cells[costIndex] || "").trim()) throw new Error(`Custo ausente na linha ${rowIndex + 1}.`);
-        item.unit_cost_cents = importMoney(cells[costIndex]);
+        try { item.unit_cost_cents = importMoney(cells[costIndex]); }
+        catch { throw new Error(`Custo inválido na linha ${rowIndex + 1}: ${cells[costIndex]}`); }
         items.push(item);
+        checked.push({ line: rowIndex + 1, product, quantity_milli: quantityMilli, unit_cost_cents: item.unit_cost_cents });
       }
       if (unknown.length) throw new Error(`Produtos não encontrados: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? "…" : ""}`);
       if (!items.length) throw new Error("Nenhum item válido foi encontrado no arquivo.");
+      if (items.length > 200) throw new Error(`O arquivo tem ${items.length} itens e cada entrada aceita até 200. Divida a compra em arquivos menores.`);
       const buffer = await selected.arrayBuffer();
       const digest = await crypto.subtle.digest("SHA-256", buffer);
       const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
       parsed = { items, source_file: { name: selected.name, mime: selected.type || "text/csv", size: selected.size, sha256: hash }, reference: selected.name };
-      summary.className = "info-strip"; summary.textContent = `${items.length} item(ns) prontos para entrada. O arquivo ${selected.name} ficará vinculado ao registro.`; submit.disabled = false;
+      summary.className = "info-strip"; summary.textContent = `${items.length} item(ns) prontos para entrada. Confira quantidades e custos abaixo antes de registrar. O arquivo ${selected.name} ficará vinculado ao registro.`;
+      preview.replaceChildren(table([
+        { label: "Linha", render: row => String(row.line) },
+        { label: "Produto", render: row => productLabel(row.product) },
+        { label: "Quantidade", render: row => quantity(row.quantity_milli, row.product.unit) },
+        { label: "Custo unitário", render: row => money(row.unit_cost_cents) }
+      ], checked));
+      submit.disabled = false;
     } catch (error) { message.textContent = errorText(error); message.hidden = false; }
   });
   form.addEventListener("submit", async event => {
@@ -1308,6 +2366,14 @@ async function stockReceiptImport(shopId) {
     catch (error) { handleError(error, message); submit.disabled = false; }
   });
   openDialog("Importar compra para o estoque", "O arquivo é conferido antes de lançar quantidade e custo dos produtos.", body);
+}
+// Names for ids shown in the stock history, cached for the session.
+const stockNames = new Map();
+async function stockName(source, id) {
+  const key = source + "/" + id;
+  if (!id || stockNames.has(key)) return;
+  try { stockNames.set(key, await api.get(source + "/" + encodeURIComponent(id))); }
+  catch { /* the row falls back to a short id; the next load tries again */ }
 }
 async function stockPage() {
   const current = ++state.renderId;
@@ -1332,9 +2398,18 @@ async function stockPage() {
     view.actions.append(button("Ajustar estoque", () => stockAdjustment(shop.select.value).catch(handleError), "ghost"));
     view.actions.append(button("+ Registrar entrada", () => stockReceipt(shop.select.value).catch(handleError)));
     view.actions.append(button("Importar compra CSV", () => stockReceiptImport(shop.select.value).catch(handleError), "secondary"));
+    view.actions.append(button("Importar XML da NF-e", () => nfeImport(shop.select.value).catch(handleError), "secondary"));
+    if (state.shops.filter(s => s.active !== false).length > 1) {
+      view.actions.append(button("Transferir", () => transferForm(shop.select.value).catch(handleError), "secondary"));
+      view.actions.append(button("Transferências", () => transfersDialog().catch(handleError), "ghost"));
+    }
   }
+  let requests = 0;
   async function load() {
-    const token = ++state.renderId;
+    // The debounced search can fire after navigation; it must not disturb the page that replaced this one.
+    if (current !== state.renderId) return;
+    const token = ++requests;
+    const stale = () => token !== requests || current !== state.renderId;
     results.replaceChildren(loadingSurface());
     try {
       const id = encodeURIComponent(shop.select.value);
@@ -1345,15 +2420,24 @@ async function stockPage() {
         api.get("/stock/movements?shop_id=" + id),
         api.get("/stock/receipts?shop_id=" + id)
       ]);
-      if (token !== state.renderId) return;
-      results.replaceChildren();
+      if (stale()) return;
       const balances = records(balance);
+      const movements = records(movementResult).slice(0, 20);
+      const receipts = records(receiptResult);
+      // The API sends product_name/sku/unit and supplier_name; the lookups below only run for rows without them.
+      balances.forEach(row => { if (row.product_id && !stockNames.has("/products/" + row.product_id)) stockNames.set("/products/" + row.product_id, row); });
+      await Promise.all([
+        ...movements.filter(row => !row.product_name).map(row => stockName("/products", row.product_id)),
+        ...receipts.slice(0, 20).filter(row => !row.supplier_name).map(row => stockName("/suppliers", row.supplier_id))
+      ]);
+      if (stale()) return;
+      results.replaceChildren();
       const balanceBox = surface("Saldos atuais", "O saldo central pode exigir reconciliação de eventos offline.");
       const columns=[
             { label: "Produto", render: row => row.name },
             { label: "SKU", render: row => row.sku },
-            { label: "Saldo", render: row => quantity(row.quantity_milli, row.unit) },
-            { label: "Mínimo", render: row => quantity(row.stock_minimum_milli, row.unit) },
+            { label: "Saldo", render: row => row.stock_controlled === false ? "Produção própria" : quantity(row.quantity_milli, row.unit) },
+            { label: "Mínimo", render: row => row.stock_controlled === false ? "—" : quantity(row.stock_minimum_milli, row.unit) },
             { label: "Atenção", render: row => row.below_minimum ? statusBadge("Baixo") : statusBadge("Regular") }
           ];
       const balanceContent=el("div");
@@ -1365,7 +2449,7 @@ async function stockPage() {
           more.disabled=true;
           try{
             const next=await api.get(balancePath+"&cursor="+encodeURIComponent(balance.next_cursor));
-            if(token!==state.renderId)return;
+            if(stale())return;
             balances.push(...records(next));
             balanceContent.replaceChildren(table(columns,balances));
             balance.next_cursor=next.next_cursor;
@@ -1379,14 +2463,24 @@ async function stockPage() {
       const grid = el("div", "section-grid");
       grid.style.marginTop = "16px";
       const movementBox = surface("Movimentações recentes", "Ajustes e baixas registrados na nuvem.");
-      const movements = records(movementResult);
+      const productOf = row => stockNames.get("/products/" + row.product_id) || {};
       movementBox.append(movements.length
-        ? table([{ label: "Produto", render: row => row.product_name || row.product_id }, { label: "Variação", render: row => quantity(row.delta_milli, row.unit || "UN") }, { label: "Motivo", render: row => row.reason }, { label: "Data", render: row => dateTime(row.created_at) }], movements.slice(0, 20))
+        ? table([
+          { label: "Produto", render: row => {
+            const name = row.product_name || productOf(row).name, sku = row.sku || productOf(row).sku;
+            return name ? name + (sku ? " · " + sku : "") : "Produto " + String(row.product_id).slice(0, 8);
+          } },
+          { label: "Variação", render: row => quantity(row.delta_milli, row.unit || productOf(row).unit || "") },
+          { label: "Motivo", render: row => row.reason }, { label: "Data", render: row => dateTime(row.created_at) }
+        ], movements)
         : empty("Sem movimentações", "Os ajustes registrados aparecerão aqui."));
       const receiptBox = surface("Entradas recentes", "Mercadorias recebidas e aplicadas ao saldo.");
-      const receipts = records(receiptResult);
       receiptBox.append(receipts.length
-        ? table([{ label: "Referência", render: row => row.source_file?.name || row.reference || String(row.id).slice(0, 8) }, { label: "Fornecedor", render: row => row.supplier_name || row.supplier_id }, { label: "Data", render: row => dateTime(row.created_at) }], receipts.slice(0, 20))
+        ? table([
+          { label: "Referência", render: row => row.source_file?.name || row.reference || String(row.id).slice(0, 8) },
+          { label: "Fornecedor", render: row => row.supplier_name || (row.supplier_id ? stockNames.get("/suppliers/" + row.supplier_id)?.name || "Fornecedor " + String(row.supplier_id).slice(0, 8) : "—") },
+          { label: "Data", render: row => dateTime(row.created_at) }
+        ], receipts.slice(0, 20))
         : empty("Sem entradas", "Registre a primeira entrada de mercadoria."));
       grid.append(movementBox, receiptBox);
       results.append(grid);
@@ -1398,8 +2492,8 @@ async function stockPage() {
       const costHistoryBox = surface("Histórico de custos", "Cada entrada preserva o custo pago e o custo médio após o lançamento.");
       costHistoryBox.append(costHistory.length
         ? table([
-          { label: "Produto", render: row => row.product_name || row.product_id },
-          { label: "Quantidade", render: row => quantity(row.quantity_milli, row.unit || "UN") },
+          { label: "Produto", render: row => row.product_name || "Produto " + String(row.product_id).slice(0, 8) },
+          { label: "Quantidade", render: row => quantity(row.quantity_milli, row.unit || "") },
           { label: "Custo da entrada", render: row => money(row.unit_cost_cents) },
           { label: "Custo médio após entrada", render: row => row.average_cost_cents == null ? "—" : money(row.average_cost_cents) },
           { label: "Referência", render: row => row.reference },
@@ -1409,12 +2503,12 @@ async function stockPage() {
       costHistoryBox.style.marginTop = "16px";
       results.append(costHistoryBox);
     } catch (error) {
-      if (token !== state.renderId) return;
+      if (stale()) return;
       results.replaceChildren(empty("Não foi possível carregar o estoque", errorText(error), "!"));
       handleError(error);
     }
   }
-  if (current === state.renderId) load();
+  load();
   shop.select.addEventListener("change", load);
   let searchTimer;
   search.addEventListener("input",()=>{
@@ -1519,6 +2613,7 @@ async function userEdit(row) {
   const fields = [
     { key:"name", label:"Nome", required:true, max:160 },
     { key:"role", label:"Papel", type:"select", required:true, choices },
+    { key:"commission_bps", label:"Comissão sobre vendas (%)", type:"percent", default:0, help:"Aplicada quando esta pessoa é o vendedor da venda (ou o operador, se nenhum vendedor for escolhido)." },
     { key:"active", label:"Acesso ativo", type:"checkbox", default:true }
   ];
   const form = await formFor(fields, row);
@@ -1526,11 +2621,13 @@ async function userEdit(row) {
   form.addEventListener("submit", async event => {
     event.preventDefault(); if (!form.reportValidity()) return;
     submit.disabled = true;
-    try { await api.patch("/users/" + row.id, formPayload(form, fields)); closeDialog(); toast("Acesso atualizado."); renderRoute(); }
+    try { await api.patch("/users/" + row.id, formPayload(form, fields, { editing: true })); closeDialog(); toast("Acesso atualizado."); renderRoute(); }
     catch (error) { handleError(error, message); submit.disabled = false; }
   });
   openDialog("Editar acesso", "Alterações de papel e desativação são auditadas.", form);
 }
+// Only the owner manages the owner's access and PIN.
+const canManageMember = row => !(row.role === "owner" && state.role !== "owner");
 function userPin(row) {
   const form = el("form", "auth-form");
   const field = el("div", "field");
@@ -1567,13 +2664,13 @@ async function usersPage() {
       {label:"Operador",render:row=>row.name},
       {label:"Papel",render:row=>roleNames[row.role]||row.role},
       {label:"Pode cancelar venda",render:row=>cancellationAccess(row.role)}
-    ],operators,row=>[{label:"Trocar PIN",onClick:()=>userPin(row)}])
+    ],operators,row=>canManageMember(row)?[{label:"Trocar PIN",onClick:()=>userPin(row)}]:[])
       :empty("Nenhum login de caixa pronto","Ative uma pessoa e defina um PIN para ela aparecer na tela de login do terminal."));
     box.append(pagedContent(response,"/users?limit=100",[
       { label:"Pessoa", render: row => row.name },{ label:"E-mail", render: row => row.email },
       { label:"Papel", render: row => roleNames[row.role] || row.role },{ label:"PIN do caixa", render: row => row.has_pin ? "Definido" : "Definir PIN" },
       { label:"Acesso", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
-    ], row => [...(row.role==="owner"&&state.role!=="owner"?[]:[{label:"Editar",onClick:()=>userEdit(row).catch(handleError)}]),{label:row.has_pin?"Trocar PIN":"Definir PIN",onClick:()=>userPin(row)}],
+    ], row => canManageMember(row)?[{label:"Editar",onClick:()=>userEdit(row).catch(handleError)},{label:row.has_pin?"Trocar PIN":"Definir PIN",onClick:()=>userPin(row)}]:[],
       empty("Equipe vazia", "Adicione pessoas para distribuir o acesso.")));
   } catch (error) { if (token === state.renderId) { operatorBox.replaceChildren();box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } }
 }
@@ -1608,6 +2705,70 @@ async function terminalCreate() {
   });
   openDialog("Novo terminal", "Cada terminal ocupa uma vaga do plano.", form);
 }
+// "Trocar de computador": recovery code that brings the shop back on a new computer.
+function transferDialog(result) {
+  const body = el("div");
+  transferWarnings(result).forEach(text => body.append(info(text, true)));
+  body.append(copyableValue("Chave da licença", result.license_key, "Identifica a sua empresa. É a mesma de sempre."));
+  const code = el("div", "pairing-code", result.recovery_code || "Código indisponível");
+  code.setAttribute("aria-label", "Código de recuperação");
+  body.append(code, copyableValue("Código de recuperação", result.recovery_code, "Uso único. Vale por 30 minutos."));
+  const steps = el("ol", "recovery-steps");
+  transferSteps(result).forEach(text => steps.append(el("li", "", text)));
+  body.append(steps, detailList([["Terminal", result.name], ["Código válido até", dateTime(result.recovery_expires_at)]]),
+    copyableValue("Endereço do servidor", localDocker() ? "http://cloud:8080" : location.origin, "Informe só se o programa pedir."),
+    info("Nada muda até o computador novo usar este código. Depois disso, o antigo para de vender assim que se conectar à internet."));
+  const actions = el("div", "form-actions");
+  actions.append(button("Concluir", renderRoute)); body.append(actions);
+  openDialog("Trocar de computador", "Anote a chave e o código antes de fechar esta janela.", body,
+    { dirty: true, confirmText: "Fechar sem anotar o código? Ele não aparece de novo: será preciso gerar outro." });
+}
+function terminalTransfer(row) {
+  const content = el("div");
+  content.append(info(transferConfirmText, true));
+  const message = el("p", "feedback error"); message.hidden = true; content.append(message);
+  const actions = el("div", "form-actions");
+  const accept = button("Gerar código de recuperação", async () => {
+    accept.disabled = true;
+    try { transferDialog(await api.post("/terminals/" + row.id + "/transfer", {})); }
+    catch (error) { handleError(error, message); accept.disabled = false; }
+  });
+  actions.append(button("Voltar", closeDialog, "ghost"), accept); content.append(actions);
+  openDialog("Trocar de computador", row.name, content);
+}
+function backupKeyDialog(result) {
+  const body = el("div");
+  body.append(info("Esta chave não será mostrada de novo. Anote ou imprima e guarde fora do computador do caixa.", true),
+    copyableValue("Chave da cópia de segurança", result.key, "Identificação " + String(result.key_id || "").slice(0, 8) + "…"));
+  body.append(info("Você não precisa desta chave para trocar de computador: o caixa novo recebe sozinho pela internet. Ela serve só para o suporte abrir a cópia do pendrive em um caso extremo."));
+  const confirmField = el("label", "checkbox-line full"), confirm = el("input");
+  confirm.type = "checkbox"; confirm.id = "backup-key-noted";
+  confirmField.append(confirm, el("span", "", " Anotei a chave e guardei em lugar seguro"));
+  body.append(confirmField);
+  const actions = el("div", "form-actions");
+  const done = button("Já guardei a chave", renderRoute); done.disabled = true;
+  confirm.addEventListener("change", () => { done.disabled = !confirm.checked; });
+  actions.append(done); body.append(actions);
+  // Shown once by the cloud: this window only closes through its own button.
+  openDialog("Chave da cópia de segurança", "Esta janela só fecha depois que você marcar que anotou a chave.", body, { persistent: true });
+}
+function backupKeyBox(status) {
+  const box = surface("Chave da cópia de segurança", "Protege a cópia de segurança que o caixa grava em outro disco ou pendrive. O caixa recebe a chave sozinho pela internet.");
+  const view = backupKeyView(status, state.role);
+  box.append(el("p", "backup-key-note", view.text));
+  if (view.canReveal) {
+    const actions = el("div", "connection-actions");
+    actions.append(button("Mostrar a chave (uma única vez)", () => confirmAction("Mostrar a chave da cópia de segurança",
+      "A chave aparece uma única vez. Tenha papel e caneta à mão, ou um lugar seguro para guardar, antes de continuar.",
+      async () => {
+        const result = await api.post("/backup-key/reveal", { confirm: true });
+        // confirmAction closes its own dialog right after this; open ours afterwards.
+        setTimeout(() => backupKeyDialog(result), 0);
+      }, "Mostrar a chave"), "secondary"));
+    box.append(actions);
+  }
+  return box;
+}
 async function terminalsPage() {
   const token = ++state.renderId;
   const view = page("Terminais", "Conecte cada caixa à empresa uma única vez e libere o acesso dos operadores.", "Administração");
@@ -1617,8 +2778,9 @@ async function terminalsPage() {
   const box = surface("Dispositivos da empresa"); view.outer.append(box); box.append(loadingSurface());
   const operatorBox=surface("Operadores habilitados para entrar no caixa","Defina ou troque o PIN em Equipe. No terminal, use Atualizar operadores para baixar mudanças.");
   view.outer.append(operatorBox);operatorBox.append(loadingSurface());
+  const backupArea=el("div");view.outer.append(backupArea);
   try {
-    const [response,subscription,usersFirst]=await Promise.all([api.get("/terminals"),api.get("/subscription"),api.get("/users?limit=100")]);
+    const [response,subscription,usersFirst,backupKey]=await Promise.all([api.get("/terminals"),api.get("/subscription"),api.get("/users?limit=100"),api.get("/backup-key").catch(()=>null)]);
     if (token !== state.renderId) return;
     const users=await collectPages("/users?limit=100",usersFirst);
     if(token!==state.renderId)return;
@@ -1636,10 +2798,30 @@ async function terminalsPage() {
     box.lastChild.remove();const rows=records(response);
     if(Number.isFinite(limit)&&Number.isFinite(used))box.append(info(`${used} de ${limit} terminais utilizados; ${Math.max(0,limit-used)} disponíveis no plano.`));
     box.append(pagedContent(response,"/terminals",[
-      {label:"Terminal",render:row=>row.name},{label:"Loja",render:row=>shopName(row.shop_id)},
+      {label:"Terminal",render:row=>{
+        if(row.hub!==true||row.revoked)return row.name;
+        const cell=el("div","terminal-state");cell.append(el("span","",row.name),el("span","badge","Caixa principal da loja"));return cell;
+      }},{label:"Loja",render:row=>shopName(row.shop_id)},
+      {label:"Caixas",render:row=>{
+        const current=terminalStationsView(row);
+        if(!current.names.length)return current.text;
+        const cell=el("div","terminal-state");cell.append(el("span","",current.text),el("small","",current.names.join(", ")));return cell;
+      }},
       {label:"Dispositivo",render:row=>row.device_id || "Aguardando pareamento"},{label:"Versão",render:row=>row.version},
-      {label:"Fila",render:row=>row.heartbeat_pending_events??0},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},{label:"Estado",render:row=>statusBadge(row.revoked ? "Revogado" : row.paired ? "Pareado" : "Aguardando")}
+      {label:"Fila",render:row=>row.heartbeat_pending_events??0},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},
+      {label:"Cópia em 2º disco",render:row=>mirrorText(row)},
+      {label:"Estado",render:row=>{
+        const current=terminalStateText(row),badge=statusBadge(current.badge);
+        if(!current.note)return badge;
+        const wrap=el("div","terminal-state");wrap.append(badge,el("small","",current.note));return wrap;
+      }}
     ], row => row.revoked ? [] : [
+      ...(canTransferTerminal(row)?[{label:"Trocar de computador",onClick:()=>terminalTransfer(row)}]:[]),
+      ...(canSetHub(row)?[{label:"Tornar principal desta loja",onClick:()=>confirmAction("Tornar principal desta loja",hubConfirmText,
+        async()=>{ await api.patch("/terminals/"+row.id,{hub:true}); toast("Este terminal agora é o caixa principal da loja."); renderRoute(); },"Tornar principal")}]:[]),
+      ...(sendOnlyActive(row)?[{label:"Encerrar envio do computador antigo",onClick:()=>confirmAction("Encerrar envio do computador antigo",
+        "O computador antigo não poderá mais enviar as vendas que ficaram nele. Faça isso só se a fila dele já zerou ou se ele foi descartado.",
+        async()=>{ await api.patch("/terminals/"+row.id,{end_send_only:true}); toast("Envio do computador antigo encerrado."); renderRoute(); },"Encerrar envio")}]:[]),
       ...(canActivate?[{label:"Novo código",onClick:async()=>{
         try { const updated=await api.patch("/terminals/"+row.id,{reissue_pairing:true}); pairingDialog(updated); }
         catch(error){handleError(error);}
@@ -1652,10 +2834,11 @@ async function terminalsPage() {
       {label:"Login",render:row=>row.name},
       {label:"Nível",render:row=>roleNames[row.role]||row.role},
       {label:"Cancelamento",render:row=>cancellationAccess(row.role)}
-    ],available,row=>[{label:"Trocar PIN",onClick:()=>userPin(row)}])
+    ],available,row=>canManageMember(row)?[{label:"Trocar PIN",onClick:()=>userPin(row)}]:[])
       :empty("Nenhum operador liberado","Abra Equipe e defina um PIN para ao menos uma pessoa ativa."));
     const teamLink=el("a","button secondary small","Gerenciar equipe e PINs");teamLink.href="#users";
     const actions=el("div","connection-actions");actions.append(teamLink);operatorBox.append(actions);
+    if(backupKey)backupArea.replaceChildren(backupKeyBox(backupKey));
   } catch (error) { if (token === state.renderId) { access.replaceChildren();operatorBox.replaceChildren();box.replaceChildren(empty("Falha ao carregar",errorText(error),"!")); handleError(error); } }
 }
 
@@ -1682,7 +2865,8 @@ async function subscriptionPage() {
       [license.source==="vip"?"Preço de referência (VIP sem cobrança)":"Mensalidade de referência",money(plan.price_month_cents)],
       ["Limite de terminais",plan.terminal_limit ?? "—"],
       ["Terminais utilizados",license.terminal_used??"—"],["Terminais disponíveis",license.terminal_available??"—"],
-      ["Limite de lojas",plan.shop_limit ?? "—"],["Fim do teste",dateOnly(data.trial_ends_at)],
+      ["Limite de lojas",plan.shop_limit ?? "—"],["Caixas adicionais por loja",license.max_stations ?? plan.max_stations ?? "—"],
+      ["Fim do teste",dateOnly(data.trial_ends_at)],
       ["Fim do período",dateOnly(data.current_period_end)]
     ]));
     view.outer.append(terminalAccessBox(license));
@@ -1717,6 +2901,17 @@ async function companyPage() {
     discount.id="company-discount";discountLabel.htmlFor=discount.id;discount.type="number";discount.min="0";discount.max="100";discount.step="0.01";
     discount.value=(Number(company.max_discount_bps ?? 10000)/100).toFixed(2).replace(/\.00$/,"");
     discountField.append(discountLabel,discount,el("small","","Limite para qualquer desconto, inclusive quando autorizado por um gerente. Ex.: 10 = até 10% do total."));
+    const hoursField=el("fieldset","business-hours-fieldset"),hoursLegend=el("legend","","Horário de funcionamento");
+    hoursField.append(hoursLegend,el("small","","O terminal impede a abertura do caixa fora destes horários. Um caixa já aberto continua funcionando e recebe um alerta."));
+    const hourLabels={mon:"Segunda",tue:"Terça",wed:"Quarta",thu:"Quinta",fri:"Sexta",sat:"Sábado",sun:"Domingo"};
+    const hoursInputs={};const savedHours=company.business_hours||{};
+    Object.entries(hourLabels).forEach(([day,labelText])=>{
+      const row=el("div","business-hours-row"),toggle=el("input"),open=el("input"),close=el("input");
+      toggle.type="checkbox";toggle.checked=Boolean(savedHours[day]?.enabled);open.type="time";close.type="time";
+      open.value=savedHours[day]?.open||"08:00";close.value=savedHours[day]?.close||"18:00";
+      const label=el("label","business-hours-day",labelText);label.prepend(toggle);
+      row.append(label,open,el("span","business-hours-separator","até"),close);hoursField.append(row);hoursInputs[day]={toggle,open,close};
+    });
     const plainField=(id,labelText,value,max=160,placeholder="")=>{const field=el("div","field"),label=el("label","",labelText),input=el("input");input.id=id;label.htmlFor=id;input.maxLength=max;input.value=value||"";if(placeholder)input.placeholder=placeholder;field.append(label,input);return {field,input}};
     const trade=plainField("company-trade-name","Nome fantasia",company.trade_name,160);
     const stateRegistration=plainField("company-state-registration","Inscrição estadual",company.state_registration,30,"Não contribuinte, se aplicável");
@@ -1727,12 +2922,12 @@ async function companyPage() {
     const addressNeighborhood=plainField("company-address-neighborhood","Bairro",company.address_neighborhood,100);
     const addressCity=plainField("company-address-city","Cidade",company.address_city,100);
     const addressState=plainField("company-address-state","UF",company.address_state,2,"RJ");addressState.input.maxLength=2;addressState.input.style.textTransform="uppercase";
-    const addressZip=plainField("company-address-zip","CEP",company.address_zip,8,"00000000");addressZip.input.inputMode="numeric";
+    const addressZip=plainField("company-address-zip","CEP",company.address_zip,9,"00000-000");addressZip.input.inputMode="numeric";
     const taxField=el("div","field"),taxLabel=el("label","","Regime tributário"),tax=el("select");tax.id="company-tax-regime";taxLabel.htmlFor=tax.id;[["simples_nacional","Simples Nacional"],["simples_excesso","Simples Nacional · excesso de sublimite"],["regime_normal","Regime normal"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;tax.append(option)});tax.value=company.tax_regime||"simples_nacional";taxField.append(taxLabel,tax);
     const environmentField=el("div","field"),environmentLabel=el("label","","Emissão fiscal"),environment=el("select");environment.id="company-fiscal-environment";environmentLabel.htmlFor=environment.id;[["non_fiscal","Comprovante não fiscal · atual"],["homologation","NFC-e em homologação"],["production","NFC-e em produção · requer provedor"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;environment.append(option)});environment.value=company.fiscal_environment||"non_fiscal";environmentField.append(environmentLabel,environment,el("small","","A chave de acesso, QR Code, protocolo e impostos só aparecem após autorização real da SEFAZ por um provedor configurado."));
-    const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(series);
-    const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumber);
-    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,taxField,environmentField,seriesField,nextNumberField,discountField);
+    const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(seriesLabel,series);
+    const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumberLabel,nextNumber,el("small","","Altere apenas ao migrar de outro sistema emissor."));
+    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,taxField,environmentField,seriesField,nextNumberField,discountField,hoursField);
     const message=formMessage(form);
     const actions=el("div","form-actions"),save=el("button","button","Salvar dados");save.type="submit";
     actions.append(save);form.append(actions);
@@ -1749,7 +2944,8 @@ async function companyPage() {
           address_line:addressLine.input.value.trim(),address_number:addressNumber.input.value.trim(),address_complement:addressComplement.input.value.trim(),
           address_neighborhood:addressNeighborhood.input.value.trim(),address_city:addressCity.input.value.trim(),address_state:addressState.input.value.trim().toUpperCase(),
           address_zip:addressZip.input.value.replace(/\D/g,""),tax_regime:tax.value,fiscal_environment:environment.value,
-          nfce_series:Number(series.value),nfce_next_number:Number(nextNumber.value),max_discount_bps:Math.round(maxDiscount*100)};
+          nfce_series:Number(series.value),nfce_next_number:Number(nextNumber.value),max_discount_bps:Math.round(maxDiscount*100),
+          business_hours:Object.fromEntries(Object.entries(hoursInputs).map(([day,inputs])=>[day,{enabled:inputs.toggle.checked,open:inputs.toggle.checked?inputs.open.value:"",close:inputs.toggle.checked?inputs.close.value:""}]))};
         await api.patch("/ops/company",companyPayload);
         toast("Dados da empresa atualizados.");renderRoute();
       }catch(error){handleError(error,message);save.disabled=false;}
@@ -1775,10 +2971,10 @@ async function auditPage() {
 
 async function syncConflictsPage() {
   const token = ++state.renderId;
-  const view = page("Conflitos offline", "Reveja vendas sincronizadas com divergência de estoque e registre a decisão da equipe.", "Administração");
+  const view = page("Conflitos offline", "Reveja o que os caixas registraram offline e a nuvem aceitou com divergência, e registre a decisão da equipe.", "Administração");
   view.actions.append(button("Atualizar", () => renderRoute(), "secondary"));
-  const box = surface("Pendências", "Uma venda não é apagada: o terminal continua vendendo dentro da política local e esta fila orienta o ajuste de estoque.");
-  view.outer.append(info("Conflitos são gerados quando dois terminais trabalham offline e a confirmação central deixa o estoque negativo. Resolva depois de conferir a contagem física.", true), box);
+  const box = surface("Pendências", "Nada do que aconteceu no caixa é apagado: a nuvem aceita o evento e esta fila mostra o que precisa ser conferido.");
+  view.outer.append(info("Um conflito aparece quando o caixa trabalhou offline e, ao sincronizar, o cadastro ou a operação já tinha mudado na nuvem: estoque negativo, desconto acima do limite, produto, promoção ou forma de pagamento alterados, cancelamento ou devolução de venda já revertida, NFC-e a cancelar, fiado de cliente desativado ou evento recusado. Confira o motivo de cada linha antes de marcar como resolvido.", true), box);
   box.append(loadingSurface());
   try {
     const response = await api.get("/sync/conflicts?status=open");
@@ -1788,11 +2984,11 @@ async function syncConflictsPage() {
     box.append(pagedContent(response, "/sync/conflicts?status=open", [
       { label: "Data", render: row => dateTime(row.created_at) },
       { label: "Terminal", render: row => row.terminal_name || "—" },
-      { label: "Motivo", render: row => row.reason === "negative_stock" ? "Estoque negativo" : row.reason },
-      { label: "Itens", render: row => (row.detail?.items || []).map(item => `${item.product_name} (${Number(item.central_balance_milli || 0) / 1000})`).join(" · ") || "Ver detalhes" },
+      { label: "Motivo", render: row => conflictReasonText(row) },
+      { label: "Detalhes", render: row => conflictView(row).summary },
       { label: "Estado", render: row => statusBadge(row.status) }
     ], row => [{ label: "Resolver", onClick: () => resolveSyncConflict(row) }],
-      empty("Nenhum conflito pendente", "As vendas offline estão conciliadas.")));
+      empty("Nenhum conflito pendente", "As operações offline estão conciliadas.")));
   } catch (error) {
     if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); }
   }
@@ -1800,10 +2996,24 @@ async function syncConflictsPage() {
 
 async function resolveSyncConflict(row) {
   const content = el("div");
-  const items = (row.detail?.items || []).map(item => `${item.product_name}: saldo central ${Number(item.central_balance_milli || 0) / 1000}`).join("\n");
-  content.append(info(items || "Confira a venda e o estoque físico antes de resolver.", true));
+  const view = conflictView(row);
+  const pairs = [["Motivo", conflictReasonText(row)], ["Terminal", row.terminal_name || "—"], ["Loja", row.shop_name || "—"], ["Data", dateTime(row.created_at)]];
+  if (view.type) pairs.push(["Tipo do evento", view.type]);
+  if (view.error) pairs.push(["Erro", view.error]);
+  content.append(detailList(pairs));
+  content.append(info(view.message || "Confira a operação no caixa antes de resolver.", true));
+  if (view.lines.length) {
+    const list = el("ul", "conflict-items");
+    view.lines.forEach(line => list.append(el("li", "", line)));
+    content.append(list);
+  }
+  if (view.payload) {
+    const block = el("details", "conflict-payload");
+    block.append(el("summary", "", "Dados enviados pelo caixa"), el("pre", "", view.payload));
+    content.append(block);
+  }
   const field = el("div", "field"), label = el("label", "", "Observação da resolução");
-  const textarea = el("textarea"); textarea.rows = 4; textarea.placeholder = "Ex.: feita entrada de 2 unidades após conferência física"; label.htmlFor = "conflict-resolution"; textarea.id = "conflict-resolution"; field.append(label, textarea);
+  const textarea = el("textarea"); textarea.rows = 4; textarea.placeholder = "Ex.: conferido com o operador; feita entrada de 2 unidades após contagem física"; label.htmlFor = "conflict-resolution"; textarea.id = "conflict-resolution"; field.append(label, textarea);
   const message = formMessage(content); message.hidden = true;
   const actions = el("div", "form-actions");
   const cancel = button("Voltar", closeDialog, "ghost");
@@ -1904,9 +3114,13 @@ const planFields=[
   {key:"price_year_cents",label:"Preço anual (R$)",type:"money",required:true,min:0},
   {key:"terminal_limit",label:"Limite de terminais",type:"number",required:true,min:1},
   {key:"shop_limit",label:"Limite de lojas",type:"number",required:true,min:1},
+  {key:"offline_days",label:"Dias sem internet",type:"number",required:true,min:1,max:45,default:30,help:"Por quantos dias o caixa continua vendendo sem falar com a nuvem (1 a 45). Nunca passa do período pago."},
+  {key:"max_stations",label:"Caixas adicionais por loja",type:"number",required:true,min:0,max:50,default:0,help:"Quantos computadores além do caixa principal cada loja pode ligar (0 a 50). Zero = só o caixa principal."},
   {key:"active",label:"Plano disponível para novas assinaturas",type:"checkbox",default:true,full:true},
   {key:"features",label:"Recursos (JSON)",type:"json",required:true,default:[],full:true,help:"Lista JSON de códigos de recursos. Ex.: [\"cloud_dashboard\", \"stock\"]."}
 ];
+// New companies always start on this plan (cloud/core/views_auth.py).
+const signupPlanSlug="essential";
 async function planForm(record) {
   const editing=!!record,fields=editing?planFields.filter(field=>field.key!=="slug"):planFields;
   const form=await formFor(fields,record||{});
@@ -1919,8 +3133,14 @@ async function planForm(record) {
       payload.terminal_limit=Number(payload.terminal_limit);
       payload.shop_limit=Number(payload.shop_limit);
       if(!Number.isSafeInteger(payload.terminal_limit)||!Number.isSafeInteger(payload.shop_limit)||payload.terminal_limit<1||payload.shop_limit<1)throw new Error("Os limites precisam ser inteiros maiores que zero.");
+      payload.offline_days=Number(payload.offline_days);
+      if(!Number.isSafeInteger(payload.offline_days)||payload.offline_days<1||payload.offline_days>45)throw new Error("Dias sem internet precisa ser um número inteiro de 1 a 45.");
+      payload.max_stations=Number(payload.max_stations);
+      if(!Number.isSafeInteger(payload.max_stations)||payload.max_stations<0||payload.max_stations>50)throw new Error("Caixas adicionais por loja precisa ser um número inteiro de 0 a 50.");
       if(!editing&&!/^[a-z0-9-]+$/.test(payload.slug))throw new Error("O identificador aceita letras minúsculas, números e hífen.");
       if(!Array.isArray(payload.features)||payload.features.some(feature=>typeof feature!=="string"))throw new Error("Recursos deve ser uma lista JSON de textos.");
+      if(editing&&record.slug===signupPlanSlug&&record.active&&payload.active===false&&
+        !window.confirm("Este é o plano usado no cadastro de novas empresas (teste grátis). Sem ele, ninguém consegue criar conta. Desativar mesmo assim?")){submit.disabled=false;return;}
       if(editing)await api.patch("/platform/plans/"+record.id,payload,{tenant:false});
       else await api.post("/platform/plans",payload,{tenant:false});
       closeDialog();toast("Plano salvo.");renderRoute();
@@ -1938,9 +3158,17 @@ async function platformPlans() {
     if(token!==state.renderId)return;
     box.lastChild.remove();const rows=records(response);state.plans=rows;
     box.append(pagedContent(response,"/platform/plans",[
-      {label:"Plano",render:row=>row.name},{label:"Mensal",render:row=>money(row.price_month_cents)},
+      {label:"Plano",render:row=>row.name},
+      {label:"Identificador",render:row=>{
+        const cell=el("div");cell.append(el("span","",row.slug||"—"));
+        if(row.slug===signupPlanSlug){cell.append(el("br"),el("span","badge warn","Plano do teste grátis"));}
+        return cell;
+      }},
+      {label:"Mensal",render:row=>money(row.price_month_cents)},
       {label:"Anual",render:row=>money(row.price_year_cents)},
       {label:"Terminais",render:row=>row.terminal_limit},{label:"Lojas",render:row=>row.shop_limit},
+      {label:"Dias sem internet",render:row=>row.offline_days??"—"},
+      {label:"Caixas adicionais por loja",render:row=>row.max_stations??"—"},
       {label:"Estado",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
     ],platformEdit()?row=>[{label:"Editar",onClick:()=>planForm(row).catch(handleError)}]:null,
       empty("Nenhum plano","Cadastre o primeiro plano comercial."),{tenant:false}));
@@ -1961,6 +3189,10 @@ async function subscriptionEdit(row) {
     submit.disabled=true;
     try {
       const payload=formPayload(form,fields);
+      // Untouched fields stay out of the PATCH: resending them rewrites dates and marks the licence as manual.
+      const original={plan_id:row.plan?.id,status:row.status,trial_ends_at:row.trial_ends_at?.slice(0,10),current_period_end:row.current_period_end?.slice(0,10)};
+      for(const key of Object.keys(payload))if(String(payload[key]??"")===String(original[key]??""))delete payload[key];
+      if(!Object.keys(payload).length){closeDialog();toast("Nenhuma alteração para salvar.");return;}
       if(payload.trial_ends_at)payload.trial_ends_at=new Date(payload.trial_ends_at+"T12:00:00Z").toISOString();
       if(payload.current_period_end)payload.current_period_end=new Date(payload.current_period_end+"T12:00:00Z").toISOString();
       if(["active","past_due"].includes(payload.status)&&!payload.current_period_end&&!row.current_period_end)
@@ -2214,9 +3446,11 @@ async function platformServices() {
   const view=page("Serviços","Estado das integrações e do processamento da plataforma.","Plataforma");
   const content=el("div");view.outer.append(content);content.append(loadingSurface());
   try {
+    // /ops/jobs answers 403 to Atendimento; asking anyway would take the whole page down.
+    const canSeeJobs=platformCan("platform_ops","platform_billing");
     const [health,jobs,asaas]=await Promise.all([
       api.get("/ops/health",{tenant:false}),
-      api.get("/ops/jobs",{tenant:false}),
+      canSeeJobs?api.get("/ops/jobs",{tenant:false}):Promise.resolve(null),
       platformSuperuser()?api.get("/ops/integrations/asaas",{tenant:false}):Promise.resolve(null)
     ]);
     if(token!==state.renderId)return;
@@ -2235,7 +3469,7 @@ async function platformServices() {
     ]):info("A configuração da cobrança exige acesso de superusuário."));
     if(asaas)integration.append(button("Configurar Asaas",()=>integrationForm("asaas",asaas,true)));
     const tasks=surface("Tarefas recentes");const rows=records(jobs);
-    tasks.append(rows.length?table([
+    tasks.append(!canSeeJobs?info("A lista de tarefas é visível para os papéis Operação e Cobrança."):rows.length?table([
       {label:"Tipo",render:row=>row.kind},{label:"Estado",render:row=>statusBadge(row.status)},
       {label:"Tentativas",render:row=>row.attempts},{label:"Erro",render:row=>row.last_error},
       {label:"Criada em",render:row=>dateTime(row.created_at)}
@@ -2248,6 +3482,58 @@ async function platformServices() {
     }):empty("Sem tarefas","As tarefas aparecerão aqui."));
     content.replaceChildren(cards,integration,tasks);
   }catch(error){if(token===state.renderId){content.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
+}
+
+function requestPlatformBackup() {
+  confirmAction("Executar backup agora", "O banco será exportado, validado e enviado ao destino Restic configurado. A venda e o banco ativo continuam disponíveis.", async () => {
+    await api.post("/ops/backups", { action: "run" }, { tenant:false });
+    toast("Backup solicitado. Atualize o painel para acompanhar o resultado.");
+    renderRoute();
+  }, "Executar backup");
+}
+
+function requestPlatformRestore(snapshot) {
+  confirmAction("Validar restauração", `O snapshot ${snapshot.short_id || snapshot.id.slice(0, 8)} será restaurado em um banco temporário isolado. O banco ativo não será alterado.`, async () => {
+    await api.post("/ops/backups", { action: "restore_test", snapshot_id: snapshot.id, confirm:true }, { tenant:false });
+    toast("Restauração solicitada. O resultado aparecerá neste painel.");
+    renderRoute();
+  }, "Restaurar em ambiente isolado");
+}
+
+async function platformBackupsPage() {
+  const token=++state.renderId;
+  const view=page("Backups e restauração","Acompanhe cópias do SaaS, solicite uma cópia imediata e valide restaurações sem tocar no banco ativo.","Plataforma");
+  view.actions.append(button("Atualizar",()=>renderRoute()),button("Executar backup agora",requestPlatformBackup,"primary"));
+  view.outer.append(info("A restauração disponível nesta tela é uma validação em banco temporário. Ela confirma que o snapshot pode ser recuperado e preserva o banco de produção.",true));
+  const content=el("div");view.outer.append(content);content.append(loadingSurface());
+  try {
+    const result=await api.get("/ops/backups",{tenant:false});
+    if(token!==state.renderId)return;
+    const restore=result.restore||{};
+    const cards=el("div","metric-grid");
+    cards.append(
+      metric("Estado do backup",statusNames[String(result.state||"").toLowerCase()]||result.state||"—",result.pending_action?`Ação pendente: ${result.pending_action}`:"Verificação automática"),
+      metric("Última cópia",dateTime(result.last_success_at),result.last_failure_at?`Última falha: ${dateTime(result.last_failure_at)}`:"Sem falha registrada"),
+      metric("Destino externo",result.external_configured?"Configurado":"Não configurado","Restic criptografado"),
+      metric("Última restauração",restore.status?String(restore.status):"Nenhuma",restore.completed_at?dateTime(Number(restore.completed_at)*1000):"Ainda não executada")
+    );
+    const overview=surface("Estado do serviço","O container de backup executa cópias periódicas e consome as solicitações desta tela.");
+    overview.append(detailList([
+      ["Periodicidade",`${Math.round((result.interval_seconds||3600)/60)} minutos`],
+      ["Próxima ação",result.pending_action?"Aguardando o worker":"Agendada pelo serviço"],
+      ["Mensagem da restauração",restore.message||"—"],
+      ["Falha mais recente",result.last_failure||"Nenhuma falha registrada"]
+    ]));
+    const snapshots=surface("Snapshots disponíveis","Escolha uma cópia estável para validar a recuperação.");
+    const rows=Array.isArray(result.snapshots)?result.snapshots:[];
+    snapshots.append(rows.length?table([
+      {label:"ID",render:row=>row.short_id||row.id.slice(0,8)},
+      {label:"Data",render:row=>dateTime(row.time)},
+      {label:"Origem",render:row=>row.hostname},
+      {label:"Tags",render:row=>(row.tags||[]).join(", ")||"—"}
+    ],rows,row=>[{label:"Restaurar",onClick:()=>requestPlatformRestore(row)}]):empty("Nenhum snapshot listado","O serviço ainda não publicou o inventário de cópias."));
+    content.replaceChildren(cards,overview,snapshots);
+  }catch(error){if(token===state.renderId){content.replaceChildren(empty("Falha ao carregar backups",errorText(error),"!"));handleError(error);}}
 }
 
 function billingForm(plans) {
@@ -2268,14 +3554,19 @@ function billingForm(plans) {
   const type=selectField("billing-type","Forma de cobrança",[["PIX","Pix"],["BOLETO","Boleto"]]);
   const name=inputField("billing-name","Nome do pagador");
   const documentNumber=inputField("billing-document","CPF ou CNPJ");documentNumber.maxLength=30;
+  documentNumber.addEventListener("input",()=>documentNumber.setCustomValidity(""));
   const email=inputField("billing-email","E-mail","email");
   form.append(info("A solicitação será enviada ao provedor quando configurado. Esta ação não confirma pagamento.",true));
   const message=formMessage(form),submit=formButtons(form,"Solicitar assinatura");
   form.addEventListener("submit",async event=>{
-    event.preventDefault();if(!form.reportValidity())return;
+    event.preventDefault();
+    // A wrong document only fails later at the provider and leaves the request stuck in review.
+    documentNumber.setCustomValidity(validTaxId(documentNumber.value)?"":"Informe um CPF ou CNPJ válido (confira os dígitos).");
+    if(!form.reportValidity())return;
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.value.trim())){handleError(new Error("Informe um e-mail válido para receber a cobrança."),message);return;}
     const payload={
       plan_id:plan.value,cycle:cycle.value,billing_type:type.value,
-      name:name.value.trim(),document:documentNumber.value.trim(),email:email.value.trim()
+      name:name.value.trim(),document:taxIdValue(documentNumber.value),email:email.value.trim()
     };
     payload.idempotency_key=idempotency(form,payload);
     submit.disabled=true;
@@ -2294,6 +3585,8 @@ function releaseForm() {
     {key:"url",label:"URL HTTPS do pacote",type:"url",required:true,full:true,max:2000},
     {key:"sha256",label:"SHA-256 do arquivo",required:true,full:true,max:64},
     {key:"size_bytes",label:"Tamanho em bytes",type:"number",required:true,min:1},
+    {key:"kind",label:"Tipo de pacote",type:"select",choices:[["","Não informado"],["bundle","Atualização automática (zip)"],["installer","Instalador completo"]]},
+    {key:"min_version",label:"Versão mínima do terminal",placeholder:"2.0.0",max:50,help:"Opcional. Terminais abaixo desta versão não recebem a oferta."},
     {key:"notes",label:"Notas da versão",type:"textarea",full:true,max:4000}
   ];
   formFor(fields).then(form=>{
@@ -2308,6 +3601,8 @@ function releaseForm() {
         if(!/^\d+\.\d+\.\d+$/.test(body.version))throw new Error("Use versão no formato 2.0.0.");
         if(!/^[0-9a-f]{64}$/.test(body.sha256))throw new Error("O SHA-256 precisa ter 64 caracteres hexadecimais minúsculos.");
         if(!Number.isSafeInteger(body.size_bytes)||body.size_bytes<1)throw new Error("Tamanho inválido.");
+        for(const key of ["kind","min_version"])if(!body[key])delete body[key];
+        if(body.min_version&&!/^\d+\.\d+\.\d+$/.test(body.min_version))throw new Error("Use a versão mínima no formato 2.0.0.");
         await api.post("/ops/releases",body,{tenant:false});
         closeDialog();toast("Versão publicada.");renderRoute();
       }catch(error){handleError(error,message);submit.disabled=false;}
@@ -2319,16 +3614,30 @@ async function releasesPage() {
   const token=++state.renderId;
   const view=page("Versões","Pacotes publicados para terminal e nuvem.","Plataforma");
   view.actions.append(button("+ Publicar versão",releaseForm));
-  view.outer.append(info("Uma versão publicada não instala automaticamente. O aplicativo local precisa consultar o manifesto assinado e validar o arquivo.",true));
+  view.outer.append(info("A nuvem só muda quando o Dokploy recria os serviços a partir do Git. O terminal consulta o manifesto assinado, mas a instalação do pacote continua sendo uma ação manual do suporte.",true));
   const box=surface("Histórico de versões");view.outer.append(box);box.append(loadingSurface());
   try {
-    const result=await api.get("/ops/releases",{tenant:false});
+    const [result,releaseStatus]=await Promise.all([
+      api.get("/ops/releases",{tenant:false}),
+      api.get("/ops/releases/status",{tenant:false})
+    ]);
     if(token!==state.renderId)return;
-    box.lastChild.remove();const rows=records(result);
+    box.lastChild.remove();
+    const statusGrid=el("div","metric-grid");
+    const cloud=releaseStatus.cloud||{},terminal=releaseStatus.terminal||{};
+    statusGrid.append(
+      metric("Nuvem em execução",cloud.running_version||"—",cloud.deployment_pending?"Há uma versão publicada aguardando deploy":"Versão em execução"),
+      metric("Nuvem publicada",cloud.published_version||"—",cloud.published_version?"Metadado disponível":"Nenhuma versão cloud publicada"),
+      metric("Terminal estável",terminal.published_version||"—",terminal.manifest_available?"Manifesto assinado disponível":"Nenhum pacote publicado")
+    );
+    view.outer.insertBefore(statusGrid,box);
+    const rows=records(result);
     box.append(rows.length?table([
       {label:"Componente",render:row=>row.component==="cloud"?"Nuvem":"Terminal"},
       {label:"Canal",render:row=>row.channel==="pilot"?"Piloto":"Estável"},
       {label:"Versão",render:row=>row.version},
+      {label:"Tipo",render:row=>({bundle:"Atualização automática",installer:"Instalador completo"})[row.kind]||"—"},
+      {label:"Versão mínima",render:row=>row.min_version||"—"},
       {label:"Pacote",render:row=>{const a=el("a","",row.url);a.href=row.url;a.target="_blank";a.rel="noopener noreferrer";return a;}},
       {label:"Publicado",render:row=>dateTime(row.published_at)},
       {label:"Estado",render:row=>statusBadge(row.active?"Ativa":"Retirada")}
@@ -2400,7 +3709,7 @@ async function platformUserForm(record) {
   form.append(roles);
   const active=el("label","checkbox-line full"),activeInput=el("input");
   activeInput.type="checkbox";activeInput.checked=record?!!record.active:true;
-  active.append(activeInput,el("span","","Acesso ativo"));
+  active.append(activeInput,el("span","","Conta de login ativa (desmarcar bloqueia também o painel da empresa)"));
   form.append(active);
   form.append(info(editing && !record.platform_access
     ? "Este usuário já pertence a uma empresa. Marque um ou mais papéis para promovê-lo também à administração SaaS."
@@ -2413,6 +3722,8 @@ async function platformUserForm(record) {
       const payload=formPayload(form,fields);
       payload.roles=choices.filter(([key])=>checked.get(key).checked).map(([key])=>key);
       payload.active=activeInput.checked;
+      if(editing&&record.active&&!payload.active&&
+        !window.confirm("Desativar a conta bloqueia todo o login desta pessoa, inclusive no painel da empresa dela. Para tirar só o acesso SaaS, desmarque os papéis. Desativar a conta?")){submit.disabled=false;return;}
       if(!editing&&!payload.roles.length)throw new Error("Selecione pelo menos um papel para criar o acesso SaaS.");
       if(payload.password&&!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,128}$/.test(payload.password))
         throw new Error("A senha precisa ter 8 a 128 caracteres, com maiúscula, minúscula, número e símbolo.");
@@ -2452,17 +3763,213 @@ async function platformUsersPage() {
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
 
+function showPlatformRecoveryCodes(codes) {
+  const content = el("div");
+  content.append(info("Guarde estes códigos em um local seguro. Cada código funciona uma única vez.", true));
+  const list = el("code", "auth-recovery-codes");
+  list.textContent = (codes || []).join("\n");
+  content.append(list);
+  content.append(el("p", "hint", "Se você perder o autenticador, use um destes códigos para entrar e depois gere uma nova lista."));
+  content.append(el("div", "form-actions"));
+  openDialog("Códigos de recuperação", "A lista não será exibida novamente depois que esta janela for fechada.", content);
+}
+
+async function startPlatformMfaEnrollment() {
+  const setup = await api.post("/auth/mfa/enroll", {}, { tenant:false });
+  const content = el("div");
+  content.append(info("Abra Google Authenticator, Microsoft Authenticator ou outro aplicativo TOTP e adicione esta conta. Depois informe o código de seis dígitos.", false));
+  const secret = el("code", "auth-secret", setup.secret);
+  const uri = el("small", "auth-secret-uri", setup.otpauth_uri);
+  const qr = el("img", "mfa-qr"); qr.src = setup.qr_data_uri || ""; qr.alt = "QR Code para configurar o autenticador"; qr.hidden = !setup.qr_data_uri;
+  content.append(el("p", "field-label", "Escaneie no aplicativo autenticador"), qr, el("small", "mfa-qr-help", "Se não conseguir escanear, use a chave de configuração abaixo."), el("p", "field-label", "Chave de configuração"), secret, uri);
+  const field = el("div", "field");
+  const label = el("label", "", "Código do autenticador");
+  const code = el("input");
+  code.inputMode = "numeric"; code.autocomplete = "one-time-code"; code.maxLength = 8; code.placeholder = "000000"; code.required = true;
+  label.htmlFor = "platform-mfa-code"; code.id = "platform-mfa-code"; field.append(label, code); content.append(field);
+  const message = formMessage(content); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("Cancelar", closeDialog, "ghost"));
+  const confirm = button("Ativar MFA");
+  confirm.addEventListener("click", async () => {
+    if (!code.value.trim()) { message.textContent = "Informe o código do autenticador."; message.hidden = false; return; }
+    confirm.disabled = true;
+    try {
+      const result = await api.post("/auth/mfa/setup/confirm", { code: code.value.trim() }, { tenant:false });
+      closeDialog();
+      renderRoute();
+      showPlatformRecoveryCodes(result.recovery_codes);
+      toast("MFA ativada para esta conta.");
+    } catch (error) { handleError(error, message); confirm.disabled = false; }
+  });
+  actions.append(confirm); content.append(actions);
+  openDialog("Ativar MFA da administração", "A proteção passa a ser exigida no próximo acesso.", content);
+}
+
+async function regeneratePlatformRecoveryCodes() {
+  const content = el("div");
+  content.append(info("Os códigos atuais deixarão de funcionar imediatamente. Gere uma nova lista somente se você perdeu ou suspeita que os códigos antigos foram expostos.", true));
+  const message = formMessage(content); message.hidden = true;
+  const actions = el("div", "form-actions");
+  actions.append(button("Cancelar", closeDialog, "ghost"));
+  const confirm = button("Gerar novos códigos", async () => {
+    confirm.disabled = true;
+    try {
+      const result = await api.post("/auth/mfa/recovery-codes", {}, { tenant:false });
+      closeDialog(); renderRoute(); showPlatformRecoveryCodes(result.recovery_codes);
+    } catch (error) { handleError(error, message); confirm.disabled = false; }
+  }, "danger");
+  actions.append(confirm); content.append(actions);
+  openDialog("Regenerar códigos de recuperação", "Confirme a troca dos códigos atuais.", content);
+}
+
+async function platformSecurityPage() {
+  const token = ++state.renderId;
+  const view = page("Segurança e MFA", "Proteja o acesso à administração SaaS e controle os códigos de recuperação.", "Plataforma");
+  const box = surface("Autenticação multifator"); view.outer.append(box); box.append(loadingSurface());
+  try {
+    const status = await api.get("/auth/mfa/status", { tenant:false });
+    if (token !== state.renderId) return;
+    box.lastChild.remove();
+    const cards = el("div", "metric-grid");
+    cards.append(metric("MFA", status.enabled ? "Ativa" : "Não configurada", status.required ? "Obrigatória em produção" : "Ativação opcional neste ambiente"));
+    cards.append(metric("Códigos restantes", String(status.recovery_codes_remaining || 0), status.enabled ? "Códigos de uso único" : "Disponíveis após ativação"));
+    const detail = surface("Estado da conta", status.enabled
+      ? "A senha sozinha não libera a administração. O próximo acesso exigirá o autenticador ou um código de recuperação."
+      : "Ative a MFA agora para proteger esta conta. Em produção, a ativação é obrigatória no primeiro acesso.");
+    detail.append(detailList([
+      ["Obrigatoriedade", status.required ? "Produção: obrigatória" : "Local: opcional"],
+      ["Ativação", status.enabled ? dateTime(status.confirmed_at) : "Ainda não ativada"],
+      ["Recuperação", status.enabled ? `${status.recovery_codes_remaining} códigos disponíveis` : "Será criada ao ativar"]
+    ]));
+    const actions = el("div", "form-actions");
+    if (!status.enabled) actions.append(button("Ativar MFA", () => startPlatformMfaEnrollment().catch(handleError), "primary"));
+    else actions.append(button("Gerar novos códigos", () => regeneratePlatformRecoveryCodes(), "secondary"));
+    detail.append(actions);
+    box.append(cards, detail);
+  } catch (error) { if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } }
+}
+
+const labelPresets = [
+  { width_mm: 30, height_mm: 20, use: "gôndola pequena, bijuteria" },
+  { width_mm: 40, height_mm: 25, use: "preço de gôndola" },
+  { width_mm: 40, height_mm: 30, use: "produto pequeno" },
+  { width_mm: 40, height_mm: 40, use: "frios, padaria" },
+  { width_mm: 50, height_mm: 25, use: "código de barras compacto" },
+  { width_mm: 50, height_mm: 30, use: "produto com código de barras" },
+  { width_mm: 60, height_mm: 40, use: "balança, hortifrúti" },
+  { width_mm: 100, height_mm: 50, use: "caixa, prateleira" },
+  { width_mm: 100, height_mm: 100, use: "volume, estoque" },
+  { width_mm: 100, height_mm: 150, use: "envio, Correios e marketplaces" }
+];
+const labelSensorNames = { gap: "Espaço entre etiquetas (mais comum)", mark: "Marca preta no verso", continuous: "Papel contínuo, sem divisão" };
+function selectNode(id, labelText, options, value) {
+  const field = el("div", "field"), label = el("label", "", labelText), select = el("select");
+  label.htmlFor = select.id = id;
+  options.forEach(([optionValue, text]) => { const option = el("option", "", text); option.value = optionValue; select.append(option); });
+  if (value !== undefined) select.value = String(value);
+  field.append(label, select);
+  return { field, select };
+}
+function numberNode(id, labelText, min, max, value) {
+  const field = el("div", "field"), label = el("label", "", labelText), input = el("input");
+  label.htmlFor = input.id = id; input.type = "number"; input.min = String(min); input.max = String(max); input.step = "0.1"; input.required = true; input.value = String(value);
+  field.append(label, input);
+  return { field, input };
+}
+function testLabelPrintDocument(size) {
+  const font = Math.max(6, Math.min(14, size.height_mm / 4));
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Etiqueta de teste · ${labelSizeText(size)}</title><style>
+    html,body{margin:0;padding:0;background:#fff}
+    @page{size:${size.width_mm}mm ${size.height_mm}mm;margin:0}
+    .test-label{box-sizing:border-box;width:${size.width_mm}mm;height:${size.height_mm}mm;border:.6mm solid #000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1mm;font-family:Arial,sans-serif;color:#000;overflow:hidden}
+    .test-label strong{font-size:${font}pt}.test-label span{font-size:${(font * .7).toFixed(1)}pt}
+  </style></head><body><div class="test-label"><strong>TESTE PDV</strong><span>${labelSizeText(size)}</span></div></body></html>`;
+}
+async function printersPage() {
+  const token = ++state.renderId;
+  const view = page("Impressoras", "Escolha o tamanho da etiqueta, imprima um teste e calibre a impressora de etiquetas.", "Administração");
+  view.outer.append(info("As etiquetas são impressas por este computador, pela janela de impressão do navegador. A impressora de etiquetas precisa estar instalada no sistema (Windows, Linux ou macOS) com o driver do fabricante."));
+  const labelBox = surface("Etiqueta da loja", "Usada em Produtos → Imprimir etiquetas.");
+  const testBox = surface("Testar e calibrar", "Calibre sempre que trocar o rolo ou quando a impressora puxar etiquetas em branco.");
+  view.outer.append(labelBox, testBox);
+  labelBox.append(loadingSurface());
+  try {
+    const settings = await api.get("/label-settings");
+    if (token !== state.renderId) return;
+    const label = { ...defaultLabelSize, ...settings };
+
+    const form = el("form", "form-grid");
+    const presetKey = size => `${size.width_mm}x${size.height_mm}`;
+    const preset = selectNode("label-preset", "Tamanho da etiqueta",
+      [...labelPresets.map(size => [presetKey(size), `${labelSizeText(size)} · ${size.use}`]), ["custom", "Outro tamanho…"]]);
+    preset.select.value = labelPresets.some(size => presetKey(size) === presetKey(label)) ? presetKey(label) : "custom";
+    const width = numberNode("label-width", "Largura (mm)", 15, 108, label.width_mm);
+    const height = numberNode("label-height", "Altura (mm)", 10, 200, label.height_mm);
+    const sensor = selectNode("label-sensor", "Tipo de papel", Object.entries(labelSensorNames), label.sensor);
+    const gap = selectNode("label-gap", "Espaço entre etiquetas", [0, 1, 2, 3, 4, 5, 6, 8, 10].map(mm => [String(mm), mm + " mm"]), label.gap_mm);
+    if (![...gap.select.options].some(option => option.value === String(label.gap_mm))) gap.select.value = "2";
+    const smallWarning = info("Em etiquetas com menos de 40 mm de largura o código de barras fica pequeno e alguns leitores podem não reconhecer.", true);
+    const currentLabel = () => ({ width_mm: Number(width.input.value), height_mm: Number(height.input.value),
+      gap_mm: sensor.select.value === "continuous" ? 0 : Number(gap.select.value), sensor: sensor.select.value });
+    const driverHint = el("p", "label-print-help");
+    const syncFields = () => {
+      const custom = preset.select.value === "custom";
+      width.input.disabled = height.input.disabled = !custom;
+      if (!custom) { const [w, h] = preset.select.value.split("x").map(Number); width.input.value = w; height.input.value = h; }
+      gap.select.disabled = sensor.select.value === "continuous";
+      smallWarning.hidden = Number(width.input.value) >= 40;
+      const size = currentLabel();
+      driverHint.textContent = "No driver da impressora, configure o papel " + labelSizeText(size) + " e o tipo " +
+        (size.sensor === "gap" ? "etiqueta com espaço de " + size.gap_mm + " mm" : size.sensor === "mark" ? "marca preta" : "contínuo") +
+        ". Na janela de impressão do navegador, use escala 100%, margens nenhuma e desative cabeçalhos e rodapés.";
+    };
+    [preset.select, sensor.select, gap.select].forEach(node => node.addEventListener("change", syncFields));
+    [width.input, height.input].forEach(node => node.addEventListener("input", syncFields));
+    syncFields();
+    form.append(preset.field, sensor.field, width.field, height.field, gap.field);
+    const labelMessage = formMessage(form);
+    const labelActions = el("div", "form-actions"), save = el("button", "button", "Salvar tamanho"); save.type = "submit";
+    labelActions.append(save); form.append(labelActions);
+    labelBox.replaceChildren(labelBox.firstChild, labelBox.children[1], smallWarning, form);
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); if (!form.reportValidity()) return;
+      save.disabled = true;
+      try { await api.patch("/label-settings", currentLabel()); labelMessage.hidden = true; toast("Tamanho da etiqueta salvo."); }
+      catch (error) { handleError(error, labelMessage); }
+      finally { save.disabled = false; }
+    });
+
+    const steps = el("ol", "label-calibration-steps");
+    ["Coloque o rolo com o lado térmico (o que escurece ao riscar com a unha) virado para cima, passando pelo sensor.",
+     "Desligue a impressora.",
+     "Segure o botão FEED e ligue a impressora.",
+     "Solte o FEED quando a luz piscar ou o papel começar a avançar. A impressora mede o espaço entre etiquetas sozinha e para no início de uma etiqueta.",
+     "Com a luz estável (verde ou azul), clique em Imprimir etiqueta de teste. Deve sair uma única etiqueta, dentro da borda."
+    ].forEach(text => steps.append(el("li", "", text)));
+    const testActions = el("div", "connection-actions");
+    testActions.append(button("Imprimir etiqueta de teste", () => {
+      if (!form.reportValidity()) return;
+      printLabelDocument(testLabelPrintDocument(currentLabel()));
+    }));
+    testBox.append(steps, testActions, driverHint,
+      info("Luz vermelha piscando ou várias etiquetas em branco: o sensor perdeu o espaço entre etiquetas. Repita a calibração e confira se o tamanho e o espaço no driver são os mesmos desta tela.", true));
+  } catch (error) {
+    if (token === state.renderId) { labelBox.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); testBox.replaceChildren(); handleError(error); }
+  }
+}
+
 const tenantRoutes = {
-  dashboard:dashboardPage,sales:salesPage,products:()=>resourcePage("products"),
+  dashboard:dashboardPage,sales:salesPage,cash:cashPage,inventory:inventoryPage,promotions:promotionsPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,
-  terminals:terminalsPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage
+  terminals:terminalsPage,printers:printersPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage
 };
 const platformRoutes = {
   overview:platformOverview,tenants:platformTenants,plans:platformPlans,
   subscriptions:platformSubscriptions,devices:platformDevices,services:platformServices,
-  releases:releasesPage,invoices:invoicesPage,platform_audit:platformAuditPage,
+  releases:releasesPage,invoices:invoicesPage,platform_audit:platformAuditPage,security:platformSecurityPage,backups:platformBackupsPage,
   platform_users:platformUsersPage
 };
 function activeSection() {
@@ -2485,6 +3992,7 @@ function renderNav() {
   });
 }
 function renderRoute() {
+  stopInventoryCamera();
   closeDialog();
   renderNav();
   const id=activeSection();
@@ -2494,14 +4002,34 @@ function renderRoute() {
     handleError(error);
   });
 }
-window.addEventListener("hashchange",renderRoute);
+function aboutDialog() {
+  const body=el("div","about");
+  const lockup=el("div","about-lockup");
+  lockup.append(el("strong","","PDV2"),el("small","","por "+VENDOR.name));
+  const link=el("a","",VENDOR.site);link.href=VENDOR.url;link.target="_blank";link.rel="noopener noreferrer";
+  body.append(lockup,detailList([["Versão",state.version||APP_VERSION],["Fabricante",VENDOR.name],["Site",link]]),el("p","about-foot",VENDOR.footer));
+  const actions=el("div","form-actions");actions.append(button("Fechar",closeDialog,"ghost"));body.append(actions);
+  openDialog("Sobre o PDV2","Sistema de ponto de venda e gestão para o varejo.",body);
+}
+function renderBrand() {
+  const version=$("#app-version");
+  if(version)version.textContent="v"+APP_VERSION;
+  $("#about-button")?.addEventListener("click",aboutDialog);
+}
+renderBrand();
+// pwa.js announces a new service worker; the running page still holds the old script.
+window.addEventListener("pdv2:update",()=>toast("Há uma versão nova do PDV2. Recarregue a página para atualizar."));
+// A window that shows something only once holds the change of section until it is closed.
+window.addEventListener("hashchange",()=>{ if(!dialogPersistent) renderRoute(); });
 $("#tenant-selector").addEventListener("change",async event=>{
   const id=event.currentTarget.value;
   const membership=state.memberships.find(item=>String(item.tenant_id)===String(id));
   if(!membership)return;
   state.tenantId=id;state.role=membership.role;setTenant(id);
   $("#sidebar-role").textContent=roleNames[state.role]||state.role;
-  try { localStorage.setItem("pdv2-tenant",id); } catch {}
+  // Without storage the URL carries the choice, so a reload stays on the company just selected.
+  try { localStorage.setItem("pdv2-tenant",id); }
+  catch { history.replaceState(null,"",location.pathname+"?tenant="+encodeURIComponent(id)+location.hash); }
   state.shops=[];state.features=[];state.subscription=null;
   try { await Promise.all([loadShops(),loadSubscription()]); }
   catch(error) { handleError(error); }
@@ -2514,6 +4042,8 @@ async function init() {
     state.user=session.user;
     state.memberships=session.memberships || [];
     state.platformRoles=state.user?.platform_roles||[];
+    state.version=displayVersion(session);
+    if($("#app-version"))$("#app-version").textContent="v"+state.version;
     if(!state.user)throw new Error("Faça login para continuar.");
     $("#sidebar-user").textContent=state.user.name||state.user.email||"Conta";
     $("#avatar").textContent=(state.user.name||state.user.email||"P").trim()[0].toUpperCase();
@@ -2532,9 +4062,13 @@ async function init() {
         return;
       }
       let saved;
-      try {saved=localStorage.getItem("pdv2-tenant");}catch{}
+      try {saved=new URLSearchParams(location.search).get("tenant") || localStorage.getItem("pdv2-tenant");}catch{}
       const current=state.memberships.find(row=>String(row.tenant_id)===String(saved))||state.memberships[0];
       state.tenantId=current.tenant_id;state.role=current.role;setTenant(state.tenantId);
+      // Keep the choice in storage and drop ?tenant=, or a reload would undo a later switch in the selector.
+      let stored=false;
+      try {localStorage.setItem("pdv2-tenant",state.tenantId);stored=true;}catch{}
+      if(stored&&new URLSearchParams(location.search).has("tenant"))history.replaceState(null,"",location.pathname+location.hash);
       const select=$("#tenant-selector");
       state.memberships.forEach(membership=>{
         const option=el("option","",membership.tenant_name);

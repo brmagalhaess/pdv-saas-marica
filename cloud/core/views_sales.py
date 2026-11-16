@@ -6,8 +6,10 @@ from django.http import JsonResponse
 from django.utils import timezone
 
 from .api_common import APIError, endpoint, iso, membership_context, method, page, payload, require_feature, scoped, text, uuid_value
-from .models import AuditEvent, FinanceEntry, Product, Sale, Shop, StockMovement
+from .models import AuditEvent, FinanceEntry, Membership, Product, Sale, Shop
+from .credit_logic import panel_return
 from .sale_logic import reverse_sale
+from .stock_balance import balances as stock_balances
 from .serializers import sale as sale_data
 
 
@@ -27,7 +29,28 @@ def sales(request):
         rows = rows.filter(shop=scoped(Shop, member.tenant, request.GET["shop_id"]))
     if request.GET.get("status"):
         rows = rows.filter(status=request.GET["status"])
+    if request.GET.get("operator_id"):
+        rows = rows.filter(operator=scoped(Membership, member.tenant, request.GET["operator_id"]))
+    if request.GET.get("seller_id"):
+        rows = rows.filter(seller=scoped(Membership, member.tenant, request.GET["seller_id"]))
     return page(request, rows.order_by("-received_at", "-id"), sale_data)
+
+
+@endpoint
+def sale_people(request):
+    """Operators and sellers that appear on synced sales, for list filters.
+
+    Built from sales instead of the team list so every role that can read sales
+    gets the filter without gaining access to the company's user directory.
+    """
+    method(request, "GET")
+    member = membership_context(request)
+    rows = Sale.objects.filter(tenant=member.tenant)
+    people = {}
+    for field in ("operator", "seller"):
+        for pk, name in rows.exclude(**{f"{field}__isnull": True}).values_list(f"{field}_id", f"{field}__name").distinct():
+            people.setdefault(str(pk), {"id": str(pk), "name": name, "operator": False, "seller": False})[field] = True
+    return JsonResponse({"results": sorted(people.values(), key=lambda row: row["name"].lower())})
 
 
 @endpoint
@@ -36,6 +59,20 @@ def sale_detail(request, pk):
     member = membership_context(request)
     row = _sale(member.tenant, pk)
     return JsonResponse(sale_data(row, detail=True))
+
+
+@endpoint
+def sale_return(request, pk):
+    """Partial return from the web panel (refund in store credit, fiado or outside the PDV)."""
+    method(request, "POST")
+    member = membership_context(request, roles={"owner", "admin", "manager", "finance"}, write=True)
+    with transaction.atomic():
+        row = Sale.objects.select_for_update().filter(tenant=member.tenant, pk=uuid_value(pk)).first()
+        if row is None:
+            raise APIError("Venda não encontrada", 404)
+        ret = panel_return(member, row, payload(request))
+    return JsonResponse({"id": str(ret.id), "total_cents": ret.total_cents, "refund_method": ret.refund_method,
+                         "sale": sale_data(row, detail=True)}, status=201)
 
 
 @endpoint
@@ -91,10 +128,9 @@ def dashboard(request):
     shops = [shop] if shop else list(Shop.objects.filter(tenant=tenant, active=True))
     products = list(Product.objects.filter(tenant=tenant, active=True))
     for current_shop in shops:
-        amounts = (StockMovement.objects.filter(tenant=tenant, shop=current_shop)
-                   .values("product_id").annotate(q=Sum("delta_milli")))
-        by_product = {row["product_id"]: row["q"] for row in amounts}
-        low_stock += sum(by_product.get(p.id, 0) < p.stock_minimum_milli for p in products if p.stock_minimum_milli > 0)
+        by_product = stock_balances(tenant, current_shop)
+        low_stock += sum(by_product.get(p.id, 0) < p.stock_minimum_milli
+                         for p in products if p.stock_controlled and p.stock_minimum_milli > 0)
     recent = list(sales.order_by("-received_at")[:10])
     return JsonResponse({"sales_count": count, "revenue_cents": revenue,
                          "average_ticket_cents": revenue // count if count else 0,

@@ -2,4 +2,9 @@ Flask==3.1.3
 waitress==3.0.2
 cryptography==50.0.1
 requests==2.34.2
+# Transitive dependency of requests, pinned past GHSA-6q48-6c7w-9gw2.
+certifi==2026.10.23
+# Windows ships no IANA time zone database; receipts need America/Sao_Paulo.
+tzdata==2026.6
+# Windows only: receipt printing (win32print) and the PDV2Service host (terminal/service_win.py).
 pywin32==312; platform_system == "Windows"

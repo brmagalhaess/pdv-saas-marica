@@ -17,9 +17,13 @@ from .models import AuditEvent, Membership, RateLimit, Subscription, Tenant
 
 
 class APIError(Exception):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, code=None, extra=None):
         self.message = message
         self.status = status
+        # Stable machine-readable code (and extra response keys) for clients
+        # that must react to one specific refusal.
+        self.code = code
+        self.extra = extra or {}
         super().__init__(message)
 
 
@@ -29,7 +33,11 @@ def endpoint(fn):
         try:
             return fn(request, *args, **kwargs)
         except APIError as exc:
-            return JsonResponse({"error": exc.message}, status=exc.status)
+            body = {"error": exc.message}
+            if exc.code:
+                body.update(exc.extra)
+                body["code"] = exc.code
+            return JsonResponse(body, status=exc.status)
     return wrapped
 
 
@@ -59,6 +67,13 @@ def payload(request):
 def fields(data, allowed, required=()):
     if set(data) - set(allowed) or any(key not in data for key in required):
         raise APIError("Campos inválidos ou ausentes")
+
+
+def bps(value, name):
+    """Percentage in basis points: integer from 0 (0%) to 10000 (100%)."""
+    if type(value) is not int or not 0 <= value <= 10000:
+        raise APIError(f"{name} deve ser um percentual entre 0 e 100")
+    return value
 
 
 def text(value, name, maximum=160, optional=False):

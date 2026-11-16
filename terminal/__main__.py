@@ -1,18 +1,19 @@
-"""Start the local terminal with Waitress."""
+"""Start the local terminal with Waitress (shop server or station, see runtime.py)."""
 
 import os
 
 from waitress import serve
 
-from .app import create_app
+from . import runtime
 
 
 def main():
     host = os.environ.get("PDV_TERMINAL_HOST", "127.0.0.1")
     port = int(os.environ.get("PDV_TERMINAL_PORT", "8010"))
-    app = create_app({"START_WORKER": True})
-    print(f"Terminal PDV local: http://{host}:{port}", flush=True)
-    serve(app, host=host, port=port, threads=6)
+    current = runtime.create()
+    role = "caixa adicional" if current.mode == "station" else "caixa principal"
+    print(f"Terminal PDV local ({role}): http://{host}:{port}", flush=True)
+    serve(current.app, host=host, port=port, threads=6)
 
 
 if __name__ == "__main__":
