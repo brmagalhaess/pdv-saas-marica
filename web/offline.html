@@ -4,17 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#102630">
-  <title>Sem conexão · PDV2</title>
+  <meta name="robots" content="noindex">
+  <title>Sem conexão · PDV2 · CrownTech</title>
   <link rel="stylesheet" href="/assets/ui.css">
-  <style>body{display:grid;place-items:center;min-height:100vh;padding:20px;background:#f5f8f3}.offline{width:min(490px,100%);padding:38px;border:1px solid #dce9df;border-radius:20px;background:white;box-shadow:0 20px 50px #193a2010}.offline h1{font-size:31px;margin:27px 0 10px}.offline p{color:#697b6e;font-size:14px}.offline .button{margin-top:13px}</style>
+  <style>body{display:grid;place-items:center;min-height:100vh;padding:20px;background:#f5f8f3}.offline{width:min(490px,100%);padding:38px;border:1px solid #dce9df;border-radius:20px;background:white;box-shadow:0 20px 50px #193a2010}.offline h1{font-size:31px;margin:27px 0 10px}.offline p{color:#697b6e;font-size:14px}.offline .button{margin-top:13px}.offline-lockup{line-height:1}.offline-lockup small{display:block;margin-top:4px;color:#647771;font-size:10px;font-weight:750;letter-spacing:.01em}.offline-terminal{display:none}.offline .offline-foot{margin:26px 0 0;padding-top:16px;border-top:1px solid #dee7e1;font-size:11px}@media(hover:hover) and (pointer:fine){.offline-terminal{display:inline-flex}}@media(max-width:420px){.offline{padding:26px}}</style>
 </head>
 <body>
   <main class="offline">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">2</span><span>PDV<strong>2</strong></span></div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M8 28V8h11a7 7 0 0 1 0 14H8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span><span class="offline-lockup">PDV<strong>2</strong><small>por CrownTech</small></span></div>
     <h1>Você está sem conexão.</h1>
     <p>O painel web precisa de internet para carregar dados e concluir ações. O caixa já pareado trabalha no computador com o catálogo local e sincroniza as vendas quando a conexão voltar.</p>
-    <a class="button" href="http://127.0.0.1:8010/">Abrir terminal local</a>
-    <button class="button secondary" type="button" onclick="location.reload()">Tentar novamente</button>
+    <a class="button" href="">Tentar novamente</a>
+    <a class="button secondary offline-terminal" href="http://127.0.0.1:8010/">Abrir terminal local</a>
+    <p class="offline-foot">PDV2 · um produto CrownTech · crowntech.com.br</p>
   </main>
 </body>
 </html>

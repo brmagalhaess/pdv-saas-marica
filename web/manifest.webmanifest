@@ -1,8 +1,8 @@
 {
   "id": "/app/",
-  "name": "PDV2 Gestão",
+  "name": "PDV2 · CrownTech",
   "short_name": "PDV2",
-  "description": "Painel de gestão PDV2 para mercados e mercearias.",
+  "description": "Painel de gestão do PDV2, um produto CrownTech, para o varejo.",
   "start_url": "/app/",
   "scope": "/",
   "display": "standalone",
@@ -10,7 +10,9 @@
   "theme_color": "#102630",
   "lang": "pt-BR",
   "icons": [
-    {"src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
-    {"src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+    {"src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/assets/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+    {"src": "/assets/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
   ]
 }
