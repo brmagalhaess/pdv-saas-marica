@@ -866,6 +866,193 @@ class ManifestoPerdidoTests(MirrorCase):
         self.assertEqual(data["warnings"], [])
 
 
+class RestauracaoDoBancoTests(MirrorCase):
+    """restore_database: o banco inteiro refeito da réplica (promoção de estação, fase 3)."""
+
+    def restore(self, **kwargs):
+        target = Path(self.tmp.name) / "promovido" / "terminal.sqlite3.promoting"
+        target.parent.mkdir(exist_ok=True)
+        return target, mirror.restore_database(str(self.disk), self.key, self.new_identity(), target, **kwargs)
+
+    def test_banco_restaurado_e_integro_sem_token_nem_chave_e_so_traz_o_diario_posterior(self):
+        before = [self.event(), self.event()]
+        self.store.ack_events(before[:1])
+        self.enable()
+        after = [self.event(), self.event(), self.event()]
+        mirror.tick(self.store)
+
+        target, data = self.restore()
+        self.assertEqual(set(data), {"snapshot", "events", "journal_last_seq", "app_version", "warnings"})
+        self.assertEqual(set(data["snapshot"]), {"name", "created_at", "outbox_seq"})
+        self.assertEqual((data["snapshot"]["outbox_seq"], data["journal_last_seq"], data["warnings"]), (2, 5, []))
+        self.assertEqual(data["app_version"], self.manifest()["app_version"])
+        # Só o que veio depois da cópia: o que já está no banco não volta como evento.
+        self.assertEqual([(item["seq"], item["event_id"]) for item in data["events"]], list(zip((3, 4, 5), after)))
+        original = self.payloads()
+        for item in data["events"]:
+            self.assertEqual(_json(item["event"]), original[item["event_id"]])
+            self.assertEqual(set(item), {"seq", "event_id", "created_at", "event"})
+        self.assertNotIn(TOKEN.encode(), target.read_bytes())
+        self.assertNotIn(self.key["key"].encode(), target.read_bytes())
+        with closing(sqlite3.connect(target)) as conn:
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            meta = dict(conn.execute("SELECT key,value FROM meta"))
+            rows = conn.execute("SELECT id,acked_at IS NULL FROM outbox ORDER BY seq").fetchall()
+        self.assertNotIn("token", meta)
+        self.assertNotIn("mirror_key", meta)
+        self.assertEqual((meta["terminal_id"], meta["device_id"]), (TERMINAL, self.store.identity()["device_id"]))
+        self.assertEqual(rows, [(before[0], 0), (before[1], 1)])
+        self.assertEqual(sorted(path.name for path in target.parent.iterdir()), [target.name])
+        if os.name == "posix":
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        # O banco restaurado abre como um caixa de verdade.
+        self.assertEqual(Store(target).identity()["terminal_id"], TERMINAL)
+
+    def test_copia_mais_recente_danificada_cai_para_a_anterior_com_aviso(self):
+        first = self.event()
+        self.enable()
+        second = self.event()
+        newest = mirror.snapshot_now(self.store)
+        third = self.event()
+        mirror.tick(self.store)
+        path = self.replica() / newest["name"]
+        content = bytearray(path.read_bytes())
+        middle = len(content) // 2
+        content[middle:middle + 8] = b"XXXXXXXX"
+        path.write_bytes(bytes(content))
+
+        target, data = self.restore(replica_id=self.store.identity()["device_id"])
+        self.assertEqual(data["snapshot"]["name"], self.manifest()["snapshots"][0]["name"])
+        self.assertEqual(data["snapshot"]["outbox_seq"], 1)
+        self.assertEqual([item["event_id"] for item in data["events"]], [second, third])
+        self.assertEqual(data["warnings"], ["A cópia mais recente do banco estava danificada; foi usada a anterior."])
+        with closing(sqlite3.connect(target)) as conn:
+            self.assertEqual([row[0] for row in conn.execute("SELECT id FROM outbox")], [first])
+
+    def test_sem_copia_legivel_recusa_e_nao_deixa_arquivo(self):
+        self.event()
+        self.enable()
+        for path in self.replica().glob("snapshot-*"):
+            path.write_bytes(path.read_bytes()[:200])
+        target = Path(self.tmp.name) / "terminal.sqlite3.promoting"
+        with self.assertRaises(mirror.MirrorError) as caught:
+            mirror.restore_database(str(self.disk), self.key, self.new_identity(), target)
+        self.assertEqual(caught.exception.status, 409)
+        self.assertEqual(list(Path(self.tmp.name).glob("terminal.sqlite3.promoting*")), [])
+
+    def test_chave_errada_outra_loja_e_pasta_vazia(self):
+        self.event()
+        self.enable()
+        target = Path(self.tmp.name) / "x.sqlite3"
+        with self.assertRaises(mirror.MirrorError) as caught:
+            mirror.restore_database(str(self.disk), new_key("0000000000000000"), self.new_identity(), target)
+        self.assertEqual((caught.exception.status, str(caught.exception)), (409, mirror.MSG_WRONG_KEY))
+        with self.assertRaises(mirror.MirrorError) as caught:
+            mirror.restore_database(str(self.disk), new_key(self.key["key_id"]), self.new_identity(), target)
+        self.assertEqual(caught.exception.status, 409)  # mesmo key_id, outro segredo: nenhuma cópia abre
+        with self.assertRaises(mirror.MirrorError) as caught:
+            mirror.restore_database(str(self.disk), self.key, dict(self.new_identity(), shop_id="outra"), target)
+        self.assertEqual(str(caught.exception), mirror.MSG_OTHER_SHOP)
+        with self.assertRaises(mirror.MirrorError) as caught:
+            mirror.restore_database(self.tmp.name + "/vazio", self.key, self.new_identity(), target)
+        self.assertEqual(caught.exception.status, 404)
+        with self.assertRaises(mirror.MirrorError):
+            mirror.restore_database(str(self.disk), None, self.new_identity(), target)
+        self.assertFalse(target.exists())
+
+    def test_buraco_no_diario_vira_aviso(self):
+        self.enable()
+        self.event(), self.event(), self.event()
+        mirror.tick(self.store)
+        segment = next(self.replica().glob("journal-*"))
+        lines = segment.read_bytes().split(b"\n")
+        segment.write_bytes(b"\n".join([lines[0], lines[2], b""]))
+        _, data = self.restore()
+        self.assertEqual([item["seq"] for item in data["events"]], [1, 3])
+        self.assertEqual(data["warnings"], [mirror.MSG_GAP])
+
+
+class InterfaceDaFase3Tests(MirrorCase):
+    def test_chave_copia_e_linhas_do_diario_pelas_funcoes_publicas(self):
+        self.assertEqual(mirror.key_from_meta(self.store.meta()), self.key)
+        self.assertIsNone(mirror.key_from_meta({}))
+        self.assertIsNone(mirror.key_from_meta({"mirror_key": "isto não é json"}))
+        self.assertIsNone(mirror.key_from_meta({"mirror_key": json.dumps({"key_id": "a", "key": "curta"})}))
+        sold = [self.event(), self.event(), self.event()]
+        out = Path(self.tmp.name) / "saida"
+        entry = mirror.make_snapshot(self.store, out)
+        self.assertEqual(set(entry), {"name", "created_at", "outbox_seq", "size_bytes", "sha256"})
+        self.assertEqual(entry["outbox_seq"], 3)
+        self.assertEqual(sorted(path.name for path in out.iterdir()), [entry["name"]])
+        self.assertEqual(list(self.store.path.parent.glob(".replica-*")), [])
+        check = mirror.verify_snapshot(out / entry["name"], self.key)
+        self.assertEqual((check["sha256"], check["header"]["outbox_seq"], check["header"]["key_id"]),
+                         (entry["sha256"], 3, self.key["key_id"]))
+        self.assertIsNone(mirror.verify_snapshot(out / entry["name"], new_key()))
+        self.assertIsNone(mirror.verify_snapshot(out / "nao-existe.pdv2snap", self.key))
+        (out / "cortada.pdv2snap").write_bytes((out / entry["name"]).read_bytes()[:-30])
+        self.assertIsNone(mirror.verify_snapshot(out / "cortada.pdv2snap", self.key))
+
+        lines = mirror.journal_lines(self.store, 1)
+        self.assertEqual(len(mirror.journal_lines(self.store, 0, limit=2)), 2)
+        self.assertTrue(all(line.endswith(b"\n") and MARKER.encode() not in line for line in lines))
+        records = [mirror.parse_journal_line(line, self.key) for line in lines]
+        self.assertEqual([(item["seq"], item["event_id"]) for item in records], [(2, sold[1]), (3, sold[2])])
+        self.assertIsNone(mirror.parse_journal_line(lines[0], new_key()))
+        self.assertIsNone(mirror.parse_journal_line(lines[0].replace(b"2\t", b"9\t", 1), self.key))
+        self.assertIsNone(mirror.parse_journal_line("texto", self.key))
+        self.assertEqual(mirror.max_seq(self.store), 3)
+
+    def test_copia_avulsa_nao_e_feita_sem_chave_nem_em_restauracao(self):
+        plain = self.make_store(Path(self.tmp.name) / "sem-chave" / "terminal.sqlite3")
+        out = Path(self.tmp.name) / "saida"
+        with self.assertRaises(mirror.MirrorError):
+            mirror.make_snapshot(plain, out)
+        self.assertEqual(mirror.journal_lines(plain, 0), [])
+        with self.store.transaction() as conn:
+            Store._set_meta(conn, "restore_state", "restoring")
+        with self.assertRaises(mirror.MirrorError):
+            mirror.make_snapshot(self.store, out)
+        self.assertFalse(out.exists() and list(out.iterdir()))
+
+    def test_copia_avulsa_e_copia_do_segundo_disco_nao_apagam_a_sobra_uma_da_outra(self):
+        parent = self.store.path.parent
+        (parent / ".mirror-1-abc.tmp").write_bytes(b"x")
+        (parent / ".replica-1-abc.tmp").write_bytes(b"x")
+        mirror.make_snapshot(self.store, Path(self.tmp.name) / "saida")
+        self.assertTrue((parent / ".mirror-1-abc.tmp").exists())
+        self.assertFalse((parent / ".replica-1-abc.tmp").exists())
+
+    def test_ouvintes_sao_chamados_pelos_ganchos_e_erro_deles_nao_sobe(self):
+        seen = []
+
+        def listener(kind, store):
+            seen.append((kind, store))
+
+        def broken(kind, store):
+            raise RuntimeError("ouvinte com defeito")
+
+        for callback in (broken, listener, listener):  # registrar duas vezes não duplica
+            mirror.add_listener(callback)
+            self.addCleanup(mirror.remove_listener, callback)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("gancho fez E/S")
+
+        with patch("builtins.open", forbidden), patch.object(os, "open", forbidden), \
+                patch.object(os, "stat", forbidden), patch.object(sqlite3, "connect", forbidden):
+            mirror.on_event(self.store)
+            mirror.on_cash_closed(self.store)
+        self.assertEqual(seen, [("event", self.store), ("cash_closed", self.store)])
+        # Pela venda de verdade: o commit acontece e o ouvinte quebrado não derruba nada.
+        sold = self.event()
+        self.assertIn(sold, self.payloads())
+        self.assertEqual(seen[-1], ("event", self.store))
+        mirror.remove_listener(listener)
+        self.event()
+        self.assertEqual(len(seen), 3)
+
+
 REAL_WRITE_SNAPSHOT = mirror._write_snapshot
 
 

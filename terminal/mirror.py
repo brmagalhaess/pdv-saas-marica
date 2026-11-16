@@ -73,6 +73,8 @@ MSG_NO_SNAPSHOT = "Nenhuma cópia do banco pôde ser lida; foram usados só os r
 MSG_TRUNCATED = "A última linha do diário estava incompleta e foi ignorada."
 MSG_BAD_LINE = "Uma linha do diário estava ilegível e foi ignorada."
 MSG_REBUILT = "O índice da cópia de segurança estava danificado; os arquivos foram lidos diretamente."
+MSG_NO_FULL_COPY = "Nenhuma cópia completa do banco pôde ser lida nesta cópia de segurança."
+MSG_GAP = "Faltam registros no diário desta cópia; as vendas mais recentes podem não ter voltado."
 
 
 class MirrorError(TerminalError):
@@ -90,6 +92,7 @@ _SNAPSHOT_REQUESTS = set()
 _SNAPSHOT_RETRY_AT = {}
 _JOURNAL_CACHE = {}
 _NEXT_DUE = {}
+_LISTENERS = []
 # No Windows, os.open sem O_BINARY traduz quebras de linha.
 _BIN = getattr(os, "O_BINARY", 0)
 
@@ -276,18 +279,19 @@ def _remove_local_copy(path):
             pass
 
 
-def _local_copy(store):
+def _local_copy(store, prefix=".mirror-"):
     """Cópia consistente e conferida do banco, em arquivo temporário ao lado dele.
 
-    O token do terminal e a própria chave da réplica não viajam na cópia.
+    O token do terminal e a própria chave da réplica não viajam na cópia. Cada escritor
+    (segundo disco, réplica pela rede) usa o próprio prefixo: um não apaga a sobra do outro.
     """
     parent = Path(store.path).parent
-    for stale in parent.glob(".mirror-*.tmp*"):
+    for stale in parent.glob(prefix + "*.tmp*"):
         try:
             stale.unlink()
         except OSError:
             pass
-    staging = parent / f".mirror-{_now_ms()}-{secrets.token_hex(3)}.tmp"
+    staging = parent / f"{prefix}{_now_ms()}-{secrets.token_hex(3)}.tmp"
     os.close(os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
     try:
         with closing(_open_readonly(store.path)) as source, closing(sqlite3.connect(staging)) as target:
@@ -412,24 +416,30 @@ def _parse_journal_line(line, fernet):
     return record
 
 
-def _segment_last_seq(path, fernet):
-    """Maior ``seq`` legível do segmento (0 se vazio ou ausente), com cache por tamanho."""
+def _segment_last(path, fernet):
+    """``(seq, event_id)`` da linha legível de maior ``seq`` do segmento (``(0, None)`` se vazio ou
+    ausente), com cache por tamanho."""
     try:
         size = os.stat(path).st_size
     except OSError:
         _JOURNAL_CACHE.pop(str(path), None)
-        return 0
+        return 0, None
     cached = _JOURNAL_CACHE.get(str(path))
     if cached and cached[0] == size:
-        return cached[1]
-    last = 0
+        return cached[1], cached[2]
+    last, last_id = 0, None
     with open(path, "rb") as source:
         for line in source:
             record = _parse_journal_line(line, fernet)
-            if record:
-                last = max(last, record["seq"])
-    _JOURNAL_CACHE[str(path)] = (size, last)
-    return last
+            if record and record["seq"] >= last:
+                last, last_id = record["seq"], record["event_id"]
+    _JOURNAL_CACHE[str(path)] = (size, last, last_id)
+    return last, last_id
+
+
+def _segment_last_seq(path, fernet):
+    """Maior ``seq`` legível do segmento (0 se vazio ou ausente), com cache por tamanho."""
+    return _segment_last(path, fernet)[0]
 
 
 def _append_journal(path, rows, fernet):
@@ -447,7 +457,7 @@ def _append_journal(path, rows, fernet):
         target.flush()
         os.fsync(target.fileno())
         size = target.tell()
-    _JOURNAL_CACHE[str(path)] = (size, rows[-1][0])
+    _JOURNAL_CACHE[str(path)] = (size, rows[-1][0], str(rows[-1][1]))
 
 
 # ---------------------------------------------------------------- manifesto
@@ -936,6 +946,28 @@ def start(store):
     return worker
 
 
+def add_listener(callback):
+    """Registra ``callback(kind, store)``, chamado por ``on_event`` ("event") e ``on_cash_closed``
+    ("cash_closed"). O ouvinte não pode fazer E/S; se levantar erro, o erro é engolido aqui."""
+    with _REGISTRY_LOCK:
+        if callback not in _LISTENERS:
+            _LISTENERS.append(callback)
+
+
+def remove_listener(callback):
+    with _REGISTRY_LOCK:
+        if callback in _LISTENERS:
+            _LISTENERS.remove(callback)
+
+
+def _notify(kind, store):
+    for callback in list(_LISTENERS):
+        try:
+            callback(kind, store)
+        except Exception:
+            pass  # o ouvinte nunca derruba a venda
+
+
 def on_event(store):
     """Há evento novo na fila: só acorda a thread. Sem E/S; nunca levanta."""
     try:
@@ -944,6 +976,7 @@ def on_event(store):
             worker.wake()
     except Exception:
         pass
+    _notify("event", store)
 
 
 def on_cash_closed(store):
@@ -956,6 +989,7 @@ def on_cash_closed(store):
             worker.wake()
     except Exception:
         pass
+    _notify("cash_closed", store)
 
 
 # ---------------------------------------------------------------- leitura (recuperação)
@@ -1160,30 +1194,12 @@ def _snapshot_pending(path, fernet):
     return header, events
 
 
-def read_pending(directory, key, identity, replica_id=None):
-    """Fila que o computador antigo não chegou a enviar, lida da réplica dele.
+def _listed_snapshots(replica, manifest, names):
+    """Cópias do banco presentes na pasta, da mais recente para a mais antiga.
 
-    Devolve as linhas não confirmadas da cópia do banco mais recente que estiver inteira,
-    mais todo evento do diário posterior a ela, sem repetir ``event_id`` e em ordem de ``seq``.
+    A mais recente é a que foi mais longe na fila; o carimbo de hora só desempata, porque o
+    relógio do computador pode ter sido corrigido entre uma cópia e outra.
     """
-    opened = _fernet(key)
-    if opened is None:
-        raise MirrorError("Conecte este caixa à internet para liberar a cópia de segurança.", 409)
-    key_id, fernet = opened
-    identity = identity if isinstance(identity, dict) else {}
-    if not isinstance(directory, str) or not directory.strip():
-        raise MirrorError(MSG_NOT_FOUND, 404)
-    replica, manifest = _choose_replica(directory.strip(), identity, replica_id)
-    recovered = manifest.get("recovered")
-    # Manifesto refeito pode não saber a chave (só diário): os arquivos cifrados decidem adiante.
-    if manifest.get("key_id") != key_id and not (recovered == "rebuilt" and manifest.get("key_id") is None):
-        raise MirrorError(MSG_WRONG_KEY, 409)
-
-    warnings, snapshot, base_events, tokens, readable = [], None, [], 0, 0
-    try:
-        names = set(os.listdir(replica))
-    except OSError:
-        raise MirrorError(MSG_NOT_FOUND, 404) from None
     listed = [item for item in manifest["snapshots"] if _safe_name(item["name"])]
     known = {item["name"] for item in listed}
     for name in sorted(names):  # cópia concluída depois da última gravação do manifesto
@@ -1191,34 +1207,13 @@ def read_pending(directory, key, identity, replica_id=None):
             header = _snapshot_header(replica / name)
             if header and type(header.get("created_at")) is int and type(header.get("outbox_seq")) is int:
                 listed.append({"name": name, "created_at": header["created_at"], "outbox_seq": header["outbox_seq"]})
-    # A mais recente é a que foi mais longe na fila; o carimbo de hora só desempata, porque o
-    # relógio do computador pode ter sido corrigido entre uma cópia e outra.
-    for entry in sorted(listed, key=lambda item: (item["outbox_seq"], item["created_at"]), reverse=True):
-        if entry["name"] not in names:
-            continue
-        tokens += 1
-        header = _snapshot_header(replica / entry["name"])
-        if header and header.get("key_id") != key_id:
-            raise MirrorError(MSG_WRONG_KEY, 409)
-        try:
-            header, base_events = _snapshot_pending(replica / entry["name"], fernet)
-        except _Damaged:
-            if MSG_DAMAGED_SNAPSHOT not in warnings:
-                warnings.append(MSG_DAMAGED_SNAPSHOT)
-            continue
-        readable += 1
-        snapshot = {"name": entry["name"], "created_at": header.get("created_at"),
-                    "outbox_seq": header.get("outbox_seq")}
-        break
-    if snapshot is None:
-        base_events = []
-        if tokens:
-            warnings = [MSG_NO_SNAPSHOT]
-    if recovered:
-        warnings.append(MSG_REBUILT)
-    floor = snapshot["outbox_seq"] if snapshot and type(snapshot["outbox_seq"]) is int else 0
+    ordered = sorted(listed, key=lambda item: (item["outbox_seq"], item["created_at"]), reverse=True)
+    return [entry for entry in ordered if entry["name"] in names]
 
-    journal, last_seq = {}, floor
+
+def _read_journal(replica, names, fernet, warnings):
+    """({seq: registro}, linhas vistas, linhas legíveis) de todos os segmentos do diário."""
+    journal, tokens, readable = {}, 0, 0
     for name in sorted(item for item in names if item.startswith("journal-") and item.endswith(JOURNAL_SUFFIX)):
         try:
             with open(replica / name, "rb") as source:
@@ -1246,6 +1241,59 @@ def read_pending(directory, key, identity, replica_id=None):
             else:  # só faltou a quebra de linha: o conteúdo é autenticado e está inteiro
                 readable += 1
                 journal.setdefault(record["seq"], record)
+    return journal, tokens, readable
+
+
+def read_pending(directory, key, identity, replica_id=None):
+    """Fila que o computador antigo não chegou a enviar, lida da réplica dele.
+
+    Devolve as linhas não confirmadas da cópia do banco mais recente que estiver inteira,
+    mais todo evento do diário posterior a ela, sem repetir ``event_id`` e em ordem de ``seq``.
+    """
+    opened = _fernet(key)
+    if opened is None:
+        raise MirrorError("Conecte este caixa à internet para liberar a cópia de segurança.", 409)
+    key_id, fernet = opened
+    identity = identity if isinstance(identity, dict) else {}
+    if not isinstance(directory, str) or not directory.strip():
+        raise MirrorError(MSG_NOT_FOUND, 404)
+    replica, manifest = _choose_replica(directory.strip(), identity, replica_id)
+    recovered = manifest.get("recovered")
+    # Manifesto refeito pode não saber a chave (só diário): os arquivos cifrados decidem adiante.
+    if manifest.get("key_id") != key_id and not (recovered == "rebuilt" and manifest.get("key_id") is None):
+        raise MirrorError(MSG_WRONG_KEY, 409)
+
+    warnings, snapshot, base_events, tokens, readable = [], None, [], 0, 0
+    try:
+        names = set(os.listdir(replica))
+    except OSError:
+        raise MirrorError(MSG_NOT_FOUND, 404) from None
+    for entry in _listed_snapshots(replica, manifest, names):
+        tokens += 1
+        header = _snapshot_header(replica / entry["name"])
+        if header and header.get("key_id") != key_id:
+            raise MirrorError(MSG_WRONG_KEY, 409)
+        try:
+            header, base_events = _snapshot_pending(replica / entry["name"], fernet)
+        except _Damaged:
+            if MSG_DAMAGED_SNAPSHOT not in warnings:
+                warnings.append(MSG_DAMAGED_SNAPSHOT)
+            continue
+        readable += 1
+        snapshot = {"name": entry["name"], "created_at": header.get("created_at"),
+                    "outbox_seq": header.get("outbox_seq")}
+        break
+    if snapshot is None:
+        base_events = []
+        if tokens:
+            warnings = [MSG_NO_SNAPSHOT]
+    if recovered:
+        warnings.append(MSG_REBUILT)
+    floor = snapshot["outbox_seq"] if snapshot and type(snapshot["outbox_seq"]) is int else 0
+
+    last_seq = floor
+    journal, journal_tokens, journal_readable = _read_journal(replica, names, fernet, warnings)
+    tokens, readable = tokens + journal_tokens, readable + journal_readable
     if tokens and not readable:
         # Nada abriu com esta chave: é outra chave (ou a réplica inteira foi adulterada).
         raise MirrorError(MSG_WRONG_KEY, 409)
@@ -1265,3 +1313,207 @@ def read_pending(directory, key, identity, replica_id=None):
     events.sort(key=lambda item: item["seq"])
     return {"terminal_id": manifest["terminal_id"], "replica_id": manifest["device_id"], "snapshot": snapshot,
             "journal_last_seq": last_seq, "events": events, "warnings": warnings}
+
+
+# ---------------------------------------------------------------- réplica pela rede e promoção (fase 3)
+
+def key_from_meta(meta):
+    """``{"key_id","key"}`` guardada em ``meta.mirror_key``, ou None se falta ou não serve."""
+    try:
+        key = json.loads((meta or {}).get("mirror_key") or "null")
+    except (ValueError, AttributeError):
+        return None
+    return {"key_id": key["key_id"], "key": key["key"]} if _fernet(key) else None
+
+
+def max_seq(store):
+    """Maior ``seq`` da fila, lido com conexão própria e só de leitura."""
+    return _max_seq(store)
+
+
+def event_id_at(store, seq):
+    """``event_id`` da linha da fila com este ``seq``, ou None se não existe (leitura própria)."""
+    with closing(_open_readonly(store.path)) as conn:
+        row = conn.execute("SELECT id FROM outbox WHERE seq=?", (int(seq),)).fetchone()
+    return str(row[0]) if row else None
+
+
+def make_snapshot(store, directory, now=None):
+    """Cópia cifrada e conferida do banco em ``directory`` (fora do layout do segundo disco).
+
+    Devolve ``{"name","created_at","outbox_seq","size_bytes","sha256"}``; o ``sha256`` é o do
+    arquivo em claro. Levanta MirrorError sem chave ou com recuperação em andamento.
+    """
+    meta = store.meta()
+    key = _meta_key(meta)
+    if key is None or not meta.get("terminal_id") or not meta.get("device_id"):
+        raise MirrorError(MSG_NO_KEY + ".", 409)
+    if (meta.get("restore_state") or "done") != "done":
+        raise MirrorError("Este caixa ainda está trazendo os dados da loja.", 409)
+    key_id, fernet = key
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.chmod(0o700)
+    except OSError:
+        pass
+    created = _now_ms() if now is None else int(now)
+    staging, outbox_seq = _local_copy(store, prefix=".replica-")
+    try:
+        while (directory / f"snapshot-{created}{SNAPSHOT_SUFFIX}").exists():
+            created += 1
+        name = f"snapshot-{created}{SNAPSHOT_SUFFIX}"
+        header = {"format": "pdv2-mirror-snapshot", "v": 1, "key_id": key_id,
+                  "terminal_id": meta["terminal_id"], "device_id": meta["device_id"],
+                  "created_at": created, "outbox_seq": outbox_seq, "chunk_bytes": CHUNK_BYTES}
+        path = directory / name
+        size, digest = _write_snapshot(path, staging, header, fernet)
+        try:
+            _, trailer = _decrypt_snapshot(path, fernet)
+            if trailer["sha256"] != digest or trailer["size"] != size:
+                raise _Damaged("conferência")
+        except _Damaged:
+            _unlink_quiet(path)
+            raise MirrorError("A cópia gravada não passou na conferência.", 409) from None
+    finally:
+        _remove_local_copy(staging)
+    return {"name": name, "created_at": created, "outbox_seq": outbox_seq,
+            "size_bytes": os.stat(path).st_size, "sha256": digest}
+
+
+def verify_snapshot(path, key):
+    """Decifra a cópia inteira sem gravar nada e devolve ``{"header","size","sha256","chunks"}``
+    (tamanho e SHA-256 do arquivo em claro). None quando a chave não serve ou a cópia está
+    incompleta, alterada ou foi cifrada com outra chave."""
+    opened = _fernet(key)
+    if opened is None:
+        return None
+    try:
+        header, trailer = _decrypt_snapshot(Path(path), opened[1])
+    except _Damaged:
+        return None
+    return {"header": header, "size": trailer["size"], "sha256": trailer["sha256"], "chunks": trailer["chunks"]}
+
+
+def journal_lines(store, after, limit=JOURNAL_BATCH):
+    """Linhas do diário (``<seq> TAB <event_id> TAB <token Fernet>``, com quebra de linha) da fila
+    com ``seq > after``, em ordem.
+
+    Lidas da tabela ``outbox`` e cifradas com a chave atual; lista vazia sem chave.
+    """
+    key = _meta_key(store.meta())
+    if key is None:
+        return []
+    limit = max(1, min(int(limit), JOURNAL_BATCH))
+    with closing(_open_readonly(store.path)) as conn:
+        rows = conn.execute("SELECT seq,id,payload,created_at FROM outbox WHERE seq>? ORDER BY seq LIMIT ?",
+                            (int(after), limit)).fetchall()
+    return [_journal_line(row, key[1]) for row in rows]
+
+
+def parse_journal_line(line, key):
+    """Registro ``{"seq","event_id","created_at","event"}`` de uma linha do diário, ou None se a
+    linha é ilegível, foi alterada, foi cifrada com outra chave ou o prefixo não bate."""
+    opened = _fernet(key)
+    if opened is None or not isinstance(line, (bytes, bytearray)):
+        return None
+    return _parse_journal_line(bytes(line), opened[1])
+
+
+def _restore_snapshot(path, fernet, target):
+    """Decifra a cópia em ``target`` e confere o banco. Devolve o cabeçalho; levanta _Damaged."""
+    target = Path(target)
+    staging = target.with_name(target.name + ".tmp")
+    _remove_local_copy(staging)
+    try:
+        descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _BIN, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            header, _ = _decrypt_snapshot(path, fernet, output)
+            output.flush()
+            os.fsync(output.fileno())
+        if type(header.get("outbox_seq")) is not int or type(header.get("created_at")) is not int:
+            raise _Damaged("cabeçalho")
+        try:
+            with closing(sqlite3.connect(staging)) as conn:
+                if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise _Damaged("banco")
+                # A cópia já sai do caixa principal sem estes dois; aqui é só garantia.
+                conn.execute("PRAGMA secure_delete=ON")
+                conn.execute("DELETE FROM meta WHERE key IN ('token','mirror_key')")
+                conn.commit()
+                conn.execute("SELECT COALESCE(MAX(seq),0) FROM outbox").fetchone()
+        except sqlite3.Error:
+            raise _Damaged("banco") from None
+        _remove_local_copy(target)
+        os.replace(staging, target)
+    except OSError:
+        _remove_local_copy(staging)
+        raise _Damaged("gravação") from None
+    except BaseException:
+        _remove_local_copy(staging)
+        raise
+    _fsync_dir(target.parent)
+    return header
+
+
+def restore_database(directory, key, identity, target_path, replica_id=None):
+    """Banco inteiro refeito da réplica, sem passar pela nuvem (promoção de estação).
+
+    Decifra em ``target_path`` a cópia do banco mais recente que estiver inteira (cai para a
+    anterior, com aviso, se a mais nova estiver danificada), confere ``PRAGMA integrity_check`` e
+    devolve os eventos do diário com ``seq`` maior que o da cópia, em ordem e sem repetir. O banco
+    gravado não tem o token do terminal nem a chave da réplica.
+    """
+    opened = _fernet(key)
+    if opened is None:
+        raise MirrorError("Conecte este caixa à internet para liberar a cópia de segurança.", 409)
+    key_id, fernet = opened
+    identity = identity if isinstance(identity, dict) else {}
+    directory = str(directory or "").strip()
+    if not directory:
+        raise MirrorError(MSG_NOT_FOUND, 404)
+    replica, manifest = _choose_replica(directory, identity, replica_id)
+    recovered = manifest.get("recovered")
+    if manifest.get("key_id") != key_id and not (recovered == "rebuilt" and manifest.get("key_id") is None):
+        raise MirrorError(MSG_WRONG_KEY, 409)
+    try:
+        names = set(os.listdir(replica))
+    except OSError:
+        raise MirrorError(MSG_NOT_FOUND, 404) from None
+
+    warnings, snapshot = [], None
+    for entry in _listed_snapshots(replica, manifest, names):
+        header = _snapshot_header(replica / entry["name"])
+        if header and header.get("key_id") != key_id:
+            raise MirrorError(MSG_WRONG_KEY, 409)
+        try:
+            header = _restore_snapshot(replica / entry["name"], fernet, target_path)
+        except _Damaged:
+            if MSG_DAMAGED_SNAPSHOT not in warnings:
+                warnings.append(MSG_DAMAGED_SNAPSHOT)
+            continue
+        snapshot = {"name": entry["name"], "created_at": header["created_at"], "outbox_seq": header["outbox_seq"]}
+        break
+    if snapshot is None:
+        _remove_local_copy(Path(target_path))
+        raise MirrorError(MSG_NO_FULL_COPY, 409)
+    if recovered:
+        warnings.append(MSG_REBUILT)
+
+    floor = snapshot["outbox_seq"]
+    journal, _, _ = _read_journal(replica, names, fernet, warnings)
+    events, seen, last_seq, expected = [], set(), floor, floor + 1
+    for seq in sorted(journal):
+        if seq <= floor:
+            continue
+        record = journal[seq]
+        if seq != expected and MSG_GAP not in warnings:
+            warnings.append(MSG_GAP)
+        expected, last_seq = seq + 1, seq
+        if record["event_id"] in seen:
+            continue
+        seen.add(record["event_id"])
+        events.append({"seq": seq, "event_id": record["event_id"],
+                       "created_at": record.get("created_at"), "event": record["event"]})
+    return {"snapshot": snapshot, "events": events, "journal_last_seq": last_seq,
+            "app_version": str(manifest.get("app_version") or ""), "warnings": warnings}
