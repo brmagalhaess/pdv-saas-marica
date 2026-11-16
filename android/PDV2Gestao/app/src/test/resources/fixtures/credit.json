@@ -1,0 +1,4 @@
+{"totals": {"open_cents": 120000, "overdue_cents": 30000, "customers": 12, "overdue_customers": 4},
+ "results": [{"customer_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "João da Silva", "phone": "21999990000",
+              "open_cents": 15000, "overdue_cents": 9000, "oldest_due_date": "2026-10-20", "entries_count": 3}],
+ "next_cursor": null}

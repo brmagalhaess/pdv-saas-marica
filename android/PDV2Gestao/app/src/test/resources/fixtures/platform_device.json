@@ -1,0 +1,5 @@
+{"id": "d7e1c0a2-5b3f-4c11-9d2e-8a6f4b2c1e90", "platform": "android", "name": "Samsung SM-S918B", "model": "SM-S918B",
+ "os_version": "Android 15", "app_version": "1.0.0 (1)", "created_at": "2026-11-16T14:03:12-03:00",
+ "last_seen_at": "2026-11-16T14:03:12-03:00", "last_ip": "177.10.20.30",
+ "user": {"id": 12, "name": "Ana Souza", "email": "ana@mercadobompreco.com.br"},
+ "status": "active", "revoked_at": null, "revoke_reason": ""}

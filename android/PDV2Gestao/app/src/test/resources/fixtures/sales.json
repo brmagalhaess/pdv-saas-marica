@@ -1,0 +1,5 @@
+{"results": [{"id": "5c0e9a1b-2d3f-4e5a-8b7c-1d2e3f4a5b6c", "created_at": "2026-11-16T13:58:40-03:00",
+              "shop": {"id": "a1b2c3d4-0001-4000-8000-000000000001", "name": "Loja Centro"},
+              "terminal_name": "Caixa 1", "station_name": "", "operator_name": "Carla", "customer_name": "",
+              "total_cents": 4590, "status": "completed", "items_count": 2, "payment_methods": ["pix"]}],
+ "next_cursor": null}

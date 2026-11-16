@@ -1,0 +1,9 @@
+{"id": "6e5d4c3b-2a19-4f8e-9d7c-6b5a49382716", "scope": "tenant",
+ "user": {"id": 12, "name": "Ana Souza", "email": "ana@mercadobompreco.com.br"},
+ "tenant": {"id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10", "name": "Mercado Bom Preço"},
+ "all_shops": false, "shops": [{"id": "a1b2c3d4-0001-4000-8000-000000000001", "name": "Loja Centro"}],
+ "permissions": ["sales", "cash", "stock", "credit", "terminals"],
+ "reason": "Dona da empresa pediu acesso ao app", "granted_by": {"id": 1, "name": "Bruno", "email": "admin@crowntech.com.br"},
+ "granted_at": "2026-11-16T14:00:00-03:00", "expires_on": null,
+ "status": "active", "status_text": "Ativo",
+ "revoked_at": null, "revoked_by": null, "revoke_reason": "", "devices_active": 1}
