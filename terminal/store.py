@@ -1,9 +1,12 @@
 """SQLite state and business rules for a single offline terminal."""
 
+import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
+import threading
 import time
 import unicodedata
 import uuid
@@ -68,6 +71,26 @@ MANAGER_OVERRIDE_GLOBAL_FAILURES = 30
 MANAGER_OVERRIDE_GLOBAL_WINDOW_SECONDS = 15 * 60
 MANAGER_OVERRIDE_LOCK_SECONDS = 300
 BUSINESS_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# Recovery of the shop on a new computer (phase 2). Everything lives in `meta`.
+RESTORE_META = ("restore_state", "restore_cursor", "restore_progress", "restore_pass", "restore_attempts",
+                "restore_paused", "restore_error", "restore_started_at", "restore_finished_at",
+                "restore_totals", "restore_import")
+PHASE2_META = RESTORE_META + ("mirror_key", "cloud_capabilities", "transferred_at", "send_only_until",
+                              "config_synced_hash")
+RESTORE_BLOCKED = "Este caixa ainda está trazendo os dados da loja. Aguarde terminar para vender."
+RESTORE_ABANDON_PENDING = ("Ainda há vendas da cópia de segurança esperando para subir ao servidor. "
+                           "Ligue a internet e aguarde; se não resolver, chame o suporte.")
+RESTORE_MAX_ATTEMPTS = 3
+RESTORE_MISMATCH = ("Os dados trazidos não bateram com os do servidor. Toque em \"Tentar de novo\"; "
+                    "se continuar, chame o suporte.")
+TRANSFERRED_REASON = ("Este caixa foi transferido para outro computador. "
+                      "As vendas que faltavam enviar continuam subindo.")
+RESTORE_COUNTERS = ("position", "total", "sales", "sales_cents", "returns", "returns_cents", "credit_receipts",
+                    "credit_receipts_cents", "cash_sessions", "cash_movements", "cash_movements_cents", "config")
+# Same values the cloud accepts in the terminal.config event.
+CONFIG_DRIVERS = ("tcp", "windows_raw", "cups", "file")
+CONFIG_FORMATS = {"receipt": ("escpos58", "escpos80"), "label": ("zpl", "epl")}
+EVENT_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class TerminalError(Exception):
@@ -78,6 +101,28 @@ class TerminalError(Exception):
 
 def _now_ms():
     return time.time_ns() // 1_000_000
+
+
+def _mirror_call(name, *args):
+    """Hook into the second-disk copy (terminal/mirror.py), when this build has it.
+
+    Imported late and fully guarded: the copy must never break a sale.
+    """
+    try:
+        from . import mirror
+        return getattr(mirror, name)(*args)
+    except Exception:  # ImportError included
+        return None
+
+
+def _int(value):
+    return value if type(value) is int else 0
+
+
+def _config_hash(data):
+    """Identity of a terminal.config payload, ignoring when it was produced."""
+    return hashlib.sha256(_json({key: value for key, value in data.items()
+                                 if key != "updated_at"}).encode()).hexdigest()
 
 
 def _uuid():
@@ -150,6 +195,8 @@ def _allocate_discount(lines, discount, base_total):
 class Store:
     def __init__(self, path):
         self.path = Path(path)
+        # Per thread: did the current transaction add something to the outbox?
+        self._local = threading.local()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.path.parent.chmod(0o700)
@@ -377,12 +424,18 @@ class Store:
     def transaction(self):
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._local.outbox_dirty = False
             try:
                 yield conn
                 conn.commit()
             except BaseException:
+                self._local.outbox_dirty = False
                 conn.rollback()
                 raise
+        if getattr(self._local, "outbox_dirty", False):
+            self._local.outbox_dirty = False
+            # Only after the commit: the copy reads the queue from the table.
+            _mirror_call("on_event", self)
 
     @staticmethod
     def _meta(conn, key):
@@ -427,10 +480,12 @@ class Store:
         # visible to the next company's operators through this SQLite file.
         if any((self.path.parent / "backups").glob("terminal-*.sqlite3")):
             return True
-        for table in ("sales", "cash_sessions", "cash_movements", "suspended_carts",
-                      "outbox", "print_jobs"):
+        for table in ("sales", "cash_sessions", "cash_movements", "suspended_carts", "print_jobs"):
             if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
                 return True
+        # terminal.config goes out by itself right after pairing: it is setup, not counter history.
+        if conn.execute("SELECT 1 FROM outbox WHERE event_type != 'terminal.config' LIMIT 1").fetchone():
+            return True
         return conn.execute("""SELECT 1 FROM audit
             WHERE action NOT IN ('terminal.paired', 'terminal.bootstrap',
                                  'terminal.unpaired', 'terminal.catalog_skipped',
@@ -451,7 +506,7 @@ class Store:
                     "discount_max_bps", "issuer_profile", "business_hours", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at",
                     "last_heartbeat_at", "last_heartbeat_error", "bootstrap_summary", "catalog_skipped",
-                    "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at"):
+                    "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at", *PHASE2_META):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
 
     def ensure_pairable(self):
@@ -472,6 +527,7 @@ class Store:
         conn.execute("""INSERT INTO outbox(id,event_type,aggregate_id,payload,created_at,acked_at,seq)
                         VALUES (?,?,?,?,?,NULL,(SELECT COALESCE(MAX(seq),0)+1 FROM outbox))""",
                      (event_id, event_type, aggregate_id, _json(event), _now_ms()))
+        self._local.outbox_dirty = True
         return event_id
 
     def _receipt_context(self, conn, snapshot):
@@ -676,6 +732,11 @@ class Store:
             if not envelope_raw or not key:
                 return {"state": "unpaired", "can_sell": False, "can_open_cash": False,
                         "reason": "Terminal não pareado"}
+            if self._meta(conn, "transferred_at"):
+                # The shop moved to another computer: this one only delivers its queue.
+                return {"state": "transferred", "can_sell": False, "can_open_cash": False,
+                        "reason": TRANSFERRED_REASON,
+                        "send_only_until": self._meta(conn, "send_only_until") or None}
             last_seen = int(self._meta(conn, "last_seen") or 0)
             if last_seen and now + CLOCK_TOLERANCE_SECONDS < last_seen:
                 return {"state": "clock_rollback", "can_sell": False, "can_open_cash": False,
@@ -777,6 +838,7 @@ class Store:
         return {"configured": True, "open": False, "message": "Fora do horário de funcionamento da empresa."}
 
     def ensure_sale_allowed(self):
+        self.ensure_not_restoring()
         status = self.lease_status()
         if not status["can_sell"]:
             raise TerminalError(status["reason"], 403)
@@ -867,6 +929,7 @@ class Store:
                 self._apply_operators(conn, operators, [])
             self._store_lease(conn, lease, claims)
             self._pin_release_key(conn, response)
+            self._store_cloud_extras(conn, response, mirror_key=True)
             self._set_meta(conn, "lease_renewed_at", str(_now_ms()))
         return {"expires_at": claims["expires_at"]}
 
@@ -913,6 +976,12 @@ class Store:
                 self._set_meta(conn, "issuer_profile", _json(response["issuer"]))
             self._set_meta(conn, "cloud_url", cloud_url)
             self._pin_release_key(conn, response)
+            self._store_cloud_extras(conn, response, mirror_key=True)
+            if response.get("recovery") is True:
+                # This terminal already has history in the cloud: bring it back before selling.
+                self._set_meta(conn, "restore_state", "pending")
+                self._set_meta(conn, "restore_pass", "1")
+                self._set_meta(conn, "restore_started_at", str(_now_ms()))
             self._audit(conn, None, "terminal.paired", response["terminal_id"])
 
     @staticmethod
@@ -963,6 +1032,7 @@ class Store:
             self._apply_operators(conn, operators, skipped)
             self._store_lease(conn, lease, claims)
             self._pin_release_key(conn, response)
+            self._store_cloud_extras(conn, response)
         if not isinstance(products, list):
             raise TerminalError("Catálogo ou operadores inválidos")
         with self.transaction() as conn:
@@ -1265,7 +1335,8 @@ class Store:
     def unpair(self):
         """Undo a clean setup; a database with business history stays bound."""
         with self.transaction() as conn:
-            pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0]
+            pending = conn.execute("""SELECT COUNT(*) FROM outbox
+                WHERE acked_at IS NULL AND event_type != 'terminal.config'""").fetchone()[0]
             if pending:
                 raise TerminalError("Sincronize as vendas pendentes antes de trocar de empresa", 409)
             if conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone():
@@ -1273,6 +1344,8 @@ class Store:
             if self._has_business_history(conn):
                 raise TerminalError("Este computador contém histórico desta empresa. Use uma nova instalação ou diretório de dados para conectar outra empresa; preserve o banco atual.", 409)
             self._clear_company_cache(conn)
+            # Setup notes of the pairing being undone must not travel with the next one.
+            conn.execute("DELETE FROM outbox WHERE event_type = 'terminal.config'")
             self._clear_connection_meta(conn)
             self._audit(conn, None, "terminal.unpaired")
         return {"paired": False}
@@ -1545,6 +1618,7 @@ class Store:
             return self._cash_summary(conn, self._open_cash(conn))
 
     def open_cash(self, operator_id, opening_cents):
+        self.ensure_not_restoring()
         status = self.lease_status()
         if not status["can_open_cash"]:
             raise TerminalError("Licença offline vencida; conecte este caixa à internet para renovar antes "
@@ -1587,8 +1661,15 @@ class Store:
         # Fechar o caixa é uma operação de supervisão. A validação acontece
         # antes de alterar a sessão para que um PIN inválido nunca deixe o
         # operador em um estado parcialmente fechado.
+        # Allowed on a transferred terminal: the closing still goes up through the send-only token.
+        self.ensure_not_restoring()
         supervisor_id = self.manager_override(manager_pin, operator_id)
         counted_cents = _positive_int(counted_cents, "Valor contado", zero=True)
+        summary = self._close_cash(operator_id, counted_cents, supervisor_id)
+        _mirror_call("on_cash_closed", self)
+        return summary
+
+    def _close_cash(self, operator_id, counted_cents, supervisor_id):
         with self.transaction() as conn:
             cash = self._open_cash(conn)
             summary = self._cash_summary(conn, cash)
@@ -1834,7 +1915,8 @@ class Store:
             if conn.execute("SELECT 1 FROM sale_returns WHERE sale_id=?", (sale_id,)).fetchone():
                 raise TerminalError("Venda com devolução não pode ser cancelada; devolva os itens restantes", 409)
             original_cash = conn.execute("SELECT closed_at FROM cash_sessions WHERE id=?", (row["session_id"],)).fetchone()
-            if original_cash and original_cash["closed_at"] is not None:
+            # A session this computer does not have (restored history) counts as closed.
+            if original_cash is None or original_cash["closed_at"] is not None:
                 raise TerminalError("Caixa dessa venda já foi fechado; registre devolução pelo processo administrativo", 409)
             snapshot = json.loads(row["snapshot"])
             for item in snapshot["items"]:
@@ -2101,8 +2183,10 @@ class Store:
     def has_local_activity(self):
         """True once this terminal created something worth an automatic backup."""
         with self.connection() as conn:
-            return any(conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
-                       for table in ("sales", "cash_sessions", "cash_movements", "outbox"))
+            return (any(conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                        for table in ("sales", "cash_sessions", "cash_movements"))
+                    or conn.execute("SELECT 1 FROM outbox WHERE event_type != 'terminal.config' LIMIT 1"
+                                    ).fetchone() is not None)
 
     def backup_status(self):
         return {"directory": str(self.path.parent / "backups"), "last_backup_at": self.meta().get("last_backup_at"),
@@ -2160,7 +2244,420 @@ class Store:
                          "driver=excluded.driver,target=excluded.target,format=excluded.format",
                          (kind, driver, target, fmt))
             self._audit(conn, operator_id, "print.settings_changed", kind, f"{driver}:{fmt}")
+        try:
+            self.ensure_config_event()
+        except (TerminalError, sqlite3.Error):
+            pass  # the worker tries again on its next pass
         return {"kind": kind, "driver": driver, "target": target, "format": fmt}
+
+    # ---------- phase 2: recovery on a new computer, transfer and second-disk copy ----------
+
+    def _store_cloud_extras(self, conn, response, mirror_key=False):
+        """What the cloud announces besides the license: its capabilities and the backup key."""
+        capabilities = response.get("capabilities") if isinstance(response, dict) else None
+        if isinstance(capabilities, list) and all(isinstance(item, str) for item in capabilities):
+            self._set_meta(conn, "cloud_capabilities", _json(capabilities[:50]))
+        key = response.get("mirror_key") if mirror_key and isinstance(response, dict) else None
+        if (isinstance(key, dict) and isinstance(key.get("key_id"), str) and key["key_id"]
+                and isinstance(key.get("key"), str) and len(key["key"]) == 44):
+            self._set_meta(conn, "mirror_key", _json({"key_id": key["key_id"], "key": key["key"]}))
+
+    def _restore_active(self, conn):
+        return (self._meta(conn, "restore_state") or "done") != "done"
+
+    def ensure_not_restoring(self):
+        with self.connection() as conn:
+            if self._restore_active(conn):
+                raise TerminalError(RESTORE_BLOCKED, 409)
+
+    @staticmethod
+    def _meta_json(raw, fallback):
+        try:
+            value = json.loads(raw) if raw else fallback
+        except ValueError:
+            return fallback
+        return value if isinstance(value, type(fallback)) else fallback
+
+    def _restore_progress(self, conn):
+        stored = self._meta_json(self._meta(conn, "restore_progress"), {})
+        return {key: _int(stored.get(key)) for key in RESTORE_COUNTERS}
+
+    def _restore_status(self, conn):
+        state = self._meta(conn, "restore_state") or "done"
+        progress = self._restore_progress(conn)
+        position, total = progress["position"], max(progress["total"], progress["position"])
+        if state in ("done", "awaiting_backup"):
+            percent = 100
+        elif state == "importing":
+            percent = 99
+        else:
+            percent = min(99, position * 100 // total) if total else 0
+        imported = self._meta_json(self._meta(conn, "restore_import"), {})
+        return {"state": state, "active": state != "done", "pass": int(self._meta(conn, "restore_pass") or 1),
+                "applied": position, "total": total, "percent": percent,
+                "counts": {key: progress[key] for key in RESTORE_COUNTERS if key not in ("position", "total")},
+                "error": self._meta(conn, "restore_error") or "",
+                "paused": self._meta(conn, "restore_paused") == "1",
+                "started_at": int(self._meta(conn, "restore_started_at") or 0) or None,
+                "finished_at": int(self._meta(conn, "restore_finished_at") or 0) or None,
+                "import": imported or None}
+
+    def restore_status(self):
+        with self.connection() as conn:
+            return self._restore_status(conn)
+
+    def _restore_restart(self, conn):
+        """Start the download over; after too many tries wait for the person to ask again."""
+        attempts = int(self._meta(conn, "restore_attempts") or 0) + 1
+        self._set_meta(conn, "restore_attempts", str(attempts))
+        self._set_meta(conn, "restore_cursor", "")
+        self._set_meta(conn, "restore_progress", "")
+        if attempts >= RESTORE_MAX_ATTEMPTS:
+            self._set_meta(conn, "restore_paused", "1")
+            self._set_meta(conn, "restore_error", RESTORE_MISMATCH)
+
+    def restore_restart(self):
+        """The cloud refused the cursor: begin again from the first page, counting one attempt."""
+        with self.transaction() as conn:
+            if self._meta(conn, "restore_state") in ("pending", "restoring"):
+                self._restore_restart(conn)
+            return self._restore_status(conn)
+
+    def restore_retry(self):
+        """"Tentar de novo": forget the pause, the error, the attempts and the cursor."""
+        with self.transaction() as conn:
+            if not self._restore_active(conn):
+                raise TerminalError("Restauração não está em andamento", 409)
+            for key in ("restore_paused", "restore_error", "restore_attempts"):
+                self._set_meta(conn, key, "")
+            if self._meta(conn, "restore_state") in ("pending", "restoring"):
+                self._set_meta(conn, "restore_cursor", "")
+                self._set_meta(conn, "restore_progress", "")
+            return self._restore_status(conn)
+
+    def set_restore_error(self, error=""):
+        with self.transaction() as conn:
+            if self._restore_active(conn) and self._meta(conn, "restore_paused") != "1":
+                self._set_meta(conn, "restore_error", str(error or "")[:300])
+
+    def _finish_restore(self, conn, detail=None):
+        self._set_meta(conn, "restore_state", "done")
+        self._set_meta(conn, "restore_finished_at", str(_now_ms()))
+        for key in ("restore_cursor", "restore_error", "restore_paused"):
+            self._set_meta(conn, key, "")
+        self._audit(conn, None, "terminal.restored", self._meta(conn, "terminal_id"), detail)
+
+    def restore_abandon(self):
+        """"Desistir da recuperação": this computer goes back to the first screen.
+
+        Only while the recovery is still running and nothing waits in the queue: the cashier
+        was blocked the whole time, so every row here came from the cloud and stays there.
+        """
+        with self.transaction() as conn:
+            if not self._restore_active(conn):
+                raise TerminalError("Restauração não está em andamento", 409)
+            if conn.execute("SELECT 1 FROM outbox WHERE acked_at IS NULL LIMIT 1").fetchone():
+                raise TerminalError(RESTORE_ABANDON_PENDING, 409)
+            self._clear_company_cache(conn)
+            for table in ("sale_returns", "credit_receipts", "sales", "cash_movements", "cash_sessions",
+                          "suspended_carts", "print_jobs", "outbox"):
+                conn.execute(f"DELETE FROM {table}")
+            self._clear_connection_meta(conn)
+            self._audit(conn, None, "terminal.unpaired", None, "Recuperação abandonada")
+        # Copies made since the pairing hold only what was just removed; left behind they
+        # would count as another company's history and refuse the next pairing.
+        for copy in (self.path.parent / "backups").glob("terminal-*.sqlite3"):
+            try:
+                copy.unlink()
+            except OSError:
+                pass
+        return {"paired": False}
+
+    def restore_skip_backup(self):
+        """"Não tenho, continuar": what came from the cloud is all there is."""
+        with self.transaction() as conn:
+            if self._meta(conn, "restore_state") != "awaiting_backup":
+                raise TerminalError("A recuperação não está esperando a cópia de segurança", 409)
+            self._finish_restore(conn, "sem cópia de segurança")
+            return self._restore_status(conn)
+
+    def restore_second_pass(self):
+        """The queue read from the backup reached the cloud: download everything once more."""
+        with self.transaction() as conn:
+            if self._meta(conn, "restore_state") != "importing":
+                return False
+            if conn.execute("SELECT 1 FROM outbox WHERE acked_at IS NULL LIMIT 1").fetchone():
+                return False
+            self._set_meta(conn, "restore_state", "restoring")
+            self._set_meta(conn, "restore_pass", "2")
+            for key in ("restore_cursor", "restore_progress", "restore_attempts", "restore_error"):
+                self._set_meta(conn, key, "")
+            return True
+
+    def apply_restore(self, page, sent_cursor=""):
+        """Apply one page of GET /terminal/restore. Idempotent; creates no event.
+
+        Nothing here touches the outbox, the print queue, product stock or customer
+        balances: those come from the bootstrap. `sent_cursor` is the cursor the page
+        was asked with; a page for any other position is ignored.
+        """
+        if not isinstance(page, dict) or not isinstance(page.get("records"), list):
+            raise TerminalError("Página de restauração inválida", 502)
+        with self.transaction() as conn:
+            state = self._meta(conn, "restore_state")
+            if state not in ("pending", "restoring"):
+                raise TerminalError("Restauração não está em andamento", 409)
+            if (self._meta(conn, "restore_cursor") or "") != (sent_cursor or ""):
+                return {"skipped": True}
+            progress = self._restore_progress(conn)
+            names = {"operators": {row["id"]: row["name"] for row in conn.execute("SELECT id,name FROM operators")},
+                     "payments": {row["id"]: row["name"] for row in self._payment_config(conn)
+                                  if row.get("kind") == "other"}}
+            applied = warnings = 0
+            for record in page["records"]:
+                progress["position"] += 1
+                handler = {"cash_session": self._restore_cash_session, "sale": self._restore_sale,
+                           "credit_receipt": self._restore_credit_receipt,
+                           "config": self._restore_config}.get(record.get("kind") if isinstance(record, dict) else None)
+                if handler is None:
+                    continue
+                try:
+                    warnings += handler(conn, record, progress, names)
+                    applied += 1
+                except (KeyError, TypeError, ValueError, AttributeError, sqlite3.IntegrityError):
+                    warnings += 1
+            remote = page.get("progress") if isinstance(page.get("progress"), dict) else {}
+            progress["total"] = max(_int(remote.get("total")), progress["position"])
+            next_cursor = page.get("next_cursor") if isinstance(page.get("next_cursor"), str) else ""
+            finished = page.get("done") is True
+            if not finished and not next_cursor:
+                raise TerminalError("Página de restauração sem continuação", 502)
+            self._set_meta(conn, "restore_state", "restoring")
+            self._set_meta(conn, "restore_error", "")
+            self._set_meta(conn, "restore_cursor", "" if finished else next_cursor)
+            self._set_meta(conn, "restore_progress", _json(progress))
+            done = False
+            if finished:
+                totals = page.get("totals") if isinstance(page.get("totals"), dict) else {}
+                if self._restore_totals_match(progress, totals):
+                    done = True
+                    self._set_meta(conn, "restore_totals", _json(totals))
+                    self._set_meta(conn, "restore_attempts", "")
+                    if (self._meta(conn, "restore_pass") or "1") == "2":
+                        self._finish_restore(conn, f"{progress['sales']} vendas; {progress['cash_sessions']} caixas")
+                    else:
+                        self._set_meta(conn, "restore_state", "awaiting_backup")
+                else:
+                    self._restore_restart(conn)
+            return {"applied": applied, "state": self._meta(conn, "restore_state"), "done": done,
+                    "warnings": warnings}
+
+    @staticmethod
+    def _restore_totals_match(progress, totals):
+        def remote(section, field):
+            value = totals.get(section)
+            return _int(value.get(field)) if isinstance(value, dict) else 0
+        return all(progress[local] == remote(section, field) for local, section, field in (
+            ("sales", "sales", "count"), ("sales_cents", "sales", "total_cents"),
+            ("returns", "returns", "count"), ("returns_cents", "returns", "total_cents"),
+            ("credit_receipts", "credit_receipts", "count"),
+            ("credit_receipts_cents", "credit_receipts", "total_cents"),
+            ("cash_sessions", "cash_sessions", "count"),
+            ("cash_movements", "cash_movements", "count"),
+            ("cash_movements_cents", "cash_movements", "total_cents"),
+            ("config", "config", "count")))
+
+    @staticmethod
+    def _restore_cash_session(conn, record, progress, _names):
+        movements = record.get("movements") if isinstance(record.get("movements"), list) else []
+        progress["cash_sessions"] += 1
+        progress["cash_movements"] += len(movements)
+        progress["cash_movements_cents"] += sum(_int(row.get("amount_cents")) for row in movements
+                                                if isinstance(row, dict))
+        session_id, opened_at = str(record["id"]), int(record["opened_at"])
+        values = [session_id, str(record.get("operator_id") or ""), int(record.get("opening_cents") or 0), opened_at,
+                  record.get("closed_at"), record.get("counted_cents"), record.get("expected_cents")]
+        upsert = """INSERT INTO cash_sessions VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    closed_at=excluded.closed_at,counted_cents=excluded.counted_cents,
+                    expected_cents=excluded.expected_cents"""
+        warnings = 0
+        try:
+            conn.execute(upsert, values)
+        except sqlite3.IntegrityError:
+            # This terminal admits a single open cashier: keep the record, as closed.
+            values[4] = opened_at
+            conn.execute(upsert, values)
+            warnings = 1
+        for row in movements:
+            conn.execute("INSERT OR IGNORE INTO cash_movements VALUES (?,?,?,?,?,?,?)",
+                         (str(row["id"]), session_id, str(row["kind"]), int(row["amount_cents"]),
+                          str(row.get("reason") or ""), str(row.get("operator_id") or ""), int(row["created_at"])))
+        return warnings
+
+    @staticmethod
+    def _restore_sale(conn, record, progress, names):
+        data = record["data"]
+        returns = record.get("returns") if isinstance(record.get("returns"), list) else []
+        progress["sales"] += 1
+        progress["sales_cents"] += _int(data.get("total_cents"))
+        progress["returns"] += len(returns)
+        progress["returns_cents"] += sum(_int(row.get("total_cents")) for row in returns if isinstance(row, dict))
+        sale_id = str(record["id"])
+        voided = record.get("status") == "voided"
+        snapshot = {"id": sale_id, **data, "seller_name": names["operators"].get(data.get("seller_id"), ""),
+                    "status": "voided" if voided else "completed"}
+        payment_names = {payment["payment_method_id"]: names["payments"][payment["payment_method_id"]]
+                         for payment in data.get("payments") or []
+                         if isinstance(payment, dict) and payment.get("payment_method_id") in names["payments"]}
+        if payment_names:
+            snapshot["payment_names"] = payment_names
+        if voided:
+            snapshot["void_reason"] = record.get("void_reason") or ""
+        warnings = 0
+        try:
+            conn.execute(
+                """INSERT INTO sales (id,request_id,session_id,operator_id,customer_name,customer_id,gross_cents,
+                       discount_cents,total_cents,change_cents,snapshot,status,created_at,voided_at,void_reason,
+                       customer_document)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET status=excluded.status,voided_at=excluded.voided_at,
+                       void_reason=excluded.void_reason,snapshot=excluded.snapshot""",
+                (sale_id, str(data.get("request_id") or sale_id), str(data.get("cash_session_id") or ""),
+                 str(data.get("operator_id") or ""), data.get("customer_name"), data.get("customer_id"),
+                 int(data.get("gross_cents") or 0), int(data.get("discount_cents") or 0),
+                 int(data.get("total_cents") or 0), int(data.get("change_cents") or 0), _json(snapshot),
+                 snapshot["status"], int(data.get("created_at") or 0),
+                 record.get("voided_at") if voided else None,
+                 (record.get("void_reason") or "") if voided else None, data.get("customer_document")))
+        except sqlite3.IntegrityError:
+            warnings = 1  # same request_id under another sale: the local record stays
+        for row in returns:
+            conn.execute("INSERT OR IGNORE INTO sale_returns VALUES (?,?,?,?,?,?,?,?,?)",
+                         (str(row["id"]), sale_id, row.get("cash_session_id") or None,
+                          str(row.get("operator_id") or ""), str(row["refund_method"]), int(row["total_cents"]),
+                          _json(row.get("items") or []), str(row.get("reason") or ""), int(row["created_at"])))
+        return warnings
+
+    @staticmethod
+    def _restore_credit_receipt(conn, record, progress, _names):
+        progress["credit_receipts"] += 1
+        progress["credit_receipts_cents"] += _int(record.get("amount_cents"))
+        conn.execute("INSERT OR IGNORE INTO credit_receipts VALUES (?,?,?,?,?,?,?)",
+                     (str(record["id"]), str(record["customer_id"]), str(record.get("cash_session_id") or ""),
+                      str(record["method"]), int(record["amount_cents"]), str(record.get("operator_id") or ""),
+                      int(record["created_at"])))
+        return 0
+
+    def _restore_config(self, conn, record, progress, _names):
+        progress["config"] += 1
+        data = record["data"]
+        for row in data.get("print_settings") or []:
+            # Only kinds this computer has not configured yet: a printer chosen here wins.
+            if (isinstance(row, dict) and row.get("driver") in CONFIG_DRIVERS
+                    and row.get("format") in CONFIG_FORMATS.get(row.get("kind"), ())
+                    and isinstance(row.get("target"), str) and 0 < len(row["target"].strip()) <= 260):
+                conn.execute("INSERT OR IGNORE INTO print_settings VALUES (?,?,?,?)",
+                             (row["kind"], row["driver"], row["target"].strip(), row["format"]))
+        self._set_meta(conn, "config_synced_hash", _config_hash(data))
+        return 0
+
+    def import_outbox_from_mirror(self, events):
+        """Put back in the queue what the old computer had not delivered (read from the backup copy).
+
+        The events go up untouched and the cloud deduplicates them by event_id. No local
+        effect is applied here: the local state comes from the second restore pass.
+        """
+        if not isinstance(events, list):
+            raise TerminalError("Cópia de segurança inválida")
+        result = {"imported": 0, "already_present": 0, "foreign": 0, "invalid": 0, "first_seq": None, "last_seq": None}
+        with self.transaction() as conn:
+            state = self._meta(conn, "restore_state")
+            if state not in ("awaiting_backup", "importing"):
+                raise TerminalError("A recuperação não está esperando a cópia de segurança", 409)
+            identity = {key: self._meta(conn, key) for key in ("tenant_id", "shop_id", "terminal_id")}
+            for item in events:
+                event = item.get("event") if isinstance(item, dict) else None
+                if (not isinstance(event, dict) or not isinstance(event.get("event_id"), str)
+                        or not EVENT_ID.fullmatch(event["event_id"]) or event["event_id"] != item.get("event_id")
+                        or not isinstance(event.get("type"), str) or not event["type"]
+                        or not isinstance(event.get("aggregate_id"), str) or not isinstance(event.get("data"), dict)
+                        or not isinstance(event.get("identity"), dict)):
+                    result["invalid"] += 1
+                    continue
+                if {key: event["identity"].get(key) for key in identity} != identity:
+                    result["foreign"] += 1
+                    continue
+                if conn.execute("SELECT 1 FROM outbox WHERE id=?", (event["event_id"],)).fetchone():
+                    result["already_present"] += 1
+                    continue
+                seq = conn.execute("SELECT COALESCE(MAX(seq),0)+1 FROM outbox").fetchone()[0]
+                created_at = item.get("created_at") if type(item.get("created_at")) is int else _now_ms()
+                conn.execute("INSERT INTO outbox(id,event_type,aggregate_id,payload,created_at,acked_at,seq) "
+                             "VALUES (?,?,?,?,?,NULL,?)",
+                             (event["event_id"], event["type"], event["aggregate_id"], _json(event), created_at, seq))
+                result["imported"] += 1
+                result["first_seq"] = result["first_seq"] or seq
+                result["last_seq"] = seq
+            if result["imported"]:
+                self._local.outbox_dirty = True
+                self._set_meta(conn, "restore_state", "importing")
+                self._set_meta(conn, "restore_import", _json(result))
+                self._audit(conn, None, "restore.mirror_imported", identity["terminal_id"],
+                            f"{result['imported']} registro(s) da cópia de segurança; "
+                            f"{result['foreign']} de outra loja; {result['invalid']} inválido(s)")
+        return result
+
+    def mark_transferred(self, send_only_until=None):
+        """The cloud said this terminal now lives on another computer."""
+        value = send_only_until if isinstance(send_only_until, str) else ""
+        with self.connection() as conn:
+            if self._meta(conn, "transferred_at") and (self._meta(conn, "send_only_until") or "") == value:
+                return
+        with self.transaction() as conn:
+            if not self._meta(conn, "transferred_at"):
+                self._set_meta(conn, "transferred_at", str(_now_ms()))
+                self._audit(conn, None, "terminal.transferred", self._meta(conn, "terminal_id"))
+            if (self._meta(conn, "send_only_until") or "") != value:
+                self._set_meta(conn, "send_only_until", value)
+
+    def is_transferred(self):
+        with self.connection() as conn:
+            return bool(self._meta(conn, "transferred_at"))
+
+    def _config_candidate(self, conn, enabled):
+        """(terminal_id, data, digest) of the terminal.config still to be sent, or None."""
+        terminal_id = self._meta(conn, "terminal_id")
+        if (not terminal_id or not self._meta(conn, "token") or self._restore_active(conn)
+                or self._meta(conn, "transferred_at")
+                or "terminal-config" not in self._meta_json(self._meta(conn, "cloud_capabilities"), [])):
+            return None
+        data = {"version": 1, "app_version": os.environ.get("PDV_VERSION", "2.0.0")[:80],
+                "print_settings": [dict(row) for row in conn.execute("SELECT * FROM print_settings ORDER BY kind")
+                                   if row["driver"] in CONFIG_DRIVERS
+                                   and row["format"] in CONFIG_FORMATS.get(row["kind"], ())][:4]}
+        if enabled is not None:
+            data["mirror"] = {"enabled": bool(enabled)}
+        digest = _config_hash(data)
+        synced = self._meta(conn, "config_synced_hash")
+        if not synced and not data["print_settings"] and not enabled:
+            return None  # nothing set up yet: a fresh pairing sends nothing and stays easy to correct
+        return None if digest == synced else (terminal_id, data, digest)
+
+    def ensure_config_event(self):
+        """Queue terminal.config when the printing or backup-copy setup changed since the last one sent."""
+        enabled = _mirror_call("is_enabled", self)  # None when this build has no second-disk copy
+        with self.connection() as conn:  # the worker asks on every pass: no write lock unless needed
+            if self._config_candidate(conn, enabled) is None:
+                return None
+        with self.transaction() as conn:
+            candidate = self._config_candidate(conn, enabled)
+            if candidate is None:
+                return None
+            terminal_id, data, digest = candidate
+            data["updated_at"] = _now_ms()
+            event_id = self._event(conn, "terminal.config", terminal_id, data)
+            self._set_meta(conn, "config_synced_hash", digest)
+            return event_id
 
     def _queue_receipt(self, conn, snapshot):
         setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()

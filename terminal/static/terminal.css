@@ -98,6 +98,14 @@ kbd{display:inline-block;min-width:22px;padding:0 6px;border:1px solid currentCo
 .gate-main{display:grid;gap:14px;align-content:start;min-width:0}
 .gate-card h1{font-size:28px;line-height:1.15;letter-spacing:-.01em}
 .login-card{width:min(860px,calc(100% - 32px));display:grid;grid-template-columns:minmax(0,1fr) 264px;gap:28px;align-items:center}
+.restore-step{display:grid;gap:14px;align-content:start;min-width:0}
+.restore-bar{height:18px;border-radius:999px;border:1px solid var(--line);background:var(--surface-2);overflow:hidden}
+.restore-bar span{display:block;height:100%;width:0;border-radius:999px;background:var(--brand);transition:width .3s ease}
+.restore-line{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+.restore-notice{padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--surface-2);font-weight:600}
+#restoreBackupPanel{display:grid;gap:10px}
+#restoreBackupList .mini-row{align-items:center}
+@media (prefers-reduced-motion:reduce){.restore-bar span{transition:none}}
 .connection-card{display:grid;gap:3px;padding:12px 14px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);font-size:14px}
 .connection-card strong{font-size:16px}
 .connection-card small{color:var(--muted);font-size:13px}
