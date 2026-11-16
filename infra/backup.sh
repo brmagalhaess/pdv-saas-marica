@@ -58,7 +58,23 @@ fail() {
   echo "$1" >&2
   exit 1
 }
+# A database without Django migrations (backup starts with the db, before
+# migrate) has nothing to protect; backing it up would only make an empty
+# snapshot the newest one, the one a restore picks first.
+schema_ready() {
+  ready=$(psql -X -q -t -A -v ON_ERROR_STOP=1 -c "SELECT to_regclass('public.django_migrations') IS NOT NULL") \
+    || fail "Falha ao consultar o banco antes do backup (psql)"
+  if [ "$ready" = "t" ]; then
+    ready=$(psql -X -q -t -A -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM django_migrations)") \
+      || fail "Falha ao consultar o banco antes do backup (psql)"
+  fi
+  [ "$ready" = "t" ]
+}
 backup_once() {
+  if ! schema_ready; then
+    echo "Banco ainda sem migrações; backup adiado até o próximo ciclo" >&2
+    return 0
+  fi
   workdir=$(mktemp -d) || fail "Não foi possível criar o diretório temporário do backup"
   trap 'rm -rf "$workdir"' EXIT HUP INT TERM
   pg_dump --format=custom --no-owner --file="$workdir/pdv2.dump" \
@@ -169,7 +185,12 @@ while true; do
     if ! (restore_test); then date -u +%s > "$STATUS_DIR/last-failure"; chmod 644 "$STATUS_DIR/last-failure"; echo 'Restore validation failed; see status files' >&2; fi
   else
     rm -f "$STATUS_DIR/request-now"
-    run_backup
+    if [ "${BACKUP_PAUSADO:-0}" = "1" ]; then
+      # Restore on a new VPS: no snapshot and no prune until the owner is done.
+      echo "Backup automático pausado (BACKUP_PAUSADO=1); nenhum snapshot enviado" >&2
+    else
+      run_backup
+    fi
   fi
   wait_until_due
 done

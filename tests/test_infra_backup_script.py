@@ -42,6 +42,17 @@ esac
 exit 0
 """
 
+# FAKE_SCHEMA: "t" migrated database (default), "sem-tabela" before migrate,
+# "vazia" django_migrations created but empty.
+FAKE_PSQL = """#!/bin/sh
+echo "psql $*" >> "$FAKE_LOG"
+case ",$FAKE_FAIL," in *,psql,*) echo "psql: connection refused" >&2; exit 2 ;; esac
+case "$*" in
+  *to_regclass*) if [ "${FAKE_SCHEMA:-t}" = sem-tabela ]; then echo f; else echo t; fi ;;
+  *django_migrations*) if [ "${FAKE_SCHEMA:-t}" = t ]; then echo t; else echo f; fi ;;
+esac
+"""
+
 # The loop reaches `sleep` only after one full iteration; the marker tells the
 # test that the status files are final.
 FAKE_SLEEP = """#!/bin/sh
@@ -75,7 +86,7 @@ class Sandbox:
         for directory in (self.status, self.work, self.bin):
             directory.mkdir()
         for name, body in (("pg_dump", FAKE_PG_DUMP), ("pg_restore", FAKE_PG_RESTORE),
-                           ("restic", FAKE_RESTIC), ("sleep", FAKE_SLEEP)):
+                           ("restic", FAKE_RESTIC), ("sleep", FAKE_SLEEP), ("psql", FAKE_PSQL)):
             target = self.bin / name
             target.write_text(body)
             target.chmod(0o755)
@@ -128,7 +139,7 @@ class Sandbox:
 
     def calls(self):
         lines = self.log.read_text().splitlines() if self.log.exists() else []
-        return [line for line in lines if not line.startswith("restic-env ")]
+        return [line for line in lines if not line.startswith(("restic-env ", "psql "))]
 
     def restic_env(self):
         lines = self.log.read_text().splitlines() if self.log.exists() else []
@@ -270,6 +281,34 @@ class BackupScriptCases:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("RESTIC_PASSWORD_FILE", result.stderr)
         self.assertEqual(box.calls(), [])
+
+    def test_database_before_migrate_is_not_backed_up(self):
+        for schema in ("sem-tabela", "vazia"):
+            with self.subTest(schema=schema):
+                box = self.sandbox()
+                (box.status / "last-success").write_text("1000\n")
+                result = box.run_once(prune="1", FAKE_SCHEMA=schema)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("sem migrações", result.stderr)
+                self.assertEqual(box.calls(), [], "pg_dump/restic rodaram com o banco vazio")
+                self.assertEqual(box.text("last-success").strip(), "1000")
+                self.assertIsNone(box.text("last-failure"))
+
+    def test_unreachable_database_is_a_backup_failure(self):
+        box = self.sandbox()
+        stderr = box.run_loop_iteration(fail="psql")
+        self.assert_failure_recorded(box, "psql")
+        self.assertIn("Backup failed", stderr)
+
+    def test_paused_loop_sends_nothing_and_does_not_prune(self):
+        box = self.sandbox()
+        (box.status / "request-now").write_text("")
+        stderr = box.run_loop_iteration(prune="1", BACKUP_PAUSADO="1")
+        self.assertIn("pausado", stderr)
+        self.assertEqual(box.calls(), [])
+        self.assertIsNone(box.text("last-success"))
+        self.assertIsNone(box.text("last-failure"))
+        self.assertFalse((box.status / "request-now").exists(), "pedido manual ficaria em laço")
 
 
 for _shell in available_shells():

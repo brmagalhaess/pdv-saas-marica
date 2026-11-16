@@ -45,7 +45,9 @@ services:
   # One-shot: creates in pdv2_secrets only the secrets that do not exist yet
   # (never overwrites). Runs as 10001:70 (app user, postgres group), no root.
   # Old installs: a secret variable still set in the panel seeds the missing
-  # file with the same value, and a different value stops the deploy.
+  # file with the same value, and a different value stops the deploy. With any
+  # of them set, missing license/release PEM files stop the deploy too (paired
+  # terminals trust the old pairs) unless PDV_SECRETS_NOVO_PAR=1.
   secrets-init:
     image: pdv2-cloud:${PDV_VERSION:-2.0.0}
     build: {context: ., dockerfile: infra/Dockerfile.cloud}
@@ -57,6 +59,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       PDV_ENCRYPTION_KEY: ${PDV_ENCRYPTION_KEY:-}
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      PDV_SECRETS_NOVO_PAR: ${PDV_SECRETS_NOVO_PAR:-0}
     volumes: [pdv2_secrets:/secrets]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
@@ -132,6 +135,9 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       BACKUP_INTERVAL_SECONDS: "3600"
       BACKUP_PRUNE: ${BACKUP_PRUNE:-0}
+      # 1 holds the automatic backups (restore on a new VPS: the empty new
+      # database must not become the newest snapshot nor prune the real ones).
+      BACKUP_PAUSADO: ${BACKUP_PAUSADO:-0}
     depends_on:
       secrets-init: {condition: service_completed_successfully}
       db: {condition: service_healthy}

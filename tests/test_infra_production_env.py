@@ -124,6 +124,23 @@ class ServerGeneratedSecretsTests(unittest.TestCase):
         self.assertIn("python -m operations.secrets_init --kit", docs)
         self.assertIn("restic_password", docs)
 
+    def test_restore_can_hold_backups_and_old_installs_can_opt_into_a_new_pair(self):
+        self.assertIn("BACKUP_PAUSADO: ${BACKUP_PAUSADO:-0}", service_block("backup"))
+        self.assertIn('${BACKUP_PAUSADO:-0}" = "1"', (ROOT / "infra" / "backup.sh").read_text())
+        self.assertIn("PDV_SECRETS_NOVO_PAR: ${PDV_SECRETS_NOVO_PAR:-0}", service_block("secrets-init"))
+
+    def test_restore_docs_pick_an_explicit_snapshot_with_backups_paused(self):
+        docs = (ROOT / "docs" / "DEPLOY-DOKPLOY.md").read_text()
+        restore = docs.split("### Restaurar em outra VPS", 1)[1].split("\n## ", 1)[0]
+        self.assertNotRegex(restore, r"restic restore latest", "latest pega o snapshot do banco vazio")
+        self.assertIn("restic restore <ID-do-snapshot>", restore)
+        self.assertIn("BACKUP_PAUSADO=1", restore)
+        self.assertIn("chown 10001:70", restore)
+        self.assertIn("tr -d '\\r' < kit.sh | docker run", restore)
+        self.assertNotIn("/srv/pdv2", docs, "diretório inventado; o compose antigo usava PDV_*_KEY_PATH")
+        self.assertIn("PDV_LICENSE_PRIVATE_KEY_PATH", restore)
+        self.assertIn("exec -T cloud python -m operations.secrets_init --kit --permitir-redirecionamento", docs)
+
 
 if __name__ == "__main__":
     unittest.main()

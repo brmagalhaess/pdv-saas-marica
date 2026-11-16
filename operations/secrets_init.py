@@ -24,16 +24,24 @@ Old installs that kept the secrets in Dokploy variables (PDV_SECRET_KEY,
 POSTGRES_PASSWORD, PDV_ENCRYPTION_KEY, RESTIC_PASSWORD) keep their values: a
 missing file is created from the variable instead of a new random value, and
 a variable that differs from an existing file stops the deploy instead of
-silently switching keys.
+silently switching keys. Any of those variables set means terminals were
+already paired with the old license/release pairs, so a missing pair stops
+the deploy (copy the old PEM files first) unless PDV_SECRETS_NOVO_PAR=1.
 
 `--kit` prints the recovery kit (a POSIX sh script that puts the same files
-back in an empty volume). It is only meant for the owner, typed in the
-container terminal, and refuses to write to anything that is not a terminal
-unless `--permitir-redirecionamento` is given. The normal run never prints a
-secret value.
+back in an empty volume). Each value goes base64-encoded with its sha256 and
+the script stages everything, checks every hash and the file count, and only
+then writes: a truncated or altered kit writes nothing. Every line ends in
+" #" so a carriage return added by a TTY (docker exec -t) falls in a comment.
+It is only meant for the owner, typed in the container terminal, and refuses
+to write to anything that is not a terminal unless
+`--permitir-redirecionamento` is given. The normal run never prints a secret
+value.
 """
 import argparse
+import base64
 import datetime
+import hashlib
 import errno
 import os
 import secrets
@@ -171,6 +179,20 @@ class Store:
     def ensure(self, environ=None):
         """Create what is missing. Returns {name: "criado"|"mantido"|"derivado"}."""
         environ = os.environ if environ is None else environ
+        old_install = []
+        for name, variable in SEEDS.items():
+            seeded = (environ.get(variable) or "").strip()
+            if seeded:
+                _validate(name, seeded)
+                old_install.append(variable)
+        if old_install and environ.get("PDV_SECRETS_NOVO_PAR", "").strip() != "1":
+            for private_name, public_name in PAIRS:
+                if not self.path(private_name).exists() and not self.path(public_name).exists():
+                    raise SecretsError(
+                        f"Instalação existente ({', '.join(old_install)} definida) sem {private_name} e "
+                        f"{public_name} em {self.dir}. Gerar um par novo quebraria os terminais já pareados. "
+                        "Copie antes os PEM antigos para o volume (docs/DEPLOY-DOKPLOY.md, 'Instalação que "
+                        "já existia'). Para gerar um par novo de propósito, defina PDV_SECRETS_NOVO_PAR=1.")
         self.prepare_dir()
         for leftover in self.dir.glob(".*.tmp"):
             leftover.unlink()
@@ -222,6 +244,7 @@ class Store:
         if missing:
             raise SecretsError("Faltam arquivos em " + str(self.dir) + ": " + ", ".join(missing))
         now = now or datetime.datetime.now(datetime.timezone.utc)
+        files = " ".join(ALL_FILES)
         lines = [
             "#!/bin/sh",
             "# KIT DE RECUPERAÇÃO PDV2 - gerado em " + now.strftime("%Y-%m-%d %H:%M UTC"),
@@ -232,34 +255,54 @@ class Store:
             "#",
             "# Restaurar numa VPS nova, ANTES do primeiro deploy (veja docs/DEPLOY-DOKPLOY.md):",
             "#   docker volume create <projeto>_pdv2_secrets",
-            "#   docker run --rm -i -v <projeto>_pdv2_secrets:/secrets alpine:3.20 sh < kit.sh",
+            "#   tr -d '\\r' < kit.sh | docker run --rm -i -v <projeto>_pdv2_secrets:/secrets alpine:3.20 sh",
+            "# Cada valor tem o sha256 conferido; kit cortado ou alterado não grava nada.",
             "# Arquivo já existente e diferente é recusado; SUBSTITUIR=1 troca de propósito.",
             "set -eu",
             "umask 077",
             'D="${PDV_SECRETS_DIR:-/secrets}"',
             'mkdir -p "$D"',
-            "falhou=0",
+            "n=0; ruim=0; gravado=0",
+            "if command -v sha256sum >/dev/null 2>&1; then soma() { sha256sum | cut -d ' ' -f 1; }; "
+            "else soma() { shasum -a 256 | cut -d ' ' -f 1; }; fi",
+            "limpa() {",
+            '  for f in ' + files + '; do rm -f "$D/.$f.kit"; done',
+            '  if [ "$gravado" != 1 ]; then echo "KIT INCOMPLETO OU CORROMPIDO: nada foi gravado" >&2; exit 1; fi',
+            "}",
+            "trap limpa EXIT",
             "put() {",
-            '  printf "%s" "$2" > "$D/.$1.kit"',
-            '  if [ -e "$D/$1" ] && cmp -s "$D/.$1.kit" "$D/$1"; then rm -f "$D/.$1.kit"; echo "igual: $1"; return; fi',
-            '  if [ -e "$D/$1" ] && [ "${SUBSTITUIR:-0}" != 1 ]; then',
-            '    rm -f "$D/.$1.kit"; echo "DIFERENTE, mantido: $1 (use SUBSTITUIR=1)" >&2; falhou=1; return',
+            "  n=$((n + 1))",
+            '  if ! printf "%s" "$2" | tr -d "\\r" | base64 -d > "$D/.$1.kit" 2>/dev/null; then',
+            '    echo "CORROMPIDO: $1 (base64 inválido)" >&2; ruim=1; return 0',
             "  fi",
-            '  mv "$D/.$1.kit" "$D/$1"; echo "restaurado: $1"',
+            '  if [ "$(soma < "$D/.$1.kit")" != "$(printf "%s" "$3" | tr -d "\\r")" ]; then',
+            '    echo "CORROMPIDO: $1 (sha256 não confere)" >&2; ruim=1',
+            "  fi",
+            "}",
+            "fim() {",
+            '  if [ "$n" != "$1" ] || [ "$ruim" != 0 ]; then exit 1; fi',
+            "  falhou=0",
+            "  for f in " + files + "; do",
+            '    if [ -e "$D/$f" ] && cmp -s "$D/.$f.kit" "$D/$f"; then rm -f "$D/.$f.kit"; echo "igual: $f"; continue; fi',
+            '    if [ -e "$D/$f" ] && [ "${SUBSTITUIR:-0}" != 1 ]; then',
+            '      rm -f "$D/.$f.kit"; echo "DIFERENTE, mantido: $f (use SUBSTITUIR=1)" >&2; falhou=1; continue',
+            "    fi",
+            '    mv -f "$D/.$f.kit" "$D/$f"; echo "restaurado: $f"',
+            "  done",
+            f'  chmod {DIR_MODE:o} "$D"',
+            f'  for f in {files}; do chmod {FILE_MODE:o} "$D/$f"; done',
+            f'  chmod {GROUP_READABLE["db_password"]:o} "$D/db_password"',
+            f'  if [ "$(id -u)" = 0 ]; then chown {self.uid}:{self.gid} "$D"; for f in {files}; do chown {self.uid}:{self.gid} "$D/$f"; done; fi',
+            "  gravado=1",
+            '  exit "$falhou"',
             "}",
         ]
         for name in ALL_FILES:
-            value = self.read(name)
-            if "'" in value:
-                raise SecretsError(f"{name} contém aspas simples; kit não pode ser montado")
-            lines.append(f"put {name} '{value}'")
-        lines += [
-            f'chmod {DIR_MODE:o} "$D"',
-            f'for f in {" ".join(ALL_FILES)}; do chmod {FILE_MODE:o} "$D/$f"; done',
-            f'chmod {GROUP_READABLE["db_password"]:o} "$D/db_password"',
-            f'if [ "$(id -u)" = 0 ]; then chown -R {self.uid}:{self.gid} "$D"; fi',
-            'exit "$falhou"',
-        ]
+            raw = self.path(name).read_bytes()
+            lines.append(f"put {name} {base64.b64encode(raw).decode()} {hashlib.sha256(raw).hexdigest()}")
+        lines.append(f"fim {len(ALL_FILES)}")
+        # A trailing comment on every line swallows the \r a TTY adds (onlcr).
+        lines = [line if line.startswith("#") else line + " #" for line in lines]
         return "\n".join(lines) + "\n"
 
 

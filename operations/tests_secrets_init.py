@@ -1,4 +1,5 @@
 """Server-generated secrets (operations.secrets_init) and settings reading them by file."""
+import base64
 import hashlib
 import io
 import os
@@ -150,18 +151,66 @@ class OldInstallSeedTests(StoreCase):
         return {"PDV_SECRET_KEY": "s" * 60, "POSTGRES_PASSWORD": "senha-antiga",
                 "PDV_ENCRYPTION_KEY": Fernet.generate_key().decode(), "RESTIC_PASSWORD": "restic-antiga"}
 
+    def copy_old_pems(self):
+        """What the old install had in PDV_*_KEY_PATH, copied into the volume first."""
+        self.dir.mkdir(mode=0o750)
+        old = {}
+        for private_name, public_name in secrets_init.PAIRS:
+            private, public = generate_keypair()
+            (self.dir / private_name).write_text(private)
+            (self.dir / public_name).write_text(public)
+            old[private_name] = private
+        return old
+
     def test_missing_files_take_the_old_variables(self):
         seeds = self.seeds()
+        old = self.copy_old_pems()
         report = self.store.ensure(seeds)
         self.assertEqual(report["db_password"], "criado a partir de POSTGRES_PASSWORD")
         for name, variable in secrets_init.SEEDS.items():
             self.assertEqual(self.store.read(name), seeds[variable])
+        for name, private in old.items():
+            self.assertEqual(self.store.read(name), private, "par antigo trocado")
         self.assertEqual(set(self.store.ensure(seeds).values()), {"mantido"})
+
+    def test_old_install_without_the_pems_stops_before_writing_anything(self):
+        for variable in secrets_init.SEEDS.values():
+            with self.subTest(variable=variable), tempfile.TemporaryDirectory() as directory:
+                store = Store(Path(directory) / "secrets", os.getuid(), os.getgid())
+                seeds = {variable: self.seeds()[variable]}
+                with self.assertRaisesRegex(SecretsError, "PDV_SECRETS_NOVO_PAR"):
+                    store.ensure(seeds)
+                self.assertFalse(store.dir.exists() and any(store.dir.iterdir()), "algo foi gravado")
+
+    def test_old_install_with_only_one_pair_still_stops(self):
+        self.dir.mkdir(mode=0o750)
+        private, public = generate_keypair()
+        (self.dir / "license-private.pem").write_text(private)
+        (self.dir / "license-public.pem").write_text(public)
+        with self.assertRaisesRegex(SecretsError, "release-private.pem"):
+            self.store.ensure(self.seeds())
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["license-private.pem", "license-public.pem"])
+
+    def test_explicit_new_pair_is_allowed(self):
+        report = self.store.ensure({**self.seeds(), "PDV_SECRETS_NOVO_PAR": "1"})
+        self.assertEqual(report["release-private.pem"], "criado")
+        self.assertEqual(report["license-public.pem"], "criado")
+
+    def test_main_reports_the_old_install_guard(self):
+        err = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"PDV_SECRETS_DIR": str(self.dir),
+                                                   "PDV_SECRETS_UID": str(os.getuid()),
+                                                   "PDV_SECRETS_GID": str(os.getgid()),
+                                                   **self.seeds(), "PDV_SECRETS_NOVO_PAR": ""}), \
+                unittest.mock.patch("sys.stderr", err):
+            self.assertEqual(main([], stdout=io.StringIO()), 1)
+        self.assertIn("terminais já pareados", err.getvalue())
+        self.assertNotIn(self.seeds()["RESTIC_PASSWORD"], err.getvalue())
 
     def test_variable_that_differs_from_the_file_stops_the_deploy(self):
         self.store.ensure(NO_SEEDS)
         before = self.hashes()
-        with self.assertRaisesRegex(SecretsError, "PDV_ENCRYPTION_KEY"):
+        with self.assertRaisesRegex(SecretsError, "PDV_ENCRYPTION_KEY.*difere"):
             self.store.ensure({"PDV_ENCRYPTION_KEY": Fernet.generate_key().decode()})
         self.assertEqual(self.hashes(), before)
 
@@ -205,7 +254,9 @@ class KitTests(StoreCase):
         with unittest.mock.patch.dict(os.environ, {"PDV_SECRETS_DIR": str(self.dir)}):
             self.assertEqual(main(["--kit"], stdout=out), 0)
         for name in ALL_FILES:
-            self.assertIn(self.store.read(name), out.getvalue())
+            raw = self.store.path(name).read_bytes()
+            self.assertIn(f"put {name} {base64.b64encode(raw).decode()} {hashlib.sha256(raw).hexdigest()} #",
+                          out.getvalue())
 
     @unittest.skipUnless(shutil.which("sh"), "sem sh")
     def test_kit_script_restores_identical_files_and_refuses_to_overwrite(self):
@@ -233,6 +284,43 @@ class KitTests(StoreCase):
                                 env={**env, "SUBSTITUIR": "1"})
         self.assertEqual(forced.returncode, 0, forced.stderr)
         self.assertEqual(restored.read("encryption_key"), self.store.read("encryption_key"))
+
+    def run_kit(self, kit, target, **extra):
+        env = {"PATH": os.environ.get("PATH", ""), "PDV_SECRETS_DIR": str(target), **extra}
+        return subprocess.run(["sh"], input=kit.encode(), capture_output=True, env=env)
+
+    @unittest.skipUnless(shutil.which("sh"), "sem sh")
+    def test_kit_captured_through_a_tty_with_crlf_still_restores(self):
+        self.store.ensure(NO_SEEDS)
+        kit = self.store.kit().replace("\n", "\r\n")  # docker exec -t (onlcr)
+        target = Path(self._tmp.name) / "crlf"
+        result = self.run_kit(kit, target)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        for name in ALL_FILES:
+            self.assertEqual((target / name).read_bytes(), self.store.path(name).read_bytes(), name)
+
+    @unittest.skipUnless(shutil.which("sh"), "sem sh")
+    def test_altered_or_truncated_kit_writes_nothing(self):
+        self.store.ensure(NO_SEEDS)
+        kit = self.store.kit()
+        lines = kit.splitlines(keepends=True)
+        index = next(i for i, line in enumerate(lines) if line.startswith("put restic_password "))
+        _, name, encoded, digest, comment = lines[index].split(" ")
+        flipped = encoded[:5] + ("A" if encoded[5] != "A" else "B") + encoded[6:]
+        altered = lines[:index] + [" ".join(["put", name, flipped, digest, comment])] + lines[index + 1:]
+        cases = {
+            "valor alterado": "".join(altered),
+            "sem a última linha": "".join(lines[:-1]),
+            "cortado no meio": "".join(lines[:index]) + lines[index][:40] + "\n",
+            "linha de put a menos": "".join(lines[:index] + lines[index + 1:]),
+        }
+        for label, text in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "secrets"
+                result = self.run_kit(text, target)
+                self.assertNotEqual(result.returncode, 0, label)
+                self.assertIn("nada foi gravado", result.stderr.decode())
+                self.assertEqual(list(target.iterdir()) if target.exists() else [], [], label)
 
     def test_kit_requires_every_file(self):
         self.store.ensure(NO_SEEDS)
