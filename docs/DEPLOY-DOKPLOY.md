@@ -45,7 +45,7 @@ O Django admin fica **desligado em produção**: sem `PDV_ENABLE_DJANGO_ADMIN=1`
 
 Ligue o admin só quando precisar inspecionar dados brutos, e desligue em seguida:
 
-1. Defina `PDV_ENABLE_DJANGO_ADMIN=1` e refaça o deploy.
+1. Defina `PDV_ENABLE_DJANGO_ADMIN=1` nas variáveis de ambiente do projeto no Dokploy e refaça o deploy. O `compose.production.yaml` repassa a variável aos serviços `cloud`, `worker` e `migrate`; sem ela o padrão é `0`.
 2. Entre por `https://pdv.crowntech.com.br/login/` com um superusuário e conclua a MFA. `/control/login/` não autentica ninguém: apenas redireciona para `/login/`, onde valem o limite de tentativas e o TOTP.
 3. Abra `https://pdv.crowntech.com.br/control/`. O acesso exige superusuário **e** sessão com MFA verificada; equipe SaaS sem superusuário e usuários de empresas são recusados.
 
