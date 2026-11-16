@@ -677,6 +677,25 @@ def probe_health(url=None, timeout=2):
     return isinstance(body, dict) and body.get("status") == "ok" and body.get("service") == "terminal-local"
 
 
+def probe_responding(url=None, timeout=2):
+    """True when the local terminal answers at all, healthy or in damaged-database mode.
+
+    The launcher uses this: a terminal that started with a damaged database
+    still serves the recovery screen, which the shopkeeper must be able to open.
+    """
+    try:
+        with urllib.request.urlopen(url or paths.health_url(), timeout=timeout) as response:
+            body = json.loads(response.read(4096))
+    except urllib.error.HTTPError as error:
+        try:
+            body = json.loads(error.read(4096))
+        except (OSError, ValueError):
+            return False
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+    return isinstance(body, dict) and body.get("service") == "terminal-local"
+
+
 def await_health(probe, timeout=HEALTH_TIMEOUT, *, alive=lambda: True, interval=1.0,
                  sleep=time.sleep, clock=time.monotonic):
     """Poll until healthy, until the process dies or until the deadline."""

@@ -160,7 +160,7 @@ def check_release(store):
     if not meta.get("cloud_url") or not meta.get("public_key"):
         raise TerminalError("Terminal não pareado", 409)
     response = _request("GET", meta["cloud_url"] +
-                        "/api/v1/ops/releases/current?component=terminal&channel=stable")
+                        "/api/v1/ops/releases/current?component=terminal&channel=stable&current=" + VERSION)
     release_key = meta.get("release_public_key") or meta["public_key"]
     if response.get("public_key") and response["public_key"] != release_key:
         raise TerminalError("Chave de atualização diferente da chave fixada", 403)

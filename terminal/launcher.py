@@ -234,7 +234,7 @@ def main(argv=None, env=None):
         return 0
     try:
         url = cashier_url(env)
-        if not ensure_running(lambda: updater.probe_health(paths.health_url(env)), start_service):
+        if not ensure_running(lambda: updater.probe_responding(paths.health_url(env)), start_service):
             show_message(not_running_message(env))
             return 1
         opened = open_cashier(url, env)

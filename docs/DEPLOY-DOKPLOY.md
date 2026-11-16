@@ -8,6 +8,7 @@ O projeto está preparado para Docker Compose. Nenhuma VPS foi acessada nesta en
 2. Crie projeto Compose a partir do repositório privado e selecione `compose.production.yaml`.
 3. Gere valores exclusivos para as variáveis de `infra/production.env.example` e mantenha `PDV_DOMAIN=pdv.crowntech.com.br` (o valor alimenta `PDV_ALLOWED_HOSTS` e `PDV_CSRF_TRUSTED_ORIGINS`). O segredo Django precisa de ao menos 50 caracteres aleatórios. Use senha de banco URL-safe; a URL de conexão exige codificação se usar caracteres especiais reservados.
 4. Gere um par Ed25519 exclusivo para licenças com `shared.licensing.generate_keypair()`. Armazene as chaves fora do repositório. Configure `PDV_LICENSE_PRIVATE_KEY_PATH` e `PDV_LICENSE_PUBLIC_KEY_PATH` com caminhos absolutos na VPS. O arquivo montado deve ser legível pelo UID 10001 no container; proteja o diretório pai no host. Docker Compose com secret baseado em arquivo preserva permissões do arquivo no host.
+   Gere também um **segundo par Ed25519, só para versões** (atualização automática do terminal) e configure `PDV_RELEASE_PRIVATE_KEY_PATH` e `PDV_RELEASE_PUBLIC_KEY_PATH`. O compose de produção não sobe sem eles. Esse par é separado do de licenças de propósito: quem assina uma licença não consegue assinar um programa. A chave pública de versões fica fixada em cada terminal no pareamento; trocar o par depois exige reparear ou atualizar manualmente os terminais, então guarde a chave privada com o mesmo cuidado da de licenças.
 5. Gere `PDV_ENCRYPTION_KEY` com `Fernet.generate_key()`; ela protege tokens dos provedores no banco. Guarde cópias seguras da chave e dos demais segredos separadas do banco.
 6. Configure Restic em destino externo, senha do repositório e credenciais de armazenamento. `PDV_BACKUP_OFFSITE=1` declara a configuração esperada; confira a restauração de verdade antes de atender clientes.
 7. Associe `pdv.crowntech.com.br` ao serviço `cloud`, porta interna **8080**, usando o painel de domínios do Dokploy e faça deploy. Não publique PostgreSQL ou worker. O proxy precisa encaminhar HTTPS corretamente; `PDV_TRUST_PROXY=1` só deve existir atrás do proxy confiável.
@@ -96,13 +97,13 @@ Cloud e worker escrevem os logs na saída padrão (coletada pelo Docker/Dokploy)
 - Mantenha a imagem anterior e o backup. Reverter a imagem não reverte automaticamente o schema ou os dados.
 - Faça restore em banco novo para testar; troque conexão somente após conferir os registros. Nunca restaure por cima do banco ativo como teste.
 - Monitore saúde do cloud/worker, fila `needs_review`, idade do último backup, espaço em disco e erros de sincronização.
-- Faça guarda externa da chave de criptografia de tokens, chave de licença, segredo de sessão e senha Restic. Sem esses segredos, restaurar apenas o SQL é insuficiente.
+- Faça guarda externa da chave de criptografia de tokens, chave de licença, chave de versões, segredo de sessão e senha Restic. Sem esses segredos, restaurar apenas o SQL é insuficiente.
 
 ## Terminal na loja
 
-O terminal fica na loja, separado da nuvem. Use `compose.terminal.yaml` em máquina com Docker, ou instalador Python/Windows em `terminal/`. Pareie a `https://pdv.crowntech.com.br`. Para impressora USB Windows, prefira instalação nativa com driver RAW; container Linux não recebe automaticamente o spool do Windows.
+O terminal fica na loja, separado da nuvem. No Windows, use o instalador descrito em [INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md) (serviço, atalho na área de trabalho e atualização automática); em máquina com Docker, `compose.terminal.yaml`. Pareie a `https://pdv.crowntech.com.br`. Para impressora USB Windows, prefira instalação nativa com driver RAW; container Linux não recebe automaticamente o spool do Windows.
 
-Cada terminal possui banco próprio. O cenário de servidor local compartilhado por várias estações, com replicação local entre caixas, ainda não foi implementado. Os terminais independentes continuam vendendo offline dentro da licença e reconciliam na nuvem quando a conexão retorna.
+Cada terminal possui banco próprio. O cenário de servidor local compartilhado por várias estações, com replicação local entre caixas, ainda não foi implementado. Os terminais independentes continuam vendendo offline dentro da licença (30 dias por padrão, campo `offline_days` do plano) e reconciliam na nuvem quando a conexão retorna. O desenho do servidor da loja com estações está em [ARQUITETURA-OFFLINE-LOCAL.md](ARQUITETURA-OFFLINE-LOCAL.md).
 
 ## Antes de liberar
 

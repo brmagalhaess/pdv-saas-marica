@@ -91,7 +91,7 @@ O primeiro interrompe apenas o cloud deste projeto, vende offline, religa, sincr
 
 Use `compose.production.yaml` para a nuvem Dokploy e `compose.terminal.yaml` para um terminal Docker na loja. Windows/Python e periféricos: [TERMINAL-V2.md](docs/TERMINAL-V2.md).
 
-`python scripts/package_terminal.py` gera ZIP sem segredos ou vendas. Hospede-o em HTTPS e cadastre versão, tamanho e SHA-256 na plataforma. O servidor assina o manifesto; o terminal avisa sobre versões verificadas. A atualização é manual. `scripts/verify_update.py` verifica o pacote baixado antes da instalação.
+`python scripts/package_terminal.py` gera ZIP sem segredos ou vendas. Hospede-o em HTTPS e cadastre versão, tamanho e SHA-256 na plataforma. O servidor assina o manifesto; o terminal instalado no Windows baixa a versão em segundo plano, confere assinatura, tamanho e SHA-256, e troca sozinho quando o caixa está fechado e a fila vazia, voltando à versão anterior se a nova não subir (veja [docs/INSTALADOR-WINDOWS.md](docs/INSTALADOR-WINDOWS.md)). Fora do instalador a atualização continua manual; `scripts/verify_update.py` verifica o pacote baixado antes da instalação.
 
 ## Marca
 

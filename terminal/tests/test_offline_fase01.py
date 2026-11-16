@@ -852,12 +852,18 @@ class UpdaterHookTests(OfflineCase):
         self.assertIsNone(self.client.get("/api/update/status").json["available"])
 
     def test_import_of_the_updater_module_is_protected(self):
+        import terminal as package
         self.addCleanup(importlib.reload, sync)
+        real = package.__dict__.pop("updater", None)  # "from . import updater" reads the package attribute first
+        if real is not None:
+            self.addCleanup(setattr, package, "updater", real)
         with patch.dict(sys.modules, {"terminal.updater": None}):  # makes the import raise ImportError
             self.assertIsNone(importlib.reload(sync).updater)
         fake = types.ModuleType("terminal.updater")
         with patch.dict(sys.modules, {"terminal.updater": fake}):
+            package.__dict__.pop("updater", None)
             self.assertIs(importlib.reload(sync).updater, fake)
+        package.__dict__.pop("updater", None)
 
     def test_screen_has_the_update_card(self):
         html = self.client.get("/").get_data(as_text=True)

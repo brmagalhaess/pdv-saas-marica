@@ -198,3 +198,41 @@ class MainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DamagedDatabaseProbeTests(unittest.TestCase):
+    """The shortcut must open the recovery screen when the terminal started in damaged-database mode."""
+
+    def _serve(self, status, body):
+        import http.server
+        import json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return f"http://127.0.0.1:{server.server_port}/health"
+
+    def test_damaged_mode_counts_as_responding_but_not_as_healthy(self):
+        from terminal import updater
+        url = self._serve(503, {"status": "degraded", "service": "terminal-local", "database": "damaged"})
+        self.assertTrue(updater.probe_responding(url))
+        self.assertFalse(updater.probe_health(url))  # the updater still rolls back on this
+
+    def test_other_services_and_dead_ports_do_not_count(self):
+        from terminal import updater
+        self.assertFalse(updater.probe_responding(self._serve(200, {"status": "ok", "service": "outro"})))
+        self.assertFalse(updater.probe_responding("http://127.0.0.1:9/health", timeout=0.5))
