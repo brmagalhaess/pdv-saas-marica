@@ -52,7 +52,7 @@ fun ConflictsScreen(vm: AppViewModel, onBack: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
             RequireTenant(vm) { scope ->
-                val paged = rememberPaged<Unit, Conflict>(scope.tenantId, scope.shopId, status, onError = vm::handleDataError) { cursor ->
+                val paged = rememberPaged<Unit, Conflict>(scope.tenantId, scope.shopId, status, keyOf = { it.id }, onError = vm::handleDataError) { cursor ->
                     val page = vm.api.conflicts(scope, status, cursor)
                     PageResult(null, page.results, page.nextCursor)
                 }

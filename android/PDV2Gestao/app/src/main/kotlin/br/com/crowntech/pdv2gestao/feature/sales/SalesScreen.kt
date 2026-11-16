@@ -74,7 +74,7 @@ fun SalesScreen(vm: AppViewModel, onOpen: (String) -> Unit) {
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
             RequireTenant(vm) { scope ->
-                val paged = rememberPaged<Unit, SaleRow>(scope, filter, onError = vm::handleDataError) { cursor ->
+                val paged = rememberPaged<Unit, SaleRow>(scope, filter, keyOf = { it.id }, onError = vm::handleDataError) { cursor ->
                     val page = vm.api.sales(scope, filter, cursor)
                     PageResult(null, page.results, page.nextCursor)
                 }

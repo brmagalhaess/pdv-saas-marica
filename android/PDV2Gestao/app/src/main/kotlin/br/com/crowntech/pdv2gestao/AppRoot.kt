@@ -14,6 +14,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import br.com.crowntech.pdv2gestao.feature.accessdenied.AccessDeniedScreen
+import br.com.crowntech.pdv2gestao.feature.accessdenied.OfflineScreen
 import br.com.crowntech.pdv2gestao.feature.home.HomeScreen
 import br.com.crowntech.pdv2gestao.feature.login.BiometricOfferScreen
 import br.com.crowntech.pdv2gestao.feature.login.LockScreen
@@ -35,6 +36,7 @@ fun AppRoot(vm: AppViewModel) {
                 MfaScreen(vm, s)
             }
             Screen.AccessDenied -> AccessDeniedScreen(onRetry = vm::backToLogin)
+            is Screen.Offline -> OfflineScreen(s.message, onRetry = vm::retryResume, onLogout = vm::logout)
             Screen.BiometricOffer -> BiometricOfferScreen(onAnswer = vm::answerBiometricOffer)
             Screen.Home -> HomeScreen(vm)
         }

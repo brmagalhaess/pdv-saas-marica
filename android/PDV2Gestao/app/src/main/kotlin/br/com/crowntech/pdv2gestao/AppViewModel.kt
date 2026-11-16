@@ -31,6 +31,8 @@ sealed interface Screen {
     data class Login(val message: String? = null) : Screen
     data class Mfa(val token: String, val user: MfaUser?, val expiresAt: String?) : Screen
     data object AccessDenied : Screen
+    /** Abertura sem internet/servidor fora: a sessão continua guardada; "Tentar de novo" ou "Sair". */
+    data class Offline(val message: String) : Screen
     data object BiometricOffer : Screen
     data object Home : Screen
 }
@@ -44,6 +46,12 @@ data class DataContext(
     val period: PeriodKey = PeriodKey.TODAY,
 ) {
     val shopName: String? get() = shops.firstOrNull { it.id == shopId }?.name
+
+    /** Rótulo da loja na barra de contexto. Loja escolhida sem nome conhecido não vira "Todas as lojas". */
+    val shopLabel: String get() = when {
+        shopId == null -> "Todas as lojas"
+        else -> shopName ?: "Loja selecionada"
+    }
 
     fun scope(): DataScope? = tenantId?.let { DataScope(it, shopId, period.key) }
 }
@@ -127,7 +135,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Depois do desbloqueio (ou sem trava): auth/refresh → me → Início. Falhou → Login. */
+    /** Depois do desbloqueio (ou sem trava): auth/refresh → me → Início. Sessão encerrada → Login; sem rede → "Sem conexão". */
     private suspend fun resumeSession() {
         _screen.value = Screen.Starting
         try {
@@ -141,10 +149,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             when (e.action) {
                 ErrorAction.AccessDenied -> { resetLocal(); _screen.value = Screen.AccessDenied }
                 ErrorAction.EndSession -> resetToLogin(e.userMessage)
-                // Sem rede/servidor fora: vai ao Login com a explicação, mas guarda a sessão para a próxima abertura.
-                else -> if (_screen.value !is Screen.Login) _screen.value = Screen.Login(e.userMessage)
+                // Sem rede/servidor fora/limite: mantém a sessão guardada e oferece "Tentar de novo".
+                // Mandar ao Login obrigaria a criar outro aparelho e deixaria o antigo ativo no servidor.
+                else -> if (_screen.value !is Screen.Login) _screen.value = Screen.Offline(e.userMessage)
             }
         }
+    }
+
+    /** "Tentar de novo" na tela Sem conexão. */
+    fun retryResume() {
+        if (_screen.value !is Screen.Offline) return
+        viewModelScope.launch { resumeSession() }
     }
 
     fun unlocked(coldStart: Boolean) {
@@ -292,24 +307,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun applyMe(me: Me) {
         _me.value = me
-        val current = _context.value
-        if (me.isPlatform) {
-            val access = me.tenants.firstOrNull { it.id == current.tenantId }
-            _context.value = if (access != null) current.copy(tenantName = access.name, shops = access.shops) else current
-        } else {
-            val access = me.tenants.firstOrNull { it.id == current.tenantId } ?: me.tenants.firstOrNull()
-            _context.value = if (access == null) {
-                DataContext(period = current.period)
-            } else {
-                val shopOk = current.tenantId == access.id && access.shops.any { it.id == current.shopId }
-                current.copy(
-                    tenantId = access.id,
-                    tenantName = access.name,
-                    shops = access.shops,
-                    shopId = if (shopOk) current.shopId else null,
-                )
-            }
-        }
+        _context.value = contextAfterMe(_context.value, me)
         persistContext()
     }
 
@@ -397,4 +395,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else -> Unit
         }
     }
+}
+
+/**
+ * Ajusta empresa/loja escolhidas ao que `/me` devolveu.
+ * Plataforma: empresa fora de `me.tenants` é mantida, mas a loja só fica se a lista de lojas
+ * for conhecida (as lojas não são guardadas no aparelho; sem elas o rótulo diria "Todas as lojas"
+ * enquanto os dados vêm filtrados por uma loja). O Resumo recarrega as lojas (dashboard.shops).
+ */
+internal fun contextAfterMe(current: DataContext, me: Me): DataContext {
+    if (me.isPlatform) {
+        val access = me.tenants.firstOrNull { it.id == current.tenantId }
+        if (access != null) {
+            val shopOk = access.shops.any { it.id == current.shopId }
+            return current.copy(tenantName = access.name, shops = access.shops, shopId = if (shopOk) current.shopId else null)
+        }
+        val shopKnown = current.shops.any { it.id == current.shopId }
+        return if (shopKnown) current else current.copy(shopId = null)
+    }
+    val access = me.tenants.firstOrNull { it.id == current.tenantId } ?: me.tenants.firstOrNull()
+        ?: return DataContext(period = current.period)
+    val shopOk = current.tenantId == access.id && access.shops.any { it.id == current.shopId }
+    return current.copy(
+        tenantId = access.id,
+        tenantName = access.name,
+        shops = access.shops,
+        shopId = if (shopOk) current.shopId else null,
+    )
 }

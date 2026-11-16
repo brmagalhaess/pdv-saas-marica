@@ -50,7 +50,7 @@ fun CreditScreen(vm: AppViewModel, onBack: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
             RequireTenant(vm) { scope ->
-                val paged = rememberPaged<CreditTotals, CreditCustomer>(scope.tenantId, scope.shopId, status, onError = vm::handleDataError) { cursor ->
+                val paged = rememberPaged<CreditTotals, CreditCustomer>(scope.tenantId, scope.shopId, status, keyOf = { it.customerId }, onError = vm::handleDataError) { cursor ->
                     val r = vm.api.credit(scope, status, cursor)
                     PageResult(r.totals, r.results, r.nextCursor)
                 }

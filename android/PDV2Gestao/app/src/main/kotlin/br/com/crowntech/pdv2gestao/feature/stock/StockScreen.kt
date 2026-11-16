@@ -51,7 +51,7 @@ fun StockScreen(vm: AppViewModel, onBack: (() -> Unit)?) {
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
             RequireTenant(vm) { scope ->
-                val paged = rememberPaged<StockCounts, StockAlert>(scope.tenantId, scope.shopId, status, onError = vm::handleDataError) { cursor ->
+                val paged = rememberPaged<StockCounts, StockAlert>(scope.tenantId, scope.shopId, status, keyOf = { "${it.shop?.id}-${it.productId}" }, onError = vm::handleDataError) { cursor ->
                     val r = vm.api.stockAlerts(scope, status, cursor)
                     PageResult(r.counts, r.results, r.nextCursor)
                 }

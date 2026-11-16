@@ -69,7 +69,7 @@ fun CashScreen(vm: AppViewModel, onOpen: (String) -> Unit) {
             RequireTenant(vm) { scope ->
                 // Abertos ignoram o período (a chave muda só quando importa).
                 val periodKey = if (status == "closed") scope.period else "-"
-                val paged = rememberPaged<Unit, CashSession>(scope.tenantId, scope.shopId, periodKey, status, onError = vm::handleDataError) { cursor ->
+                val paged = rememberPaged<Unit, CashSession>(scope.tenantId, scope.shopId, periodKey, status, keyOf = { it.id }, onError = vm::handleDataError) { cursor ->
                     val page = vm.api.cashSessions(scope, status, cursor)
                     PageResult(null, page.results, page.nextCursor)
                 }

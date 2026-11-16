@@ -135,7 +135,7 @@ private fun TenantsList(vm: AppViewModel) {
     Row(Modifier.padding(horizontal = 16.dp)) {
         FilterChip(selected = attention, onClick = { attention = !attention }, label = { Text("Precisam de atenção") })
     }
-    val paged = rememberPaged<Unit, PlatformTenant>(q, attention, onError = {}) { cursor ->
+    val paged = rememberPaged<Unit, PlatformTenant>(q, attention, keyOf = { it.id }, onError = {}) { cursor ->
         val page = vm.api.platformTenants(q.ifBlank { null }, attention, cursor)
         PageResult(null, page.results, page.nextCursor)
     }
@@ -184,7 +184,7 @@ private fun AccessList(vm: AppViewModel) {
         FilterChip(selected = activeOnly, onClick = { activeOnly = true }, label = { Text("Ativos") })
         FilterChip(selected = !activeOnly, onClick = { activeOnly = false }, label = { Text("Todos") })
     }
-    val paged = rememberPaged<Unit, AppAccessObj>(q, activeOnly, onError = {}) { cursor ->
+    val paged = rememberPaged<Unit, AppAccessObj>(q, activeOnly, keyOf = { it.id }, onError = {}) { cursor ->
         val page = vm.api.platformAccess(activeOnly, q.ifBlank { null }, cursor)
         PageResult(null, page.results, page.nextCursor)
     }
@@ -261,7 +261,7 @@ private fun DevicesList(vm: AppViewModel) {
         FilterChip(selected = activeOnly, onClick = { activeOnly = true }, label = { Text("Ativos") })
         FilterChip(selected = !activeOnly, onClick = { activeOnly = false }, label = { Text("Todos") })
     }
-    val paged = rememberPaged<Unit, PlatformDevice>(q, activeOnly, onError = {}) { cursor ->
+    val paged = rememberPaged<Unit, PlatformDevice>(q, activeOnly, keyOf = { it.id }, onError = {}) { cursor ->
         val page = vm.api.platformDevices(activeOnly, q.ifBlank { null }, cursor)
         PageResult(null, page.results, page.nextCursor)
     }

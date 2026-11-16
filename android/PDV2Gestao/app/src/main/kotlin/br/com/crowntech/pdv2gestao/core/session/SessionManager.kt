@@ -16,6 +16,7 @@ import br.com.crowntech.pdv2gestao.core.model.TokenPair
 import io.ktor.http.HttpMethod
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
@@ -24,6 +25,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /** O que fica guardado (cifrado) no aparelho. O access token NUNCA é gravado. */
@@ -97,6 +99,9 @@ class SessionManager(
     }
 
     suspend fun login(email: String, password: String, device: DeviceInfo): LoginResponse {
+        // Sessão antiga ainda guardada (ex.: abriu sem internet e escolheu entrar de novo):
+        // desconecta o aparelho antigo antes, para não deixá-lo ativo no servidor.
+        if (refreshToken != null) logout()
         val body = AppJson.encodeToString(LoginRequest.serializer(), LoginRequest(email.trim(), password, device))
         val response = client.send(HttpMethod.Post, baseUrl, "/api/v1/app/auth/login", LoginResponse.serializer(), jsonBody = body)
         if (response.status == "ok") adopt(response)
@@ -155,6 +160,12 @@ class SessionManager(
         when (e.action) {
             ErrorAction.EndSession -> endSession(e.userMessage)
             ErrorAction.RefreshAndRetry -> endSession(ApiException.SESSION_ENDED_MESSAGE)
+            // O servidor responde app_access_denied em qualquer rota quando a pessoa fica sem
+            // empresa elegível (e já revoga o aparelho): apaga a sessão e vai à tela S3.
+            ErrorAction.AccessDenied -> {
+                clearLocal()
+                _events.tryEmit(SessionEvent.AccessDenied)
+            }
             else -> Unit
         }
     }
@@ -172,9 +183,19 @@ class SessionManager(
         accessToken ?: throw ApiException(401, "unauthenticated", ApiException.SESSION_ENDED_MESSAGE)
     }
 
-    /** Força uma renovação (usada na abertura do app). */
-    suspend fun refreshNow() {
-        mutex.withLock { doRefreshLocked() }
+    /**
+     * Força uma renovação (usada na abertura do app). Em falha de rede/timeout repete UMA vez
+     * depois de [retryDelay]: se o servidor já tinha girado o refresh e a resposta se perdeu,
+     * a nova tentativa cai dentro da tolerância de 30 s do servidor (evita falso "reuso").
+     */
+    suspend fun refreshNow(retryDelay: Duration = NETWORK_RETRY_DELAY) {
+        try {
+            mutex.withLock { doRefreshLocked() }
+        } catch (e: ApiException) {
+            if (e.action != ErrorAction.Network) throw e
+            delay(retryDelay)
+            mutex.withLock { doRefreshLocked() }
+        }
     }
 
     private suspend fun doRefreshLocked() {
@@ -238,5 +259,7 @@ class SessionManager(
 
     companion object {
         val PROACTIVE_WINDOW = 60.seconds
+        /** Bem menor que a tolerância de 30 s do servidor para refresh repetido. */
+        val NETWORK_RETRY_DELAY = 3.seconds
     }
 }

@@ -114,7 +114,7 @@ fun ContextBar(vm: AppViewModel, showPeriod: Boolean, modifier: Modifier = Modif
             Box {
                 AssistChip(
                     onClick = { shopMenu = true },
-                    label = { Text(ctx.shopName ?: "Todas as lojas", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = { Text(ctx.shopLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     trailingIcon = { Icon(Icons.Filled.ArrowDropDown, contentDescription = "Trocar de loja") },
                 )
                 DropdownMenu(expanded = shopMenu, onDismissRequest = { shopMenu = false }) {

@@ -80,12 +80,23 @@ fun <T> rememberLoad(vararg keys: Any?, onError: (ApiException) -> Unit, fetch: 
 /** Uma página vinda da API, com cabeçalho opcional (totais/contagens). */
 data class PageResult<H, T>(val header: H?, val items: List<T>, val nextCursor: String?)
 
-/** Lista com rolagem infinita por next_cursor. */
+/**
+ * Junta a página nova à lista sem repetir itens. O servidor pagina por offset: se entram
+ * registros novos entre uma página e outra, a página seguinte devolve itens que já estão
+ * na tela. Repetidos quebram o LazyColumn (chave usada duas vezes) e confundem o usuário.
+ */
+internal fun <T> newItemsOnly(existing: List<T>, page: List<T>, keyOf: (T) -> Any): List<T> {
+    val seen = existing.mapTo(HashSet()) { keyOf(it) }
+    return page.filter { seen.add(keyOf(it)) }
+}
+
+/** Lista com rolagem infinita por next_cursor. [keyOf] identifica cada item (o mesmo usado como key no LazyColumn). */
 @Stable
 class PagedState<H, T>(
     private val scope: CoroutineScope,
     private val fetch: suspend (cursor: String?) -> PageResult<H, T>,
     private val onError: (ApiException) -> Unit,
+    private val keyOf: (T) -> Any,
 ) {
     val items = mutableStateListOf<T>()
     var header by mutableStateOf<H?>(null)
@@ -118,7 +129,7 @@ class PagedState<H, T>(
             try {
                 val page = fetch(null)
                 items.clear()
-                items.addAll(page.items)
+                items.addAll(newItemsOnly(emptyList(), page.items, keyOf))
                 header = page.header
                 nextCursor = page.nextCursor
                 loaded = true
@@ -146,7 +157,7 @@ class PagedState<H, T>(
         scope.launch {
             try {
                 val page = fetch(cursor)
-                items.addAll(page.items)
+                items.addAll(newItemsOnly(items, page.items, keyOf))
                 if (page.header != null) header = page.header
                 nextCursor = page.nextCursor
                 moreError = null
@@ -164,13 +175,15 @@ class PagedState<H, T>(
 @Composable
 fun <H, T> rememberPaged(
     vararg keys: Any?,
+    keyOf: (T) -> Any,
     onError: (ApiException) -> Unit,
     fetch: suspend (cursor: String?) -> PageResult<H, T>,
 ): PagedState<H, T> {
     val scope = rememberCoroutineScope()
     val latestFetch by rememberUpdatedState(fetch)
     val latestOnError by rememberUpdatedState(onError)
-    val state = remember(*keys) { PagedState<H, T>(scope, { latestFetch(it) }, { latestOnError(it) }) }
+    val latestKeyOf by rememberUpdatedState(keyOf)
+    val state = remember(*keys) { PagedState<H, T>(scope, { latestFetch(it) }, { latestOnError(it) }, { latestKeyOf(it) }) }
     LaunchedEffect(state) { state.reload() }
     return state
 }

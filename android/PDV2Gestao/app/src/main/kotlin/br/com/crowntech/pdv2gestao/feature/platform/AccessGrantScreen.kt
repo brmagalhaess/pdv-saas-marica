@@ -72,9 +72,19 @@ internal fun pickerMillisToDate(millis: Long): LocalDate =
     Instant.fromEpochMilliseconds(millis).toLocalDateTime(TimeZone.UTC).date
 
 /** Valida a concessão antes de enviar (mesmas regras do servidor, §6.18). Retorna a mensagem de erro ou null. */
-internal fun validateGrant(scope: String, tenantId: String?, userId: Long?, permissions: Collection<String>, reason: String): String? = when {
+internal fun validateGrant(
+    scope: String,
+    tenantId: String?,
+    userId: Long?,
+    permissions: Collection<String>,
+    reason: String,
+    allShops: Boolean = true,
+    shopIds: Collection<String> = emptyList(),
+): String? = when {
     scope == "tenant" && tenantId == null -> "Escolha a empresa."
     userId == null -> "Escolha a pessoa."
+    // shop_ids vazio no servidor = TODAS as lojas: nunca enviar vazio quando o admin desmarcou "Todas".
+    scope == "tenant" && !allShops && shopIds.isEmpty() -> "Marque pelo menos uma loja ou escolha Todas as lojas."
     scope == "tenant" && permissions.isEmpty() -> "Marque pelo menos uma permissão."
     reason.trim().length !in 3..240 -> "Escreva o motivo (mínimo 3 letras)."
     else -> null
@@ -213,6 +223,9 @@ fun AccessGrantScreen(vm: AppViewModel, onBack: () -> Unit) {
                     Label("Lojas")
                     CheckRow("Todas as lojas", allShops) { allShops = it; if (it) shopIds.clear() }
                     if (!allShops) {
+                        if (opts.shops.isEmpty()) {
+                            Text("Esta empresa não tem lojas ativas para escolher.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         opts.shops.forEach { shop ->
                             CheckRow(shop.name, shop.id in shopIds) { on -> if (on) shopIds.add(shop.id) else shopIds.remove(shop.id) }
                         }
@@ -240,11 +253,15 @@ fun AccessGrantScreen(vm: AppViewModel, onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
             error?.let { Text(it, color = dangerColor()) }
+            val missingShops = kind == "tenant" && !allShops && shopIds.isEmpty()
+            if (missingShops) {
+                Text("Marque pelo menos uma loja ou escolha Todas as lojas.", color = dangerColor())
+            }
             Button(
-                enabled = !busy,
+                enabled = !busy && !missingShops,
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {
-                    val problem = validateGrant(kind, tenant?.id, userId, permissions, reason)
+                    val problem = validateGrant(kind, tenant?.id, userId, permissions, reason, allShops, shopIds)
                     if (problem != null) {
                         error = problem
                         return@Button
