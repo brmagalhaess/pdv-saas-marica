@@ -16,7 +16,7 @@ from django.test import SimpleTestCase, TestCase
 WEB = Path(settings.WEB_DIR)
 ASSETS = WEB / "assets"
 VENDOR_URL = "https://crowntech.com.br"
-SITE_URL = "https://pdv.crowntech.com.br/"
+SITE_URL = "https://pdv2.crowntech.com.br/"
 HEDGES = ("acesso antecipado", "nome provisório", "de referência", "validação técnica")
 # Contact and registration data that nobody supplied must never be made up in the pages.
 INVENTED_CONTACT = re.compile(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|wa\.me|tel:|mailto:|\(\d{2}\)\s?\d{4}", re.I)

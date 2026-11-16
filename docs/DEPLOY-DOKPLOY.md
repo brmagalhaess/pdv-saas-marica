@@ -4,18 +4,18 @@ O projeto está preparado para Docker Compose. Nenhuma VPS foi acessada nesta en
 
 ## Preparar a instalação
 
-1. Aponte o DNS de `pdv.crowntech.com.br` para a VPS e configure esse domínio com HTTPS no Dokploy.
+1. Aponte o DNS de `pdv2.crowntech.com.br` para a VPS e configure esse domínio com HTTPS no Dokploy.
 2. Crie projeto Compose a partir do repositório privado e selecione `compose.production.yaml`.
-3. Gere valores exclusivos para as variáveis de `infra/production.env.example` e mantenha `PDV_DOMAIN=pdv.crowntech.com.br` (o valor alimenta `PDV_ALLOWED_HOSTS` e `PDV_CSRF_TRUSTED_ORIGINS`). O segredo Django precisa de ao menos 50 caracteres aleatórios. Use senha de banco URL-safe; a URL de conexão exige codificação se usar caracteres especiais reservados.
+3. Gere valores exclusivos para as variáveis de `infra/production.env.example` e mantenha `PDV_DOMAIN=pdv2.crowntech.com.br` (o valor alimenta `PDV_ALLOWED_HOSTS` e `PDV_CSRF_TRUSTED_ORIGINS`). O segredo Django precisa de ao menos 50 caracteres aleatórios. Use senha de banco URL-safe; a URL de conexão exige codificação se usar caracteres especiais reservados.
 4. Gere um par Ed25519 exclusivo para licenças com `shared.licensing.generate_keypair()`. Armazene as chaves fora do repositório. Configure `PDV_LICENSE_PRIVATE_KEY_PATH` e `PDV_LICENSE_PUBLIC_KEY_PATH` com caminhos absolutos na VPS. O arquivo montado deve ser legível pelo UID 10001 no container; proteja o diretório pai no host. Docker Compose com secret baseado em arquivo preserva permissões do arquivo no host.
    Gere também um **segundo par Ed25519, só para versões** (atualização automática do terminal) e configure `PDV_RELEASE_PRIVATE_KEY_PATH` e `PDV_RELEASE_PUBLIC_KEY_PATH`. O compose de produção não sobe sem eles. Esse par é separado do de licenças de propósito: quem assina uma licença não consegue assinar um programa. A chave pública de versões fica fixada em cada terminal no pareamento; trocar o par depois exige reparear ou atualizar manualmente os terminais, então guarde a chave privada com o mesmo cuidado da de licenças.
 5. Gere `PDV_ENCRYPTION_KEY` com `Fernet.generate_key()`; ela protege tokens dos provedores no banco. Guarde cópias seguras da chave e dos demais segredos separadas do banco.
 6. Configure Restic em destino externo, senha do repositório e credenciais de armazenamento. `PDV_BACKUP_OFFSITE=1` declara a configuração esperada; confira a restauração de verdade antes de atender clientes.
-7. Associe `pdv.crowntech.com.br` ao serviço `cloud`, porta interna **8080**, usando o painel de domínios do Dokploy e faça deploy. Não publique PostgreSQL ou worker. O proxy precisa encaminhar HTTPS corretamente; `PDV_TRUST_PROXY=1` só deve existir atrás do proxy confiável.
+7. Associe `pdv2.crowntech.com.br` ao serviço `cloud`, porta interna **8080**, usando o painel de domínios do Dokploy e faça deploy. Não publique PostgreSQL ou worker. O proxy precisa encaminhar HTTPS corretamente; `PDV_TRUST_PROXY=1` só deve existir atrás do proxy confiável.
 
 `migrate` termina antes de iniciar cloud. `worker` só inicia depois do healthcheck. A tarefa de backup roda a cada hora. O banco usa volume persistente. Não use `down -v` em uma instalação com dados.
 
-Depois do deploy, confira `https://pdv.crowntech.com.br/health/` (deve responder `{"status": "ok"}`) e o login em `https://pdv.crowntech.com.br/login/`.
+Depois do deploy, confira `https://pdv2.crowntech.com.br/health/` (deve responder `{"status": "ok"}`) e o login em `https://pdv2.crowntech.com.br/login/`.
 
 ### Variáveis opcionais
 
@@ -38,7 +38,7 @@ python manage.py createsuperuser
 
 Use e-mail também como username, pois o login web usa o endereço de e-mail. O bootstrap de demonstração está bloqueado por padrão em produção. Cadastre a equipe SaaS no painel; reserve superusuário para administração restrita.
 
-No primeiro acesso em `https://pdv.crowntech.com.br/login/` o superusuário cadastra a MFA (TOTP) e recebe os códigos de recuperação. Guarde-os fora da VPS.
+No primeiro acesso em `https://pdv2.crowntech.com.br/login/` o superusuário cadastra a MFA (TOTP) e recebe os códigos de recuperação. Guarde-os fora da VPS.
 
 ## Django admin (`/control/`)
 
@@ -47,8 +47,8 @@ O Django admin fica **desligado em produção**: sem `PDV_ENABLE_DJANGO_ADMIN=1`
 Ligue o admin só quando precisar inspecionar dados brutos, e desligue em seguida:
 
 1. Defina `PDV_ENABLE_DJANGO_ADMIN=1` nas variáveis de ambiente do projeto no Dokploy e refaça o deploy. O `compose.production.yaml` repassa a variável aos serviços `cloud`, `worker` e `migrate`; sem ela o padrão é `0`.
-2. Entre por `https://pdv.crowntech.com.br/login/` com um superusuário e conclua a MFA. `/control/login/` não autentica ninguém: apenas redireciona para `/login/`, onde valem o limite de tentativas e o TOTP.
-3. Abra `https://pdv.crowntech.com.br/control/`. O acesso exige superusuário **e** sessão com MFA verificada; equipe SaaS sem superusuário e usuários de empresas são recusados.
+2. Entre por `https://pdv2.crowntech.com.br/login/` com um superusuário e conclua a MFA. `/control/login/` não autentica ninguém: apenas redireciona para `/login/`, onde valem o limite de tentativas e o TOTP.
+3. Abra `https://pdv2.crowntech.com.br/control/`. O acesso exige superusuário **e** sessão com MFA verificada; equipe SaaS sem superusuário e usuários de empresas são recusados.
 
 O que o admin permite:
 
@@ -62,7 +62,7 @@ Se possível, restrinja `/control/` por IP ou VPN no proxy do Dokploy enquanto e
 
 Configure SMTP nas variáveis indicadas. As credenciais Asaas são globais da plataforma e devem ser inseridas no painel Serviços. Focus NFe é configurado em cada empresa, inicialmente em homologação. Nunca copie tokens para Git.
 
-Cadastre webhook Asaas HTTPS em `https://pdv.crowntech.com.br/api/v1/ops/webhooks/asaas`, com o mesmo token aleatório (32–255 caracteres) de `PDV_ASAAS_WEBHOOK_TOKEN`. Teste recebimento, reenvio e reconciliação no sandbox. Uma assinatura criada só libera acesso após cobrança confirmada pelo estado consultado no provedor.
+Cadastre webhook Asaas HTTPS em `https://pdv2.crowntech.com.br/api/v1/ops/webhooks/asaas`, com o mesmo token aleatório (32–255 caracteres) de `PDV_ASAAS_WEBHOOK_TOKEN`. Teste recebimento, reenvio e reconciliação no sandbox. Uma assinatura criada só libera acesso após cobrança confirmada pelo estado consultado no provedor.
 
 Emissão Focus em ambiente production só é habilitada com `PDV_ALLOW_LIVE_FISCAL=1`, depois da homologação. Essa variável não conclui a configuração fiscal da empresa nem cria um motor tributário.
 
@@ -101,7 +101,7 @@ Cloud e worker escrevem os logs na saída padrão (coletada pelo Docker/Dokploy)
 
 ## Terminal na loja
 
-O terminal fica na loja, separado da nuvem. No Windows, use o instalador descrito em [INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md) (serviço, atalho na área de trabalho e atualização automática); em máquina com Docker, `compose.terminal.yaml`. Pareie a `https://pdv.crowntech.com.br`. Para impressora USB Windows, prefira instalação nativa com driver RAW; container Linux não recebe automaticamente o spool do Windows.
+O terminal fica na loja, separado da nuvem. No Windows, use o instalador descrito em [INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md) (serviço, atalho na área de trabalho e atualização automática); em máquina com Docker, `compose.terminal.yaml`. Pareie a `https://pdv2.crowntech.com.br`. Para impressora USB Windows, prefira instalação nativa com driver RAW; container Linux não recebe automaticamente o spool do Windows.
 
 Cada terminal possui banco próprio. O cenário de servidor local compartilhado por várias estações, com replicação local entre caixas, ainda não foi implementado. Os terminais independentes continuam vendendo offline dentro da licença (30 dias por padrão, campo `offline_days` do plano) e reconciliam na nuvem quando a conexão retorna. O desenho do servidor da loja com estações está em [ARQUITETURA-OFFLINE-LOCAL.md](ARQUITETURA-OFFLINE-LOCAL.md).
 

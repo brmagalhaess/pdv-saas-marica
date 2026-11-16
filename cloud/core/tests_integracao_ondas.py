@@ -122,7 +122,7 @@ class IntegracaoOndasTests(TestCase):
         for path in ("/app/", "/platform/", "/login/", "/api/", "/control/"):
             self.assertIn(f"Disallow: {path}", lines)
         self.assertNotIn("Disallow: /", lines)
-        self.assertIn("Sitemap: https://pdv.crowntech.com.br/sitemap.xml", lines)
+        self.assertIn("Sitemap: https://pdv2.crowntech.com.br/sitemap.xml", lines)
 
     def test_sitemap_lists_only_the_landing(self):
         response = self.client.get("/sitemap.xml")
@@ -131,7 +131,7 @@ class IntegracaoOndasTests(TestCase):
         body = response.content.decode()
         self.assertTrue(body.startswith('<?xml version="1.0" encoding="UTF-8"?>'))
         self.assertEqual(body.count("<loc>"), 1)
-        self.assertIn("<loc>https://pdv.crowntech.com.br/</loc>", body)
+        self.assertIn("<loc>https://pdv2.crowntech.com.br/</loc>", body)
         with override_settings(PDV_PUBLIC_URL="https://loja.example.test/"):
             self.assertIn("<loc>https://loja.example.test/</loc>", self.client.get("/sitemap.xml").content.decode())
             self.assertIn("Sitemap: https://loja.example.test/sitemap.xml",

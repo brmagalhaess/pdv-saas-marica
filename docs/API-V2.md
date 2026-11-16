@@ -145,7 +145,7 @@ Visão geral em [ARQUITETURA-OFFLINE-LOCAL.md](ARQUITETURA-OFFLINE-LOCAL.md). O 
 ## Páginas públicas e cabeçalhos de segurança
 
 - `GET /robots.txt` (texto): libera a landing (`Allow: /`) e bloqueia `/app/`, `/platform/`, `/login/`, `/api/` e `/control/`; aponta para o sitemap.
-- `GET /sitemap.xml`: contém só a landing. O endereço público vem de `PDV_PUBLIC_URL` nas configurações do Django quando definido; o padrão é `https://pdv.crowntech.com.br`.
+- `GET /sitemap.xml`: contém só a landing. O endereço público vem de `PDV_PUBLIC_URL` nas configurações do Django quando definido; o padrão é `https://pdv2.crowntech.com.br`.
 - `Permissions-Policy: camera=(self), microphone=(), geolocation=()`. A câmera é liberada só para a própria origem, porque o inventário do painel lê códigos de barras pela câmera do celular. Microfone e localização continuam bloqueados.
 - `Content-Security-Policy`: `default-src 'self'`, scripts só da própria origem, sem `object`, sem *frames* de terceiros. `img-src 'self' data: https:` permite que o catálogo mostre fotos de produto cadastradas por URL externa; imagens em `http://` não carregam. Nenhuma outra origem externa foi liberada (`connect-src`, `script-src`, `font-src` continuam em `'self'`).
 - Rotas `/api/`, `/app/`, `/platform/`, `/login/` e `/control/` respondem com `Cache-Control: private, no-store`.

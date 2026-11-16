@@ -39,7 +39,7 @@ PRIVATE_PATHS = ("/app/", "/platform/", "/login/", "/api/", "/control/")
 
 
 def _public_origin():
-    return getattr(settings, "PDV_PUBLIC_URL", "https://pdv.crowntech.com.br").rstrip("/")
+    return getattr(settings, "PDV_PUBLIC_URL", "https://pdv2.crowntech.com.br").rstrip("/")
 
 
 def robots(request):

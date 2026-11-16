@@ -271,7 +271,7 @@ Decisões do plano:
 
 Publicar tem custo para a CrownTech, não para o usuário: Apple Developer Program (US$ 99 por ano) e Google Play (US$ 25, uma vez).
 
-## 8. Produção no Dokploy — `pdv.crowntech.com.br`
+## 8. Produção no Dokploy — `pdv2.crowntech.com.br`
 
 O projeto já tem `compose.production.yaml` e o guia de deploy, e o domínio já resolve para o servidor. Falta:
 
@@ -290,7 +290,7 @@ O projeto já tem `compose.production.yaml` e o guia de deploy, e o domínio já
 |---|---|---|
 | **0 · Estancar** | Fila do caixa que não trava, backup que acusa falha, Windows, `/control/`, limite de fiado, PIN, regressões de teste | sem isso não dá para ter cliente |
 | **1 · Cara nova do caixa** | Caixa Rápido com a régua de teclas F, total e troco grandes, sangria e suprimento na tela, marca CrownTech, cupom no leiaute novo | é o que você pediu como mais importante e o que o operador vê |
-| **2 · Produção** | Deploy no Dokploy, e-mail, troca e recuperação de senha, logs e alertas | colocar `pdv.crowntech.com.br` no ar com segurança |
+| **2 · Produção** | Deploy no Dokploy, e-mail, troca e recuperação de senha, logs e alertas | colocar `pdv2.crowntech.com.br` no ar com segurança |
 | **3 · Cobrança** | Asaas completo (boleto por e-mail, faturas, troca de plano), Stripe com cartão, régua de cobrança | começar a receber |
 | **4 · Painel e admin** | Navegação em 6 áreas, dashboard com gráficos, tabela e busca novas, Console CrownTech, perfis de permissão e planos novos | gestão fácil para o cliente e para você |
 | **5 · App** | Acesso liberado pelo admin, iOS e Android, envio às lojas | depende do servidor em produção |

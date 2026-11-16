@@ -5,7 +5,7 @@ x-env: &env
   PDV_DEBUG: "0"
   PDV_VERSION: ${PDV_VERSION:-2.0.0}
   PDV_SECRET_KEY: ${PDV_SECRET_KEY:?Set a unique secret with at least 50 random characters}
-  DATABASE_URL: postgresql://pdv2:${POSTGRES_PASSWORD:?Set database password}@db:5432/pdv2
+  DATABASE_URL: postgresql://pdv2:${POSTGRES_PASSWORD:?Set database password}@pdv2-db:5432/pdv2
   PDV_ALLOWED_HOSTS: ${PDV_DOMAIN:?Set the real domain},127.0.0.1,localhost
   PDV_CSRF_TRUSTED_ORIGINS: https://${PDV_DOMAIN:?Set the real domain}
   PDV_TRUST_PROXY: "1"
@@ -44,6 +44,11 @@ services:
       POSTGRES_USER: pdv2
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set database password}
     volumes: [postgres_data:/var/lib/postgresql/data]
+    # Nome exclusivo: no Dokploy o cloud também fica na rede compartilhada,
+    # onde outros projetos têm serviços chamados "db".
+    networks:
+      default:
+        aliases: [pdv2-db]
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U pdv2 -d pdv2"]
       interval: 5s
@@ -80,7 +85,7 @@ services:
     image: pdv2-backup:${PDV_VERSION:-2.0.0}
     build: {context: ., dockerfile: infra/Dockerfile.backup}
     environment:
-      PGHOST: db
+      PGHOST: pdv2-db
       PGDATABASE: pdv2
       PGUSER: pdv2
       PGPASSWORD: ${POSTGRES_PASSWORD:?Set database password}
