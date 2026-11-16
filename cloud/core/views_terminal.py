@@ -16,6 +16,8 @@ from shared.licensing import MAX_LEASE_SECONDS, LicenseError, load_private_key, 
 from shared.releases import load_release_public_key
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
 from .models import Customer, Membership, Product, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
+from .models import CashSession
+from .backup_key import tenant_backup_key
 from .cash_logic import CASH_EVENTS, apply_cash_event
 from .credit_logic import apply_credit_receipt, apply_return, balances as credit_balances
 from .payment_methods import ensure as ensure_payment_methods, method_data
@@ -24,6 +26,7 @@ from .stock_balance import balances as stock_balances
 from .sale_logic import event_time, open_conflict, persist_sale, void_from_terminal
 from .serializers import plan as plan_data, sync_conflict as sync_conflict_data, terminal as terminal_data
 from .stock_balance import balance
+from . import restore_logic
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,19 @@ DEVICE_ROLES = {"owner", "admin"}
 LONG_LEASE_CAPABILITY = "long-lease"
 LEGACY_LEASE_SECONDS = 72 * 3600
 EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "credit.received", "stock.adjusted", "cash.opened", "cash.closed",
-               "cash.withdrawn", "cash.supplied"}
+               "cash.withdrawn", "cash.supplied", "terminal.config"}
+# "Trocar de computador" (fase 2). The cloud announces what it supports and the
+# terminal only uses what was announced.
+SEND_ONLY_DAYS = 7
+RESTORE_HISTORY_DAYS = 90
+RECOVERY_CODE_MINUTES = 30
+RESTORE_PAGE_DEFAULT = 200
+RESTORE_PAGE_MAX = 500
+RESTORE_PAGE_BYTES = 1_000_000
+CLOUD_CAPABILITIES = ["restore", "send-only", "terminal-config", "mirror-key"]
+RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+RECOVERY_CODE_SHAPE = re.compile(r"[A-Za-z2-9]{4}-?[A-Za-z2-9]{4}-?[A-Za-z2-9]{4}")
+TRANSFERRED_MESSAGE = "Este caixa foi transferido para outro computador."
 
 
 def _hash(value):
@@ -127,18 +142,60 @@ def _lease(terminal, operators=None, long_lease=False):
         raise APIError("Chaves de licença indisponíveis", 503) from exc
 
 
-def _bearer_terminal(request):
+def _recovery_code():
+    """Easy to type on the new computer: XXXX-XXXX-XXXX, no 0/O/1/I."""
+    letters = "".join(secrets.choice(RECOVERY_ALPHABET) for _ in range(12))
+    return f"{letters[:4]}-{letters[4:8]}-{letters[8:]}"
+
+
+def _pairing_code_hashes(code):
+    """Hashes to look up. A typed recovery code is accepted in any case, with
+    or without hyphens; the code exactly as typed keeps working as before."""
+    compact = re.sub(r"\s+", "", code)
+    hashes = [_hash(code)]
+    if RECOVERY_CODE_SHAPE.fullmatch(compact):
+        letters = compact.replace("-", "").upper()
+        hashes.append(_hash(f"{letters[:4]}-{letters[4:8]}-{letters[8:]}"))
+    return hashes
+
+
+def _send_only_until(terminal, now=None):
+    """Deadline while the replaced computer may still send its queue, else None."""
+    deadline = terminal.previous_token_expires_at
+    if terminal.previous_token_hash and deadline and deadline > (now or timezone.now()):
+        return deadline
+    return None
+
+
+def _bearer_terminal(request, send_only_ok=False):
     authorization = request.headers.get("Authorization", "")
     if not authorization.startswith("Bearer "):
         raise APIError("Terminal não autenticado", 401)
     token = authorization[7:]
     if not 32 <= len(token) <= 160:
         raise APIError("Terminal não autenticado", 401)
-    terminal = Terminal.objects.select_related("tenant", "shop").filter(token_hash=_hash(token), revoked=False).first()
-    if not terminal or not terminal.device_id or not terminal.tenant.active:
+    hashed = _hash(token)
+    terminal = Terminal.objects.select_related("tenant", "shop").filter(token_hash=hashed, revoked=False).first()
+    if terminal:
+        if not terminal.device_id or not terminal.tenant.active:
+            raise APIError("Terminal não autenticado", 401)
+        Terminal.objects.filter(pk=terminal.pk).update(last_seen_at=timezone.now())
+        terminal.send_only = False
+        return terminal
+    # Token of the computer replaced by "Trocar de computador": it may only
+    # send what was left in its queue, for a few days. It never counts as
+    # presence (last_seen_at belongs to the new computer).
+    terminal = (Terminal.objects.select_related("tenant", "shop")
+                .filter(previous_token_hash=hashed, revoked=False).first())
+    if not terminal or not terminal.tenant.active:
         raise APIError("Terminal não autenticado", 401)
-    Terminal.objects.filter(pk=terminal.pk).update(last_seen_at=timezone.now())
-    return terminal
+    deadline = _send_only_until(terminal)
+    if deadline and send_only_ok:
+        terminal.send_only = True
+        return terminal
+    raise APIError(TRANSFERRED_MESSAGE, 403, code="terminal_transferred",
+                   extra={"send_only_until": deadline.isoformat() if deadline else None,
+                          "transferred_at": terminal.transferred_at.isoformat() if terminal.transferred_at else None})
 
 
 @endpoint
@@ -198,9 +255,11 @@ def terminal_detail(request, pk):
     if request.method == "GET":
         return JsonResponse(terminal_data(row))
     data = payload(request)
-    fields(data, ("name", "revoked", "reissue_pairing"))
+    fields(data, ("name", "revoked", "reissue_pairing", "end_send_only"))
     if not data:
         raise APIError("Informe ao menos um campo")
+    if "end_send_only" in data and type(data["end_send_only"]) is not bool:
+        raise APIError("Encerramento inválido")
     if "revoked" in data and type(data["revoked"]) is not bool:
         raise APIError("Estado inválido")
     if "reissue_pairing" in data and type(data["reissue_pairing"]) is not bool:
@@ -223,12 +282,50 @@ def terminal_detail(request, pk):
             code = secrets.token_urlsafe(12)
             row.pairing_code_hash = _hash(code)
             row.pairing_expires_at = timezone.now() + timedelta(minutes=10)
+        ended = bool(data.get("end_send_only")) and _send_only_until(row) is not None
+        if ended:
+            # The hash stays: the old computer keeps hearing "transferido", not "não autenticado".
+            row.previous_token_expires_at = timezone.now()
         row.save()
         audit(member.tenant, member.user, "terminal.updated", row, {"fields": list(data)})
+        if ended:
+            audit(member.tenant, member.user, "terminal.send_only_ended", row,
+                  {"previous_device_id": row.previous_device_id})
     response = terminal_data(row)
     if code:
         response.update(pairing_code=code, pairing_expires_at=row.pairing_expires_at.isoformat())
     return JsonResponse(response)
+
+
+@endpoint
+def terminal_transfer(request, pk):
+    """"Trocar de computador": a recovery code that pairs a new computer to the
+    same terminal. Nothing changes for the old one until the code is used."""
+    method(request, "POST")
+    member = membership_context(request, roles=DEVICE_ROLES, write=True)
+    fields(payload(request), ())
+    with transaction.atomic():
+        Tenant.objects.select_for_update().get(pk=member.tenant_id)
+        row = scoped(Terminal, member.tenant, pk)
+        if row.revoked:
+            raise APIError("Terminal revogado", 409)
+        if not row.token_hash:
+            raise APIError('Este terminal ainda não foi conectado a um computador. Use "Novo código".', 409,
+                           code="terminal_not_paired")
+        code = _recovery_code()
+        row.pairing_code_hash = _hash(code)
+        row.pairing_expires_at = timezone.now() + timedelta(minutes=RECOVERY_CODE_MINUTES)
+        row.save(update_fields=["pairing_code_hash", "pairing_expires_at"])
+        audit(member.tenant, member.user, "terminal.transfer_started", row,
+              {"expires_at": row.pairing_expires_at.isoformat()})
+    license_key = Subscription.objects.filter(tenant=member.tenant).values_list("license_key", flat=True).first()
+    response = JsonResponse({
+        **terminal_data(row), "recovery_code": code, "recovery_expires_at": row.pairing_expires_at.isoformat(),
+        "license_key": license_key, "pending_events": row.heartbeat_pending_events,
+        "open_cash_session": CashSession.objects.filter(terminal=row, closed_at__isnull=True).exists(),
+        "send_only_days": SEND_ONLY_DAYS, "history_days": RESTORE_HISTORY_DAYS})
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @csrf_exempt
@@ -239,7 +336,7 @@ def pair(request):
     fields(data, ("license_key", "code", "device_id", "version"),
            ("license_key", "code", "device_id", "version"))
     license_key = text(data["license_key"], "Licença", 40).upper()
-    code = text(data["code"], "Código", 80)
+    code_hashes = _pairing_code_hashes(text(data["code"], "Código", 80))
     device_id = text(data["device_id"], "Dispositivo", 160)
     version = text(data["version"], "Versão", 80)
     ip = client_ip(request)
@@ -247,7 +344,7 @@ def pair(request):
     try:
         with transaction.atomic():
             row = Terminal.objects.select_for_update().select_related("tenant", "shop").filter(
-                pairing_code_hash=_hash(code), revoked=False,
+                pairing_code_hash__in=code_hashes, revoked=False,
                 tenant__subscription__license_key=license_key,
                 pairing_expires_at__gt=timezone.now()).first()
             if not row:
@@ -267,6 +364,15 @@ def pair(request):
                 previous.version = ""
                 previous.last_seen_at = None
                 previous.save(update_fields=["device_id", "token_hash", "version", "last_seen_at"])
+            now = timezone.now()
+            transferred = bool(row.token_hash) and row.device_id != device_id
+            if transferred:
+                # The replaced computer keeps a send-only token so the sales
+                # still in its queue reach the cloud. A previous hand-over is overwritten.
+                row.previous_token_hash = row.token_hash
+                row.previous_token_expires_at = now + timedelta(days=SEND_ONLY_DAYS)
+                row.previous_device_id = row.device_id
+                row.transferred_at = now
             token = secrets.token_urlsafe(48)
             row.device_id = device_id
             row.version = version
@@ -277,10 +383,18 @@ def pair(request):
             row.save()
             lease, public_key = _lease(row, long_lease=_long_lease(request))
             audit(row.tenant, None, "terminal.paired", row, {"device_id": device_id})
+            if transferred:
+                audit(row.tenant, None, "terminal.transferred", row,
+                      {"device_id": device_id, "previous_device_id": row.previous_device_id,
+                       "send_only_until": row.previous_token_expires_at.isoformat()})
+            # With history in the cloud the terminal starts in recovery mode.
+            recovery = SyncEvent.objects.filter(terminal=row).exists()
     except IntegrityError as exc:
         raise APIError("Dispositivo já vinculado ou código já utilizado", 409) from exc
     reset_rate(limit_key)
     return JsonResponse({"token": token, "terminal_id": str(row.id),
+                         "recovery": recovery, "history_days": RESTORE_HISTORY_DAYS,
+                         "capabilities": CLOUD_CAPABILITIES, "mirror_key": tenant_backup_key(row.tenant),
                          "tenant_id": str(row.tenant_id), "shop_id": str(row.shop_id),
                          "license_hint": row.tenant.subscription.license_key.replace("-", "")[-4:],
                          "tenant": {"id": str(row.tenant_id), "name": row.tenant.name},
@@ -300,7 +414,8 @@ def lease(request):
     operators = _operators(terminal.tenant)
     envelope, public_key = _lease(terminal, operators, _long_lease(request))
     response = JsonResponse({"lease": envelope, "public_key": public_key, "operators": operators,
-                             "server_time": int(time.time()), "release_public_key": _release_public_key()})
+                             "server_time": int(time.time()), "release_public_key": _release_public_key(),
+                             "capabilities": CLOUD_CAPABILITIES, "mirror_key": tenant_backup_key(terminal.tenant)})
     response["Cache-Control"] = "private, no-store"
     return response
 
@@ -349,6 +464,7 @@ def bootstrap(request):
                          "next_cursor": str(offset + limit) if len(rows) > limit else None,
                          "operators": operators, "lease": lease, "public_key": public_key,
                          "release_public_key": _release_public_key(), "server_time": int(time.time()),
+                         "capabilities": CLOUD_CAPABILITIES,
                          "license_hint": terminal.tenant.subscription.license_key.replace("-", "")[-4:]})
 
 
@@ -487,6 +603,42 @@ def _validate_event(event):
         text(data["reason"], "Motivo", 240)
         uuid_value(data["operator_id"], "Operador")
         event_time(data["created_at"])
+    elif event["type"] == "terminal.config":
+        data = event["data"]
+        fields(data, ("version", "print_settings", "mirror", "app_version", "updated_at"),
+               ("version", "print_settings", "updated_at"))
+        uuid_value(aggregate_id, "Terminal")
+        if type(data["version"]) is not int or data["version"] != 1:
+            raise APIError("Versão da configuração inválida")
+        printers = data["print_settings"]
+        if not isinstance(printers, list) or len(printers) > 4:
+            raise APIError("Impressoras inválidas")
+        for printer in printers:
+            if not isinstance(printer, dict):
+                raise APIError("Impressora inválida")
+            fields(printer, ("kind", "driver", "target", "format"), ("kind", "driver", "target", "format"))
+            if (printer["kind"] not in ("receipt", "label") or
+                    printer["driver"] not in ("tcp", "windows_raw", "cups", "file") or
+                    printer["format"] not in ("escpos58", "escpos80", "zpl", "epl") or
+                    not isinstance(printer["target"], str) or len(printer["target"]) > 260):
+                raise APIError("Impressora inválida")
+        if "mirror" in data and (not isinstance(data["mirror"], dict) or set(data["mirror"]) != {"enabled"} or
+                                 type(data["mirror"]["enabled"]) is not bool):
+            raise APIError("Cópia de segurança inválida")
+        if "app_version" in data and (not isinstance(data["app_version"], str) or len(data["app_version"]) > 80):
+            raise APIError("Versão inválida")
+        event_time(data["updated_at"])
+
+
+def _persist_config(terminal, event):
+    """Keep the newest configuration; it returns to a replaced computer on restore.
+    No conflict and no stock effect: an older event is stored but does not win."""
+    data = event["data"]
+    current = Terminal.objects.filter(pk=terminal.pk).values_list("config", flat=True).first()
+    latest = current.get("updated_at") if isinstance(current, dict) else 0
+    if data["updated_at"] >= (latest if type(latest) is int else 0):
+        Terminal.objects.filter(pk=terminal.pk).update(config=data)
+        terminal.config = data
 
 
 def _persist_adjustment(terminal, event, conflicts):
@@ -550,6 +702,8 @@ def _intake(terminal, event, conflicts):
                          .order_by("created_at", "id"))
         return
     _validate_event(event)
+    if event["type"] == "terminal.config" and uuid_value(event["aggregate_id"], "Terminal") != terminal.id:
+        raise APIError("Configuração de outro terminal")
     SyncEvent.objects.create(event_id=event["event_id"], tenant=terminal.tenant,
                              shop=terminal.shop, terminal=terminal,
                              event_type=event["type"], aggregate_id=event["aggregate_id"],
@@ -569,6 +723,8 @@ def _intake(terminal, event, conflicts):
         apply_return(terminal, event, conflicts)
     elif event["type"] == "credit.received":
         apply_credit_receipt(terminal, event, conflicts)
+    elif event["type"] == "terminal.config":
+        _persist_config(terminal, event)
 
 
 # PostgreSQL refuses NUL and lone surrogates in text and jsonb (and NaN/Infinity in jsonb).
@@ -632,7 +788,8 @@ def sync(request):
     """Outbox intake. What happened at the counter is a fact: every event is
     acknowledged, either applied (divergences become conflicts) or quarantined."""
     method(request, "POST")
-    terminal = _bearer_terminal(request)
+    # The only route a replaced computer may still use ("send-only").
+    terminal = _bearer_terminal(request, send_only_ok=True)
     data = payload(request)
     fields(data, ("events",), ("events",))
     events = data["events"]
@@ -662,7 +819,73 @@ def sync(request):
                 if conflict.reason == "rejected_event":
                     quarantined.append({"event_id": event["event_id"], "reason": conflict.reason,
                                         "message": conflict.detail.get("error", "")})
-    return JsonResponse({"accepted_event_ids": accepted, "conflicts": conflicts, "quarantined": quarantined})
+    body = {"accepted_event_ids": accepted, "conflicts": conflicts, "quarantined": quarantined,
+            "send_only": terminal.send_only}
+    if terminal.send_only:
+        body["send_only_until"] = terminal.previous_token_expires_at.isoformat()
+    return JsonResponse(body)
+
+
+@csrf_exempt
+@endpoint
+def restore(request):
+    """History of this terminal for a replaced computer, paged and resumable.
+    Independent of the subscription state: the shop's own data always comes back."""
+    method(request, "GET")
+    terminal = _bearer_terminal(request)
+    take_rate(f"restore:{terminal.pk}", 1200, 600)
+    try:
+        limit = int(request.GET.get("limit", str(RESTORE_PAGE_DEFAULT)))
+    except ValueError:
+        raise APIError("Paginação inválida")
+    if not 1 <= limit <= RESTORE_PAGE_MAX:
+        raise APIError("Paginação inválida")
+    response = JsonResponse(restore_logic.restore_page(
+        terminal, request.GET.get("cursor", ""), limit,
+        history_days=RESTORE_HISTORY_DAYS, max_bytes=RESTORE_PAGE_BYTES))
+    response["Cache-Control"] = "private, no-store"
+    return response
+
+
+@endpoint
+def backup_key(request):
+    """Whether the company's replica key exists and was already shown."""
+    method(request, "GET")
+    member = membership_context(request, roles=DEVICE_ROLES)
+    tenant = member.tenant
+    response = JsonResponse({"exists": bool(tenant.backup_key_encrypted), "key_id": tenant.backup_key_id,
+                             "revealed_at": tenant.backup_key_revealed_at.isoformat()
+                             if tenant.backup_key_revealed_at else None,
+                             "can_reveal": member.role == "owner" and tenant.backup_key_revealed_at is None})
+    response["Cache-Control"] = "private, no-store"
+    return response
+
+
+@endpoint
+def backup_key_reveal(request):
+    """Show the replica key to the owner, once."""
+    method(request, "POST")
+    member = membership_context(request, roles={"owner"}, write=True)
+    data = payload(request)
+    fields(data, ("confirm",), ("confirm",))
+    if data["confirm"] is not True:
+        raise APIError("Confirme para ver a chave")
+    with transaction.atomic():
+        tenant = Tenant.objects.select_for_update().get(pk=member.tenant_id)
+        if tenant.backup_key_revealed_at is not None:
+            raise APIError("A chave da cópia de segurança já foi exibida uma vez.", 409,
+                           code="backup_key_already_revealed")
+        key = tenant_backup_key(tenant)
+        if key is None:
+            raise APIError("A chave da cópia de segurança está indisponível no momento. Tente mais tarde.", 503,
+                           code="backup_key_unavailable")
+        tenant.backup_key_revealed_at = timezone.now()
+        tenant.save(update_fields=["backup_key_revealed_at"])
+        audit(tenant, member.user, "backup_key.revealed", tenant, {"key_id": key["key_id"]})
+    response = JsonResponse({"key_id": key["key_id"], "key": key["key"],
+                             "revealed_at": tenant.backup_key_revealed_at.isoformat()})
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @endpoint

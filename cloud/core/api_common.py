@@ -17,9 +17,13 @@ from .models import AuditEvent, Membership, RateLimit, Subscription, Tenant
 
 
 class APIError(Exception):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, code=None, extra=None):
         self.message = message
         self.status = status
+        # Stable machine-readable code (and extra response keys) for clients
+        # that must react to one specific refusal.
+        self.code = code
+        self.extra = extra or {}
         super().__init__(message)
 
 
@@ -29,7 +33,11 @@ def endpoint(fn):
         try:
             return fn(request, *args, **kwargs)
         except APIError as exc:
-            return JsonResponse({"error": exc.message}, status=exc.status)
+            body = {"error": exc.message}
+            if exc.code:
+                body.update(exc.extra)
+                body["code"] = exc.code
+            return JsonResponse(body, status=exc.status)
     return wrapped
 
 
