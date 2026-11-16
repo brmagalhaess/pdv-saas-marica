@@ -50,7 +50,7 @@ O terminal nunca pede para digitar a chave da cópia de segurança: ela chega da
 A pasta por `device_id` impede que o computador antigo e o novo, usando o mesmo pendrive, misturem as numerações da fila.
 
 - **Cifra:** Fernet (`cryptography`, que já era dependência) com a chave da cópia de segurança.
-- **`manifest.json`:** `{"format":"pdv2-mirror","v":1,"tenant_id","shop_id","terminal_id","device_id","tenant_name","shop_name","terminal_name","key_id","snapshots":[{"name","created_at","outbox_seq","size_bytes","sha256"}],"journal_seq","journal_segments":[{"name","first_seq"}],"updated_at","app_version"}`. Trocado de forma atômica.
+- **`manifest.json`:** `{"format":"pdv2-mirror","v":1,"tenant_id","shop_id","terminal_id","device_id","tenant_name","shop_name","terminal_name","key_id","snapshots":[{"name","created_at","outbox_seq","size_bytes","sha256"}],"journal_seq","journal_segments":[{"name","first_seq"}],"updated_at","app_version"}`. Trocado de forma atômica. É regravado **só quando uma cópia do banco termina**, nunca a cada venda: em pendrive FAT/exFAT a troca do arquivo não é atômica, e o diário já diz sozinho até onde a réplica chegou. Se o manifesto se perder (queda de energia ou pendrive puxado no meio da troca), a leitura tenta `manifest.json.tmp` e, na falta, refaz o índice pelos cabeçalhos das cópias e pelo caminho `<terminal_id>/<device_id>`; a recuperação segue com o aviso "O índice da cópia de segurança estava danificado; os arquivos foram lidos diretamente."
 - **Cópia do banco** (texto ASCII, por linhas):
   - linha 1: cabeçalho em claro `{"format":"pdv2-mirror-snapshot","v":1,"key_id","terminal_id","device_id","created_at","outbox_seq","chunk_bytes":4194304}`;
   - uma linha por bloco de 4 MiB do SQLite, cada uma um token Fernet;
@@ -70,6 +70,8 @@ A cópia do banco **não leva** o token do terminal nem a própria `mirror_key`:
 O diário é sempre alimentado **pela tabela `outbox`, em ordem de `seq`**, com uma conexão SQLite própria e só de leitura. Evento desfeito por rollback nunca entra; queda entre a venda e a gravação não perde nada, porque a passada seguinte recomeça de onde o disco parou.
 
 Passos de cada cópia: `backup` do SQLite para um arquivo temporário ao lado do banco → `PRAGMA integrity_check` → cifra em blocos em `*.tmp` no destino → `fsync` → `os.replace` → **relê do disco, decifra e confere o SHA-256** → atualiza o manifesto → apaga o temporário. Cada cópia concluída com `outbox_seq = S` abre o segmento `journal-<S+1>`.
+
+**Relógio do computador corrigido para trás.** Se a hora estava adiantada quando uma cópia foi feita e depois foi acertada, a passada seguinte faz **uma** cópia de reancoragem com a hora certa e rebaixa, no manifesto, o carimbo das cópias retidas; a cadência normal volta dali em diante. Prazos guardados em memória (próxima cópia, nova tentativa depois de falha) são descartados quando ficam mais distantes do que o intervalo que os criou. Na leitura, a cópia "mais recente" é a que foi mais longe na fila (`outbox_seq`); o carimbo de hora só desempata.
 
 ### 3.3 Quando o disco falha
 

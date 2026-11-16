@@ -28,6 +28,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -71,6 +72,7 @@ MSG_DAMAGED_SNAPSHOT = "A cópia mais recente do banco estava danificada; foi us
 MSG_NO_SNAPSHOT = "Nenhuma cópia do banco pôde ser lida; foram usados só os registros do diário."
 MSG_TRUNCATED = "A última linha do diário estava incompleta e foi ignorada."
 MSG_BAD_LINE = "Uma linha do diário estava ilegível e foi ignorada."
+MSG_REBUILT = "O índice da cópia de segurança estava danificado; os arquivos foram lidos diretamente."
 
 
 class MirrorError(TerminalError):
@@ -550,9 +552,10 @@ class _Run:
             position, wrote = rows[-1][0], True
         self.state["journal_seq"] = position
         if wrote:
+            # O manifesto não é regravado aqui: em pendrive FAT/exFAT a troca do arquivo não é
+            # atômica, e uma por venda multiplicava a chance de perdê-lo numa queda de energia.
+            # Quem lê descobre o fim do diário pelo próprio diário.
             self.state["last_journal_at"] = now
-            self.manifest["journal_seq"] = position
-            _save_manifest(self.replica, self.manifest, now)
         return wrote
 
     def snapshot(self, now, fresh):
@@ -560,8 +563,13 @@ class _Run:
         try:
             if not fresh:
                 self.append(now, upto=outbox_seq)  # a cópia anterior continua aproveitável até aqui
-            newest = max((item["created_at"] for item in self.manifest["snapshots"]), default=0)
-            created = max(now, newest + 1)
+            # O carimbo é sempre a hora de agora, mesmo que cópias antigas tenham carimbo no futuro
+            # (relógio que estava adiantado e foi acertado); só o nome do arquivo precisa ser único.
+            taken = {item["name"] for item in self.manifest["snapshots"]}
+            created = now
+            while (f"snapshot-{created}{SNAPSHOT_SUFFIX}" in taken
+                   or (self.replica / f"snapshot-{created}{SNAPSHOT_SUFFIX}").exists()):
+                created += 1
             name = f"snapshot-{created}{SNAPSHOT_SUFFIX}"
             header = {"format": "pdv2-mirror-snapshot", "v": 1, "key_id": self.key_id,
                       "terminal_id": self.meta["terminal_id"], "device_id": self.meta["device_id"],
@@ -580,7 +588,12 @@ class _Run:
         entry = {"name": name, "created_at": created, "outbox_seq": outbox_seq,
                  "size_bytes": os.stat(path).st_size, "sha256": digest}
         manifest = self.manifest
-        manifest["snapshots"] = (manifest["snapshots"] + [entry])[-KEEP_SNAPSHOTS:]
+        # Reancoragem: nenhuma cópia retida fica com carimbo depois desta, senão a idade da mais
+        # recente seria negativa para sempre e cada venda dispararia uma cópia completa.
+        older = manifest["snapshots"]
+        older = [dict(item, created_at=min(item["created_at"], created - (len(older) - index)))
+                 for index, item in enumerate(older)]
+        manifest["snapshots"] = (older + [entry])[-KEEP_SNAPSHOTS:]
         segment = {"name": _segment_name(outbox_seq + 1), "first_seq": outbox_seq + 1}
         segments = [item for item in manifest["journal_segments"] if item["name"] != segment["name"]] + [segment]
         oldest = manifest["snapshots"][0]["outbox_seq"]
@@ -618,7 +631,7 @@ class _Run:
             return True
         age = now - snapshots[-1]["created_at"]
         if age >= SNAPSHOT_MAX_AGE_MS or age < 0:
-            return True
+            return True  # age < 0: relógio voltou; uma cópia reancora os carimbos (ver snapshot)
         return age >= SNAPSHOT_INTERVAL_MS and self.journal_seq() > snapshots[-1]["outbox_seq"]
 
 
@@ -643,15 +656,19 @@ def tick(store, now=None, force_snapshot=False):
             try:
                 requested = force_snapshot or store_id in _SNAPSHOT_REQUESTS
                 run = _begin(store, state)
+                # Prazos guardados em memória só valem dentro do intervalo que os criou: se o
+                # relógio foi corrigido para trás, um prazo distante demais é descartado.
                 if (run is not None and not requested and not state["last_error"]
-                        and now < _NEXT_DUE.get(store_id, 0) and _max_seq(store) == state["journal_seq"]):
+                        and 0 < _NEXT_DUE.get(store_id, 0) - now <= SNAPSHOT_MAX_AGE_MS
+                        and _max_seq(store) == state["journal_seq"]):
                     run = None  # nada novo: não acorda o disco de destino
                 if run is not None:
                     _NEXT_DUE.pop(store_id, None)
                     fresh = run.prepare(now)
                     if not fresh:
                         run.append(now)
-                    waiting = _SNAPSHOT_RETRY_AT.get(store_id, 0) > now and not force_snapshot
+                    waiting = (0 < _SNAPSHOT_RETRY_AT.get(store_id, 0) - now <= SNAPSHOT_RETRY_MS
+                               and not force_snapshot)
                     if (requested or fresh or run.snapshot_due(now)) and not waiting:
                         try:
                             run.snapshot(now, fresh)
@@ -932,28 +949,124 @@ def on_cash_closed(store):
 
 # ---------------------------------------------------------------- leitura (recuperação)
 
+_JOURNAL_NAME = re.compile(r"journal-(\d{12})" + re.escape(JOURNAL_SUFFIX))
+
+
+def _rebuild_manifest(replica):
+    """Manifesto refeito dos próprios arquivos: cabeçalhos das cópias e, na falta, o caminho da pasta."""
+    try:
+        names = sorted(os.listdir(replica))
+    except OSError:
+        return None
+    snapshots, newest = [], None
+    for name in names:
+        if not (name.startswith("snapshot-") and name.endswith(SNAPSHOT_SUFFIX)):
+            continue
+        header = _snapshot_header(Path(replica) / name)
+        if (header and type(header.get("created_at")) is int and type(header.get("outbox_seq")) is int
+                and isinstance(header.get("terminal_id"), str) and isinstance(header.get("device_id"), str)):
+            snapshots.append({"name": name, "created_at": header["created_at"], "outbox_seq": header["outbox_seq"]})
+            if newest is None or header["outbox_seq"] >= newest["outbox_seq"]:
+                newest = header
+    segments = [{"name": name, "first_seq": int(match.group(1))}
+                for name in names for match in [_JOURNAL_NAME.fullmatch(name)] if match]
+    if not snapshots and not segments:
+        return None
+    snapshots.sort(key=lambda item: (item["outbox_seq"], item["created_at"]))
+    replica = Path(replica)
+    return {"format": "pdv2-mirror", "v": 1, "tenant_id": None, "shop_id": None,
+            "terminal_id": newest["terminal_id"] if newest else replica.parent.name,
+            "device_id": newest["device_id"] if newest else replica.name,
+            "tenant_name": "", "shop_name": "", "terminal_name": "",
+            "key_id": newest.get("key_id") if newest else None,
+            "snapshots": snapshots, "journal_segments": segments,
+            "journal_seq": max((item["outbox_seq"] for item in snapshots), default=0),
+            "updated_at": max((item["created_at"] for item in snapshots), default=0),
+            "recovered": "rebuilt"}
+
+
+def _journal_tail(replica, name):
+    """(maior seq, data de gravação em ms) de um segmento, lidos do prefixo em claro das linhas."""
+    last, written = 0, 0
+    try:
+        path = Path(replica) / name
+        written = int(os.stat(path).st_mtime * 1000)
+        with open(path, "rb") as source:
+            for line in source:
+                head = line.split(b"\t", 1)[0]
+                if line.endswith(b"\n") and head.isdigit():
+                    last = max(last, int(head))
+    except (OSError, ValueError):
+        pass
+    return last, written
+
+
+def _open_replica(replica):
+    """Manifesto de uma pasta de réplica para leitura, mesmo que ``manifest.json`` tenha se perdido.
+
+    O manifesto é trocado por tmp + replace, o que não é atômico em pendrive FAT/exFAT: uma queda
+    nesse instante deixa só o ``.tmp`` ou um arquivo cortado. As cópias e o diário continuam bons,
+    então a réplica não pode sumir por causa do índice.
+    """
+    manifest = _load_manifest(replica)
+    if manifest is None:
+        staged = _read_json(Path(replica) / (MANIFEST_NAME + ".tmp"))
+        manifest = dict(staged, recovered="tmp") if _manifest_ok(staged) else _rebuild_manifest(replica)
+    else:
+        manifest = dict(manifest)
+        manifest.pop("recovered", None)
+    if (manifest is None or not isinstance(manifest.get("terminal_id"), str) or not manifest["terminal_id"]
+            or not isinstance(manifest.get("device_id"), str) or not manifest["device_id"]):
+        return None
+    # O manifesto só é regravado na cópia do banco; o diário diz até onde a réplica chegou.
+    try:
+        journals = sorted(name for name in os.listdir(replica) if _JOURNAL_NAME.fullmatch(name))
+    except OSError:
+        journals = []
+    journal_seq = manifest.get("journal_seq") if type(manifest.get("journal_seq")) is int else 0
+    updated_at = manifest.get("updated_at") if type(manifest.get("updated_at")) is int else 0
+    for index, name in enumerate(journals):
+        last, written = _journal_tail(replica, name) if index == len(journals) - 1 else (0, 0)
+        journal_seq = max(journal_seq, last, int(name[8:20]) - 1)
+        if last:
+            updated_at = max(updated_at, written)
+    manifest["journal_seq"], manifest["updated_at"] = journal_seq, updated_at
+    return manifest
+
+
 def _replicas(directory):
     """[(pasta da réplica, manifesto)] encontradas a partir de qualquer nível do layout."""
     base = Path(directory)
     found, seen = [], set()
-    for pattern in (f"{ROOT_NAME}/*/*/{MANIFEST_NAME}", f"*/*/{MANIFEST_NAME}", f"*/{MANIFEST_NAME}", MANIFEST_NAME):
-        try:
-            paths = sorted(base.glob(pattern))
-        except OSError:
-            continue
-        for path in paths:
-            if str(path) in seen:
+    tails = (MANIFEST_NAME, MANIFEST_NAME + ".tmp", "snapshot-*" + SNAPSHOT_SUFFIX, "journal-*" + JOURNAL_SUFFIX)
+    for prefix in (f"{ROOT_NAME}/*/*/", "*/*/", "*/", ""):
+        for tail in tails:
+            try:
+                paths = sorted(base.glob(prefix + tail))
+            except OSError:
                 continue
-            seen.add(str(path))
-            manifest = _load_manifest(path.parent)
-            if manifest and isinstance(manifest.get("terminal_id"), str) and isinstance(manifest.get("device_id"), str):
-                found.append((path.parent, manifest))
+            for path in paths:
+                if str(path.parent) in seen:
+                    continue
+                seen.add(str(path.parent))
+                manifest = _open_replica(path.parent)
+                if manifest:
+                    found.append((path.parent, manifest))
     return found
 
 
+def _other_shop(manifest, identity):
+    """A réplica é de outra empresa ou loja. Manifesto refeito dos arquivos não traz esses dados:
+    aí valem o ``terminal_id`` e a chave, que só abre cópia da mesma empresa."""
+    if manifest.get("recovered") == "rebuilt":
+        return False
+    return any(manifest.get(name) != identity.get(name) for name in ("tenant_id", "shop_id"))
+
+
 def _matches(manifest, identity):
-    return all(identity.get(name) and manifest.get(name) == identity.get(name)
-               for name in ("tenant_id", "shop_id", "terminal_id"))
+    return bool(identity.get("tenant_id") and identity.get("shop_id") and identity.get("terminal_id")
+                and manifest.get("terminal_id") == identity.get("terminal_id")
+                and not _other_shop(manifest, identity))
 
 
 def candidates(identity, directory=None):
@@ -970,9 +1083,9 @@ def candidates(identity, directory=None):
                     "terminal_id": manifest["terminal_id"],
                     "terminal_name": str(manifest.get("terminal_name") or ""),
                     "shop_name": str(manifest.get("shop_name") or ""),
-                    "updated_at": manifest.get("updated_at") if type(manifest.get("updated_at")) is int else 0,
-                    "journal_seq": manifest.get("journal_seq") if type(manifest.get("journal_seq")) is int else 0,
-                    "last_snapshot_at": snapshots[-1]["created_at"] if snapshots else None,
+                    "updated_at": manifest["updated_at"],
+                    "journal_seq": manifest["journal_seq"],
+                    "last_snapshot_at": max(item["created_at"] for item in snapshots) if snapshots else None,
                     "matches": _matches(manifest, identity),
                     "current_device": bool(identity.get("device_id")) and manifest["device_id"] == identity.get("device_id"),
                 })
@@ -993,7 +1106,7 @@ def _choose_replica(directory, identity, replica_id):
             raise MirrorError(MSG_NOT_FOUND, 404)
         chosen.sort(key=lambda item: item[1]["terminal_id"] != identity.get("terminal_id"))
         replica, manifest = chosen[0]
-        if manifest.get("tenant_id") != identity.get("tenant_id") or manifest.get("shop_id") != identity.get("shop_id"):
+        if _other_shop(manifest, identity):
             raise MirrorError(MSG_OTHER_SHOP, 409)
         if manifest["terminal_id"] != identity.get("terminal_id"):
             raise MirrorError(MSG_OTHER_TERMINAL, 409)
@@ -1002,11 +1115,10 @@ def _choose_replica(directory, identity, replica_id):
            and item[1]["device_id"] != identity.get("device_id")]
     if own:
         replica, manifest = max(own, key=lambda item: item[1].get("updated_at") or 0)
-        if manifest.get("tenant_id") != identity.get("tenant_id") or manifest.get("shop_id") != identity.get("shop_id"):
+        if _other_shop(manifest, identity):
             raise MirrorError(MSG_OTHER_SHOP, 409)
         return replica, manifest
-    if found and all(item[1].get("tenant_id") != identity.get("tenant_id")
-                     or item[1].get("shop_id") != identity.get("shop_id") for item in found):
+    if found and all(_other_shop(item[1], identity) for item in found):
         raise MirrorError(MSG_OTHER_SHOP, 409)
     raise MirrorError(MSG_NOT_FOUND, 404)
 
@@ -1047,7 +1159,9 @@ def read_pending(directory, key, identity, replica_id=None):
     if not isinstance(directory, str) or not directory.strip():
         raise MirrorError(MSG_NOT_FOUND, 404)
     replica, manifest = _choose_replica(directory.strip(), identity, replica_id)
-    if manifest.get("key_id") != key_id:
+    recovered = manifest.get("recovered")
+    # Manifesto refeito pode não saber a chave (só diário): os arquivos cifrados decidem adiante.
+    if manifest.get("key_id") != key_id and not (recovered == "rebuilt" and manifest.get("key_id") is None):
         raise MirrorError(MSG_WRONG_KEY, 409)
 
     warnings, snapshot, base_events, tokens, readable = [], None, [], 0, 0
@@ -1062,7 +1176,9 @@ def read_pending(directory, key, identity, replica_id=None):
             header = _snapshot_header(replica / name)
             if header and type(header.get("created_at")) is int and type(header.get("outbox_seq")) is int:
                 listed.append({"name": name, "created_at": header["created_at"], "outbox_seq": header["outbox_seq"]})
-    for entry in sorted(listed, key=lambda item: item["created_at"], reverse=True):
+    # A mais recente é a que foi mais longe na fila; o carimbo de hora só desempata, porque o
+    # relógio do computador pode ter sido corrigido entre uma cópia e outra.
+    for entry in sorted(listed, key=lambda item: (item["outbox_seq"], item["created_at"]), reverse=True):
         if entry["name"] not in names:
             continue
         tokens += 1
@@ -1083,6 +1199,8 @@ def read_pending(directory, key, identity, replica_id=None):
         base_events = []
         if tokens:
             warnings = [MSG_NO_SNAPSHOT]
+    if recovered:
+        warnings.append(MSG_REBUILT)
     floor = snapshot["outbox_seq"] if snapshot and type(snapshot["outbox_seq"]) is int else 0
 
     journal, last_seq = {}, floor

@@ -190,7 +190,7 @@ class CopiaEDiarioTests(MirrorCase):
         self.event()
         mirror.tick(self.store, now=start + 10 * minute)
         self.assertEqual(len(self.manifest()["snapshots"]), 1)
-        self.assertEqual(self.manifest()["journal_seq"], 1)
+        self.assertEqual(mirror.status(self.store)["journal_seq"], 1)
         mirror.tick(self.store, now=start + 16 * minute)
         self.assertEqual(len(self.manifest()["snapshots"]), 2)
         mirror.tick(self.store, now=start + 40 * minute)  # sem movimento: nada novo
@@ -356,7 +356,8 @@ class DiscoTests(MirrorCase):
         self.assertEqual(list(self.store.path.parent.glob(".mirror-*")), [])
         self.assertEqual(len(self.manifest()["snapshots"]), 1)
         # O diário não depende da cópia do banco.
-        self.assertEqual(self.manifest()["journal_seq"], 1)
+        self.assertEqual(status["journal_seq"], 1)
+        self.assertEqual(len(self.read()["events"]), 1)
         # Nova tentativa pedida pelo gerente funciona e limpa o erro.
         mirror.snapshot_now(self.store)
         self.assertEqual(mirror.status(self.store)["state"], "ok")
@@ -682,6 +683,190 @@ class GanchosTests(MirrorCase):
                 pass
             time.sleep(0.02)
         self.fail("a thread da réplica não reagiu a tempo")
+
+
+class RelogioCorrigidoTests(MirrorCase):
+    HOUR = 60 * 60 * 1000
+    MINUTE = 60 * 1000
+
+    def test_relogio_corrigido_para_tras_faz_uma_unica_copia_de_reancoragem(self):
+        self.enable()
+        start = self.manifest()["snapshots"][-1]["created_at"]
+        self.event()
+        mirror.tick(self.store, now=start + 3 * self.HOUR)  # computador com a hora adiantada
+        self.assertEqual(len(self.manifest()["snapshots"]), 2)
+        copies = []
+        with patch.object(mirror, "_write_snapshot", side_effect=lambda *args: copies.append(1)
+                          or self.real_write(*args)):
+            for index in range(5):  # o Windows acertou a hora: cinco vendas em seguida
+                self.event()
+                status = mirror.tick(self.store, now=start + self.MINUTE + index)
+                self.assertEqual(status["state"], "ok", status)
+        self.assertEqual(len(copies), 1)
+        now = start + self.MINUTE + 4
+        snapshots = self.manifest()["snapshots"]
+        self.assertEqual(len(snapshots), 3)
+        stamps = [item["created_at"] for item in snapshots]
+        self.assertEqual(stamps, sorted(set(stamps)))
+        self.assertLessEqual(stamps[-1], now)
+        self.assertLessEqual(mirror.status(self.store)["last_snapshot_at"], now)
+        self.assertEqual(sorted(path.name for path in self.replica().glob("snapshot-*")),
+                         sorted(item["name"] for item in snapshots))
+        # A cadência normal volta a valer a partir da hora certa.
+        mirror.tick(self.store, now=stamps[-1] + 10 * self.MINUTE)
+        self.assertEqual(self.manifest()["snapshots"][-1]["created_at"], stamps[-1])
+        mirror.tick(self.store, now=stamps[-1] + 16 * self.MINUTE)
+        self.assertGreater(self.manifest()["snapshots"][-1]["created_at"], stamps[-1])
+        # A leitura usa a cópia mais adiantada na fila, não a de carimbo mais alto.
+        data = self.read()
+        self.assertEqual(data["snapshot"]["outbox_seq"], 6)
+        self.assertEqual([item["seq"] for item in data["events"]], [1, 2, 3, 4, 5, 6])
+
+    def real_write(self, *args):
+        return REAL_WRITE_SNAPSHOT(*args)
+
+    def test_leitura_prefere_a_copia_mais_adiantada_mesmo_com_carimbo_antigo(self):
+        self.enable()
+        start = self.manifest()["snapshots"][-1]["created_at"]
+        first = self.event()
+        mirror.tick(self.store, now=start + 3 * self.HOUR)
+        self.store.ack_events([first])
+        second = self.event()
+        mirror.tick(self.store, now=start + self.MINUTE)
+        data = self.read()
+        self.assertEqual(data["snapshot"]["outbox_seq"], 2)
+        self.assertEqual([item["event_id"] for item in data["events"]], [second])
+
+    def test_espera_de_nova_tentativa_nao_fica_presa_no_carimbo_futuro(self):
+        self.enable()
+        start = self.manifest()["snapshots"][-1]["created_at"]
+        self.event()
+        with patch.object(mirror, "_write_snapshot", side_effect=OSError(errno.EIO, "falha")):
+            status = mirror.tick(self.store, now=start + 3 * self.HOUR)
+        self.assertEqual(status["state"], "error")
+        self.event()
+        status = mirror.tick(self.store, now=start + 20 * self.MINUTE)  # hora acertada, disco bom
+        self.assertEqual(status["state"], "ok", status)
+        self.assertEqual(status["last_error"], "")
+        self.assertEqual(len(self.manifest()["snapshots"]), 2)
+
+    def test_proximo_vencimento_no_futuro_distante_nao_segura_a_copia_diaria(self):
+        self.enable()
+        start = self.manifest()["snapshots"][-1]["created_at"]
+        mirror.tick(self.store, now=start + 30 * 24 * self.HOUR)  # data errada por um mês, sem venda
+        self.assertEqual(len(self.manifest()["snapshots"]), 2)
+        mirror.tick(self.store, now=start + self.MINUTE)
+        mirror.tick(self.store, now=start + 2 * self.MINUTE)
+        self.assertEqual(len(self.manifest()["snapshots"]), 3)
+        newest = self.manifest()["snapshots"][-1]["created_at"]
+        self.assertEqual(newest, start + self.MINUTE)
+        mirror.tick(self.store, now=newest + 25 * self.HOUR)
+        self.assertEqual(self.manifest()["snapshots"][-1]["created_at"], newest + 25 * self.HOUR)
+
+
+class ManifestoPerdidoTests(MirrorCase):
+    def prepare_replica(self):
+        sent, kept = self.event(), self.event()
+        self.store.ack_events([sent])
+        self.enable()
+        later = [self.event(), self.event()]
+        mirror.tick(self.store)
+        return [kept, *later]
+
+    def assert_recovered(self, expected):
+        data = self.read()
+        self.assertEqual([item["event_id"] for item in data["events"]], expected)
+        self.assertEqual(data["terminal_id"], TERMINAL)
+        self.assertEqual(data["replica_id"], self.store.identity()["device_id"])
+        return data
+
+    def test_sem_manifesto_a_replica_e_lida_pelos_arquivos(self):
+        expected = self.prepare_replica()
+        (self.replica() / "manifest.json").unlink()
+        data = self.assert_recovered(expected)
+        self.assertEqual(data["snapshot"]["outbox_seq"], 2)
+        self.assertIn(mirror.MSG_REBUILT, data["warnings"])
+        found = mirror.candidates(self.new_identity(), str(self.disk))
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0]["matches"])
+        self.assertEqual(found[0]["replica_id"], self.store.identity()["device_id"])
+        self.assertEqual(found[0]["terminal_id"], TERMINAL)
+        self.assertEqual(found[0]["journal_seq"], 4)
+        self.assertIsInstance(found[0]["last_snapshot_at"], int)
+        self.assertEqual(self.read(replica_id=self.store.identity()["device_id"])["events"], data["events"])
+
+    def test_manifesto_cortado_usa_o_arquivo_temporario_da_troca(self):
+        expected = self.prepare_replica()
+        path = self.replica() / "manifest.json"
+        content = path.read_bytes()
+        (self.replica() / "manifest.json.tmp").write_bytes(content)
+        path.write_bytes(content[:len(content) // 2])  # troca interrompida em pendrive FAT
+        data = self.assert_recovered(expected)
+        self.assertIn(mirror.MSG_REBUILT, data["warnings"])
+        found = mirror.candidates(self.new_identity(), str(self.disk))
+        self.assertEqual([item["shop_name"] for item in found], ["Matriz"])
+        self.assertTrue(found[0]["matches"])
+
+    def test_manifesto_e_temporario_cortados_reconstroem_pelos_cabecalhos(self):
+        expected = self.prepare_replica()
+        path = self.replica() / "manifest.json"
+        content = path.read_bytes()
+        path.write_bytes(b"")
+        (self.replica() / "manifest.json.tmp").write_bytes(content[:40])
+        self.assert_recovered(expected)
+
+    def test_so_o_diario_ainda_devolve_os_eventos_pelo_caminho_da_pasta(self):
+        self.enable()
+        events = [self.event(), self.event()]
+        mirror.tick(self.store)
+        (self.replica() / "manifest.json").unlink()
+        for path in self.replica().glob("snapshot-*"):
+            path.unlink()
+        data = self.assert_recovered(events)
+        self.assertIsNone(data["snapshot"])
+
+    def test_replica_reconstruida_com_outra_chave_e_recusada(self):
+        self.prepare_replica()
+        (self.replica() / "manifest.json").unlink()
+        with self.assertRaises(mirror.MirrorError) as raised:
+            mirror.read_pending(str(self.disk), new_key("ffffffffffffffff"), self.new_identity())
+        self.assertEqual(str(raised.exception), mirror.MSG_WRONG_KEY)
+
+    def test_replica_reconstruida_de_outro_caixa_nao_e_usada(self):
+        self.prepare_replica()
+        (self.replica() / "manifest.json").unlink()
+        other = dict(self.new_identity(), terminal_id="55555555-5555-4555-8555-555555555555")
+        with self.assertRaises(mirror.MirrorError) as raised:
+            mirror.read_pending(str(self.disk), self.key, other)
+        self.assertEqual(raised.exception.status, 404)
+        self.assertFalse(mirror.candidates(other, str(self.disk))[0]["matches"])
+
+    def test_diario_nao_regrava_o_manifesto_a_cada_venda(self):
+        self.enable()
+        path = self.replica() / "manifest.json"
+        before = path.read_bytes()
+        with patch.object(mirror, "_save_manifest", side_effect=AssertionError("manifesto regravado")):
+            for _ in range(3):
+                self.event()
+                self.assertEqual(mirror.tick(self.store)["state"], "ok")
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(mirror.status(self.store)["journal_seq"], 3)
+        found = mirror.candidates(self.new_identity(), str(self.disk))
+        self.assertEqual(found[0]["journal_seq"], 3)  # lido do próprio diário
+        self.assertEqual(len(self.read()["events"]), 3)
+
+    def test_caixa_antigo_refaz_o_manifesto_perdido_sem_perder_a_fila(self):
+        expected = self.prepare_replica()
+        (self.replica() / "manifest.json").unlink()
+        expected.append(self.event())
+        self.assertEqual(mirror.tick(self.store)["state"], "ok")
+        self.assertEqual(self.manifest()["key_id"], self.key["key_id"])
+        data = self.read()
+        self.assertEqual([item["event_id"] for item in data["events"]], expected)
+        self.assertEqual(data["warnings"], [])
+
+
+REAL_WRITE_SNAPSHOT = mirror._write_snapshot
 
 
 if __name__ == "__main__":
