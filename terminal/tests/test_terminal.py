@@ -452,8 +452,8 @@ class TerminalTests(unittest.TestCase):
                                               "payments": [{"method": "cash", "amount_cents": 700}]})
         back = self.store.return_sale(self.manager, sale["id"], {"return_id": "d1", "refund_method": "cash", "reason": "Avaria",
                                       "items": [{"product_id": self.unit_product_id, "quantity_milli": 1000}]})
-        printed = json.dumps(back["receipt"])
-        self.assertIn("DEVOLUCAO", printed)
+        printed = json.dumps(back["receipt"], ensure_ascii=False)
+        self.assertIn("DEVOLUÇÃO", printed)
         self.assertIn("Assinatura do cliente", printed)
 
     def test_promotions_priced_offline_and_manual_discount_over_promo_price(self):
@@ -475,7 +475,7 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual((sale["gross_cents"], sale["promo_discount_cents"], sale["discount_cents"], sale["total_cents"]),
                          (2100, 700, 140, 1260))
         self.assertEqual(sale["items"][0]["line_total_cents"], 1260)
-        self.assertIn(b"Promocao: Leve 3 pague 2 Arroz", receipt_bytes(sale))
+        self.assertIn("Promoção: Leve 3 pague 2 Arroz".encode("cp850"), receipt_bytes(sale))
         item = [e for e in self.store.pending_events() if e["type"] == "sale.completed"][0]["data"]["items"][0]
         self.assertEqual((item["promo_discount_cents"], item["promotion_id"], item["promotion_name"]),
                          (700, rules[0]["id"], "Leve 3 pague 2 Arroz"))
@@ -647,7 +647,7 @@ class TerminalTests(unittest.TestCase):
                 "quantity_milli": 1250, "unit": "KG", "unit_price_cents": 1299, "line_total_cents": 1624}],
                 "gross_cents": 1624, "discount_cents": 0, "total_cents": 1624,
                 "payments": [{"method": "cash", "amount_cents": 1700}], "change_cents": 76}
-        self.assertIn(b"COMPROVANTE NAO FISCAL", receipt_bytes(sale, 58))
+        self.assertIn("NÃO É DOCUMENTO FISCAL".encode("cp850"), receipt_bytes(sale, 58))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "zpl").startswith(b"^XA"))
         self.assertTrue(label_bytes({"id": "x", "name": "Arroz", "barcode": "789", "price_cents": 700}, "epl").startswith(b"N\n"))
         with self.assertRaisesRegex(ValueError, "TM-T20"):
