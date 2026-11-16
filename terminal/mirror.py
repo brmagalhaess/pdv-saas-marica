@@ -416,24 +416,30 @@ def _parse_journal_line(line, fernet):
     return record
 
 
-def _segment_last_seq(path, fernet):
-    """Maior ``seq`` legível do segmento (0 se vazio ou ausente), com cache por tamanho."""
+def _segment_last(path, fernet):
+    """``(seq, event_id)`` da linha legível de maior ``seq`` do segmento (``(0, None)`` se vazio ou
+    ausente), com cache por tamanho."""
     try:
         size = os.stat(path).st_size
     except OSError:
         _JOURNAL_CACHE.pop(str(path), None)
-        return 0
+        return 0, None
     cached = _JOURNAL_CACHE.get(str(path))
     if cached and cached[0] == size:
-        return cached[1]
-    last = 0
+        return cached[1], cached[2]
+    last, last_id = 0, None
     with open(path, "rb") as source:
         for line in source:
             record = _parse_journal_line(line, fernet)
-            if record:
-                last = max(last, record["seq"])
-    _JOURNAL_CACHE[str(path)] = (size, last)
-    return last
+            if record and record["seq"] >= last:
+                last, last_id = record["seq"], record["event_id"]
+    _JOURNAL_CACHE[str(path)] = (size, last, last_id)
+    return last, last_id
+
+
+def _segment_last_seq(path, fernet):
+    """Maior ``seq`` legível do segmento (0 se vazio ou ausente), com cache por tamanho."""
+    return _segment_last(path, fernet)[0]
 
 
 def _append_journal(path, rows, fernet):
@@ -451,7 +457,7 @@ def _append_journal(path, rows, fernet):
         target.flush()
         os.fsync(target.fileno())
         size = target.tell()
-    _JOURNAL_CACHE[str(path)] = (size, rows[-1][0])
+    _JOURNAL_CACHE[str(path)] = (size, rows[-1][0], str(rows[-1][1]))
 
 
 # ---------------------------------------------------------------- manifesto
@@ -1323,6 +1329,13 @@ def key_from_meta(meta):
 def max_seq(store):
     """Maior ``seq`` da fila, lido com conexão própria e só de leitura."""
     return _max_seq(store)
+
+
+def event_id_at(store, seq):
+    """``event_id`` da linha da fila com este ``seq``, ou None se não existe (leitura própria)."""
+    with closing(_open_readonly(store.path)) as conn:
+        row = conn.execute("SELECT id FROM outbox WHERE seq=?", (int(seq),)).fetchone()
+    return str(row[0]) if row else None
 
 
 def make_snapshot(store, directory, now=None):

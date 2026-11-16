@@ -503,6 +503,94 @@ class PrincipalInstavelTests(ReplicaCase):
         self.assertNotEqual(self.replica().name, old_device)
 
 
+class PrincipalTrocadoPorPromocaoTests(ReplicaCase):
+    """Outro caixa assumiu como principal: mesma identidade (terminal_id, device_id, chave), outra
+    linha do tempo. O que este caixa recebeu do principal antigo não pode se misturar com o novo."""
+
+    def promoted_store(self, sales, generation=None):
+        """Banco de quem assumiu: cópia do principal como está agora, mais ``sales`` vendas próprias."""
+        path = self.root / "promovido" / "terminal.sqlite3"
+        path.parent.mkdir()
+        with closing(sqlite3.connect(self.store.path)) as source, closing(sqlite3.connect(path)) as target:
+            source.backup(target)
+        store = Store(path)
+        if generation is not None:
+            with store.transaction() as conn:
+                Store._set_meta(conn, "server_generation", str(generation))
+        for _ in range(sales):
+            self.event(store, note="venda do novo principal")
+        return store
+
+    def outbox_ids(self, store):
+        with closing(sqlite3.connect(store.path)) as conn:
+            return [row[0] for row in conn.execute("SELECT id FROM outbox ORDER BY seq")]
+
+    def diverge(self, generation=None):
+        """Este caixa tem 6,7,8 do principal antigo; o novo principal só tinha até 5 e vendeu 6'..9'."""
+        self.events(5)
+        self.sync()
+        promoted = self.promoted_store(4, generation)
+        old_tail = self.events(3)  # só este caixa recebeu
+        self.assertTrue(self.puller.cycle())
+        self.assertEqual([item["event_id"] for item in self.journal()][-3:], old_tail)
+        self.assertEqual((mirror.max_seq(self.store), mirror.max_seq(promoted)), (8, 9))
+        self.assertEqual(promoted.identity()["device_id"], self.store.identity()["device_id"])
+        old_replica = self.replica()
+        replica_net.stop_all()
+        self.store = self.lan.store = promoted  # o caixa é religado ao novo principal
+        self.lan.calls.clear()
+        return promoted, old_tail, old_replica
+
+    def check_separated(self, promoted, old_tail):
+        kept = list(self.puller.base.glob("anterior-*"))
+        self.assertEqual(len(kept), 1, "as vendas do principal antigo tinham de ficar guardadas")
+        archived = kept[0] / mirror.ROOT_NAME / TERMINAL / promoted.identity()["device_id"]
+        lines = b"".join(path.read_bytes() for path in sorted(archived.glob("journal-*.pdv2log"))).split(b"\n")
+        self.assertEqual([mirror.parse_journal_line(line, self.key)["event_id"] for line in lines if line][-3:],
+                         old_tail)
+        # A cópia nova é só a linha do tempo do novo principal: nada do antigo, nada faltando.
+        target = self.root / "conferencia.sqlite3"
+        identity = dict(promoted.identity(), device_id=None)
+        restored = mirror.restore_database(str(self.puller.base), self.key, identity, target,
+                                           replica_id=promoted.identity()["device_id"])
+        with closing(sqlite3.connect(target)) as conn:
+            ids = [row[0] for row in conn.execute("SELECT id FROM outbox ORDER BY seq")]
+        ids += [item["event_id"] for item in restored["events"]]
+        self.assertEqual(ids, self.outbox_ids(promoted))
+        self.assertFalse(set(ids) & set(old_tail))
+        self.assertEqual(replica_net.status(promoted)["state"], "ok")
+
+    def test_mesma_identidade_e_fila_divergente_guarda_a_geracao_antiga(self):
+        promoted, old_tail, _ = self.diverge()
+        self.assertEqual(self.sync()["state"], "ok")
+        self.assertTrue(any("after=8&" in path and "after_id=" + old_tail[-1] in path
+                            for _, path, _ in self.lan.calls))
+        self.check_separated(promoted, old_tail)
+
+    def test_geracao_diferente_arquiva_antes_de_pedir_o_diario(self):
+        self.assertEqual(self.server_status()["generation"], 1)
+        promoted, old_tail, _ = self.diverge(generation=2)
+        self.assertEqual(json.loads((self.puller.base / "state.json").read_text(encoding="utf-8"))["generation"], 1)
+        self.assertEqual(self.sync()["state"], "ok")
+        self.assertFalse(any("after=8" in path for _, path, _ in self.lan.calls))
+        self.assertEqual(json.loads((self.puller.base / "state.json").read_text(encoding="utf-8"))["generation"], 2)
+        self.check_separated(promoted, old_tail)
+        self.assertTrue(self.puller.cycle())  # mesma geração de novo: nada mais é arquivado
+        self.assertEqual(len(list(self.puller.base.glob("anterior-*"))), 1)
+
+    def test_rota_do_diario_confere_o_evento_da_posicao(self):
+        ids = self.events(3)
+        self.wait_snapshot()
+        status, headers, body = self.call("GET", "/lan/v1/replica/journal", {"after": "2", "after_id": ids[1]})
+        self.assertEqual((status, headers["X-PDV-Journal-Count"]), (200, "1"))
+        status, _, body = self.call("GET", "/lan/v1/replica/journal", {"after": "2", "after_id": ids[0]})
+        self.assertEqual((status, json.loads(body)["code"], json.loads(body)["outbox_seq"]), (409, "journal_reset", 3))
+        status, _, _ = self.call("GET", "/lan/v1/replica/journal", {"after": "2", "after_id": "x y"})
+        self.assertEqual(status, 400)
+        status, _, _ = self.call("GET", "/lan/v1/replica/journal", {"after": "0", "after_id": ids[0]})
+        self.assertEqual(status, 200)  # posição zero não tem evento para conferir
+
+
 class SemChaveOuRestaurandoTests(ReplicaCase):
     def assert_nothing_copied(self, store):
         out = store.path.parent / "replica-out"
@@ -552,8 +640,8 @@ class RotasTests(ReplicaCase):
         snapshot = self.wait_snapshot()
         info = self.server_status()
         self.assertEqual(set(info), {"v", "state", "terminal_id", "device_id", "tenant_id", "shop_id", "tenant_name",
-                                     "shop_name", "terminal_name", "key_id", "app_version", "outbox_seq", "snapshot",
-                                     "server_time_ms"})
+                                     "shop_name", "terminal_name", "key_id", "app_version", "generation", "outbox_seq",
+                                     "snapshot", "server_time_ms"})
         self.assertEqual((info["v"], info["state"], info["terminal_id"], info["shop_name"], info["outbox_seq"]),
                          (1, "ok", TERMINAL, "Matriz", 2))
         self.assertEqual(set(snapshot), {"name", "created_at", "outbox_seq", "size_bytes", "sha256"})

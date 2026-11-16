@@ -46,6 +46,7 @@ LOCK_NAME = "promotion.lock"
 DATABASE_NAME = "terminal.sqlite3"
 PROMOTING_NAME = DATABASE_NAME + ".promoting"
 PROFILE_POINTER = "active-profile.json"
+MODE_NAME = "mode.json"  # gravado por paths.write_mode: {"v":1,"mode","changed_at": <epoch s>}
 MANAGER_ROLES = ("owner", "admin", "manager")
 PIN_MAX_FAILURES = 5
 PIN_LOCK_MS = 5 * 60 * 1000
@@ -74,7 +75,7 @@ def _base(data_dir):
 
 def _default():
     return {"v": 1, "state": "idle", "step": "", "error": "", "started_at": None, "finished_at": None,
-            "failures": 0, "locked_until": None, "result": None}
+            "failures": 0, "locked_until": None, "result": None, "promoted_at": None}
 
 
 def _load(data_dir):
@@ -91,6 +92,7 @@ def _load(data_dir):
     saved["failures"] = saved["failures"] if type(saved["failures"]) is int and saved["failures"] >= 0 else 0
     saved["locked_until"] = saved["locked_until"] if type(saved["locked_until"]) is int else None
     saved["result"] = saved["result"] if isinstance(saved["result"], dict) else None
+    saved["promoted_at"] = saved["promoted_at"] if type(saved["promoted_at"]) is int else None
     return saved
 
 
@@ -104,11 +106,44 @@ def _save(data_dir, saved):
     mirror._atomic_write(base / STATE_NAME, mirror._canon(saved).encode("utf-8"))
 
 
-def _version_tuple(value):
+def _compat(value):
+    """Número de compatibilidade do banco: ``(maior, menor)`` da versão do PDV2.
+
+    A correção (terceiro número) não entra: versão de correção não muda o formato do banco, e o
+    caixa principal se atualiza sozinho de madrugada enquanto o caixa adicional não. Comparar a
+    versão inteira deixaria a promoção indisponível depois de qualquer correção.
+    """
     try:
-        return tuple(int(part) for part in str(value).strip().split("."))
+        parts = tuple(int(part) for part in str(value).strip().split("."))
     except ValueError:
         return ()
+    return (parts + (0,))[:2] if parts else ()
+
+
+def _newer(copy):
+    """A cópia veio de um PDV2 com formato de banco mais novo que o deste computador."""
+    theirs = _compat((copy["manifest"] or {}).get("app_version") or copy["state"]["app_version"])
+    return bool(theirs and theirs > _compat(replica_net._version()))
+
+
+def _mode_changed_at(data_dir):
+    """Quando o modo deste computador foi gravado pela última vez (epoch s), ou None."""
+    stored = mirror._read_json(Path(data_dir) / MODE_NAME)
+    value = stored.get("changed_at") if isinstance(stored, dict) else None
+    return value if type(value) in (int, float) and value > 0 else None
+
+
+def _concluded(data_dir, saved):
+    """A promoção terminou E o modo já foi gravado depois dela: é história, não pendência.
+
+    ``changed_at`` é em segundos; só conta o que foi gravado em um segundo posterior ao do fim da
+    promoção (na dúvida continua pendente, que é o lado seguro: sobe como caixa principal).
+    """
+    if saved["state"] != "done":
+        return False
+    changed = _mode_changed_at(data_dir)
+    finished = saved["finished_at"] if type(saved["finished_at"]) is int else None
+    return changed is not None and finished is not None and int(changed) > finished // 1000
 
 
 def _copy(data_dir):
@@ -125,6 +160,16 @@ def _copy(data_dir):
         except OSError:
             manifest = None
     complete = bool(state["key"] and manifest and manifest["snapshots"])
+    try:
+        promoted_at = _load(data_dir)["promoted_at"]
+        if (complete and promoted_at and (state["last_contact_at"] or 0) <= promoted_at
+                and (Path(data_dir) / DATABASE_NAME).is_file()):
+            # Este computador já assumiu com esta cópia e o banco promovido está no lugar. Para
+            # assumir de novo ele precisa ter voltado a ser caixa adicional e falado com o
+            # principal atual depois disso; a cópia velha não pode passar por cima do banco.
+            complete = False
+    except Exception:
+        complete = False
     return {"state": state, "manifest": manifest, "complete": complete}
 
 
@@ -132,8 +177,7 @@ def _require_copy(data_dir):
     copy = _copy(data_dir)
     if not copy["complete"]:
         raise TerminalError(MSG_NO_COPY, 409)
-    theirs = _version_tuple(copy["manifest"].get("app_version") or copy["state"]["app_version"])
-    if theirs and theirs > _version_tuple(replica_net._version()):
+    if _newer(copy):
         raise TerminalError(MSG_NEWER, 409)
     return copy
 
@@ -189,8 +233,7 @@ def status(data_dir):
         elif not copy["complete"]:
             result.update(available=False, reason=MSG_NO_COPY)
         else:
-            theirs = _version_tuple(manifest.get("app_version") or copy["state"]["app_version"])
-            newer = bool(theirs and theirs > _version_tuple(replica_net._version()))
+            newer = _newer(copy)
             result.update(available=not newer, reason=MSG_NEWER if newer else "")
     except Exception:
         pass
@@ -389,7 +432,7 @@ def promote(data_dir, pin, *, station_id, station_name, store_factory=None):
                       "snapshot_at": restored["snapshot"]["created_at"],
                       "previous_server_cash_open": bool((finished or {}).get("previous_server_cash_open")),
                       "warnings": list(restored["warnings"])}
-            saved.update(state="done", step="", finished_at=now,
+            saved.update(state="done", step="", finished_at=now, promoted_at=now,
                          result=dict(result, previous_database=kept.name if kept else None))
             _save(data_dir, saved)
             return result
@@ -412,10 +455,14 @@ def promote(data_dir, pin, *, station_id, station_name, store_factory=None):
 def pending(data_dir):
     """True quando a promoção terminou e o banco já está no lugar: falta só trocar o modo.
 
-    Cobre a queda entre a troca do banco e a troca de modo: na partida, quem vê True sobe como
-    caixa principal.
+    Cobre só a queda entre a troca do banco e a troca de modo: na partida, quem vê True sobe como
+    caixa principal. Deixa de valer assim que ``<dados>/mode.json`` é gravado depois da promoção
+    (por ``station.py`` ao concluir, ou mais tarde por quem escolheu "Este é um caixa adicional"):
+    daí em diante este computador pode voltar a ser caixa adicional e até assumir de novo.
     """
     try:
-        return _load(data_dir)["state"] == "done" and (Path(data_dir) / DATABASE_NAME).is_file()
+        saved = _load(data_dir)
+        return (saved["state"] == "done" and (Path(data_dir) / DATABASE_NAME).is_file()
+                and not _concluded(data_dir, saved))
     except Exception:
         return False

@@ -171,6 +171,14 @@ def _source_state(meta):
     return None
 
 
+def _generation(meta):
+    """Geração do banco do principal: ``finish_promotion`` soma um a cada promoção (1 se nunca houve)."""
+    try:
+        return max(int(meta.get("server_generation") or 1), 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _blocked(state):
     if state == "restoring":
         return _error(409, MSG_RESTORING, "restoring")
@@ -319,7 +327,8 @@ def _route_status(server, store):
         "tenant_id": meta.get("tenant_id"), "shop_id": meta.get("shop_id"),
         "tenant_name": meta.get("tenant_name") or "", "shop_name": meta.get("shop_name") or "",
         "terminal_name": meta.get("terminal_name") or "", "key_id": key.get("key_id"),
-        "app_version": _version(), "outbox_seq": outbox_seq, "snapshot": snapshot, "server_time_ms": _now_ms()})
+        "app_version": _version(), "generation": _generation(meta), "outbox_seq": outbox_seq, "snapshot": snapshot,
+        "server_time_ms": _now_ms()})
 
 
 def _route_key(store):
@@ -393,6 +402,9 @@ def _route_journal(server, store, values):
     after = _number(values, "after", 0, 0, 2 ** 62)
     wait = _number(values, "wait", 0.0, 0.0, MAX_WAIT_SECONDS, float)
     limit = _number(values, "limit", mirror.JOURNAL_BATCH, 1, mirror.JOURNAL_BATCH)
+    after_id = values.get("after_id") or None
+    if after_id is not None and not (isinstance(after_id, str) and _ID.fullmatch(after_id)):
+        raise TerminalError("Pedido inválido", 400)
     deadline, epoch = time.monotonic() + wait, _EPOCH
     while True:
         with server.cond:
@@ -404,6 +416,12 @@ def _route_journal(server, store, values):
         top = mirror.max_seq(store)
         if after > top:
             return _error(409, "A fila do caixa principal recomeçou.", "journal_reset", outbox_seq=top)
+        if after_id is not None and after and mirror.event_id_at(store, after) != after_id:
+            # Mesmo número, outro evento: quem pede seguiu outra linha do tempo (o principal foi
+            # trocado por promoção ou restaurado). Ele guarda o que tem e começa outra geração.
+            return _error(409, "A fila do caixa principal não é a que este caixa acompanhava.", "journal_reset",
+                          outbox_seq=top)
+        after_id = None  # conferido uma vez; a espera longa não repete a leitura
         lines = mirror.journal_lines(store, after, limit) if top > after else []
         remaining = deadline - time.monotonic()
         if lines or remaining <= 0 or epoch != _EPOCH:
@@ -553,7 +571,7 @@ def _base_dir(data_dir):
 def _default_state():
     return {"v": 1, "terminal_id": None, "device_id": None, "key": None, "journal_seq": 0, "server_seq": 0,
             "last_snapshot": None, "last_contact_at": None, "last_error": "", "error_kind": "",
-            "app_version": "", "hint": "", "behind_since": None}
+            "app_version": "", "hint": "", "behind_since": None, "generation": None}
 
 
 def _load_state(data_dir):
@@ -576,6 +594,8 @@ def _load_state(data_dir):
             state[name] = None
     if not _entry_ok(state["last_snapshot"]):
         state["last_snapshot"] = None
+    if type(state["generation"]) is not int or state["generation"] < 1:
+        state["generation"] = None
     for name in ("last_error", "error_kind", "app_version", "hint"):
         if not isinstance(state[name], str):
             state[name] = ""
@@ -770,6 +790,17 @@ class Puller:
         last = segments[-1]
         return max(last["first_seq"] - 1, mirror._segment_last_seq(self._replica() / last["name"], self._fernet()))
 
+    def _journal_tail_id(self, manifest, position):
+        """``event_id`` da linha do diário daqui com ``seq == position``; None se a posição vem só da
+        cópia do banco (nenhuma linha gravada com esse número)."""
+        if position <= 0:
+            return None
+        for segment in reversed(manifest["journal_segments"]):
+            seq, event_id = mirror._segment_last(self._replica() / segment["name"], self._fernet())
+            if seq:
+                return event_id if seq == position and isinstance(event_id, str) and _ID.fullmatch(event_id) else None
+        return None
+
     def _new_manifest(self, info):
         manifest = mirror._new_manifest(info, self.state["key"]["key_id"])
         manifest["app_version"] = self.state["app_version"]
@@ -904,6 +935,9 @@ class Puller:
         """Uma leva do diário. Devolve quantas linhas entraram; grava só linha conferida."""
         position = self._journal_seq(manifest)
         path = f"{PREFIX}journal?after={position}&wait={int(wait)}&limit={mirror.JOURNAL_BATCH}"
+        tail_id = self._journal_tail_id(manifest, position)
+        if tail_id:
+            path += f"&after_id={tail_id}"  # o principal confere que ainda é a mesma linha do tempo
         response = self._request("GET", path, headers={"Accept": "application/octet-stream"},
                                  timeout=float(wait) + 15.0)
         data, whole = self._read_all(response)
@@ -989,6 +1023,14 @@ class Puller:
             raise _Rejected()
         if state["terminal_id"] and (state["terminal_id"], state["device_id"]) != (terminal_id, device_id):
             self._archive(now)  # o principal agora é outro banco: a cópia do anterior fica guardada
+        generation = info.get("generation")
+        generation = generation if type(generation) is int and generation >= 1 else None
+        if generation is not None and state["generation"] is not None and generation != state["generation"]:
+            # Outro caixa assumiu como principal: a identidade é a mesma, a linha do tempo não. O que
+            # este caixa recebeu do principal antigo fica guardado, nunca misturado com o do novo.
+            self._archive(now)
+        if generation is not None:
+            state["generation"] = generation
         if state["key"] is None or state["key"]["key_id"] != key_id:
             key = self._json("GET", PREFIX + "key")
             key = {"key_id": key.get("key_id"), "key": key.get("key")}

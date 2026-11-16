@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -207,6 +208,20 @@ class PinDoGerenteTests(PromotionCase):
             promotion.verify_manager(self.station_dir, MANAGER_PIN)
 
 
+    def test_versao_de_correcao_do_principal_nao_bloqueia_so_formato_de_banco_mais_novo(self):
+        # O principal se atualiza sozinho de madrugada; o caixa adicional não.
+        with patch.dict(os.environ, {"PDV_VERSION": "2.1.7"}):
+            self.replicate()
+        with patch.dict(os.environ, {"PDV_VERSION": "2.1.0"}):
+            status = promotion.status(self.station_dir)
+            self.assertEqual((status["available"], status["reason"]), (True, ""))
+            self.assertEqual(promotion.verify_manager(self.station_dir, MANAGER_PIN)["operator_id"], "op-gerente")
+            self.assertTrue(self.promote()["promoted"])
+        for local, blocked in (("2.0.9", True), ("2.0", True), ("1.9.9", True), ("2.1", False), ("2.2.0", False)):
+            with patch.dict(os.environ, {"PDV_VERSION": local}):
+                self.assertEqual(promotion._newer(promotion._copy(self.station_dir)), blocked, local)
+
+
 class PromoverTests(PromotionCase):
     def test_passos_na_ordem_estado_e_troca_do_banco(self):
         later = self.replicate(before=2, after=3)
@@ -352,6 +367,51 @@ class PromoverTests(PromotionCase):
         self.assertFalse(promotion.pending(self.station_dir))
         self.assertEqual(promotion.status(self.station_dir)["state"], "idle")
         self.assertTrue(self.promote()["promoted"])
+
+    def write_mode(self, mode, changed_at):
+        (self.station_dir / "mode.json").write_text(
+            json.dumps({"v": 1, "mode": mode, "changed_at": changed_at}), encoding="utf-8")
+
+    def test_pendente_so_ate_o_modo_ser_gravado_depois_da_promocao(self):
+        self.replicate()
+        self.write_mode("station", self.saved_time() - 3600)  # de quando virou caixa adicional
+        self.promote()
+        finished = self.saved()["finished_at"]
+        self.assertTrue(promotion.pending(self.station_dir))  # caiu antes de trocar o modo
+        self.write_mode("server", finished // 1000)  # mesmo segundo: na dúvida continua pendente
+        self.assertTrue(promotion.pending(self.station_dir))
+
+        self.write_mode("server", finished // 1000 + 1)  # station.py concluiu a troca
+        self.assertFalse(promotion.pending(self.station_dir))
+        # Meses depois: outro computador virou o principal e este volta a ser caixa adicional.
+        (self.station_dir / "active-profile.json").write_text('{"profile":"outro"}', encoding="utf-8")
+        self.write_mode("station", finished // 1000 + 5000)
+        self.assertFalse(promotion.pending(self.station_dir))
+        status = promotion.status(self.station_dir)
+        self.assertEqual((status["state"], status["available"]), ("idle", False))
+        # A cópia com que ele já assumiu não pode passar por cima do banco promovido.
+        self.assertIn("ainda não tem uma cópia completa", status["reason"])
+        promoted = (self.station_dir / "terminal.sqlite3").read_bytes()
+        for _ in range(2):  # a recusa não pode apagar a guarda (estado "failed" no meio)
+            with self.assertRaises(TerminalError) as caught:
+                self.promote()
+            self.assertEqual(caught.exception.status, 409)
+            self.assertIn("ainda não tem uma cópia completa", str(caught.exception))
+        self.assertEqual((self.station_dir / "terminal.sqlite3").read_bytes(), promoted)
+        self.assertFalse(promotion.pending(self.station_dir))
+
+        # Voltou a falar com o principal: pode assumir de novo, e o banco anterior fica guardado.
+        self.write_mode("station", self.saved_time())
+        time.sleep(0.01)
+        self.assertTrue(self.puller.cycle())
+        status = promotion.status(self.station_dir)
+        self.assertEqual((status["state"], status["available"], status["reason"]), ("failed", True, ""))
+        self.assertTrue(self.promote()["promoted"])
+        self.assertEqual(len(list(self.station_dir.glob("terminal-antes-da-promocao-*"))), 1)
+        self.assertTrue(promotion.pending(self.station_dir))  # nova janela, até o modo ser gravado de novo
+
+    def saved_time(self):
+        return replica_net._now_ms() // 1000
 
     def test_copia_mais_recente_danificada_promove_com_a_anterior_e_avisa(self):
         self.events(2)
