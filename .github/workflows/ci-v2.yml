@@ -46,6 +46,9 @@ jobs:
       - name: Backup script and dependency audit tests
         run: python -m unittest discover -s tests -p 'test_infra_*.py' -v
       - run: node --input-type=module --check < web/assets/app.js && node --check terminal/static/terminal.js
+      - run: node --input-type=module --check < web/assets/core.js && node --check web/sw.js
+      - name: Panel unit tests
+        run: node --test web/tests/painel-core.test.mjs
       - run: docker build -f infra/Dockerfile.cloud -t pdv2-cloud:ci .
       - run: docker build -f infra/Dockerfile.terminal -t pdv2-terminal:ci .
   dependency-audit:

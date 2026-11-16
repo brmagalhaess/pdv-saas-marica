@@ -179,13 +179,16 @@ function clearedValue(field) {
 
 // With `editing`, an emptied optional field is sent explicitly (""/null/default):
 // dropping the key would make it impossible to clear a value through PATCH.
-export function formPayload(form, fields, { editing = false } = {}) {
+// A `sendIfChanged` field is left out of an edit while it still equals the stored
+// value: the server revalidates whatever it receives, legacy values included.
+export function formPayload(form, fields, { editing = false, record = null } = {}) {
   const payload = {};
   for (const field of fields) {
     if (field.generated) continue;
     const input = form.elements.namedItem(field.key);
     if (!input) continue;
     const raw = field.type === "checkbox" ? "" : String(input.value ?? "").trim();
+    if (editing && record && field.sendIfChanged && raw === String(record[field.key] ?? "").trim()) continue;
     const numeric = NUMERIC_FIELDS.includes(field.type);
     let value;
     if (field.type === "checkbox") value = input.checked;
@@ -267,17 +270,91 @@ export function validTaxId(raw) {
 }
 
 export const conflictReasons = {
-  negative_stock: "Estoque negativo",
-  return_exceeds_sold: "Devolução no caixa acima do disponível",
-  rejected_event: "Evento recusado (em revisão)",
+  rejected_event: "Evento recusado pela nuvem (em revisão)",
   discount_over_limit: "Desconto acima do limite atual",
-  unit_changed: "Unidade do produto mudou",
-  fiscal_cancel_required: "Cancelar a NFC-e na SEFAZ",
-  sale_already_reversed: "Venda já cancelada no painel",
-  return_on_reversed_sale: "Devolução de venda cancelada"
+  unit_changed: "Unidade do produto alterada",
+  stock_control_changed: "Controle de estoque alterado",
+  product_inactive: "Produto desativado",
+  payment_method_inactive: "Forma de pagamento desativada",
+  promotion_changed: "Promoção alterada ou encerrada",
+  cash_expected_negative: "Caixa fechado com esperado negativo",
+  void_already_reversed: "Cancelamento no caixa de venda já revertida no painel",
+  void_after_return: "Cancelamento no caixa após devolução",
+  fiscal_cancel_required: "Cancelar a NFC-e da venda estornada no caixa",
+  return_on_reversed_sale: "Devolução no caixa de venda já revertida no painel",
+  customer_inactive: "Fiado recebido de cliente desativado",
+  negative_stock: "Estoque negativo",
+  return_exceeds_sold: "Devolução acima do vendido"
 };
 
 export function conflictReasonText(row) {
   const message = row?.detail?.message;
   return conflictReasons[row?.reason] || (typeof message === "string" && message.trim()) || row?.reason || "—";
+}
+
+const filled = value => typeof value === "string" && value.trim() ? value.trim() : "";
+
+// Only stock conflicts carry the central balance; the other reasons list the
+// product (and the quantity involved, when the server sent one).
+export function conflictItemLines(row) {
+  const items = Array.isArray(row?.detail?.items) ? row.detail.items : [];
+  return items.filter(item => item && typeof item === "object").map(item => {
+    const name = filled(item.product_name) || "Produto " + String(item.product_id ?? "").slice(0, 8);
+    if (item.central_balance_milli !== undefined) return name + ": saldo central " + quantity(item.central_balance_milli, "");
+    const amount = item.quantity_milli ?? item.delta_milli;
+    return amount === undefined ? name : name + ": " + quantity(amount, "");
+  });
+}
+
+function payloadText(payload) {
+  if (payload === undefined || payload === null) return "";
+  let value = payload;
+  // A payload the database refused is kept as escaped JSON text.
+  if (typeof value?.unserializable === "string" && Object.keys(value).length === 1) {
+    try { value = JSON.parse(value.unserializable); } catch { return value.unserializable; }
+  }
+  try { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
+  catch { return String(value); }
+}
+
+export function conflictView(row) {
+  const detail = row?.detail && typeof row.detail === "object" ? row.detail : {};
+  const lines = conflictItemLines(row);
+  const balances = (Array.isArray(detail.items) ? detail.items : []).some(item => item?.central_balance_milli !== undefined);
+  const rejected = row?.reason === "rejected_event";
+  const error = rejected ? filled(detail.error) : "";
+  const message = filled(detail.message);
+  return {
+    message, lines, error,
+    type: rejected ? filled(detail.type) || filled(row?.event_type) : "",
+    payload: rejected ? payloadText(detail.payload) : "",
+    summary: balances ? lines.join(" · ") : error || message || lines.join(" · ") || "Ver detalhes"
+  };
+}
+
+// Cashiers register customers but never set the fiado limit nor deactivate;
+// finance edits only the limit (the API answers 403 to anything else).
+export function customerFormFields(fields, role, editing = false) {
+  if (role === "cashier") return fields.filter(field => !["credit_limit_cents", "active"].includes(field.key));
+  if (role === "finance") return editing ? fields.filter(field => field.key === "credit_limit_cents") : [];
+  return fields;
+}
+
+export function productSaveErrorText(error) {
+  const message = error instanceof Error ? error.message : "";
+  if (error?.status === 409 && /trocar de unidade/i.test(message)) {
+    return "Este produto já tem vendas ou movimentações de estoque, então a unidade não pode ser trocada. "
+      + "Cadastre um novo produto com a unidade desejada e desative este.";
+  }
+  if (error?.status === 409 && /custo calculado pelas entradas/i.test(message)) {
+    return "Este produto já teve entrada de mercadoria: o custo médio é calculado pelas entradas e não pode ser editado aqui.";
+  }
+  return message || "Ocorreu uma falha inesperada.";
+}
+
+// The server version (auth/me) wins; the bundled constant covers older APIs.
+export function displayVersion(session) {
+  const value = session?.version;
+  const text = typeof value === "string" ? value.trim().replace(/^v/i, "") : "";
+  return text && text.length <= 40 ? text : APP_VERSION;
 }

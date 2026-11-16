@@ -1,6 +1,7 @@
 import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, el, errorText,
   APP_VERSION, VENDOR, editableMoney, parseMoneyInput, parseImportDecimal, scaledInteger, formPayload,
-  listPath, sortByLabel, taxIdValue, validTaxId, conflictReasonText } from "./core.js";
+  listPath, sortByLabel, taxIdValue, validTaxId, conflictReasonText, conflictView, customerFormFields,
+  productSaveErrorText, displayVersion } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -482,17 +483,18 @@ const resourceSpecs = {
   },
   products: {
     title: "Produtos", description: "Preços, unidades, variações e dados básicos de cada item.",
-    endpoint: "/products", singular: "produto", create: canCatalog, edit: canCatalog, remove: true, search: "Buscar por nome, SKU ou código de barras",
+    endpoint: "/products", singular: "produto", create: canCatalog, edit: canCatalog, remove: true, saveErrorText: productSaveErrorText, search: "Buscar por nome, SKU ou código de barras",
     fields: [
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
       { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
-      { key: "barcode", label: "Código de barras", generated: true, max: 13, help: "Código interno EAN-13 gerado para esta empresa; bloqueado para edição." },
+      { key: "barcode", label: "Código de barras (EAN)", sendIfChanged: true, max: 14, inputMode: "numeric", pattern: "[0-9]{8}|[0-9]{12,14}", placeholder: "Vazio = gerar código interno", help: "Informe o EAN de fábrica (8, 12, 13 ou 14 dígitos). Deixe vazio para o sistema gerar um código interno EAN-13." },
       { key: "ncm", label: "NCM (opcional)", max: 8, inputMode: "numeric", pattern: "[0-9]{7,8}", help: "Informe o NCM do produto quando a empresa tiver a classificação fiscal definida." },
       { key: "scale_code", label: "Código PLU da balança (opcional)", max: 6, inputMode: "numeric", pattern: "[0-9]{1,6}", help: "Use o código numérico programado na balança para etiquetas EAN-13 com peso." },
       { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
       { key: "variant", label: "Variação", placeholder: "Ex.: Tamanho M ou sabor morango", max: 100 },
       { key: "unit", label: "Unidade", type: "select", required: true, choices: [["UN","Unidade"],["KG","Quilo"],["L","Litro"]], default: "UN" },
       { key: "price_cents", label: "Preço de venda (R$)", type: "money", required: true, min: 0 },
+      { key: "cost_cents", label: "Custo (R$)", type: "money", min: 0, default: 0, help: "Custo inicial, usado na margem e no lucro. Depois da primeira entrada de mercadoria, o custo médio é calculado pelas entradas." },
       { key: "stock_minimum_milli", label: "Estoque mínimo (alerta)", type: "milli", min: 0, default: 0, help: "Apenas sinaliza reposição. Para adicionar unidades, use Operação > Estoque > Registrar entrada ou Ajustar estoque." },
       { key: "stock_controlled", label: "Controlar estoque", type: "checkbox", default: true, help: "Desative para produtos de produção própria, como pão, salgados e refeições vendidos por KG. O terminal permitirá vender mesmo sem saldo de entrada." },
       { key: "image_url", label: "Imagem do produto (URL opcional)", placeholder: "https://... ou /assets/product-images/...", max: 500, full: true, help: "Se ficar vazio, o PDV escolhe automaticamente uma imagem da categoria." },
@@ -510,7 +512,9 @@ const resourceSpecs = {
   },
   customers: {
     title: "Clientes", description: "Cadastro, limite de fiado, crédito na loja e extrato de cada cliente.",
-    endpoint: "/customers", singular: "cliente", create: () => can("owner","admin","manager","cashier"), edit: () => can("owner","admin","manager","cashier"), remove: false, search: "Buscar por nome",
+    endpoint: "/customers", singular: "cliente", create: () => can("owner","admin","manager","cashier"), edit: () => can("owner","admin","manager","cashier","finance"), remove: false, search: "Buscar por nome",
+    toggleActive: () => can("owner","admin","manager"),
+    fieldsFor: editing => customerFormFields(resourceSpecs.customers.fields, state.role, editing),
     fields: [
       { key: "name", label: "Nome", required: true, max: 160, full: true },
       { key: "document", label: "CPF ou CNPJ", max: 18 },
@@ -827,7 +831,7 @@ async function formFor(fields, values = {}, creating = false) {
 }
 async function resourceForm(spec, record) {
   const editing = !!record;
-  const fields = editing ? (spec.editFields || spec.fields) : spec.fields;
+  const fields = spec.fieldsFor ? spec.fieldsFor(editing) : editing ? (spec.editFields || spec.fields) : spec.fields;
   const body = el("div");
   const formValues = editing && spec.endpoint === "/shops" ? { ...record, address: addressText(record.address) === "—" ? "" : addressText(record.address) } : record || {};
   const form = await formFor(fields, formValues, !editing);
@@ -843,7 +847,7 @@ async function resourceForm(spec, record) {
     event.preventDefault();
     if (!form.reportValidity()) return;
     let payload;
-    try { payload = formPayload(form, fields, { editing }); }
+    try { payload = formPayload(form, fields, { editing, record }); }
     catch (error) { handleError(error, message); return; }
     if (spec.endpoint === "/shops" && typeof payload.address === "string") payload.address = { text: payload.address };
     save.disabled = true;
@@ -854,10 +858,14 @@ async function resourceForm(spec, record) {
       closeDialog();
       toast(editing ? "Alterações salvas." : "Cadastro concluído.");
       renderRoute();
-    } catch (error) { handleError(error, message); save.disabled = false; }
+    } catch (error) {
+      const shown = spec.saveErrorText && error?.status === 409 ? Object.assign(new Error(spec.saveErrorText(error)), { status: error.status }) : error;
+      handleError(shown, message); save.disabled = false;
+    }
   });
   body.append(form);
-  openDialog(editing ? "Editar " + spec.singular : "Novo " + spec.singular, editing ? "Atualize os dados e salve." : "Preencha os campos para cadastrar.", body);
+  const limitOnly = editing && fields.length === 1 && fields[0].key === "credit_limit_cents";
+  openDialog(editing ? "Editar " + spec.singular : "Novo " + spec.singular, limitOnly ? (record.name || "Cliente") + ": o financeiro altera apenas o limite de fiado." : editing ? "Atualize os dados e salve." : "Preencha os campos para cadastrar.", body);
 }
 async function resourcePage(key) {
   const spec = resourceSpecs[key];
@@ -928,6 +936,7 @@ async function resourcePage(key) {
         if (stale(token)) return;
       }
       const editable = spec.edit();
+      const toggles = editable && (!spec.toggleActive || spec.toggleActive());
       // The statement is open to every role that can read customer credit, including Financeiro.
       const statement = key === "customers" && can("owner", "admin", "manager", "finance", "cashier");
       const actionsFor = editable || statement ? row => {
@@ -935,8 +944,8 @@ async function resourcePage(key) {
         if (statement) actions.push({ label: "Extrato", onClick: () => customerStatement(row).catch(handleError) });
         if (editable) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
         if (editable && key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row).catch(handleError) });
-        if (editable && row.active === false) actions.push({ label: "Reativar", onClick: () => reactivate(row) });
-        else if (spec.remove && editable) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria e ele pode ser reativado em Mostrar inativos.", async () => {
+        if (toggles && row.active === false) actions.push({ label: "Reativar", onClick: () => reactivate(row) });
+        else if (spec.remove && toggles) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria e ele pode ser reativado em Mostrar inativos.", async () => {
           await api.delete(spec.endpoint + "/" + row.id);
           toast("Registro desativado.");
           load();
@@ -2379,7 +2388,7 @@ async function stockPage() {
       const balances = records(balance);
       const movements = records(movementResult).slice(0, 20);
       const receipts = records(receiptResult);
-      // Until the API sends product_name/sku/unit and supplier_name, resolve them here.
+      // The API sends product_name/sku/unit and supplier_name; the lookups below only run for rows without them.
       balances.forEach(row => { if (row.product_id && !stockNames.has("/products/" + row.product_id)) stockNames.set("/products/" + row.product_id, row); });
       await Promise.all([
         ...movements.filter(row => !row.product_name).map(row => stockName("/products", row.product_id)),
@@ -2839,10 +2848,10 @@ async function auditPage() {
 
 async function syncConflictsPage() {
   const token = ++state.renderId;
-  const view = page("Conflitos offline", "Reveja eventos sincronizados com divergência e registre a decisão da equipe.", "Administração");
+  const view = page("Conflitos offline", "Reveja o que os caixas registraram offline e a nuvem aceitou com divergência, e registre a decisão da equipe.", "Administração");
   view.actions.append(button("Atualizar", () => renderRoute(), "secondary"));
-  const box = surface("Pendências", "Uma venda não é apagada: o terminal continua vendendo dentro da política local e esta fila orienta o ajuste de estoque.");
-  view.outer.append(info("Conflitos são gerados quando dois terminais trabalham offline e a confirmação central deixa o estoque negativo. Resolva depois de conferir a contagem física.", true), box);
+  const box = surface("Pendências", "Nada do que aconteceu no caixa é apagado: a nuvem aceita o evento e esta fila mostra o que precisa ser conferido.");
+  view.outer.append(info("Um conflito aparece quando o caixa trabalhou offline e, ao sincronizar, o cadastro ou a operação já tinha mudado na nuvem: estoque negativo, desconto acima do limite, produto, promoção ou forma de pagamento alterados, cancelamento ou devolução de venda já revertida, NFC-e a cancelar, fiado de cliente desativado ou evento recusado. Confira o motivo de cada linha antes de marcar como resolvido.", true), box);
   box.append(loadingSurface());
   try {
     const response = await api.get("/sync/conflicts?status=open");
@@ -2853,10 +2862,10 @@ async function syncConflictsPage() {
       { label: "Data", render: row => dateTime(row.created_at) },
       { label: "Terminal", render: row => row.terminal_name || "—" },
       { label: "Motivo", render: row => conflictReasonText(row) },
-      { label: "Itens", render: row => (row.detail?.items || []).map(item => `${item.product_name} (${Number(item.central_balance_milli || 0) / 1000})`).join(" · ") || row.detail?.message || "Ver detalhes" },
+      { label: "Detalhes", render: row => conflictView(row).summary },
       { label: "Estado", render: row => statusBadge(row.status) }
     ], row => [{ label: "Resolver", onClick: () => resolveSyncConflict(row) }],
-      empty("Nenhum conflito pendente", "As vendas offline estão conciliadas.")));
+      empty("Nenhum conflito pendente", "As operações offline estão conciliadas.")));
   } catch (error) {
     if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); }
   }
@@ -2864,11 +2873,24 @@ async function syncConflictsPage() {
 
 async function resolveSyncConflict(row) {
   const content = el("div");
-  const items = (row.detail?.items || []).map(item => `${item.product_name}: saldo central ${Number(item.central_balance_milli || 0) / 1000}`).join("\n");
-  content.append(detailList([["Motivo", conflictReasonText(row)], ["Terminal", row.terminal_name || "—"], ["Data", dateTime(row.created_at)]]));
-  content.append(info(items || row.detail?.message || "Confira a venda e o estoque físico antes de resolver.", true));
+  const view = conflictView(row);
+  const pairs = [["Motivo", conflictReasonText(row)], ["Terminal", row.terminal_name || "—"], ["Loja", row.shop_name || "—"], ["Data", dateTime(row.created_at)]];
+  if (view.type) pairs.push(["Tipo do evento", view.type]);
+  if (view.error) pairs.push(["Erro", view.error]);
+  content.append(detailList(pairs));
+  content.append(info(view.message || "Confira a operação no caixa antes de resolver.", true));
+  if (view.lines.length) {
+    const list = el("ul", "conflict-items");
+    view.lines.forEach(line => list.append(el("li", "", line)));
+    content.append(list);
+  }
+  if (view.payload) {
+    const block = el("details", "conflict-payload");
+    block.append(el("summary", "", "Dados enviados pelo caixa"), el("pre", "", view.payload));
+    content.append(block);
+  }
   const field = el("div", "field"), label = el("label", "", "Observação da resolução");
-  const textarea = el("textarea"); textarea.rows = 4; textarea.placeholder = "Ex.: feita entrada de 2 unidades após conferência física"; label.htmlFor = "conflict-resolution"; textarea.id = "conflict-resolution"; field.append(label, textarea);
+  const textarea = el("textarea"); textarea.rows = 4; textarea.placeholder = "Ex.: conferido com o operador; feita entrada de 2 unidades após contagem física"; label.htmlFor = "conflict-resolution"; textarea.id = "conflict-resolution"; field.append(label, textarea);
   const message = formMessage(content); message.hidden = true;
   const actions = el("div", "form-actions");
   const cancel = button("Voltar", closeDialog, "ghost");
@@ -3848,7 +3870,7 @@ function aboutDialog() {
   const lockup=el("div","about-lockup");
   lockup.append(el("strong","","PDV2"),el("small","","por "+VENDOR.name));
   const link=el("a","",VENDOR.site);link.href=VENDOR.url;link.target="_blank";link.rel="noopener noreferrer";
-  body.append(lockup,detailList([["Versão",APP_VERSION],["Fabricante",VENDOR.name],["Site",link]]),el("p","about-foot",VENDOR.footer));
+  body.append(lockup,detailList([["Versão",state.version||APP_VERSION],["Fabricante",VENDOR.name],["Site",link]]),el("p","about-foot",VENDOR.footer));
   const actions=el("div","form-actions");actions.append(button("Fechar",closeDialog,"ghost"));body.append(actions);
   openDialog("Sobre o PDV2","Sistema de ponto de venda e gestão para o varejo.",body);
 }
@@ -3882,6 +3904,8 @@ async function init() {
     state.user=session.user;
     state.memberships=session.memberships || [];
     state.platformRoles=state.user?.platform_roles||[];
+    state.version=displayVersion(session);
+    if($("#app-version"))$("#app-version").textContent="v"+state.version;
     if(!state.user)throw new Error("Faça login para continuar.");
     $("#sidebar-user").textContent=state.user.name||state.user.email||"Conta";
     $("#avatar").textContent=(state.user.name||state.user.email||"P").trim()[0].toUpperCase();
