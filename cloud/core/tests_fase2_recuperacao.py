@@ -212,7 +212,7 @@ class TrocarDeComputadorTests(Fase2Base):
         self.assertEqual(body["terminal_id"], str(self.terminal.id))
         self.assertIs(body["recovery"], True)
         self.assertEqual(body["history_days"], 90)
-        self.assertEqual(body["capabilities"], ["restore", "send-only", "terminal-config", "mirror-key"])
+        self.assertEqual(body["capabilities"], ["restore", "send-only", "terminal-config", "mirror-key", "stations"])
         self.assertRegex(body["mirror_key"]["key_id"], r"^[0-9a-f]{16}$")
         self.assertEqual(len(body["mirror_key"]["key"]), 44)
         row = Terminal.objects.get(pk=self.terminal.pk)
@@ -670,7 +670,7 @@ class ChaveDaCopiaTests(Fase2Base):
                          {"exists": False, "key_id": "", "revealed_at": None, "can_reveal": True})
         first = self.term("POST", "/api/v1/terminal/lease", {}).json()
         second = self.term("POST", "/api/v1/terminal/lease", {}).json()
-        self.assertEqual(first["capabilities"], ["restore", "send-only", "terminal-config", "mirror-key"])
+        self.assertEqual(first["capabilities"], ["restore", "send-only", "terminal-config", "mirror-key", "stations"])
         key = first["mirror_key"]
         self.assertEqual(second["mirror_key"], key)
         self.assertEqual(key["key_id"], sha(key["key"])[:16])

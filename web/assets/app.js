@@ -2,7 +2,8 @@ import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, 
   APP_VERSION, VENDOR, editableMoney, parseMoneyInput, parseImportDecimal, scaledInteger, formPayload,
   listPath, sortByLabel, taxIdValue, validTaxId, conflictReasonText, conflictView, customerFormFields,
   productSaveErrorText, displayVersion, sendOnlyActive, terminalStateText, mirrorText, canTransferTerminal,
-  transferConfirmText, transferWarnings, transferSteps, backupKeyView } from "./core.js";
+  transferConfirmText, transferWarnings, transferSteps, backupKeyView, hubConfirmText, terminalStationsView,
+  canSetHub, stationLimitText, stationLabel, stationFilterOptions } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -308,6 +309,8 @@ function terminalAccessBox(license) {
   if(localDocker())grid.append(copyableValue("Servidor fora do Docker, no mesmo computador",location.origin,"Use apenas se o terminal estiver instalado fora do Docker nesta máquina."));
   grid.append(copyableValue("Link para abrir o terminal neste computador",terminalLink(),"O aplicativo local precisa estar em execução neste computador."));
   box.append(grid);
+  const stationLimit=stationLimitText(license);
+  if(stationLimit)box.append(info(stationLimit+". O caixa principal de cada loja liga os adicionais em Sistema → Caixas da loja."));
   const actions=el("div","connection-actions"),open=el("a","button secondary","Abrir terminal local");
   open.href=terminalLink();open.target="_blank";open.rel="noopener noreferrer";
   actions.append(open);box.append(actions);
@@ -1415,7 +1418,24 @@ async function cashPage() {
     const option = el("option", "", text); option.value = value; status.append(option);
   });
   statusField.append(statusLabel, status);
-  toolbar.append(shop.field, statusField);
+  const stationField = el("div", "field");
+  const stationLabelNode = el("label", "", "Caixa");
+  stationLabelNode.htmlFor = "cash-station";
+  const station = el("select");
+  station.id = "cash-station";
+  stationField.append(stationLabelNode, station);
+  // Additional registers come from the terminals (owner/admin) and from the rows already seen.
+  let stationTerminals = [], stationRows = [];
+  const fillStations = () => {
+    const chosen = station.value;
+    station.replaceChildren(...stationFilterOptions(stationTerminals, stationRows).map(([value, text]) => {
+      const option = el("option", "", text); option.value = value; return option;
+    }));
+    if ([...station.options].some(option => option.value === chosen)) station.value = chosen;
+  };
+  fillStations();
+  if (can("owner", "admin")) api.get("/terminals?limit=100").then(response => { stationTerminals = records(response); fillStations(); }).catch(() => {});
+  toolbar.append(shop.field, stationField, statusField);
   box.append(toolbar);
   const content = el("div");
   box.append(content);
@@ -1426,11 +1446,14 @@ async function cashPage() {
     const params = new URLSearchParams({ limit: "30" });
     if (shop.select.value) params.set("shop_id", shop.select.value);
     if (status.value) params.set("status", status.value);
+    if (station.value) params.set("station_id", station.value);
     if (cursor) params.set("cursor", cursor);
     try {
       const response = await api.get("/cash-sessions?" + params);
       if (token !== state.renderId) return;
       const rows = records(response);
+      stationRows = stationRows.concat(rows.filter(row => row.station_id)).slice(-200);
+      fillStations();
       content.replaceChildren();
       if (!rows.length) {
         content.append(empty("Nenhum caixa encontrado", "Os turnos abertos e fechados nos terminais aparecerão aqui após a sincronização."));
@@ -1438,6 +1461,7 @@ async function cashPage() {
       }
       content.append(table([
         { label: "Terminal", render: row => `${row.terminal_name} · ${shopName(row.shop_id)}` },
+        { label: "Caixa", render: row => stationLabel(row) },
         { label: "Operador", render: row => row.operator_name || "—" },
         { label: "Abertura", render: row => dateTime(row.opened_at) },
         { label: "Fechamento", render: row => row.closed_at ? dateTime(row.closed_at) : statusBadge("open") },
@@ -1458,7 +1482,7 @@ async function cashPage() {
     }
   }
   if (current === state.renderId) load();
-  [shop.select, status].forEach(input => input.addEventListener("change", () => load()));
+  [shop.select, station, status].forEach(input => input.addEventListener("change", () => load()));
 }
 
 async function commissionsPage() {
@@ -2771,7 +2795,15 @@ async function terminalsPage() {
     box.lastChild.remove();const rows=records(response);
     if(Number.isFinite(limit)&&Number.isFinite(used))box.append(info(`${used} de ${limit} terminais utilizados; ${Math.max(0,limit-used)} disponíveis no plano.`));
     box.append(pagedContent(response,"/terminals",[
-      {label:"Terminal",render:row=>row.name},{label:"Loja",render:row=>shopName(row.shop_id)},
+      {label:"Terminal",render:row=>{
+        if(row.hub!==true||row.revoked)return row.name;
+        const cell=el("div","terminal-state");cell.append(el("span","",row.name),el("span","badge","Caixa principal da loja"));return cell;
+      }},{label:"Loja",render:row=>shopName(row.shop_id)},
+      {label:"Caixas",render:row=>{
+        const current=terminalStationsView(row);
+        if(!current.names.length)return current.text;
+        const cell=el("div","terminal-state");cell.append(el("span","",current.text),el("small","",current.names.join(", ")));return cell;
+      }},
       {label:"Dispositivo",render:row=>row.device_id || "Aguardando pareamento"},{label:"Versão",render:row=>row.version},
       {label:"Fila",render:row=>row.heartbeat_pending_events??0},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},
       {label:"Cópia em 2º disco",render:row=>mirrorText(row)},
@@ -2782,6 +2814,8 @@ async function terminalsPage() {
       }}
     ], row => row.revoked ? [] : [
       ...(canTransferTerminal(row)?[{label:"Trocar de computador",onClick:()=>terminalTransfer(row)}]:[]),
+      ...(canSetHub(row)?[{label:"Tornar principal desta loja",onClick:()=>confirmAction("Tornar principal desta loja",hubConfirmText,
+        async()=>{ await api.patch("/terminals/"+row.id,{hub:true}); toast("Este terminal agora é o caixa principal da loja."); renderRoute(); },"Tornar principal")}]:[]),
       ...(sendOnlyActive(row)?[{label:"Encerrar envio do computador antigo",onClick:()=>confirmAction("Encerrar envio do computador antigo",
         "O computador antigo não poderá mais enviar as vendas que ficaram nele. Faça isso só se a fila dele já zerou ou se ele foi descartado.",
         async()=>{ await api.patch("/terminals/"+row.id,{end_send_only:true}); toast("Envio do computador antigo encerrado."); renderRoute(); },"Encerrar envio")}]:[]),
@@ -2828,7 +2862,8 @@ async function subscriptionPage() {
       [license.source==="vip"?"Preço de referência (VIP sem cobrança)":"Mensalidade de referência",money(plan.price_month_cents)],
       ["Limite de terminais",plan.terminal_limit ?? "—"],
       ["Terminais utilizados",license.terminal_used??"—"],["Terminais disponíveis",license.terminal_available??"—"],
-      ["Limite de lojas",plan.shop_limit ?? "—"],["Fim do teste",dateOnly(data.trial_ends_at)],
+      ["Limite de lojas",plan.shop_limit ?? "—"],["Caixas adicionais por loja",license.max_stations ?? plan.max_stations ?? "—"],
+      ["Fim do teste",dateOnly(data.trial_ends_at)],
       ["Fim do período",dateOnly(data.current_period_end)]
     ]));
     view.outer.append(terminalAccessBox(license));
@@ -3077,6 +3112,7 @@ const planFields=[
   {key:"terminal_limit",label:"Limite de terminais",type:"number",required:true,min:1},
   {key:"shop_limit",label:"Limite de lojas",type:"number",required:true,min:1},
   {key:"offline_days",label:"Dias sem internet",type:"number",required:true,min:1,max:45,default:30,help:"Por quantos dias o caixa continua vendendo sem falar com a nuvem (1 a 45). Nunca passa do período pago."},
+  {key:"max_stations",label:"Caixas adicionais por loja",type:"number",required:true,min:0,max:50,default:0,help:"Quantos computadores além do caixa principal cada loja pode ligar (0 a 50). Zero = só o caixa principal."},
   {key:"active",label:"Plano disponível para novas assinaturas",type:"checkbox",default:true,full:true},
   {key:"features",label:"Recursos (JSON)",type:"json",required:true,default:[],full:true,help:"Lista JSON de códigos de recursos. Ex.: [\"cloud_dashboard\", \"stock\"]."}
 ];
@@ -3096,6 +3132,8 @@ async function planForm(record) {
       if(!Number.isSafeInteger(payload.terminal_limit)||!Number.isSafeInteger(payload.shop_limit)||payload.terminal_limit<1||payload.shop_limit<1)throw new Error("Os limites precisam ser inteiros maiores que zero.");
       payload.offline_days=Number(payload.offline_days);
       if(!Number.isSafeInteger(payload.offline_days)||payload.offline_days<1||payload.offline_days>45)throw new Error("Dias sem internet precisa ser um número inteiro de 1 a 45.");
+      payload.max_stations=Number(payload.max_stations);
+      if(!Number.isSafeInteger(payload.max_stations)||payload.max_stations<0||payload.max_stations>50)throw new Error("Caixas adicionais por loja precisa ser um número inteiro de 0 a 50.");
       if(!editing&&!/^[a-z0-9-]+$/.test(payload.slug))throw new Error("O identificador aceita letras minúsculas, números e hífen.");
       if(!Array.isArray(payload.features)||payload.features.some(feature=>typeof feature!=="string"))throw new Error("Recursos deve ser uma lista JSON de textos.");
       if(editing&&record.slug===signupPlanSlug&&record.active&&payload.active===false&&
@@ -3127,6 +3165,7 @@ async function platformPlans() {
       {label:"Anual",render:row=>money(row.price_year_cents)},
       {label:"Terminais",render:row=>row.terminal_limit},{label:"Lojas",render:row=>row.shop_limit},
       {label:"Dias sem internet",render:row=>row.offline_days??"—"},
+      {label:"Caixas adicionais por loja",render:row=>row.max_stations??"—"},
       {label:"Estado",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
     ],platformEdit()?row=>[{label:"Editar",onClick:()=>planForm(row).catch(handleError)}]:null,
       empty("Nenhum plano","Cadastre o primeiro plano comercial."),{tenant:false}));

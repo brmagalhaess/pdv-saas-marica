@@ -27,6 +27,7 @@ from .sale_logic import event_time, open_conflict, persist_sale, void_from_termi
 from .serializers import plan as plan_data, sync_conflict as sync_conflict_data, terminal as terminal_data
 from .stock_balance import balance
 from . import restore_logic
+from .station_logic import effective_hub_id, is_hub, valid_stations
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,9 @@ RECOVERY_CODE_MINUTES = 30
 RESTORE_PAGE_DEFAULT = 200
 RESTORE_PAGE_MAX = 500
 RESTORE_PAGE_BYTES = 1_000_000
-CLOUD_CAPABILITIES = ["restore", "send-only", "terminal-config", "mirror-key"]
+# "stations" (fase 3): events may carry the top-level "station" label, terminal.config may
+# carry "stations" and the lease carries the claims "max_stations" and "hub".
+CLOUD_CAPABILITIES = ["restore", "send-only", "terminal-config", "mirror-key", "stations"]
 RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 RECOVERY_CODE_SHAPE = re.compile(r"[A-Za-z2-9]{4}-?[A-Za-z2-9]{4}-?[A-Za-z2-9]{4}")
 TRANSFERRED_MESSAGE = "Este caixa foi transferido para outro computador."
@@ -129,6 +132,8 @@ def _lease(terminal, operators=None, long_lease=False):
     expires = min(now + seconds, int(deadline.timestamp()))
     if expires <= now:
         raise APIError("Assinatura sem prazo de licença", 403)
+    # Additional registers are per shop and belong to its main terminal only.
+    hub = is_hub(terminal)
     claims = {"schema": 1, "tenant_id": str(terminal.tenant_id),
               "shop_id": str(terminal.shop_id), "terminal_id": str(terminal.id),
               "device_id": terminal.device_id, "issued_at": now, "expires_at": expires,
@@ -136,7 +141,8 @@ def _lease(terminal, operators=None, long_lease=False):
               "max_discount_bps": terminal.tenant.max_discount_bps,
               "business_hours": terminal.tenant.business_hours or {},
               "roles_version": terminal.tenant.roles_version,
-              "operators_hash": payload_digest(operators)}
+              "operators_hash": payload_digest(operators),
+              "max_stations": sub.plan.max_stations if hub else 0, "hub": hub}
     try:
         return sign_lease(claims, load_private_key()), load_public_key()
     except LicenseError as exc:
@@ -226,6 +232,7 @@ def subscription(request):
                                          "source": row.license_source, "status": effective_status,
                                          "can_activate": effective_status in ("trial", "active", "past_due"),
                                          "terminal_limit": limit, "terminal_used": used,
+                                         "max_stations": row.plan.max_stations,
                                          "terminal_available": max(0, limit - used)}})
     response["Cache-Control"] = "private, no-store"
     return response
@@ -266,9 +273,11 @@ def terminal_detail(request, pk):
     if request.method == "GET":
         return JsonResponse(terminal_data(row))
     data = payload(request)
-    fields(data, ("name", "revoked", "reissue_pairing", "end_send_only"))
+    fields(data, ("name", "revoked", "reissue_pairing", "end_send_only", "hub"))
     if not data:
         raise APIError("Informe ao menos um campo")
+    if "hub" in data and data["hub"] is not True:
+        raise APIError("Para trocar o caixa principal da loja, escolha o outro terminal")
     if "end_send_only" in data and type(data["end_send_only"]) is not bool:
         raise APIError("Encerramento inválido")
     if "revoked" in data and type(data["revoked"]) is not bool:
@@ -300,7 +309,25 @@ def terminal_detail(request, pk):
             TerminalFormerToken.objects.filter(terminal=row, expires_at__gt=now).update(expires_at=now)
             _mirror_former_token(row)
         row.save()
+        hub_change = None
+        shop = Shop.objects.select_for_update().get(pk=row.shop_id)
+        if row.revoked and shop.hub_terminal_id == row.id:
+            # A revoked terminal is no longer the shop's main register.
+            shop.hub_terminal = None
+            shop.save(update_fields=["hub_terminal"])
+        if data.get("hub"):
+            if row.revoked:
+                raise APIError("Terminal revogado", 409)
+            previous_hub = effective_hub_id(shop)
+            if shop.hub_terminal_id != row.id:
+                shop.hub_terminal = row
+                shop.save(update_fields=["hub_terminal"])
+            if previous_hub != row.id:
+                hub_change = {"shop_id": str(shop.id),
+                              "previous_terminal_id": str(previous_hub) if previous_hub else None}
         audit(member.tenant, member.user, "terminal.updated", row, {"fields": list(data)})
+        if hub_change is not None:
+            audit(member.tenant, member.user, "terminal.hub_set", row, hub_change)
         if ended:
             audit(member.tenant, member.user, "terminal.send_only_ended", row,
                   {"previous_device_id": row.previous_device_id})
@@ -582,7 +609,10 @@ def _event_identity(event, terminal):
 
 def _validate_event(event):
     """Shape of one event. Any error here quarantines the event alone."""
-    fields(event, ("event_id", "type", "aggregate_id", "identity", "data"),
+    # "station" (optional, any type) labels the register of the shop that produced the
+    # event. Its content is never judged here: station_logic.station_of reads a
+    # malformed label as empty instead of refusing what happened at the counter.
+    fields(event, ("event_id", "type", "aggregate_id", "identity", "data", "station"),
            ("event_id", "type", "aggregate_id", "identity", "data"))
     if not re.fullmatch(r"[0-9a-f]{32}", event["event_id"]):
         raise APIError("ID do evento inválido")
@@ -663,7 +693,7 @@ def _validate_event(event):
         event_time(data["created_at"])
     elif event["type"] == "terminal.config":
         data = event["data"]
-        fields(data, ("version", "print_settings", "mirror", "app_version", "updated_at"),
+        fields(data, ("version", "print_settings", "mirror", "app_version", "stations", "updated_at"),
                ("version", "print_settings", "updated_at"))
         uuid_value(aggregate_id, "Terminal")
         if type(data["version"]) is not int or data["version"] != 1:
@@ -685,6 +715,8 @@ def _validate_event(event):
             raise APIError("Cópia de segurança inválida")
         if "app_version" in data and (not isinstance(data["app_version"], str) or len(data["app_version"]) > 80):
             raise APIError("Versão inválida")
+        if "stations" in data and not valid_stations(data["stations"]):
+            raise APIError("Caixas adicionais inválidos")
         event_time(data["updated_at"])
 
 
@@ -697,6 +729,12 @@ def _persist_config(terminal, event):
     if data["updated_at"] >= (latest if type(latest) is int else 0):
         Terminal.objects.filter(pk=terminal.pk).update(config=data)
         terminal.config = data
+    if data.get("stations"):
+        # The first terminal of a shop to report additional registers is its main one.
+        claimed = Shop.objects.filter(pk=terminal.shop_id, hub_terminal__isnull=True).update(hub_terminal=terminal)
+        if claimed:
+            audit(terminal.tenant, None, "terminal.hub_set", terminal,
+                  {"shop_id": str(terminal.shop_id), "previous_terminal_id": None, "source": "terminal.config"})
 
 
 def _persist_adjustment(terminal, event, conflicts):

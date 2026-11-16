@@ -27,6 +27,8 @@ class Plan(models.Model):
     shop_limit = models.PositiveIntegerField(default=1)
     # Days a terminal may keep selling without reaching the cloud.
     offline_days = models.PositiveSmallIntegerField(default=30, validators=[MinValueValidator(1), MaxValueValidator(45)])
+    # Additional registers ("caixas adicionais") per shop, on top of the shop's main one.
+    max_stations = models.PositiveSmallIntegerField(default=0, validators=[MaxValueValidator(50)])
     features = models.JSONField(default=list)
     active = models.BooleanField(default=True)
 
@@ -98,6 +100,10 @@ class Shop(models.Model):
     address = models.JSONField(default=dict, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # The shop's main register ("caixa principal"): the only terminal whose licence
+    # carries the plan's additional registers. Null = the oldest paired terminal.
+    hub_terminal = models.OneToOneField("Terminal", null=True, blank=True, on_delete=models.SET_NULL,
+                                        related_name="hub_of")
 
 
 class Membership(models.Model):
@@ -296,6 +302,9 @@ class Sale(models.Model):
     # Plain id instead of FK: sales synced before CashSession existed reference
     # sessions rebuilt later from SyncEvent, and ordering must never block sync.
     cash_session_id = models.CharField(max_length=160, blank=True, db_index=True)
+    # Register of the shop that made the sale (local concept of the terminal); "" = main one.
+    station_id = models.CharField(max_length=64, blank=True, default="")
+    station_name = models.CharField(max_length=80, blank=True, default="")
     content_hash = models.CharField(max_length=64)
     gross_cents = models.PositiveBigIntegerField()
     # Promotions applied by the terminal, kept apart from the operator's manual discount.
@@ -495,6 +504,9 @@ class CashSession(models.Model):
     operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
                                  related_name="opened_cash_sessions")
     opening_cents = models.PositiveBigIntegerField(default=0)
+    # Register of the shop that opened the shift; "" = main one (or an older terminal).
+    station_id = models.CharField(max_length=64, blank=True, default="")
+    station_name = models.CharField(max_length=80, blank=True, default="")
     opened_at = models.DateTimeField()
     closed_at = models.DateTimeField(null=True, blank=True)
     closed_by = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,

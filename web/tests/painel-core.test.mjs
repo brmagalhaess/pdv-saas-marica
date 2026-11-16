@@ -410,3 +410,95 @@ test("painel de terminais usa a troca de computador e a chave da cópia", async 
   assert.match(app, /done\.disabled = !confirm\.checked/);
   assert.doesNotMatch(app, /só deixa de vender quando o novo usar este código/);
 });
+
+// Fase 3: caixas adicionais (estações) -----------------------------------------
+const { stationCountText, terminalStationsView, canSetHub, stationLimitText, stationLabel, stationFilterOptions,
+  hubConfirmText, MAIN_STATION_ID } = core;
+
+test("terminais: coluna Caixas mostra 'Principal + N adicional(is)' com os nomes", () => {
+  assert.equal(stationCountText(0), "Principal + 0 adicionais");
+  assert.equal(stationCountText(1), "Principal + 1 adicional");
+  assert.equal(stationCountText(3), "Principal + 3 adicionais");
+  assert.equal(stationCountText("x"), "Principal + 0 adicionais");
+  const hub = { paired: true, revoked: false, hub: true, max_stations: 2, stations_used: 1, stations: [
+    { id: "3f2a", name: "Caixa 2", revoked: false }, { id: "77aa", name: "Caixa 3", revoked: true }] };
+  assert.deepEqual(terminalStationsView(hub), { text: "Principal + 1 adicional (plano: até 2)", names: ["Caixa 2"] });
+  assert.deepEqual(terminalStationsView({ ...hub, stations: [], stations_used: 0 }),
+    { text: "Principal + 0 adicionais (plano: até 2)", names: [] });
+  assert.deepEqual(terminalStationsView({ ...hub, stations: [{ id: "a", name: " ", revoked: false }] }).names, ["Caixa sem nome"]);
+  // Not the main register of the shop, revoked, or an answer of an older cloud: nothing to show.
+  assert.deepEqual(terminalStationsView({ ...hub, hub: false }), { text: "—", names: [] });
+  assert.deepEqual(terminalStationsView({ ...hub, revoked: true }), { text: "—", names: [] });
+  assert.deepEqual(terminalStationsView({ paired: true, revoked: false }), { text: "—", names: [] });
+  assert.deepEqual(terminalStationsView(null), { text: "—", names: [] });
+  // Hub answer without the counters: counts the names it has.
+  assert.deepEqual(terminalStationsView({ hub: true, stations: [{ id: "a", name: "Caixa 2", revoked: false }] }),
+    { text: "Principal + 1 adicional", names: ["Caixa 2"] });
+  assert.deepEqual(terminalStationsView({ hub: true, stations: "quebrado" }), { text: "Principal + 0 adicionais", names: [] });
+});
+
+test("terminais: só um terminal pareado que não é o principal pode virar principal", () => {
+  assert.equal(canSetHub({ paired: true, revoked: false, hub: false }), true);
+  assert.equal(canSetHub({ paired: true, revoked: false, hub: true }), false);
+  assert.equal(canSetHub({ paired: false, revoked: false, hub: false }), false);
+  assert.equal(canSetHub({ paired: true, revoked: true, hub: false }), false);
+  assert.equal(canSetHub({ paired: true, revoked: false }), false); // older cloud: no "hub" field
+  assert.equal(canSetHub(null), false);
+  assert.match(hubConfirmText, /deixam de funcionar até serem ligados ao novo/);
+});
+
+test("licença: limite de caixas adicionais do plano", () => {
+  assert.equal(stationLimitText({ max_stations: 2 }), "Caixas adicionais incluídos por loja: 2");
+  assert.equal(stationLimitText({ max_stations: 0 }), "Caixas adicionais incluídos por loja: 0");
+  assert.equal(stationLimitText({}), "");
+  assert.equal(stationLimitText(null), "");
+  assert.equal(stationLimitText({ max_stations: "2" }), "");
+});
+
+test("caixas: rótulo do caixa e opções do filtro", () => {
+  assert.equal(MAIN_STATION_ID, "server");
+  assert.equal(stationLabel({ station_id: "3f2a", station_name: "Caixa 2" }), "Caixa 2");
+  assert.equal(stationLabel({ station_id: "server", station_name: "Caixa principal" }), "Caixa principal");
+  assert.equal(stationLabel({ station_id: "server", station_name: "" }), "Caixa principal");
+  assert.equal(stationLabel({ station_id: "", station_name: "" }), "Caixa principal");
+  assert.equal(stationLabel({}), "Caixa principal"); // older cloud: no station fields
+  assert.equal(stationLabel(null), "Caixa principal");
+  assert.equal(stationLabel({ station_id: "3f2a", station_name: "" }), "Caixa adicional");
+  assert.deepEqual(stationFilterOptions(), [["", "Todos os caixas"], ["server", "Caixa principal"]]);
+  const terminals = [{ stations: [{ id: "3f2a", name: "Caixa 2", revoked: false }, { id: "77aa", name: "Caixa 3", revoked: true }] },
+    { name: "sem campo" }, { stations: "quebrado" }];
+  const rows = [{ station_id: "3f2a", station_name: "Caixa 2" }, { station_id: "9b", station_name: "Balcão" },
+    { station_id: "server", station_name: "Caixa principal" }, { station_id: "" }, {}];
+  assert.deepEqual(stationFilterOptions(terminals, rows),
+    [["", "Todos os caixas"], ["server", "Caixa principal"], ["3f2a", "Caixa 2"], ["9b", "Balcão"]]);
+  assert.deepEqual(stationFilterOptions(null, null), [["", "Todos os caixas"], ["server", "Caixa principal"]]);
+});
+
+test("painel usa os caixas adicionais e o service worker sobe de versão", async () => {
+  const app = await readFile(new URL("../assets/app.js", import.meta.url), "utf8");
+  assert.match(app, /"Caixa principal da loja"/);
+  assert.match(app, /label:"Caixas",render:row=>\{\s*const current=terminalStationsView\(row\)/);
+  assert.match(app, /label:"Tornar principal desta loja"/);
+  assert.match(app, /api\.patch\("\/terminals\/"\+row\.id,\{hub:true\}\)/);
+  assert.match(app, /stationLimitText\(license\)/);
+  assert.match(app, /\{ label: "Caixa", render: row => stationLabel\(row\) \}/);
+  assert.match(app, /params\.set\("station_id", station\.value\)/);
+  assert.match(app, /key:"max_stations",label:"Caixas adicionais por loja",type:"number",required:true,min:0,max:50,default:0/);
+  assert.match(app, /label:"Caixas adicionais por loja",render:row=>row\.max_stations\?\?"—"/);
+  // The filter never depends on a request only owner/admin may make.
+  assert.match(app, /if \(can\("owner", "admin"\)\) api\.get\("\/terminals\?limit=100"\)[^\n]*\.catch\(\(\) => \{\}\)/);
+  const worker = await readFile(new URL("../sw.js", import.meta.url), "utf8");
+  assert.match(worker, /const VERSION = "2\.0\.0-painel\.5";/);
+});
+
+test("terminais e caixas renderizam respostas sem os campos novos (nuvem antiga em cache)", () => {
+  // What the table cells receive from a cloud that does not know stations yet.
+  const oldTerminal = { id: "t1", name: "Caixa 01", paired: true, revoked: false, mirror_enabled: null };
+  assert.equal(terminalStationsView(oldTerminal).text, "—");
+  assert.equal(canSetHub(oldTerminal), false);
+  assert.deepEqual(terminalStateText(oldTerminal), { badge: "Pareado", note: "" });
+  const oldCash = { id: "c1", terminal_name: "Caixa 01", opened_at: "2026-11-16T12:00:00+00:00" };
+  assert.equal(stationLabel(oldCash), "Caixa principal");
+  assert.deepEqual(stationFilterOptions([oldTerminal], [oldCash]), [["", "Todos os caixas"], ["server", "Caixa principal"]]);
+  assert.equal(stationLimitText({ key: "PDV2-X", terminal_limit: 1 }), "");
+});
