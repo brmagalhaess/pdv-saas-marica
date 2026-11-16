@@ -66,7 +66,7 @@ final class DemoGestaoAPI: GestaoAPI {
         Product(name: "Queijo muçarela", unit: "KG", priceCents: 4990),
         Product(name: "Macarrão espaguete 500 g", unit: "UN", priceCents: 489),
         Product(name: "Refrigerante 2 L", unit: "UN", priceCents: 999),
-        Product(name: "Cerveja lata 350 ml", unit: "UN", priceCents: 429),
+        Product(name: "Água de coco 1 L", unit: "UN", priceCents: 429),
         Product(name: "Água mineral 1,5 L", unit: "UN", priceCents: 299),
         Product(name: "Biscoito recheado 140 g", unit: "UN", priceCents: 349),
         Product(name: "Detergente 500 ml", unit: "UN", priceCents: 249),

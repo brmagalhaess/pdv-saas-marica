@@ -111,7 +111,7 @@ class DemoData(private val now: () -> Instant) {
         Product("p09", "Tomate", "2000000000095", "KG", 899),
         Product("p10", "Queijo muçarela", "2000000000101", "KG", 4990),
         Product("p11", "Refrigerante cola 2 L", "2100001000110", "UN", 999),
-        Product("p12", "Cerveja lata 350 ml", "2100001000127", "UN", 429),
+        Product("p12", "Água de coco 1 L", "2100001000127", "UN", 429),
         Product("p13", "Sabão em pó 1 kg", "2100001000134", "UN", 1490),
         Product("p14", "Papel higiênico 12 rolos", "2100001000141", "UN", 2190),
         Product("p15", "Detergente 500 ml", "2100001000158", "UN", 279),
