@@ -8,6 +8,8 @@ nem grava o banco real do terminal e nunca fala com a nuvem.
     python scripts/demo_terminal.py            # online simulado
     python scripts/demo_terminal.py --offline  # simula queda da internet
     python scripts/demo_terminal.py --revisao  # já abre com registros "em revisão"
+    python scripts/demo_terminal.py --licenca-5-dias  # licença offline vencendo em 5 dias
+    python scripts/demo_terminal.py --atualizacao     # nova versão baixada, pronta para instalar
 """
 import argparse
 import json
@@ -15,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import uuid
 from pathlib import Path
 
@@ -23,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 from shared.licensing import generate_keypair, payload_digest, sign_lease  # noqa: E402
 from shared.security import hash_pin  # noqa: E402
+from terminal import sync  # noqa: E402
 from terminal.app import create_app  # noqa: E402
 
 CASHIER_PIN = "135790"
@@ -74,7 +78,7 @@ def demo_catalog():
     return products
 
 
-def seed(store):
+def seed(store, expiring=False):
     """Pair and bootstrap the same way terminal/tests/test_terminal.py does."""
     tenant_id, shop_id, terminal_id = (str(uuid.uuid4()) for _ in range(3))
     private, public = generate_keypair()
@@ -85,8 +89,10 @@ def seed(store):
     products = demo_catalog()
     water = next(product for product in products if product["name"].startswith("Água mineral"))
     now = int(time.time())
+    # --licenca-5-dias: a lease issued a day ago (the terminal has been offline) with 5 days left.
+    issued, expires = (now - 24 * 3600, now + 5 * 24 * 3600 + 3600) if expiring else (now - 5, now + 72 * 3600)
     claims = {"schema": 1, "tenant_id": tenant_id, "shop_id": shop_id, "terminal_id": terminal_id,
-              "device_id": store.identity()["device_id"], "issued_at": now - 5, "expires_at": now + 72 * 3600,
+              "device_id": store.identity()["device_id"], "issued_at": issued, "expires_at": expires,
               "features": ["pdv"], "status": "active", "operators_hash": payload_digest(operators)}
     lease = sign_lease(claims, private)
     names = {"tenant": {"name": "Mercadinho Exemplo (demonstração)"}, "shop": {"name": "Loja Centro"},
@@ -131,6 +137,28 @@ def seed_review(store):
         store._set_meta(conn, "catalog_skipped", json.dumps(skipped, ensure_ascii=False))
 
 
+def simulate_update(store, version="2.1.0"):
+    """Stand-in for terminal/updater.py: a verified package already downloaded, nothing is installed."""
+    manifest = {"schema": 1, "purpose": "pdv2-release", "component": "terminal", "channel": "stable",
+                "version": version, "kind": "bundle", "url": "https://atualizacoes.exemplo.invalid/pdv2.zip",
+                "sha256": "0" * 64, "size_bytes": 48 * 1024 * 1024, "notes": "Demonstração: melhorias no caixa"}
+    store.set_release_result(manifest)
+    current = {"state": "staged"}
+
+    def status(target):
+        cash_open = bool(target.cash_state())
+        return {"current_version": sync.VERSION, "available": manifest, "staged_version": version,
+                "state": current["state"], "error": "", "can_apply": current["state"] == "staged" and not cash_open,
+                "blocked_reason": "Feche o caixa para atualizar" if cash_open else ""}
+
+    def request_apply(target):
+        current["state"] = "applying"  # the demo never restarts or replaces anything
+        return status(target)
+
+    sync.updater = types.SimpleNamespace(status=status, request_apply=request_apply,
+                                         auto_step=lambda target, online: None)
+
+
 def simulate_cloud(store, offline, stop):
     """No real cloud here: acknowledge the outbox locally, or report an outage with --offline."""
     while not stop.is_set():
@@ -156,14 +184,20 @@ def main():
     parser.add_argument("--offline", action="store_true", help="simula o caixa sem internet (fila pendente)")
     parser.add_argument("--revisao", action="store_true",
                         help="abre o caixa com um registro em revisão e um item de catálogo ignorado")
+    parser.add_argument("--licenca-5-dias", dest="expiring", action="store_true",
+                        help="simula a licença offline vencendo em 5 dias (aviso na barra e em Sistema)")
+    parser.add_argument("--atualizacao", action="store_true",
+                        help="simula uma nova versão já baixada, pronta para instalar (cartão Atualização)")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="pdv2-demo-") as data_dir:
         app = create_app({"DATA_DIR": data_dir, "DB_PATH": Path(data_dir) / "terminal.sqlite3", "START_WORKER": False,
                           "TEMPLATES_AUTO_RELOAD": True})
         store = app.extensions["terminal_store"]
-        products = seed(store)
+        products = seed(store, expiring=args.expiring)
         if args.revisao:
             seed_review(store)
+        if args.atualizacao:
+            simulate_update(store)
         receipts = Path(data_dir) / "cupons"
         receipts.mkdir()
         store.save_printer("receipt", "file", str(receipts), "escpos80")
@@ -181,6 +215,9 @@ def main():
             f"  Etiqueta balança: {ean13('2' + banana['scale_code'] + '01250' + '0')} ({banana['name']}, 1,250 kg)",
             "  Promoção:        Água mineral 500 ml · leve 3 pague 2",
             f"  Conexão:         {'offline simulado (fila pendente)' if args.offline else 'online simulado'}",
+            *(["  Licença:         vence em 5 dias (aviso na barra de status e em Sistema)"] if args.expiring else []),
+            *(["  Atualização:     versão 2.1.0 pronta (Sistema > Atualização; feche o caixa para instalar)"]
+              if args.atualizacao else []),
             f"  Dados em:        {data_dir} (apagados ao encerrar)",
             "  Encerrar:        Ctrl+C",
             "",

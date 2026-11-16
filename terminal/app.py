@@ -5,8 +5,10 @@ import os
 import secrets
 import hashlib
 import hmac
+import shutil
 import sqlite3
 import time
+from contextlib import closing
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
@@ -18,10 +20,103 @@ from .printers import cups_queues
 from .store import MANAGER_ROLES, SELL_ROLES, Store, TerminalError
 
 
-def _default_data_dir():
-    if os.name == "nt":
-        return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "PDV2"
-    return Path.home() / ".local" / "share" / "pdv2"
+MIGRATION_MARKER = "migrated-from.json"
+# SQLite failures that mean "try again in a moment", not a bug in a statement.
+DATABASE_UNAVAILABLE_HINTS = ("locked", "busy", "unable to open", "disk", "readonly", "read-only",
+                              "malformed", "not a database", "full")
+
+
+def default_data_dir(os_name=None, environ=None, home=None):
+    """Windows keeps data in %ProgramData%\\PDV2: the service runs as the system
+    account and does not see a user's %LOCALAPPDATA%."""
+    os_name = os.name if os_name is None else os_name
+    environ = os.environ if environ is None else environ
+    if os_name == "nt":
+        return Path(environ.get("ProgramData") or environ.get("PROGRAMDATA") or "C:\\ProgramData") / "PDV2"
+    return Path(home or Path.home()) / ".local" / "share" / "pdv2"
+
+
+def legacy_data_dir(os_name=None, environ=None):
+    """Where Windows builds kept the data before; PDV_TERMINAL_LEGACY_DATA lets the installer point at it."""
+    os_name = os.name if os_name is None else os_name
+    environ = os.environ if environ is None else environ
+    if os_name != "nt":
+        return None
+    if environ.get("PDV_TERMINAL_LEGACY_DATA"):
+        return Path(environ["PDV_TERMINAL_LEGACY_DATA"])
+    return Path(environ["LOCALAPPDATA"]) / "PDV2" if environ.get("LOCALAPPDATA") else None
+
+
+def _copy_database(source, destination):
+    """Transaction-consistent, verified copy of one SQLite file."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(source, timeout=10)) as origin, closing(sqlite3.connect(destination)) as target:
+        origin.backup(target)
+        if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise sqlite3.DatabaseError("cópia não passou na verificação")
+        target.commit()
+    with destination.open("rb+") as copied:
+        os.fsync(copied.fileno())
+
+
+def _move_into(source, target):
+    if source.is_dir():
+        target.mkdir(exist_ok=True)
+        for child in source.iterdir():
+            _move_into(child, target / child.name)
+    else:
+        os.replace(source, target)
+
+
+def migrate_legacy_data(legacy_dir, data_dir):
+    """One-time copy of the old per-user data into the new directory.
+
+    The origin is never changed. Returns the directory to use: `data_dir`, or
+    `legacy_dir` when the copy failed (the terminal keeps working where the data
+    is and tries again on the next start).
+    """
+    legacy_dir, data_dir = Path(legacy_dir), Path(data_dir)
+    database = legacy_dir / "terminal.sqlite3"
+    if (legacy_dir == data_dir or not database.exists() or (data_dir / "terminal.sqlite3").exists()
+            or (data_dir / MIGRATION_MARKER).exists()):
+        return data_dir
+    staging = data_dir / ".migrating"
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(staging, ignore_errors=True)
+        for source in [database, *sorted(legacy_dir.glob("profiles/*/terminal.sqlite3"))]:
+            _copy_database(source, staging / source.relative_to(legacy_dir))
+        for name in ("active-profile.json", "session.key"):
+            if (legacy_dir / name).is_file():
+                shutil.copy2(legacy_dir / name, staging / name)
+        for copy in sorted(legacy_dir.glob("backups/terminal-*.sqlite3")):
+            (staging / "backups").mkdir(exist_ok=True)
+            shutil.copy2(copy, staging / "backups" / copy.name)
+        # The main database goes last: its presence is what says "already migrated".
+        for item in sorted(staging.iterdir(), key=lambda entry: entry.name == "terminal.sqlite3"):
+            _move_into(item, data_dir / item.name)
+        (data_dir / MIGRATION_MARKER).write_text(json.dumps(
+            {"source": str(legacy_dir), "migrated_at": int(time.time())}, ensure_ascii=False), encoding="utf-8")
+    except (OSError, sqlite3.Error):
+        shutil.rmtree(staging, ignore_errors=True)
+        return legacy_dir
+    shutil.rmtree(staging, ignore_errors=True)
+    return data_dir
+
+
+def _resolve_data_dir(config):
+    explicit = config.get("DATA_DIR") or os.environ.get("PDV_TERMINAL_DATA")
+    if explicit:
+        return Path(explicit)
+    data_dir, legacy = default_data_dir(), legacy_data_dir()
+    return migrate_legacy_data(legacy, data_dir) if legacy else data_dir
+
+
+def _version_tuple(value):
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return ()
 
 
 def _active_profile_db(data_dir, fallback):
@@ -56,7 +151,7 @@ BOOTSTRAP_WINDOW_SECONDS = 60
 
 def create_app(config=None):
     config = dict(config or {})
-    data_dir = Path(config.get("DATA_DIR") or os.environ.get("PDV_TERMINAL_DATA") or _default_data_dir())
+    data_dir = _resolve_data_dir(config)
     data_dir.mkdir(parents=True, exist_ok=True)
     try:
         data_dir.chmod(0o700)
@@ -77,17 +172,42 @@ def create_app(config=None):
     app.config.update(config)
     configured_db = Path(config.get("DB_PATH") or os.environ.get("PDV_TERMINAL_DB") or data_dir / "terminal.sqlite3")
     db_path = _active_profile_db(data_dir, configured_db)
-    store = Store(db_path)
+    allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]"))
+    # A damaged file must not take the screen down: start without selling and
+    # tell the shop how to bring the last local backup back.
+    damage = Store.quick_check(db_path)
+    store = None
+    if damage is None:
+        try:
+            store = Store(db_path)
+        except sqlite3.DatabaseError as exc:
+            if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower():
+                raise
+            damage = str(exc) or type(exc).__name__
     worker = None
     app.extensions["terminal_store"] = store
-    allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]"))
+    app.extensions["terminal_damage"] = damage
     bootstrap_calls = []
+    if store is None:
+        app.logger.error("Banco local danificado (%s): %s", db_path, damage)
 
     @app.before_request
     def local_security():
         host = request.host.rsplit(":", 1)[0]
         if host not in allowed_hosts:
             raise TerminalError("Host não permitido", 403)
+        if store is None:
+            if request.endpoint in ("index", "favicon", "health", "static"):
+                return None
+            if request.endpoint == "session_state":
+                if not session.get("csrf"):
+                    session["csrf"] = secrets.token_urlsafe(32)
+                return jsonify({"csrf": session["csrf"], "paired": False, "operator": None, "operators": [],
+                                "damaged": {"database": str(db_path), "problem": damage,
+                                            "backup_directory": str(db_path.parent / "backups"),
+                                            "backups": Store.local_backups(db_path)}})
+            return jsonify({"error": "Banco de dados local danificado. As vendas estão paradas até a restauração "
+                                     "do último backup; chame o suporte.", "damaged": True}), 503
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("Origin")
             if origin:
@@ -104,9 +224,16 @@ def create_app(config=None):
 
     @app.errorhandler(sqlite3.Error)
     def database_error(exc):
-        app.logger.error("Banco local indisponível: %s: %s", type(exc).__name__, exc)
-        return jsonify({"error": "Banco de dados local ocupado ou indisponível. Aguarde alguns segundos e tente "
-                                 "novamente; se persistir, reinicie o terminal."}), 503
+        # Only a database that is locked or cannot be read is "busy, try again".
+        unavailable = ((isinstance(exc, sqlite3.OperationalError) or type(exc) is sqlite3.DatabaseError)
+                       and any(hint in str(exc).lower() for hint in DATABASE_UNAVAILABLE_HINTS))
+        if unavailable:
+            app.logger.error("Banco local indisponível: %s: %s", type(exc).__name__, exc)
+            return jsonify({"error": "Banco de dados local ocupado ou indisponível. Aguarde alguns segundos e tente "
+                                     "novamente; se persistir, reinicie o terminal."}), 503
+        app.logger.error("Falha no banco local: %s: %s", type(exc).__name__, exc)
+        return jsonify({"error": "Erro interno ao gravar no banco de dados local. A operação não foi concluída; "
+                                 "se o erro se repetir, chame o suporte."}), 500
 
     @app.errorhandler(404)
     def not_found(_exc):
@@ -161,7 +288,35 @@ def create_app(config=None):
         """
         if not store.identity()["terminal_id"] or not store.has_manager() or session_manager():
             return
+        # No requester: these attempts are counted apart from the cashier's authorizations.
         store.manager_override(data.get("manager_pin"))
+
+    def throttle_cloud_calls():
+        now = time.monotonic()
+        bootstrap_calls[:] = [moment for moment in bootstrap_calls if now - moment < BOOTSTRAP_WINDOW_SECONDS]
+        if len(bootstrap_calls) >= BOOTSTRAP_CALLS:
+            raise TerminalError("Muitas atualizações seguidas; aguarde um minuto e tente novamente", 429)
+        bootstrap_calls.append(now)
+
+    def update_status():
+        """What updater.status says, or the plain release notice when this build has no updater."""
+        base = {"supported": sync.updater is not None, "current_version": sync.VERSION, "available": None,
+                "staged_version": None, "state": "idle", "error": "", "can_apply": False, "blocked_reason": ""}
+        if sync.updater is None:
+            release = store.sync_status()["release"]
+            if release and _version_tuple(release.get("version")) > _version_tuple(sync.VERSION):
+                base["available"] = release
+            base["blocked_reason"] = "Atualização automática indisponível nesta instalação"
+            return base
+        try:
+            status = {**base, **sync.updater.status(store)}
+        except Exception as exc:
+            app.logger.error("Atualizador falhou ao informar o estado: %s: %s", type(exc).__name__, exc)
+            return dict(base, state="failed", error="Não foi possível consultar o atualizador",
+                        blocked_reason="Não foi possível consultar o atualizador")
+        if status["can_apply"] and store.cash_state():
+            status.update(can_apply=False, blocked_reason="Feche o caixa para atualizar")
+        return status
 
     @app.get("/")
     def index():
@@ -173,6 +328,8 @@ def create_app(config=None):
 
     @app.get("/health")
     def health():
+        if store is None:
+            return jsonify({"status": "degraded", "service": "terminal-local", "database": "damaged"})
         return jsonify({"status": "ok", "service": "terminal-local"})
 
     @app.get("/api/session")
@@ -198,6 +355,7 @@ def create_app(config=None):
                         "license": store.lease_status(),
                         "hours": store.business_hours_status(),
                         "cash": store.cash_state(), "sync": store.sync_status(),
+                        "update": update_status(),
                         "payment_methods": store.payment_methods()})
 
     @app.post("/api/unpair")
@@ -270,12 +428,42 @@ def create_app(config=None):
         # A PIN may have changed in the cloud since this terminal last synced.
         # The paired device token authorizes this read-only bootstrap, so it
         # must also be possible from the login screen before local PIN auth.
-        now = time.monotonic()
-        bootstrap_calls[:] = [moment for moment in bootstrap_calls if now - moment < BOOTSTRAP_WINDOW_SECONDS]
-        if len(bootstrap_calls) >= BOOTSTRAP_CALLS:
-            raise TerminalError("Muitas atualizações seguidas; aguarde um minuto e tente novamente", 429)
-        bootstrap_calls.append(now)
+        throttle_cloud_calls()
         return jsonify(sync.refresh_bootstrap(store))
+
+    @app.post("/api/license/renew")
+    @authenticated()
+    def license_renew(_operator):
+        # "Verificar de novo" of the license and clock screens. Offline it only re-reads the lease.
+        throttle_cloud_calls()
+        renewed, error = False, ""
+        try:
+            renewed = sync.renew_lease(store, force=True) is not None
+        except TerminalError as exc:
+            error = str(exc)
+        return jsonify({"renewed": renewed, "error": error, "license": store.lease_status()})
+
+    @app.get("/api/update/status")
+    @authenticated()
+    def update_state(_operator):
+        return jsonify(update_status())
+
+    @app.post("/api/update/apply")
+    @authenticated(*MANAGER_ROLES)
+    def update_apply(operator):
+        if sync.updater is None:
+            raise TerminalError("Atualização automática indisponível nesta instalação", 409)
+        status = update_status()
+        if not status["can_apply"]:
+            raise TerminalError(status["blocked_reason"] or "Atualização indisponível no momento", 409)
+        store.record_audit(operator["id"], "terminal.update_requested", None, str(status["staged_version"] or ""))
+        try:
+            return jsonify(sync.updater.request_apply(store))
+        except TerminalError:
+            raise
+        except Exception as exc:
+            app.logger.error("Atualização não aplicada: %s: %s", type(exc).__name__, exc)
+            raise TerminalError("Não foi possível aplicar a atualização; a versão atual continua em uso", 500) from exc
 
     @app.post("/api/login")
     def login():
@@ -443,10 +631,10 @@ def create_app(config=None):
 
     @app.post("/api/discount/authorize")
     @authenticated(*SELL_ROLES)
-    def authorize_discount(_operator):
+    def authorize_discount(operator):
         data = body()
         return jsonify(store.authorize_discount(data.get("pin"), data.get("gross_cents"),
-                                                data.get("discount_cents")))
+                                                data.get("discount_cents"), operator["id"]))
 
     @app.post("/api/cart/items/authorize-remove")
     @authenticated(*SELL_ROLES)
@@ -522,7 +710,7 @@ def create_app(config=None):
     def create_backup(_operator):
         return jsonify(store.backup_now())
 
-    if config.get("START_WORKER", False):
+    if config.get("START_WORKER", False) and store is not None:
         worker = sync.Worker(store)
         worker.start()
         app.extensions["terminal_worker"] = worker

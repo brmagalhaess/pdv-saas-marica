@@ -256,6 +256,11 @@ body.focus-mode .tabs{display:none}
 .blocked-panel{background:var(--danger-soft);color:var(--danger);border:2px solid var(--danger)}
 .blocked-panel h2{font-size:24px;font-weight:800}
 .blocked-panel p{max-width:36ch;color:var(--ink);font-size:16px}
+.blocked-panel .guide-steps{max-width:44ch;color:var(--ink);font-size:15px;text-align:left}
+.guide-steps{display:grid;gap:8px;margin:0;padding-left:22px;line-height:1.45}
+.guide-title{font-size:18px}
+.card.attention{border-color:#E6AC43;box-shadow:inset 4px 0 0 #E6AC43,var(--shadow)}
+.card.attention #leaseInfo{color:var(--ink);font-weight:600}
 
 /* ---------- key ruler ---------- */
 .keybar{display:flex;gap:4px;padding:4px 6px;background:var(--bar-bg);overflow-x:auto;overflow-y:hidden}
