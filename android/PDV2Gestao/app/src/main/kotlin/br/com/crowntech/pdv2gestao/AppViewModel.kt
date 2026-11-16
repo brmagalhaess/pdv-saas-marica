@@ -90,6 +90,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Contexto de antes da demonstração, devolvido intacto ao sair. */
     private var contextBeforeDemo: DataContext? = null
+    /** Biometria de antes da demonstração (lida de [AppPrefs]), devolvida ao sair. */
+    private var biometricBeforeDemo: Boolean = false
 
     private val _devServer = MutableStateFlow(AppConfig.defaultBaseUrl)
     val devServer: StateFlow<String> = _devServer.asStateFlow()
@@ -293,10 +295,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (demo.active.value || session.hasSession) return
         val api = demo.enter()
         contextBeforeDemo = _context.value
+        biometricBeforeDemo = _biometricEnabled.value
         val me = api.data.me()
         val first = me.tenants.first()
         _me.value = me
-        _context.value = DataContext(tenantId = first.id, tenantName = first.name, shops = first.shops, period = PeriodKey.TODAY)
+        _context.value = DataContext(tenantId = first.id, tenantName = first.name, shops = first.shops, period = api.data.initialPeriod())
         _biometricEnabled.value = false
         _showTenantPicker.value = false
         _tabRequest.value = null
@@ -310,7 +313,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _me.value = null
         _context.value = contextBeforeDemo ?: DataContext()
         contextBeforeDemo = null
-        _biometricEnabled.value = false
+        _biometricEnabled.value = biometricBeforeDemo
+        biometricBeforeDemo = false
         _showTenantPicker.value = false
         _tabRequest.value = null
         _screen.value = Screen.Login()
@@ -339,6 +343,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (demo.active.value) {
             demo.exit()
             contextBeforeDemo = null
+            biometricBeforeDemo = false
         }
         session.clearLocal()
         prefs.clearSession()

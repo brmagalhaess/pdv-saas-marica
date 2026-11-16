@@ -100,26 +100,26 @@ class DemoData(private val now: () -> Instant) {
     )
 
     private val products = listOf(
-        Product("p01", "Arroz tipo 1 5 kg", "7891000100011", "UN", 2899),
-        Product("p02", "Feijão carioca 1 kg", "7891000100028", "UN", 849),
-        Product("p03", "Café torrado 500 g", "7891000100035", "UN", 1890),
-        Product("p04", "Açúcar refinado 1 kg", "7891000100042", "UN", 499),
-        Product("p05", "Óleo de soja 900 ml", "7891000100059", "UN", 789),
-        Product("p06", "Leite integral 1 L", "7891000100066", "UN", 549),
+        Product("p01", "Arroz tipo 1 5 kg", "2100001000011", "UN", 2899),
+        Product("p02", "Feijão carioca 1 kg", "2100001000028", "UN", 849),
+        Product("p03", "Café torrado 500 g", "2100001000035", "UN", 1890),
+        Product("p04", "Açúcar refinado 1 kg", "2100001000042", "UN", 499),
+        Product("p05", "Óleo de soja 900 ml", "2100001000059", "UN", 789),
+        Product("p06", "Leite integral 1 L", "2100001000066", "UN", 549),
         Product("p07", "Pão francês", "2000000000071", "KG", 1599),
         Product("p08", "Banana prata", "2000000000088", "KG", 699),
         Product("p09", "Tomate", "2000000000095", "KG", 899),
         Product("p10", "Queijo muçarela", "2000000000101", "KG", 4990),
-        Product("p11", "Refrigerante cola 2 L", "7891000100118", "UN", 999),
-        Product("p12", "Cerveja lata 350 ml", "7891000100125", "UN", 429),
-        Product("p13", "Sabão em pó 1 kg", "7891000100132", "UN", 1490),
-        Product("p14", "Papel higiênico 12 rolos", "7891000100149", "UN", 2190),
-        Product("p15", "Detergente 500 ml", "7891000100156", "UN", 279),
-        Product("p16", "Ovos brancos dúzia", "7891000100163", "UN", 1290),
-        Product("p17", "Macarrão espaguete 500 g", "7891000100170", "UN", 469),
-        Product("p18", "Biscoito recheado 140 g", "7891000100187", "UN", 349),
-        Product("p19", "Iogurte natural 170 g", "7891000100194", "UN", 329),
-        Product("p20", "Água mineral 1,5 L", "7891000100200", "UN", 299),
+        Product("p11", "Refrigerante cola 2 L", "2100001000110", "UN", 999),
+        Product("p12", "Cerveja lata 350 ml", "2100001000127", "UN", 429),
+        Product("p13", "Sabão em pó 1 kg", "2100001000134", "UN", 1490),
+        Product("p14", "Papel higiênico 12 rolos", "2100001000141", "UN", 2190),
+        Product("p15", "Detergente 500 ml", "2100001000158", "UN", 279),
+        Product("p16", "Ovos brancos dúzia", "2100001000165", "UN", 1290),
+        Product("p17", "Macarrão espaguete 500 g", "2100001000172", "UN", 469),
+        Product("p18", "Biscoito recheado 140 g", "2100001000189", "UN", 349),
+        Product("p19", "Iogurte natural 170 g", "2100001000196", "UN", 329),
+        Product("p20", "Água mineral 1,5 L", "2100001000202", "UN", 299),
     )
 
     private val customers = listOf(
@@ -148,6 +148,13 @@ class DemoData(private val now: () -> Instant) {
         fun two(n: Int) = n.toString().padStart(2, '0')
         return "${d.year}-${two(d.monthNumber)}-${two(d.dayOfMonth)}T${two(d.hour)}:${two(d.minute)}:${two(d.second)}-03:00"
     }
+
+    /**
+     * Período com que a demonstração abre. As lojas fictícias abrem às 07:00 (Brasília):
+     * antes disso o "Hoje" ainda está vazio, então a demonstração começa em "Ontem",
+     * que tem o dia inteiro de vendas e caixas fechados (revisores das lojas costumam abrir de madrugada).
+     */
+    fun initialPeriod(): PeriodKey = if (localNow().hour < OPEN_HOUR) PeriodKey.YESTERDAY else PeriodKey.TODAY
 
     fun dateRange(period: PeriodKey): List<LocalDate> {
         val today = today()
@@ -411,7 +418,7 @@ class DemoData(private val now: () -> Instant) {
 
     // ---------- Caixas ----------
 
-    private val openMinute = 7 * 60
+    private val openMinute = OPEN_HOUR * 60
     private val closeMinute = 22 * 60 + 5
 
     /** Sessão de caixa de um terminal num dia (null se o terminal não abriu). */
@@ -526,15 +533,15 @@ class DemoData(private val now: () -> Instant) {
         val today = today()
         val base = when {
             tenantId == TENANT_EMPORIO -> listOf(
-                CreditCustomer("demo-cli-9", "Restaurante Sabor Caseiro", "(11) 98888-1020", 64000, 0, today.plus(8, DateTimeUnit.DAY).toString(), 6),
+                CreditCustomer("demo-cli-9", "Restaurante Sabor Caseiro", "(11) 90000-0001", 64000, 0, today.plus(8, DateTimeUnit.DAY).toString(), 6),
             )
             else -> listOf(
-                CreditCustomer("demo-cli-1", "Maria das Graças", "(11) 99876-1234", 38750, 12500, today.minus(12, DateTimeUnit.DAY).toString(), 7),
-                CreditCustomer("demo-cli-2", "João Batista", "(11) 98765-4321", 21490, 21490, today.minus(25, DateTimeUnit.DAY).toString(), 4),
-                CreditCustomer("demo-cli-3", "Dona Cida", "(11) 97654-3210", 15800, 0, today.plus(5, DateTimeUnit.DAY).toString(), 3),
-                CreditCustomer("demo-cli-4", "Antônio Ferreira", "(11) 96543-2109", 9230, 4100, today.minus(3, DateTimeUnit.DAY).toString(), 2),
-                CreditCustomer("demo-cli-5", "Luciana Martins", "(11) 95432-1098", 7650, 0, today.plus(12, DateTimeUnit.DAY).toString(), 2),
-                CreditCustomer("demo-cli-6", "Seu Zé da Padaria", "(11) 94321-0987", 52300, 0, today.plus(20, DateTimeUnit.DAY).toString(), 9),
+                CreditCustomer("demo-cli-1", "Maria das Graças", "(11) 90000-0002", 38750, 12500, today.minus(12, DateTimeUnit.DAY).toString(), 7),
+                CreditCustomer("demo-cli-2", "João Batista", "(11) 90000-0003", 21490, 21490, today.minus(25, DateTimeUnit.DAY).toString(), 4),
+                CreditCustomer("demo-cli-3", "Dona Cida", "(11) 90000-0004", 15800, 0, today.plus(5, DateTimeUnit.DAY).toString(), 3),
+                CreditCustomer("demo-cli-4", "Antônio Ferreira", "(11) 90000-0005", 9230, 4100, today.minus(3, DateTimeUnit.DAY).toString(), 2),
+                CreditCustomer("demo-cli-5", "Luciana Martins", "(11) 90000-0006", 7650, 0, today.plus(12, DateTimeUnit.DAY).toString(), 2),
+                CreditCustomer("demo-cli-6", "Seu Zé da Padaria", "(11) 90000-0007", 52300, 0, today.plus(20, DateTimeUnit.DAY).toString(), 9),
             )
         }
         // Uma loja específica vê só parte dos clientes (os de índice par ficam no Centro).
@@ -600,6 +607,8 @@ class DemoData(private val now: () -> Instant) {
     )
 
     companion object {
+        /** Hora (Brasília) em que as lojas fictícias abrem e começam a vender. */
+        const val OPEN_HOUR = 7
         const val TENANT_MERCADINHO = "demo-mercadinho"
         const val TENANT_EMPORIO = "demo-emporio"
         const val SHOP_CENTRO = "demo-loja-centro"

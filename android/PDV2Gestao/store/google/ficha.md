@@ -26,11 +26,11 @@ O PDV2 Gestão é o complemento gratuito do PDV2 para quem administra a empresa.
 
 ## Notas para a revisão (rascunho — credenciais o dono preenche)
 
-Aplicativo gratuito e somente leitura para empresas clientes do PDV2. As empresas se cadastram no site; o administrador libera o uso do app. Para revisar sem senha: na tela de entrada, toque em "Ver demonstração". O app abre inteiro com dados fictícios (empresa "Mercadinho Exemplo", 2 lojas), sem acessar a internet, com a faixa "Demonstração · dados fictícios" no topo; "Sair da demonstração" volta à tela de entrada. Não há compras nem conteúdo pago.
+Aplicativo gratuito e somente leitura para empresas clientes do PDV2. As empresas se cadastram no site; o administrador libera o uso do app. Para revisar sem senha: na tela de entrada, toque em "Ver demonstração". O app abre inteiro com dados fictícios (empresa "Mercadinho Exemplo", 2 lojas), sem acessar a internet, com a faixa "Demonstração · dados fictícios" no topo; "Sair da demonstração" volta à tela de entrada. As lojas fictícias abrem às 07:00 (horário de Brasília): antes disso a demonstração abre no período "Ontem", com o dia inteiro de vendas. Não há compras nem conteúdo pago.
 
 ## Artes (prontas em `graficos/`, geradas do modo demonstração)
 
 - `icone-512.png` — 512×512 PNG 32 bits (fundo azul #146BD6 com o símbolo PDV2, igual ao ícone adaptativo do app)
 - `destaque-1024x500.png` — 1024×500, fundo sólido
-- `captura-01_resumo.png` … `captura-06_estoque.png` — 6 capturas 1080×2400 (Resumo, gráfico e pagamentos, Vendas, detalhe da venda, Caixas, Estoque)
+- `captura-01_resumo.png` … `captura-06_estoque.png` — 6 capturas 1080×2400, PNG 24 bits sem canal alfa, como a Play Store exige (Resumo, gráfico e pagamentos, Vendas, detalhe da venda, Caixas, Estoque)
 - Para refazer as capturas: emulador 1080×2400, `./gradlew installDebug installDebugAndroidTest` e `adb shell am instrument -w -e storeShots true -e class br.com.crowntech.pdv2gestao.StoreScreenshotsTest br.com.crowntech.pdv2gestao.test/androidx.test.runner.AndroidJUnitRunner`; as imagens ficam em `/sdcard/Android/data/br.com.crowntech.pdv2gestao/files/store/`

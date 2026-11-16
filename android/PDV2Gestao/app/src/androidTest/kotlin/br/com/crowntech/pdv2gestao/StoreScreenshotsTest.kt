@@ -1,6 +1,8 @@
 package br.com.crowntech.pdv2gestao
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -54,8 +56,12 @@ class StoreScreenshotsTest {
     private fun shot(dir: File, name: String) {
         compose.waitForIdle()
         Thread.sleep(400)
-        val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
-        File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val captured = compose.onRoot().captureToImage().asAndroidBitmap()
+        // A Play Store só aceita capturas PNG de 24 bits (sem canal alfa): desenha sobre fundo opaco.
+        val opaque = Bitmap.createBitmap(captured.width, captured.height, Bitmap.Config.ARGB_8888)
+        Canvas(opaque).apply { drawColor(Color.WHITE); drawBitmap(captured, 0f, 0f, null) }
+        opaque.setHasAlpha(false)
+        File(dir, "$name.png").outputStream().use { opaque.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
     @Test fun captureStoreScreens() {
