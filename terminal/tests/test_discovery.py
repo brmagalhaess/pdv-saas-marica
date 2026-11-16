@@ -117,6 +117,48 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(discovery, "local_addresses", return_value=["192.168.0.20", "10.1.2.3"]):
             self.assertEqual(discovery.broadcast_targets(), ["255.255.255.255", "192.168.0.255", "10.1.2.255"])
 
+    def test_same_network_needs_a_real_adapter_on_the_network_of_the_server(self):
+        lan_card = {"address": "192.168.0.20", "prefix": 24, "name": "Ethernet Intel(R) Ethernet", "up": True}
+        wsl = {"address": "172.24.80.1", "prefix": 20, "name": "vEthernet (WSL) Hyper-V Virtual Ethernet Adapter",
+               "up": True}
+        vpn = {"address": "10.8.0.6", "prefix": 8, "name": "Ethernet 3 TAP-Windows Adapter V9", "up": True}
+
+        def check(listed, route, target="192.168.0.10"):
+            return discovery.same_network(target, addresses=lambda: [item["address"] for item in listed],
+                                          listed=lambda: listed, route=lambda _target: route)
+
+        self.assertTrue(check([lan_card, wsl], "192.168.0.20"))
+        # Cable out: only the WSL adapter keeps an address; there is no route to the server through it.
+        self.assertFalse(check([wsl], None))
+        self.assertFalse(check([wsl], "172.24.80.1"), "an address on another network is not the shop")
+        # A VPN that takes the route (even one that claims the network of the server).
+        self.assertFalse(check([vpn], "10.8.0.6", target="10.8.0.1"))
+        self.assertFalse(check([dict(lan_card, up=False)], "192.168.0.20"), "adapter without link")
+        self.assertFalse(check([lan_card], "192.168.0.20", target="192.168.1.10"), "another network (/24)")
+        self.assertTrue(check([dict(lan_card, prefix=16)], "192.168.0.20", target="192.168.1.10"), "a /16 shop")
+        # The same computer (development) only needs some address; a name falls back to the plain check.
+        self.assertTrue(check([lan_card], None, target="127.0.0.1"))
+        self.assertFalse(check([], None, target="127.0.0.1"))
+        self.assertTrue(discovery.virtual_adapter("VirtualBox Host-Only Ethernet Adapter"))
+        self.assertFalse(discovery.virtual_adapter("Realtek PCIe GbE Family Controller", "Ethernet"))
+
+    def test_interfaces_on_windows_come_with_the_size_of_the_network(self):
+        discovery._INTERFACES_CACHE.update(at=0.0, value=None)
+        self.addCleanup(discovery._INTERFACES_CACHE.update, at=0.0, value=None)
+        answer = json.dumps([
+            {"address": "192.168.0.20", "prefix": 23, "alias": "Ethernet", "description": "Realtek", "status": "Up"},
+            {"address": "172.24.80.1", "prefix": 20, "alias": "vEthernet (WSL)", "description": "Hyper-V",
+             "status": "Up"},
+            {"address": "10.0.0.5", "prefix": 24, "alias": "Wi-Fi", "description": "Intel", "status": "Disconnected"}])
+        with patch.object(discovery.os, "name", "nt"), patch.object(discovery.subprocess, "run") as run:
+            run.return_value.stdout = answer
+            found = discovery.interfaces()
+        self.assertEqual([(item["address"], item["prefix"], item["up"]) for item in found],
+                         [("192.168.0.20", 23, True), ("172.24.80.1", 20, True), ("10.0.0.5", 24, False)])
+        self.assertTrue(discovery.virtual_adapter(found[1]["name"]))
+        self.assertTrue(discovery.same_network("192.168.1.30", listed=lambda: found,
+                                               route=lambda _target: "192.168.0.20"))
+
     def test_network_profile(self):
         with patch.object(discovery.os, "name", "posix"):
             self.assertEqual(discovery.network_profile(), "unknown")

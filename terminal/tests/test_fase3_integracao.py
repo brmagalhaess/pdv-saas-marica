@@ -339,6 +339,104 @@ class SupersededStationTests(StationCase):
         self.assertEqual(bridge.relink["fingerprint"], promoted.fingerprint)
 
 
+class OldServerOnWhileTheNewOneIsOffTests(StationCase):
+    """B took over (generation 2) and was turned off; the next day A, the old one, is turned on first.
+    The caixas that know B tell A, so A stops before the sales of the shop split in two."""
+
+    def setUp(self):
+        super().setUp()
+        self.server.stop()
+        self.old_store = KeyedStore(generation=1, shop_id=self.store.shop_id, terminal_id=self.store.terminal_id)
+        self.old_app, self.old = serve(self, self.old_store)
+        self.new_store = KeyedStore(generation=2, shop_id=self.store.shop_id, terminal_id=self.store.terminal_id)
+        self.new_app, self.new = serve(self, self.new_store)
+
+    def linked_to_the_new_one(self, copy, name="Caixa 2"):
+        """A caixa linked to B (it typed the code of the new main cashier), with B now off."""
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        station_id, token = self.new_store.add_station(name)
+        state = {"v": 1, "station_id": station_id, "station_name": name, "token": token,
+                 "server": {"address": HOST, "port": self.new.port, "host": "CAIXA-NOVO",
+                            "fingerprint": self.new.fingerprint, "shop_id": self.store.shop_id,
+                            "terminal_id": self.store.terminal_id, "terminal_name": "Caixa 1", "generation": 2},
+                 "addresses": [HOST], "linked_at": 1}
+        station.save_state(folder.name, state)
+        announced = [announce(self.old, self.old_store)]
+        app = station.create_app({"TESTING": True, "DATA_DIR": folder.name,
+                                  "DISCOVER": lambda shop_id=None: announced})
+        self.addCleanup(station.stop_background, app, 2.0)
+        bridge = app.extensions["station"]
+        bridge._copy_key = lambda: copy
+        return app, bridge
+
+    def test_a_caixa_with_the_copy_stops_the_old_one_with_proof(self):
+        self.assertEqual(lan.status(self.old_app)["superseded"], False)
+        app, bridge = self.linked_to_the_new_one(KEY)
+        self.new.stop()
+        with self.assertLogs("pdv2.lan", level="ERROR"):
+            self.assertEqual(bridge.check_once(), "down", "the old one is never offered as the place to link")
+        self.assertEqual(self.old_store.superseded_by, (2, self.new.fingerprint))
+        self.assertTrue(self.old.superseded)
+        self.assertIsNone(self.old._discovery_info(), "it stopped inviting caixas")
+        self.assertIsNone(bridge.relink)
+        self.assertEqual(station.load_state(bridge.data_dir)["server"]["fingerprint"], self.new.fingerprint, "the link to B is untouched")
+
+    def test_a_caixa_without_the_copy_only_warns(self):
+        app, bridge = self.linked_to_the_new_one(None)
+        self.new.stop()
+        with self.assertLogs("pdv2.lan", level="WARNING"):
+            self.assertEqual(bridge.check_once(), "down")
+        self.assertIsNone(self.old_store.superseded_by, "without proof nobody is stopped")
+        status = lan.status(self.old_app)
+        self.assertFalse(status["superseded"])
+        self.assertEqual(status["newer_reported"]["generation"], 2)
+
+    def test_a_wrong_proof_or_an_old_generation_stops_nobody(self):
+        client = LanClient(HOST, self.old.port, self.old.fingerprint, None)
+        self.addCleanup(client.close)
+        challenge = os.urandom(16).hex()
+        notice = {"terminal_id": self.store.terminal_id, "generation": 2, "fingerprint": self.new.fingerprint,
+                  "challenge": challenge}
+        for label, extra in (("wrong key", {"proof": lanclient.generation_proof("x" * 43 + "=", challenge,
+                                                                                 self.store.terminal_id, 2,
+                                                                                 self.new.fingerprint)}),
+                             ("same generation", {"generation": 1}),
+                             ("other terminal", {"terminal_id": "outro"}),
+                             ("its own fingerprint", {"fingerprint": self.old.fingerprint})):
+            with self.subTest(label):
+                response = client.request("POST", "/lan/v1/superseded", body={**notice, **extra})
+                response.close()
+                self.assertIn(response.status, (200, 400))
+                self.assertIsNone(self.old_store.superseded_by)
+                self.assertFalse(self.old.superseded)
+
+    def test_a_caixa_still_linked_to_the_old_one_tells_it_when_it_answers(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        station_id, token = self.old_store.add_station("Caixa 3")
+        station.save_state(folder.name, {
+            "v": 1, "station_id": station_id, "station_name": "Caixa 3", "token": token,
+            "server": {"address": HOST, "port": self.old.port, "host": "CAIXA-ANTIGO",
+                       "fingerprint": self.old.fingerprint, "shop_id": self.store.shop_id,
+                       "terminal_id": self.store.terminal_id, "generation": 1},
+            "addresses": [HOST], "linked_at": 1,
+            # It saw B (and B proved it) before B was turned off.
+            "superseded": {"host": "CAIXA-NOVO", "address": HOST, "port": self.new.port,
+                           "fingerprint": self.new.fingerprint, "generation": 2}})
+        app = station.create_app({"TESTING": True, "DATA_DIR": folder.name, "DISCOVER": lambda shop_id=None: []})
+        self.addCleanup(station.stop_background, app, 2.0)
+        bridge = app.extensions["station"]
+        bridge._copy_key = lambda: KEY
+        self.new.stop()
+        with self.assertLogs("pdv2.lan", level="ERROR"):
+            self.assertEqual(bridge.check_once(), "relink")
+        self.assertEqual(self.old_store.superseded_by, (2, self.new.fingerprint))
+        # From now on the old one refuses everybody.
+        self.assertEqual(bridge.check_once(), "relink")
+        self.assertEqual(bridge.reason, "server_superseded")
+
+
 # ------------------------------------------------------------- a ponte local
 
 class BridgeBoundaryTests(StationCase):
@@ -465,6 +563,27 @@ class PromotionGuardTests(StationCase):
         self.assertFalse(client.get("/station/api/promotion", base_url=BASE).json["can_promote"])
         # With the network back (and the server really out) the offer is there.
         addresses.append("192.168.0.20")
+        status = client.get("/station/api/status", base_url=BASE).json
+        self.assertEqual((status["can_promote"], status["promote_block"]), (True, None))
+
+    def test_an_address_outside_the_network_of_the_server_is_no_network(self):
+        # Cable out on a Windows with WSL or a VPN: the computer still has an address, but not on the
+        # network of the main cashier. Taking over from there would make a second main cashier.
+        reachable = []
+        app, bridge = self.station_app(PROMOTE_AFTER_SECONDS=0, LOCAL_ADDRESSES=lambda: ["172.24.80.1"],
+                                       SAME_NETWORK=lambda address: bool(reachable) and address == HOST)
+        client = app.test_client()
+        self.assertEqual(bridge.check_once(), "up")
+        self.server.stop()
+        self.assertEqual(bridge.check_once(), "down")
+        status = client.get("/station/api/status", base_url=BASE).json
+        self.assertEqual((status["can_promote"], status["promote_block"]), (False, "no_network"))
+        refused = client.post("/station/api/promotion/start", json={"manager_pin": "654321", "confirm": True},
+                              base_url=BASE, headers=LOCAL)
+        self.assertEqual((refused.status_code, refused.json["code"]), (409, "no_network"))
+        self.assertIn("fora da rede do caixa principal", refused.json["error"])
+        self.assertEqual(self.promotion.calls, [])
+        reachable.append(True)
         status = client.get("/station/api/status", base_url=BASE).json
         self.assertEqual((status["can_promote"], status["promote_block"]), (True, None))
 

@@ -657,6 +657,8 @@ const out = {
   notHub: C.stationsCard({supported: true, limit: {limit: 0, used: 0, hub: false}, lan: {supported: true}, stations: stations.slice(0, 1)}),
   firewall: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, firewall: 'missing'}, stations: []}),
   lanError: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, firewall: 'missing', error: 'porta em uso'}, stations: []}),
+  newerReported: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, error: 'porta em uso', newer_reported: {generation: 2, at: 1}}, stations: []}),
+  newerAndStopped: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, superseded: true, newer_reported: {generation: 2, at: 1}}, stations: []}),
   outdated: C.stationsCard({supported: true, version: '2.1.3', limit: {limit: 3, used: 3}, lan: {supported: true}, stations: [
     {id: 'server', name: 'Caixa principal', is_server: true, linked: true, online: true},
     {id: 'old', name: 'Caixa 2', linked: true, online: true, app_version: '2.0.9'},
@@ -724,6 +726,9 @@ console.log(JSON.stringify(out));
             self.assertIn("Tornar principal desta loja", text)
         self.assertIn("firewall do Windows deste computador não liberou", self.out["firewall"]["warning"])
         self.assertEqual(self.out["lanError"]["warning"], "A rede entre os caixas não está funcionando: porta em uso")
+        # A caixa adicional without the copy said another computer took over: it comes first.
+        self.assertIn("Um caixa adicional avisou que outro computador assumiu", self.out["newerReported"]["warning"])
+        self.assertEqual(self.out["newerAndStopped"]["warning"], "", "stopped: the license screen already says it")
 
     def test_outdated_cashier_is_warned_before_the_main_one_breaks(self):
         card = self.out["outdated"]

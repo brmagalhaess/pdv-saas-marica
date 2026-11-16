@@ -63,6 +63,7 @@ CERT_YEARS = 20
 SUPERSEDED_MESSAGE = ("Este computador não é mais o caixa principal desta loja: outro computador assumiu. "
                       "Procure o novo caixa principal.")
 _CHALLENGE = re.compile(r"[0-9a-f]{32}")
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 SERVER_ONLY_MESSAGE = "Esta operação só pode ser feita no caixa principal da loja."
 UNAVAILABLE_MESSAGE = "Rede entre caixas indisponível nesta instalação"
 # Canonical list (contract 2.2): the path itself and everything below it, any method.
@@ -401,6 +402,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._method("GET")
             challenge = (parse_qs(query).get("challenge") or [""])[0]
             self._json(200, manager.hello(store, challenge if _CHALLENGE.fullmatch(challenge) else None))
+            return
+        if path == "/lan/v1/superseded":
+            # A caixa adicional that already knows a NEWER generation of this terminal (it linked to
+            # the promoted computer, or saw it and proved it) tells this computer, which may have
+            # been turned on while the new main cashier is off. No station token: the proof is the
+            # key of the shop copy, the same one the promoted computer proves with.
+            self._method("POST")
+            if manager.blocked(address):
+                raise _Refused(429, "Muitas tentativas. Aguarde um minuto.", "too_many_attempts")
+            self._json(200, manager.report_newer(store, self._body_object(body), address))
             return
         if manager.superseded:
             # A newer generation of this terminal is on the network: nobody links or sells here.
@@ -794,6 +805,9 @@ class LanServer:
         self._touched = {}
         self.connection_limit = MAX_CONNECTIONS
         self.superseded = False
+        # A caixa adicional said a newer generation exists, without the key to prove it (it does not
+        # keep the copy). Not enough to stop selling, enough to warn on the screen of this computer.
+        self.newer_reported = None
         self.discover = app.config.get("LAN_DISCOVER") or (
             None if app.config.get("TESTING") else discovery.discover)
         self.client_factory = app.config.get("LAN_CLIENT_FACTORY") or lanclient.LanClient
@@ -962,6 +976,45 @@ class LanServer:
             return True
         return False
 
+    def report_newer(self, store, data, address):
+        """A caixa adicional reports a newer generation of this terminal (POST /lan/v1/superseded).
+
+        With a proof made with the key of the shop copy, this computer stops selling for good,
+        exactly as when it finds the promoted computer itself. Without one (a caixa that does not
+        keep the copy) it only warns: anyone on the network could have sent it."""
+        terminal_id = store.identity().get("terminal_id")
+        generation, presented = data.get("generation"), data.get("fingerprint")
+        challenge, proof = data.get("challenge"), data.get("proof")
+        if (not terminal_id or data.get("terminal_id") != terminal_id
+                or isinstance(generation, bool) or not isinstance(generation, int)
+                or not isinstance(presented, str) or not _FINGERPRINT.fullmatch(presented)
+                or presented == self.fingerprint or (proof is not None and not isinstance(proof, str))):
+            raise _Refused(400, "Aviso inválido.", "bad_request")
+        own = _generation(store.meta())
+        if generation <= own:
+            return {"superseded": self.superseded, "proven": False}
+        key = _copy_key(store)
+        expected = (lanclient.generation_proof(key, challenge, terminal_id, generation, presented)
+                    if key and isinstance(challenge, str) and _CHALLENGE.fullmatch(challenge) else None)
+        if not (expected and proof and hmac.compare_digest(expected, proof)):
+            if proof is not None:
+                self.bad_token(address)  # a wrong proof counts like a wrong token
+            if not self.superseded:
+                self.newer_reported = {"generation": generation, "at": int(time.time() * 1000)}
+                log.warning("Um caixa adicional avisou que outro computador assumiu como caixa principal "
+                            "(sem prova)")
+            return {"superseded": self.superseded, "proven": False}
+        if not self.superseded:
+            try:
+                store.mark_superseded(generation, presented)
+            except Exception as exc:
+                log.error("Não foi possível registrar que outro computador assumiu: %s", type(exc).__name__)
+                raise _Refused(503, "O caixa principal teve um erro.", "server_error") from None
+            self.superseded = True
+            log.error("Um caixa adicional provou que outro computador assumiu como caixa principal desta loja; "
+                      "este parou de vender")
+        return {"superseded": True, "proven": True}
+
     def poke(self):
         try:
             self.evaluate()
@@ -1095,7 +1148,8 @@ def status(app):
     if server is None:
         return result
     result.update(running=server.running, port=server.port, fingerprint=server.fingerprint,
-                  firewall=server.firewall, error=server.error, superseded=server.superseded)
+                  firewall=server.firewall, error=server.error, superseded=server.superseded,
+                  newer_reported=None if server.superseded else server.newer_reported)
     if result["fingerprint"] is None:
         try:
             result["fingerprint"] = fingerprint((_data_dir(app) / "lan" / "cert.pem").read_bytes())

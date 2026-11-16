@@ -366,7 +366,9 @@
       : total <= 0 ? (notHub ? NOT_HUB : 'O plano desta loja não inclui caixas adicionais.')
       : used >= total && !relinkable ? 'Todos os caixas adicionais do plano já estão em uso. Remova um caixa ou amplie o plano.' : '';
     // The firewall rule covers every network profile, so "Public" is not a problem to report.
-    const warning = lan.error ? `A rede entre os caixas não está funcionando: ${lan.error}`
+    // A caixa adicional that does not keep the copy cannot prove it, so this computer only warns.
+    const warning = lan.newer_reported && !lan.superseded ? 'Um caixa adicional avisou que outro computador assumiu como caixa principal desta loja. Pare de vender aqui e chame o suporte antes de continuar.'
+      : lan.error ? `A rede entre os caixas não está funcionando: ${lan.error}`
       : lan.firewall === 'missing' ? 'O firewall do Windows deste computador não liberou os outros caixas. Chame o suporte (regra “PDV2 - Servidor da loja”).'
       : (info.stations || []).some(outdated) ? 'Há caixa adicional com versão antiga: ele não poderá assumir se este computador quebrar. Instale a versão nova do PDV2 nele.' : '';
     return {summary, rows, canAdd: !blocked, addBlocked: blocked, warning};

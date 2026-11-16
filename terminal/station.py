@@ -52,6 +52,7 @@ PING_DOWN_SECONDS = 2.0
 PRINT_SECONDS = 2.0
 REDISCOVER_SECONDS = 10.0
 PROMOTE_AFTER_SECONDS = 60.0
+TELL_OLD_SERVER_SECONDS = 60.0
 ALL_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 HOP_BY_HOP = frozenset(("connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
                         "trailer", "transfer-encoding", "upgrade", "proxy-connection"))
@@ -81,8 +82,8 @@ TRANSIENT_REFUSALS = {
 SCREEN_REFUSALS = ("station_outdated", "server_outdated", "server_damaged", "station_limit", "server_superseded")
 REPLACED_TEXT = ("O caixa principal desta loja mudou de computador. Este caixa não vende pelo computador antigo: "
                  "ligue-o ao novo caixa principal.")
-NO_NETWORK_TEXT = ("Este computador está sem rede. Confira o cabo ou o Wi-Fi antes de assumir: sem rede não dá "
-                   "para saber se o caixa principal parou.")
+NO_NETWORK_TEXT = ("Este computador está sem rede ou fora da rede do caixa principal. Confira o cabo ou o Wi-Fi "
+                   "antes de assumir: sem rede não dá para saber se o caixa principal parou.")
 CLOCK_TOLERANCE_SECONDS = 300
 NOT_FOUND_TEXT = ("Não encontrei o caixa principal neste endereço. Confira o número e se o computador "
                   "principal está ligado.")
@@ -175,6 +176,8 @@ class Station:
         self.discover = config.get("DISCOVER") or (lambda shop_id=None: discovery.discover(shop_id))
         self.fingerprint_of = config.get("PEER_FINGERPRINT") or lanclient.peer_fingerprint
         self.local_addresses = config.get("LOCAL_ADDRESSES") or (lambda: discovery.local_addresses())
+        self.same_network = config.get("SAME_NETWORK") or (
+            lambda address: discovery.same_network(address, addresses=self.local_addresses))
         self.send_bytes = config.get("SEND_BYTES")
         self.ping_up = float(config.get("PING_UP_SECONDS", PING_UP_SECONDS))
         self.ping_down = float(config.get("PING_DOWN_SECONDS", PING_DOWN_SECONDS))
@@ -206,6 +209,7 @@ class Station:
         self._puller = None
         self._recovered = False
         self._print_lock = threading.Lock()
+        self._told = {}
         self._restore_superseded()
 
     # -- identity
@@ -350,8 +354,16 @@ class Station:
         return waited and self.has_network()
 
     def has_network(self):
+        """True when this computer is on the network of the main cashier: the route to its saved
+        address goes through a real adapter (not WSL, Hyper-V, VirtualBox or a VPN) whose network
+        contains it. Any address at all is not enough: with the cable out, those adapters keep
+        theirs, and taking over from there would make a second main cashier."""
+        with self.lock:
+            address = self.state["server"].get("address") if self.state is not None else None
         try:
-            return bool(self.local_addresses())
+            if not address:
+                return bool(self.local_addresses())
+            return bool(self.same_network(address))
         except Exception:
             return False
 
@@ -412,7 +424,14 @@ class Station:
             self.rediscover(include_last=exc.code == "fingerprint_mismatch")
             return self.status
         with self.lock:
-            looking = self.status == "relink" and (self.relink is None or self._superseded() is not None)
+            record = self._superseded()
+            looking = self.status == "relink" and (self.relink is None or record is not None)
+            server = dict(self.state["server"]) if self.state is not None else None
+        if record is not None and server is not None:
+            # The OLD main cashier answers while this caixa knows a newer one: tell it, so it stops
+            # selling too (it may have been turned on while the new one is off).
+            self._tell_old_server(server["address"], server["port"], server["fingerprint"],
+                                  record.get("generation"), record.get("fingerprint"))
         if looking:
             # The old server answers, but it is not the main cashier any more: find the new one.
             self.rediscover()
@@ -500,6 +519,13 @@ class Station:
             other = self._hello_at(address, number, presented)
             if (other and server.get("shop_id") and other.get("shop_id") == server["shop_id"]
                     and (not server.get("terminal_id") or other.get("terminal_id") == server["terminal_id"])):
+                announced = other.get("generation")
+                current = server.get("generation") if isinstance(server.get("generation"), int) else 1
+                if isinstance(announced, int) and not isinstance(announced, bool) and announced < current:
+                    # An OLDER generation of the main cashier (the computer that was replaced) is on
+                    # again: never a place to link to. Tell it that a newer one exists.
+                    self._tell_old_server(address, number, presented, current, pinned)
+                    continue
                 relink = {"host": other.get("host") or address, "address": address, "port": number,
                           "fingerprint": presented, "shop_name": other.get("shop_name"),
                           "terminal_name": other.get("terminal_name")}
@@ -547,6 +573,44 @@ class Station:
         if not expected or not isinstance(proof, str) or not hmac.compare_digest(expected, proof):
             return None
         return generation
+
+    def _tell_old_server(self, address, port, presented, generation, newer_fingerprint):
+        """Tells an older generation of the main cashier that a newer one exists. With the key of
+        the copy this caixa keeps, the message carries the proof that stops it for good; without
+        it, the old computer only shows a warning. At most once a minute for each computer."""
+        with self.lock:
+            terminal_id = self.state["server"].get("terminal_id") if self.state is not None else None
+        if (not terminal_id or isinstance(generation, bool) or not isinstance(generation, int)
+                or not isinstance(newer_fingerprint, str) or not _FINGERPRINT.fullmatch(newer_fingerprint)
+                or newer_fingerprint == presented):
+            return None
+        mark, now = (address, port, presented, generation), time.monotonic()
+        with self.lock:
+            last = self._told.get(mark)
+            if last is not None and now - last < TELL_OLD_SERVER_SECONDS:
+                return None
+            self._told[mark] = now
+        challenge = os.urandom(16).hex()
+        notice = {"terminal_id": terminal_id, "generation": generation, "fingerprint": newer_fingerprint,
+                  "challenge": challenge}
+        key = self._copy_key()
+        if key:
+            notice["proof"] = lanclient.generation_proof(key, challenge, terminal_id, generation, newer_fingerprint)
+        client = self.client_factory(address, port, presented, None, timeout=CONNECT_SECONDS)
+        try:
+            response = client.request("POST", "/lan/v1/superseded", body=notice, headers=self.native_headers(),
+                                      timeout=CONNECT_SECONDS)
+            try:
+                body = response.json() if response.status == 200 else None
+            finally:
+                response.close()
+        except OSError:
+            return None
+        finally:
+            client.close()
+        if isinstance(body, dict) and body.get("superseded"):
+            log.warning("O computador antigo do caixa principal estava ligado e foi avisado; ele parou de vender")
+        return body
 
     def _adopt_address(self, address, port):
         with self.lock:

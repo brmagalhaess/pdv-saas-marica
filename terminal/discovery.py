@@ -6,8 +6,10 @@ comes from the pinned certificate fingerprint (linked station) or from the
 6-digit code typed by the manager (new station).
 """
 
+import ipaddress
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -171,6 +173,101 @@ def local_addresses():
         if address and not address.startswith("127.") and address != "0.0.0.0" and address not in unique:
             unique.append(address)
     return unique
+
+
+_VIRTUAL = re.compile(r"virtualbox|vmware|hyper-v virtual|vethernet \((wsl|default switch)|default switch|"
+                      r"tap-|wintun|wireguard|tailscale|zerotier|hamachi|vpn|anyconnect|fortinet|pangp|"
+                      r"openvpn|npcap|loopback|bluetooth", re.IGNORECASE)
+_INTERFACES_CACHE = {"at": 0.0, "value": None}
+_INTERFACES_LOCK = threading.Lock()
+
+
+def virtual_adapter(*names):
+    """True for the adapters that keep an address with the network cable out (virtual machines,
+    WSL, VPN and tunnels): their address says nothing about the network of the shop."""
+    return any(isinstance(name, str) and _VIRTUAL.search(name) for name in names)
+
+
+def route_address(target):
+    """Address of this computer the system would use to reach `target` (None: no route)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect((target, 9))  # no packet leaves: this only picks the route
+            address = sock.getsockname()[0]
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    return address if address and address != "0.0.0.0" else None
+
+
+def _windows_interfaces():
+    script = ("Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object { "
+              "$a = Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue; "
+              "[pscustomobject]@{address=$_.IPAddress; prefix=[int]$_.PrefixLength; alias=$_.InterfaceAlias; "
+              "description=[string]$a.InterfaceDescription; status=[string]$a.Status} } | ConvertTo-Json -Compress")
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=5,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    value = json.loads(result.stdout or "[]")
+    items = value if isinstance(value, list) else [value]
+    found = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("address"), str):
+            continue
+        prefix = item.get("prefix")
+        found.append({"address": item["address"],
+                      "prefix": prefix if isinstance(prefix, int) and 0 < prefix <= 32 else 24,
+                      "name": " ".join(str(item.get(key) or "") for key in ("alias", "description")).strip(),
+                      "up": str(item.get("status") or "Up").lower() == "up"})
+    return found
+
+
+def interfaces():
+    """IPv4 interfaces of this computer: {"address", "prefix", "name", "up"}. On Windows they come
+    from the system (with the size of each network); elsewhere the addresses are taken as /24."""
+    with _INTERFACES_LOCK:
+        now = time.monotonic()
+        if _INTERFACES_CACHE["value"] is not None and now - _INTERFACES_CACHE["at"] < 15:
+            return list(_INTERFACES_CACHE["value"])
+        value = None
+        if os.name == "nt":
+            try:
+                value = _windows_interfaces()
+            except (OSError, ValueError, subprocess.SubprocessError):
+                value = None
+        if value is None:
+            value = [{"address": address, "prefix": 24, "name": "", "up": True} for address in local_addresses()]
+        _INTERFACES_CACHE.update(at=now, value=value)
+        return list(value)
+
+
+def same_network(target, addresses=None, listed=None, route=None):
+    """True when this computer is really on the network of `target` (the saved address of the
+    main cashier): the system routes to it through a real adapter whose network contains it.
+
+    "Has some address" is not enough: with the cable out, a virtual adapter (WSL, Hyper-V,
+    VirtualBox) or a VPN keeps its address, and taking over from there makes a second main
+    cashier. `addresses`, `listed` and `route` replace local_addresses, interfaces and
+    route_address (tests)."""
+    try:
+        ip = ipaddress.IPv4Address(target)
+    except (ipaddress.AddressValueError, ValueError, TypeError):
+        # A name instead of an address: only the plain check is possible.
+        return bool((addresses or local_addresses)())
+    if ip.is_loopback:
+        return bool((addresses or local_addresses)())  # same computer (development and tests)
+    source = (route or route_address)(str(ip))
+    if not source:
+        return False
+    for item in (listed or interfaces)():
+        if item.get("address") != source or not item.get("up", True) or virtual_adapter(item.get("name")):
+            continue
+        try:
+            network = ipaddress.IPv4Network(f"{source}/{int(item.get('prefix') or 24)}", strict=False)
+        except (ValueError, TypeError):
+            continue
+        if ip in network:
+            return True
+    return False
 
 
 def broadcast_targets():
