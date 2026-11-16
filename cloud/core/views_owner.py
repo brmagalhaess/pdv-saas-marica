@@ -4,41 +4,29 @@ The endpoint deliberately returns one tenant-scoped snapshot.  It is kept
 separate from the operational dashboard so the mobile client never receives
 write-capable controls or an overly broad admin payload.
 """
-from datetime import datetime, time, timedelta
 
 from django.db.models import Count, Max, Sum
 from django.http import JsonResponse
 from django.utils import timezone
 
 from .api_common import endpoint, iso, membership_context, method, require_feature
-from .models import FinanceEntry, Sale, SalePayment, Terminal
-
-
-ONLINE_WINDOW = timedelta(minutes=5)
+from .models import FinanceEntry, Sale, Terminal
+from .monitoring import ONLINE_WINDOW, method_totals, period_window
 
 
 def _day_window():
     """Return today's local timezone aware half-open interval."""
-    today = timezone.localdate()
-    zone = timezone.get_current_timezone()
-    start = timezone.make_aware(datetime.combine(today, time.min), zone)
-    return today, start, start + timedelta(days=1)
+    window = period_window("today")
+    return window["first"], window["start"], window["end"]
 
 
 def _payment_totals(sales):
-    values = (SalePayment.objects.filter(sale__in=sales)
-              .values("method").annotate(total=Sum("amount_cents")))
-    totals = {"cash": 0, "pix": 0, "card_credit": 0, "card_debit": 0, "other": 0}
-    for row in values:
-        method_name = row["method"]
-        amount = row["total"] or 0
-        if method_name == "card":
-            # Older terminals used the generic card method.
-            method_name = "other"
-        if method_name not in totals:
-            method_name = "other"
-        totals[method_name] += amount
-    return totals
+    """Money received by method: cash net of change; fiado and store credit left out.
+
+    Kept in the legacy shape of the endpoint (cash/pix/card_credit/card_debit/other).
+    """
+    totals = method_totals(sales)
+    return {key: totals[key] for key in ("cash", "pix", "card_credit", "card_debit", "other")}
 
 
 @endpoint
@@ -52,21 +40,23 @@ def monitoring(request):
     online_after = now - ONLINE_WINDOW
     today, start, end = _day_window()
 
+    # Revoked terminals are left out of the list too, so it matches terminals_total.
     terminals = list(Terminal.objects.select_related("shop")
-                     .filter(tenant=tenant).order_by("name", "id"))
-    active_terminals = [row for row in terminals if not row.revoked]
+                     .filter(tenant=tenant, revoked=False).order_by("name", "id"))
+    active_terminals = terminals
     online_ids = {row.id for row in active_terminals
                   if row.last_seen_at and row.last_seen_at >= online_after}
 
+    # The day a sale was made, not the day the cloud received it (offline sales sync later).
     sales = Sale.objects.filter(tenant=tenant, status="completed",
-                                received_at__gte=start, received_at__lt=end)
+                                created_at__gte=start, created_at__lt=end)
     summary = sales.aggregate(count=Count("id"), revenue=Sum("total_cents"))
     count = summary["count"] or 0
     revenue = summary["revenue"] or 0
 
     by_terminal = (sales.values("terminal_id", "terminal__name", "shop__name")
                    .annotate(sales_count=Count("id"), revenue_cents=Sum("total_cents"),
-                             last_sale_at=Max("received_at"))
+                             last_sale_at=Max("created_at"))
                    .order_by("-revenue_cents", "terminal__name"))
     sales_by_terminal = [{
         "terminal_id": str(row["terminal_id"]) if row["terminal_id"] else None,

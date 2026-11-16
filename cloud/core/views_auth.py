@@ -271,21 +271,21 @@ def mfa_recovery_codes(request):
     return JsonResponse({"recovery_codes": recovery})
 
 
-@endpoint
-def mfa_verify(request):
-    method(request, "POST")
-    data = payload(request)
-    fields(data, ("code", "recovery_code"))
-    user = _pending_platform_user(request)
+def check_platform_mfa(user, code, recovery_code, rate_key):
+    """Verify a TOTP or one recovery code of a platform account (web and app share it).
+
+    Five wrong codes lock the account for 15 minutes; a used recovery code is
+    removed. Returns True when a recovery code was used. Raises APIError with
+    a stable `code`: mfa_setup_required (409), mfa_locked / rate_limited (429)
+    or mfa_invalid (401).
+    """
     mfa = PlatformMFA.objects.filter(user=user, enabled=True).first()
     if mfa is None:
-        raise APIError("Configure a MFA antes de entrar na administração SaaS", 409)
+        raise APIError("Configure a MFA antes de entrar na administração SaaS", 409, code="mfa_setup_required")
     now = timezone.now()
     if mfa.locked_until and mfa.locked_until > now:
-        raise APIError("Muitas tentativas de MFA; aguarde alguns minutos", 429)
-    code = text(data.get("code", ""), "Código MFA", 32, optional=True).replace(" ", "")
-    recovery_code = text(data.get("recovery_code", ""), "Código de recuperação", 40, optional=True).upper()
-    key = take_rate(f"mfa-verify:{client_ip(request)}:{user.pk}", 5, 900)
+        raise APIError("Muitas tentativas de MFA; aguarde alguns minutos", 429, code="mfa_locked")
+    key = take_rate(rate_key, 5, 900)
     valid = bool(code and pyotp.TOTP(decrypt_secret(mfa.secret_encrypted)).verify(code, valid_window=1))
     used_recovery = None
     if not valid and recovery_code:
@@ -299,7 +299,7 @@ def mfa_verify(request):
         if mfa.failed_attempts >= 5:
             mfa.locked_until = now + timedelta(minutes=15)
         mfa.save(update_fields=["failed_attempts", "locked_until"])
-        raise APIError("Código MFA inválido", 401)
+        raise APIError("Código MFA inválido", 401, code="mfa_invalid")
     reset_rate(key)
     if used_recovery is not None:
         codes = list(mfa.recovery_codes)
@@ -309,8 +309,20 @@ def mfa_verify(request):
     mfa.locked_until = None
     mfa.last_used_at = now
     mfa.save(update_fields=["recovery_codes", "failed_attempts", "locked_until", "last_used_at"])
+    return used_recovery is not None
+
+
+@endpoint
+def mfa_verify(request):
+    method(request, "POST")
+    data = payload(request)
+    fields(data, ("code", "recovery_code"))
+    user = _pending_platform_user(request)
+    code = text(data.get("code", ""), "Código MFA", 32, optional=True).replace(" ", "")
+    recovery_code = text(data.get("recovery_code", ""), "Código de recuperação", 40, optional=True).upper()
+    used_recovery = check_platform_mfa(user, code, recovery_code, f"mfa-verify:{client_ip(request)}:{user.pk}")
     result = _finish_platform_login(request, user)
-    audit(None, user, "platform.mfa_verified", user, {"recovery_code": used_recovery is not None})
+    audit(None, user, "platform.mfa_verified", user, {"recovery_code": used_recovery})
     return JsonResponse(result)
 
 

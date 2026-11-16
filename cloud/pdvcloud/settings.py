@@ -156,3 +156,8 @@ LOGGING = {
         "django.request": {"level": "ERROR"},
     },
 }
+
+# Public address of the site (privacy, support and account deletion links of the app).
+PDV_PUBLIC_URL = os.environ.get("PDV_PUBLIC_URL", "https://pdv2.crowntech.com.br").rstrip("/")
+# Contact shown in the privacy policy and support page (to be confirmed by the owner).
+PDV_SUPPORT_EMAIL = os.environ.get("PDV_SUPPORT_EMAIL", "suporte@crowntech.com.br")
