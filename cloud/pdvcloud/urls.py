@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.conf import settings
 from django.urls import include, path
 
 from core import views_auth as auth, views_finance as finance, views_pages as pages
@@ -12,9 +12,6 @@ from core import views_users as users
 from core import views_owner as owner
 from core import views_labels as labels
 
-admin.site.site_header = "PDV2 • Administração da plataforma"
-admin.site.site_title = "PDV2"
-
 urlpatterns = [
     path("", lambda request: pages.page(request, "landing")),
     path("login/", lambda request: pages.page(request, "login")),
@@ -24,7 +21,6 @@ urlpatterns = [
     path("sw.js", lambda request: pages.public_asset(request, "sw")),
     path("offline/", lambda request: pages.public_asset(request, "offline")),
     path("health", pages.health), path("health/", pages.health),
-    path("control/", admin.site.urls),
     path("api/v1/csrf", auth.csrf),
     path("api/v1/auth/register", auth.register),
     path("api/v1/auth/login", auth.login_view),
@@ -108,3 +104,9 @@ urlpatterns = [
     path("api/v1/<str:kind>", resources.collection),
     path("api/v1/<str:kind>/<uuid:pk>", resources.detail),
 ]
+
+# Django admin is off in production unless PDV_ENABLE_DJANGO_ADMIN=1. When on,
+# it only opens for a superuser whose session passed the platform MFA.
+if settings.PDV_ENABLE_DJANGO_ADMIN:
+    from core.admin import platform_admin
+    urlpatterns.insert(0, path("control/", platform_admin.urls))

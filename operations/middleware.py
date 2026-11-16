@@ -1,4 +1,29 @@
 """Response hardening without storing customer data in browser/proxy caches."""
+import contextvars
+import logging
+import uuid
+
+_request_id=contextvars.ContextVar('pdv_request_id',default='-')
+
+class RequestIdFilter(logging.Filter):
+    """Adds the current request id (or '-') to every log record."""
+    def filter(self,record):
+        record.request_id=_request_id.get()
+        return True
+
+class RequestIdMiddleware:
+    """Tags log lines and the response of one request with the same id."""
+    def __init__(self,get_response):self.get_response=get_response
+    def __call__(self,request):
+        request_id=uuid.uuid4().hex[:16]
+        token=_request_id.set(request_id)
+        try:
+            response=self.get_response(request)
+        finally:
+            _request_id.reset(token)
+        response['X-Request-ID']=request_id
+        return response
+
 class ResponsePolicyMiddleware:
     def __init__(self,get_response):self.get_response=get_response
     def __call__(self,request):
