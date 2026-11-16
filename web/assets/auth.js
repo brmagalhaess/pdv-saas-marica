@@ -31,8 +31,8 @@ function setMode(next, focus = false) {
   $(".auth-tabs").hidden = false;
   $("#auth-title").textContent = login ? "Boas-vindas ao PDV2" : "Seu espaço começa aqui";
   $("#auth-description").textContent = login
-    ? "Acesse seu espaço de gestão ou crie uma conta para testar as funções disponíveis."
-    : "Crie uma conta de teste para conhecer a gestão de lojas, produtos, estoque e equipe.";
+    ? "Acesse seu painel de gestão ou crie uma conta para testar o PDV2 por 14 dias."
+    : "Teste o PDV2 por 14 dias, sem cartão: lojas, produtos, estoque, equipe e caixa.";
   showMessage("");
   if (focus) (login ? $("#login-email") : $("#company")).focus();
   const url = new URL(location.href);

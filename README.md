@@ -1,6 +1,6 @@
 # PDV2 — SaaS, gestão e terminal local
 
-V2.0.0 para validação em mercados, mercearias e varejo de produtos. Django/PostgreSQL na nuvem e Flask/SQLite no terminal, com aplicações executáveis, containers e testes integrados. **A instalação local é demonstração; a liberação comercial depende de [STATUS-V2.md](docs/STATUS-V2.md).** PDV2 é nome provisório.
+V2.0.0 para validação em mercados, mercearias e varejo de produtos. Django/PostgreSQL na nuvem e Flask/SQLite no terminal, com aplicações executáveis, containers e testes integrados. **A instalação local é demonstração; a liberação comercial depende de [STATUS-V2.md](docs/STATUS-V2.md).** PDV2 é um produto CrownTech ([crowntech.com.br](https://crowntech.com.br)).
 
 ## Executar no Docker Desktop
 
@@ -88,6 +88,18 @@ O primeiro interrompe apenas o cloud deste projeto, vende offline, religa, sincr
 Use `compose.production.yaml` para a nuvem Dokploy e `compose.terminal.yaml` para um terminal Docker na loja. Windows/Python e periféricos: [TERMINAL-V2.md](docs/TERMINAL-V2.md).
 
 `python scripts/package_terminal.py` gera ZIP sem segredos ou vendas. Hospede-o em HTTPS e cadastre versão, tamanho e SHA-256 na plataforma. O servidor assina o manifesto; o terminal avisa sobre versões verificadas. A atualização é manual. `scripts/verify_update.py` verifica o pacote baixado antes da instalação.
+
+## Marca
+
+PDV2 é o produto; CrownTech é o selo de quem desenvolve e dá suporte. A assinatura aparece nas bordas (cabeçalho, rodapé, login, tela offline, link compartilhado), nunca na área de venda do caixa.
+
+- **Lockup:** "PDV2" seguido de "por CrownTech" em tamanho menor. Horizontal: `web/assets/pdv2-por-crowntech.svg` (fundo claro) e `web/assets/pdv2-por-crowntech-negativo.svg` (fundo escuro). Empilhado: `web/assets/pdv2-por-crowntech-empilhado.svg`. Só o produto: `logo-pdv2.svg`. Só o símbolo "P2": `web/assets/pdv2-simbolo.svg`.
+- **Paleta:** azul-noite `#102630`, verde `#148765`, menta `#d9f4e6` e dourado de destaque `#E6AC43` (em fundo escuro; não usar como cor de texto em fundo claro).
+- **Textos fixos:** rodapé de telas "PDV2 · um produto CrownTech · crowntech.com.br"; última linha do cupom impresso "PDV2 - crowntech.com.br"; login "PDV2 é um produto CrownTech © 2026".
+- **Ícones e compartilhamento:** `icon-192.png` e `icon-512.png` (uso geral), `icon-maskable-192.png` e `icon-maskable-512.png` (launchers com máscara) e `og-pdv2.png` (1200×630, gerada de `og-pdv2.svg`), todos em `web/assets/`. Os SVG usam só fontes do sistema; nada é carregado de fora.
+- **Não inventar:** CNPJ, telefone, endereço, depoimentos e números da CrownTech só entram nas páginas quando forem fornecidos.
+
+As regressões de marca, landing, login, tela offline e manifesto ficam em `cloud/core/tests_marca_landing.py`.
 
 ## Documentação
 
