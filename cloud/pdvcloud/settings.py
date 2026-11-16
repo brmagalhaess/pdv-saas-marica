@@ -14,6 +14,8 @@ if str(ROOT_DIR) not in sys.path:
 DEBUG = os.environ.get("PDV_DEBUG", "0") == "1" and os.environ.get("PDV_ENV") != "production"
 PLATFORM_MFA_REQUIRED = os.environ.get("PDV_PLATFORM_MFA_REQUIRED", "1" if not DEBUG else "0") == "1"
 PDV_VERSION = os.environ.get("PDV_VERSION", "2.0.0")
+# /control/ (Django admin) is opt-in outside development; see core/admin.py.
+PDV_ENABLE_DJANGO_ADMIN = os.environ.get("PDV_ENABLE_DJANGO_ADMIN", "1" if DEBUG else "0") == "1"
 SECRET_KEY = os.environ.get("PDV_SECRET_KEY")
 if not SECRET_KEY:
     if DEBUG:
@@ -59,6 +61,7 @@ INSTALLED_APPS = [
     "core", "operations.apps.OperationsConfig",
 ]
 MIDDLEWARE = [
+    "operations.middleware.RequestIdMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "operations.middleware.ResponsePolicyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -127,3 +130,29 @@ EMAIL_HOST_USER = os.environ.get("PDV_EMAIL_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("PDV_EMAIL_PASSWORD", "")
 EMAIL_USE_TLS = os.environ.get("PDV_EMAIL_USE_TLS", "1") == "1"
 DEFAULT_FROM_EMAIL = os.environ.get("PDV_DEFAULT_FROM_EMAIL", "PDV2 <no-reply@pdv2.local>")
+
+# Everything goes to stdout, which the container runtime already collects.
+# Without this, Django only logs errors when DEBUG is on and unhandled
+# exceptions in production left no trace.
+LOG_LEVEL = os.environ.get("PDV_LOG_LEVEL", "INFO").upper()
+if LOG_LEVEL not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+    raise RuntimeError("PDV_LOG_LEVEL deve ser DEBUG, INFO, WARNING, ERROR ou CRITICAL")
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {"request_id": {"()": "operations.middleware.RequestIdFilter"}},
+    "formatters": {"standard": {
+        "format": "%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s",
+    }},
+    "handlers": {"console": {
+        "class": "logging.StreamHandler", "stream": "ext://sys.stdout",
+        "formatter": "standard", "filters": ["request_id"],
+    }},
+    "root": {"handlers": ["console"], "level": LOG_LEVEL},
+    "loggers": {
+        "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        # 4xx responses are already in the gunicorn access log; keep the
+        # tracebacks of 5xx responses.
+        "django.request": {"level": "ERROR"},
+    },
+}
