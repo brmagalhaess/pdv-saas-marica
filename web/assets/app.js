@@ -3,7 +3,8 @@ import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, 
   listPath, sortByLabel, taxIdValue, validTaxId, conflictReasonText, conflictView, customerFormFields,
   productSaveErrorText, displayVersion, sendOnlyActive, terminalStateText, mirrorText, canTransferTerminal,
   transferConfirmText, transferWarnings, transferSteps, backupKeyView, hubConfirmText, terminalStationsView,
-  canSetHub, stationLimitText, stationLabel, stationFilterOptions } from "./core.js";
+  canSetHub, stationLimitText, stationLabel, stationFilterOptions, appPermissionNames, appPermissionOrder,
+  appPermissionText, appAccessStatusText, appAccessShopsText, appAccessCompanyText } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -55,6 +56,7 @@ const platformNav = [
   { group: "Plataforma", id: "subscriptions", label: "Assinaturas", icon: "▤", roles:["platform_support","platform_billing"] },
   { group: "Plataforma", id: "devices", label: "Terminais", icon: "▥", roles:["platform_support","platform_ops"] },
   { group: "Plataforma", id: "platform_users", label: "Usuários e permissões", icon: "♙", roles:[], superuserOnly:true },
+  { group: "Plataforma", id: "app_access", label: "Acessos ao app", icon: "▯", roles: [], superuserOnly: true },
   { group: "Plataforma", id: "security", label: "Segurança e MFA", icon: "⌑", roles:["platform_support","platform_billing","platform_ops"] },
   { group: "Plataforma", id: "services", label: "Serviços", icon: "◇", roles:["platform_support","platform_billing","platform_ops"] },
   { group: "Plataforma", id: "backups", label: "Backups e restauração", icon: "◫", roles:["platform_ops"] },
@@ -3959,6 +3961,252 @@ async function printersPage() {
   }
 }
 
+// ---- PDV2 Gestão (aplicativo de celular): liberar e revogar acesso -------------------------------
+function appField(labelText, control, help = "") {
+  const field = el("div", "field");
+  const label = el("label", "", labelText);
+  label.htmlFor = control.id;
+  field.append(label, control);
+  if (help) field.append(el("small", "", help));
+  return field;
+}
+function appReasonDialog(title, subtitle, warning, submitLabel, send) {
+  const form = el("form", "auth-form");
+  if (warning) form.append(info(warning, true));
+  const reason = el("textarea");
+  reason.id = "app-reason"; reason.required = true; reason.minLength = 3; reason.maxLength = 240;
+  form.append(appField("Motivo", reason));
+  const message = formMessage(form), submit = formButtons(form, submitLabel);
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    submit.disabled = true;
+    try { await send(reason.value.trim()); closeDialog(); renderRoute(); }
+    catch (error) { handleError(error, message); submit.disabled = false; }
+  });
+  openDialog(title, subtitle, form);
+}
+function appScopeFields(record, options) {
+  // Shops (all by default) and the five read permissions of a company access.
+  const wrap = el("div", "full");
+  const shopSet = el("fieldset", "role-set full");
+  shopSet.append(el("legend", "", "Lojas"));
+  const allLine = el("label", "checkbox-line"), all = el("input");
+  all.type = "checkbox"; all.checked = !record || record.all_shops;
+  allLine.append(all, el("span", "", "Todas as lojas"));
+  shopSet.append(allLine);
+  const chosen = new Set((record?.shops || []).map(shop => shop.id));
+  const shopChecks = (options?.shops || []).map(shop => {
+    const line = el("label", "checkbox-line"), check = el("input");
+    check.type = "checkbox"; check.value = shop.id; check.checked = chosen.has(shop.id); check.disabled = all.checked;
+    line.append(check, el("span", "", shop.name)); shopSet.append(line);
+    return check;
+  });
+  if (!shopChecks.length) shopSet.append(el("small", "", "Escolha a empresa para ver as lojas."));
+  all.addEventListener("change", () => shopChecks.forEach(check => { check.disabled = all.checked; }));
+  const permissionSet = el("fieldset", "role-set full");
+  permissionSet.append(el("legend", "", "Permissões"));
+  const current = record?.permissions || appPermissionOrder;
+  const permissionChecks = appPermissionOrder.map(key => {
+    const line = el("label", "checkbox-line"), check = el("input");
+    check.type = "checkbox"; check.value = key; check.checked = current.includes(key);
+    line.append(check, el("span", "", appPermissionNames[key])); permissionSet.append(line);
+    return check;
+  });
+  wrap.append(shopSet, permissionSet);
+  return {
+    node: wrap,
+    shopIds: () => all.checked ? [] : shopChecks.filter(check => check.checked).map(check => check.value),
+    permissions: () => permissionChecks.filter(check => check.checked).map(check => check.value),
+    validate: () => {
+      if (!all.checked && !shopChecks.some(check => check.checked)) throw new Error("Escolha ao menos uma loja ou marque \"Todas as lojas\".");
+      if (!permissionChecks.some(check => check.checked)) throw new Error("Escolha ao menos uma permissão.");
+    }
+  };
+}
+async function appAccessForm(record = null) {
+  const editing = Boolean(record);
+  const form = el("form", "form-grid");
+  form.append(info("O app é só de consulta. A pessoa entra com o mesmo e-mail e senha do painel.", false));
+  const kind = el("select"); kind.id = "app-access-kind";
+  [["tenant", "Empresa cliente"], ["platform", "Equipe CrownTech"]].forEach(([value, label]) => {
+    const option = el("option", "", label); option.value = value; kind.append(option);
+  });
+  kind.value = record?.scope || "tenant"; kind.disabled = editing;
+  const search = el("input"); search.id = "app-access-tenant-search"; search.type = "search"; search.maxLength = 120;
+  search.placeholder = "Digite parte do nome";
+  const tenant = el("select"); tenant.id = "app-access-tenant";
+  const person = el("select"); person.id = "app-access-user"; person.required = !editing;
+  const expires = el("input"); expires.id = "app-access-expires"; expires.type = "date";
+  expires.min = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" });
+  expires.value = record?.expires_on || "";
+  const reason = el("textarea"); reason.id = "app-access-reason"; reason.required = true; reason.minLength = 3; reason.maxLength = 240;
+  reason.value = record?.reason || "";
+  const tenantFields = el("div", "full form-grid");
+  const searchField = appField("Buscar empresa", search), tenantField = appField("Empresa", tenant);
+  const personField = appField("Pessoa", person, "Quem já tem acesso aparece desativado.");
+  const scopeHost = el("div", "full");
+  let scope = null, options = null;
+  if (!editing) {
+    form.append(appField("Tipo", kind));
+    tenantFields.append(searchField, tenantField);
+    form.append(tenantFields, personField);
+  } else {
+    form.append(detailList([["Pessoa", record.user?.name + " · " + record.user?.email], ["Empresa", appAccessCompanyText(record)]]));
+  }
+  form.append(scopeHost, appField("Validade (opcional)", expires, "Vale até o fim do dia escolhido. Sem data, vale até ser revogado."),
+    appField("Motivo", reason));
+  async function loadOptions() {
+    const tenantId = kind.value === "tenant" ? (editing ? record.tenant?.id : tenant.value) : "";
+    options = kind.value === "tenant" && !tenantId ? { shops: [], members: [] }
+      : await api.get("/platform/app-access/options" + (tenantId ? "?tenant_id=" + encodeURIComponent(tenantId) : ""), { tenant:false });
+    if (!editing) {
+      person.replaceChildren();
+      const placeholder = el("option", "", options.members?.length ? "Escolha a pessoa" : (kind.value === "tenant" ? "Escolha a empresa primeiro" : "Nenhuma pessoa da equipe sem acesso"));
+      placeholder.value = ""; person.append(placeholder);
+      (options.members || []).forEach(member => {
+        const option = el("option", "", `${member.name} · ${member.email} · ${member.role_text}${member.has_active_access ? " (já liberado)" : ""}`);
+        option.value = String(member.user_id); option.disabled = member.has_active_access; person.append(option);
+      });
+    }
+    scope = kind.value === "tenant" ? appScopeFields(record, options) : null;
+    scopeHost.replaceChildren(...(scope ? [scope.node] : []));
+  }
+  async function loadTenants() {
+    const result = await api.get("/platform/tenants?limit=50" + (search.value.trim() ? "&q=" + encodeURIComponent(search.value.trim()) : ""), { tenant:false });
+    tenant.replaceChildren();
+    const placeholder = el("option", "", "Escolha a empresa"); placeholder.value = ""; tenant.append(placeholder);
+    records(result).forEach(row => { const option = el("option", "", row.name); option.value = row.id; tenant.append(option); });
+    await loadOptions();
+  }
+  let searchTimer = null;
+  search.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadTenants().catch(handleError), 300); });
+  tenant.addEventListener("change", () => loadOptions().catch(handleError));
+  kind.addEventListener("change", () => {
+    tenantFields.hidden = kind.value !== "tenant";
+    loadOptions().catch(handleError);
+  });
+  if (editing) await loadOptions(); else await loadTenants();
+  const message = formMessage(form), submit = formButtons(form, editing ? "Salvar acesso" : "Liberar acesso");
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    submit.disabled = true;
+    try {
+      const body = { expires_on: expires.value || null, reason: reason.value.trim() };
+      if (scope) { scope.validate(); body.shop_ids = scope.shopIds(); body.permissions = scope.permissions(); }
+      if (editing) {
+        await api.patch("/platform/app-access/" + record.id, body, { tenant:false });
+      } else {
+        if (!person.value) throw new Error("Escolha a pessoa.");
+        body.scope = kind.value; body.user_id = Number(person.value);
+        if (kind.value === "tenant") {
+          if (!tenant.value) throw new Error("Escolha a empresa.");
+          body.tenant_id = tenant.value;
+        }
+        await api.post("/platform/app-access", body, { tenant:false });
+      }
+      closeDialog(); toast(editing ? "Acesso atualizado." : "Acesso ao app liberado."); renderRoute();
+    } catch (error) { handleError(error, message); submit.disabled = false; }
+  });
+  openDialog(editing ? "Editar acesso ao app" : "Liberar acesso", editing ? "As mudanças valem na próxima tela que a pessoa abrir no app." : "Escolha a pessoa e o que ela pode ver no aplicativo PDV2 Gestão.", form, { dirty: false });
+}
+async function platformAppAccessPage() {
+  const token = ++state.renderId;
+  const view = page("Acessos ao app", "Libere quem pode usar o aplicativo PDV2 Gestão no celular.", "Plataforma");
+  view.actions.append(button("+ Liberar acesso", () => appAccessForm().catch(handleError)));
+  const accessBox = surface("Acessos", "Pessoas liberadas para o app e o que cada uma pode ver.");
+  const filter = el("select"); filter.id = "app-access-filter"; filter.setAttribute("aria-label", "Mostrar acessos");
+  [["active", "Ativos"], ["all", "Todos"]].forEach(([value, label]) => { const option = el("option", "", label); option.value = value; filter.append(option); });
+  const accessHost = el("div");
+  accessBox.append(filter, accessHost);
+  const devicesBox = surface("Aparelhos conectados", "Celulares com o app aberto na conta de alguém. Desconectar pede o login de novo.");
+  const deletionBox = surface("Pedidos de exclusão de conta", "Pedidos feitos no app ou na página pública. Atenda em até 15 dias.");
+  view.outer.append(accessBox, devicesBox, deletionBox);
+  async function loadAccesses() {
+    accessHost.replaceChildren(loadingSurface());
+    const path = "/platform/app-access?status=" + filter.value;
+    const result = await api.get(path, { tenant:false });
+    if (token !== state.renderId) return;
+    accessHost.replaceChildren(pagedContent(result, path, [
+      { label: "Pessoa", render: row => row.user?.name }, { label: "E-mail", render: row => row.user?.email },
+      { label: "Empresa", render: row => appAccessCompanyText(row) }, { label: "Lojas", render: row => appAccessShopsText(row) },
+      { label: "Permissões", render: row => appPermissionText(row.permissions) },
+      { label: "Validade", render: row => row.expires_on ? dateOnly(row.expires_on) : "Sem prazo" },
+      { label: "Estado", render: row => statusBadge(appAccessStatusText(row.status)) },
+      { label: "Aparelhos", render: row => String(row.devices_active ?? 0) }
+    ], row => row.status === "revoked" ? [] : [
+      { label: "Editar", onClick: () => appAccessForm(row).catch(handleError) },
+      { label: "Revogar", danger: true, onClick: () => appReasonDialog("Revogar acesso de " + (row.user?.name || "pessoa"),
+        appAccessCompanyText(row), "A pessoa perde o acesso a esta empresa no app na hora. Se não sobrar nenhum acesso, os celulares dela são desconectados.",
+        "Revogar acesso", reason => api.post("/platform/app-access/" + row.id + "/revoke", { reason }, { tenant:false }).then(() => toast("Acesso revogado."))) }
+    ], empty("Nenhum acesso", "Use \"+ Liberar acesso\" para liberar o app a alguém."), { tenant:false }));
+  }
+  filter.addEventListener("change", () => loadAccesses().catch(error => { accessHost.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); }));
+  async function loadDevices() {
+    devicesBox.append(loadingSurface());
+    const result = await api.get("/platform/app-devices", { tenant:false });
+    if (token !== state.renderId) return;
+    devicesBox.lastChild.remove();
+    devicesBox.append(pagedContent(result, "/platform/app-devices", [
+      { label: "Pessoa", render: row => row.user?.name }, { label: "Aparelho", render: row => [row.name, row.model].filter(Boolean).join(" · ") },
+      { label: "Sistema", render: row => row.os_version || (row.platform === "ios" ? "iOS" : "Android") },
+      { label: "Versão do app", render: row => row.app_version }, { label: "Último uso", render: row => dateTime(row.last_seen_at) },
+      { label: "Estado", render: row => statusBadge(row.status === "revoked" ? "Revogado" : "Ativo") }
+    ], row => row.status === "revoked" ? [] : [
+      { label: "Desconectar", danger: true, onClick: () => appReasonDialog("Desconectar aparelho", (row.user?.name || "") + " · " + row.name,
+        "O app deste celular volta para a tela de login.", "Desconectar",
+        reason => api.post("/platform/app-devices/" + row.id + "/revoke", { reason }, { tenant:false }).then(() => toast("Aparelho desconectado."))) }
+    ], empty("Nenhum aparelho", "Os celulares conectados ao app aparecerão aqui."), { tenant:false }));
+  }
+  function resolveDeletion(row, status) {
+    const done = status === "done";
+    const form = el("form", "auth-form");
+    form.append(info(done ? "Desativa o login desta pessoa no app e no painel e apaga o nome, o e-mail e os aparelhos dela. Não dá para desfazer." : "O pedido fica registrado como recusado; o login continua ativo.", done));
+    if (row.note) form.append(info("Motivo informado: " + row.note));
+    // Anyone can type an e-mail on the public page: the admin must confirm with the account owner first.
+    const needsIdentity = done && row.source === "web" && !!row.user;
+    let identity = null;
+    if (needsIdentity) {
+      form.append(info("Pedido feito pelo site, sem login: qualquer pessoa pode digitar o e-mail de outra. Confirme com a pessoa pelo e-mail da conta antes de atender.", true));
+      const line = el("label", "checkbox-line"); identity = el("input");
+      identity.type = "checkbox"; identity.id = "app-deletion-identity"; identity.required = true;
+      line.append(identity, el("span", "", "Confirmei com a pessoa, pelo e-mail da conta, que o pedido é dela."));
+      form.append(line);
+    }
+    const note = el("textarea"); note.id = "app-deletion-note"; note.maxLength = 500;
+    form.append(appField("Observação (opcional)", note));
+    const message = formMessage(form), submit = formButtons(form, done ? "Marcar como atendido" : "Recusar pedido");
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      if (identity && !identity.checked) { message.textContent = "Marque a confirmação antes de atender o pedido."; return; }
+      submit.disabled = true;
+      try {
+        const body = { status, note: note.value.trim() };
+        if (identity) body.identity_confirmed = true;
+        await api.post("/platform/account-deletions/" + row.id + "/resolve", body, { tenant:false });
+        closeDialog(); toast(done ? "Pedido atendido." : "Pedido recusado."); renderRoute();
+      } catch (error) { handleError(error, message); submit.disabled = false; }
+    });
+    openDialog(done ? "Atender pedido de exclusão" : "Recusar pedido de exclusão", row.email, form);
+  }
+  async function loadDeletions() {
+    deletionBox.append(loadingSurface());
+    const result = await api.get("/platform/account-deletions?status=all", { tenant:false });
+    if (token !== state.renderId) return;
+    deletionBox.lastChild.remove();
+    deletionBox.append(pagedContent(result, "/platform/account-deletions?status=all", [
+      { label: "E-mail", render: row => row.email }, { label: "Origem", render: row => row.source === "app" ? "App" : "Site (sem login)" },
+      { label: "Motivo", render: row => row.note || "—" },
+      { label: "Data", render: row => dateTime(row.created_at) },
+      { label: "Estado", render: row => statusBadge(row.status_text || row.status) }
+    ], row => row.status !== "pending" ? [] : [
+      { label: "Marcar como atendido", onClick: () => resolveDeletion(row, "done") },
+      { label: "Recusar", danger: true, onClick: () => resolveDeletion(row, "rejected") }
+    ], empty("Nenhum pedido", "Pedidos de exclusão de conta aparecerão aqui."), { tenant:false }));
+  }
+  const failed = box => error => { if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } };
+  await Promise.all([loadAccesses().catch(failed(accessHost)), loadDevices().catch(failed(devicesBox)), loadDeletions().catch(failed(deletionBox))]);
+}
+
 const tenantRoutes = {
   dashboard:dashboardPage,sales:salesPage,cash:cashPage,inventory:inventoryPage,promotions:promotionsPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,
@@ -3970,7 +4218,7 @@ const platformRoutes = {
   overview:platformOverview,tenants:platformTenants,plans:platformPlans,
   subscriptions:platformSubscriptions,devices:platformDevices,services:platformServices,
   releases:releasesPage,invoices:invoicesPage,platform_audit:platformAuditPage,security:platformSecurityPage,backups:platformBackupsPage,
-  platform_users:platformUsersPage
+  platform_users:platformUsersPage,app_access:platformAppAccessPage
 };
 function activeSection() {
   const id=decodeURIComponent(location.hash.slice(1));

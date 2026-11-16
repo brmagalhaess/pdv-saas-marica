@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#091F3D">
+  <title>Excluir conta · PDV2 Gestão · CrownTech</title>
+  <meta name="description" content="Peça a exclusão da sua conta do PDV2 e do aplicativo PDV2 Gestão.">
+  <link rel="canonical" href="__PDV_PUBLIC_URL__/excluir-conta/">
+  <link rel="icon" type="image/svg+xml" href="/assets/pdv2-simbolo.svg">
+  <link rel="stylesheet" href="/assets/public.css">
+  <script type="module" src="/assets/public.js"></script>
+</head>
+<body>
+  <header class="public-head">
+    <a class="public-brand" href="/">PDV<strong>2</strong> <small>por CrownTech</small></a>
+    <nav aria-label="Páginas de ajuda"><a href="/privacidade/">Privacidade</a><a href="/suporte/">Suporte</a></nav>
+  </header>
+  <main class="public-page">
+    <h1>Excluir minha conta</h1>
+    <p class="lead">Use esta página para pedir a exclusão da sua conta do PDV2, inclusive do aplicativo <strong>PDV2 Gestão</strong>.</p>
+    <h2>O que acontece</h2>
+    <ul>
+      <li>Seu login no PDV2 (aplicativo e painel) é desativado.</li>
+      <li>Seus dados pessoais (nome, e-mail e aparelhos) são apagados em até 15 dias.</li>
+      <li>Os dados da empresa, como vendas e notas, continuam com a empresa, como exige a lei.</li>
+      <li>Registros de segurança ficam guardados por 6 meses e depois são apagados.</li>
+    </ul>
+    <p>Se você ainda tem o aplicativo, também pode pedir em <strong>Mais &gt; Conta &gt; Excluir minha conta</strong>.</p>
+
+    <form id="deletion-form" class="public-form" novalidate>
+      <label for="deletion-email">E-mail da conta</label>
+      <input id="deletion-email" name="email" type="email" autocomplete="email" required maxlength="254">
+      <label for="deletion-note">Motivo (opcional)</label>
+      <textarea id="deletion-note" name="note" maxlength="500" rows="3"></textarea>
+      <button type="submit">Pedir exclusão</button>
+      <p id="deletion-message" class="public-message" role="status" aria-live="polite"></p>
+    </form>
+    <p class="hint">Antes de concluir um pedido feito por esta página, confirmamos pelo e-mail da conta que o pedido é seu. Dúvidas: <a href="mailto:__PDV_SUPPORT_EMAIL__">__PDV_SUPPORT_EMAIL__</a>.</p>
+  </main>
+  <footer class="public-foot">PDV2 · um produto CrownTech · <a href="/privacidade/">Privacidade</a> · <a href="/suporte/">Suporte</a> · <a href="/excluir-conta/">Excluir conta</a></footer>
+</body>
+</html>

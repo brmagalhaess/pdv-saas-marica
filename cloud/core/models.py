@@ -5,6 +5,7 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 
 def uid():
@@ -322,7 +323,8 @@ class Sale(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["tenant", "terminal", "request_id"], name="sale_request_unique")]
-        indexes = [models.Index(fields=["tenant", "-received_at", "-id"])]
+        indexes = [models.Index(fields=["tenant", "-received_at", "-id"]),
+                   models.Index(fields=["tenant", "-created_at", "-id"], name="sale_tenant_created_idx")]
 
 
 class SaleItem(models.Model):
@@ -819,3 +821,90 @@ class PlatformMFA(models.Model):
 
     def __str__(self):
         return f"MFA {self.user_id}"
+
+
+class AppAccess(models.Model):
+    """Release of the PDV2 Gestão mobile app, granted by the SaaS administrator.
+
+    `tenant` scope: one company, optionally a subset of shops (empty = all
+    active shops) and of read permissions. `platform` scope: CrownTech staff
+    (the superuser has implicit access without a row). Active = not revoked
+    and not past `expires_at`.
+    """
+    SCOPES = [(s, s) for s in ("platform", "tenant")]
+    PERMISSIONS = ("sales", "cash", "stock", "credit", "terminals")
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="app_accesses")
+    scope = models.CharField(max_length=10, choices=SCOPES)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, null=True, blank=True, related_name="app_accesses")
+    shops = models.ManyToManyField(Shop, blank=True, related_name="+")
+    permissions = models.JSONField(default=list)
+    granted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name="+")
+    granted_at = models.DateTimeField(default=timezone.now)
+    reason = models.CharField(max_length=240)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name="+")
+    revoke_reason = models.CharField(max_length=240, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "tenant"], condition=Q(scope="tenant", revoked_at__isnull=True),
+                                    name="app_access_active_tenant"),
+            models.UniqueConstraint(fields=["user"], condition=Q(scope="platform", revoked_at__isnull=True),
+                                    name="app_access_active_platform"),
+            models.CheckConstraint(condition=(Q(scope="platform", tenant__isnull=True) |
+                                              Q(scope="tenant", tenant__isnull=False)),
+                                   name="app_access_scope_tenant"),
+        ]
+
+
+class AppDevice(models.Model):
+    """One phone signed in to the app. Only SHA-256 hashes of tokens are kept."""
+    PLATFORMS = [(s, s) for s in ("ios", "android")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="app_devices")
+    platform = models.CharField(max_length=10, choices=PLATFORMS)
+    name = models.CharField(max_length=80)
+    model = models.CharField(max_length=60, blank=True)
+    os_version = models.CharField(max_length=40, blank=True)
+    app_version = models.CharField(max_length=40)
+    access_hash = models.CharField(max_length=64, unique=True, null=True)
+    access_expires_at = models.DateTimeField(null=True)
+    refresh_hash = models.CharField(max_length=64, unique=True, null=True)
+    refresh_expires_at = models.DateTimeField(null=True)
+    previous_refresh_hash = models.CharField(max_length=64, unique=True, null=True)
+    refresh_rotated_at = models.DateTimeField(null=True)
+    mfa_challenge_hash = models.CharField(max_length=64, unique=True, null=True)
+    mfa_challenge_expires_at = models.DateTimeField(null=True)
+    mfa_verified_at = models.DateTimeField(null=True)
+    activated_at = models.DateTimeField(null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(null=True)
+    last_ip = models.CharField(max_length=64, blank=True)
+    push_provider = models.CharField(max_length=10, blank=True)
+    push_token = models.CharField(max_length=300, null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True)
+    revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name="+")
+    revoke_reason = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "revoked_at"], name="appdevice_user_revoked")]
+
+
+class AccountDeletionRequest(models.Model):
+    """Account deletion asked in the app or on the public page (Apple 5.1.1(v), Google Play)."""
+    SOURCES = [(s, s) for s in ("app", "web")]
+    STATUS = [(s, s) for s in ("pending", "done", "rejected")]
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+")
+    email = models.CharField(max_length=254)
+    source = models.CharField(max_length=10, choices=SOURCES)
+    note = models.CharField(max_length=500, blank=True)
+    status = models.CharField(max_length=10, choices=STATUS, default="pending")
+    ip = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    handled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name="+")
+    handled_at = models.DateTimeField(null=True)
+    handled_note = models.CharField(max_length=500, blank=True)

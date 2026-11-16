@@ -485,3 +485,30 @@ export function backupKeyView(status, role) {
   if (status?.can_reveal && role === "owner") return { canReveal: true, text: "Você não precisa desta chave para trocar de computador: o caixa novo recebe sozinho pela internet. Ela serve só para o suporte abrir a cópia do pendrive em um caso extremo, e só pode ser mostrada uma vez." };
   return { canReveal: false, text: "Só o proprietário da empresa pode ver a chave, uma única vez." + (id ? " Identificação " + id + "…" : "") };
 }
+
+// PDV2 Gestão (mobile app) access released in /platform. Same texts as the server and the apps.
+export const appPermissionNames = { sales: "Vendas", cash: "Caixa", stock: "Estoque", credit: "Fiado", terminals: "Terminais e conflitos" };
+export const appPermissionOrder = ["sales", "cash", "stock", "credit", "terminals"];
+
+export function appPermissionText(permissions) {
+  const list = Array.isArray(permissions) ? permissions : [];
+  const known = appPermissionOrder.filter(key => list.includes(key));
+  if (!known.length) return "—";
+  if (known.length === appPermissionOrder.length) return "Todas";
+  return known.map(key => appPermissionNames[key]).join(", ");
+}
+
+export function appAccessStatusText(status) {
+  return { active: "Ativo", expired: "Expirado", revoked: "Revogado" }[status] || "—";
+}
+
+export function appAccessShopsText(row) {
+  if (!row || row.scope === "platform" || row.all_shops) return "Todas";
+  const names = (row.shops || []).map(shop => shop?.name).filter(Boolean);
+  return names.length ? names.join(", ") : "Todas";
+}
+
+export function appAccessCompanyText(row) {
+  if (!row) return "—";
+  return row.scope === "platform" ? "Equipe CrownTech" : (row.tenant?.name || "—");
+}

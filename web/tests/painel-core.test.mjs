@@ -510,3 +510,21 @@ test("terminais e caixas renderizam respostas sem os campos novos (nuvem antiga 
   assert.deepEqual(stationFilterOptions([oldTerminal], [oldCash]), [["", "Todos os caixas"], ["server", "Caixa principal"]]);
   assert.equal(stationLimitText({ key: "PDV2-X", terminal_limit: 1 }), "");
 });
+
+test("app access texts for the platform panel", () => {
+  const { appPermissionText, appAccessStatusText, appAccessShopsText, appAccessCompanyText } = core;
+  assert.equal(appPermissionText(["sales", "cash", "stock", "credit", "terminals"]), "Todas");
+  assert.equal(appPermissionText(["cash", "sales"]), "Vendas, Caixa");
+  assert.equal(appPermissionText(["terminals", "nada"]), "Terminais e conflitos");
+  assert.equal(appPermissionText([]), "—");
+  assert.equal(appPermissionText(null), "—");
+  assert.equal(appAccessStatusText("active"), "Ativo");
+  assert.equal(appAccessStatusText("expired"), "Expirado");
+  assert.equal(appAccessStatusText("revoked"), "Revogado");
+  assert.equal(appAccessStatusText("x"), "—");
+  assert.equal(appAccessShopsText({ scope: "tenant", all_shops: true, shops: [{ name: "A" }] }), "Todas");
+  assert.equal(appAccessShopsText({ scope: "tenant", all_shops: false, shops: [{ name: "Centro" }, { name: "Bairro" }] }), "Centro, Bairro");
+  assert.equal(appAccessShopsText({ scope: "platform", all_shops: true, shops: [] }), "Todas");
+  assert.equal(appAccessCompanyText({ scope: "platform", tenant: null }), "Equipe CrownTech");
+  assert.equal(appAccessCompanyText({ scope: "tenant", tenant: { name: "Mercado" } }), "Mercado");
+});
