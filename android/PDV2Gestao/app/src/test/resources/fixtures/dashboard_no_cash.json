@@ -1,0 +1,11 @@
+{"generated_at": "2026-11-16T14:03:12-03:00",
+ "tenant": {"id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10", "name": "Mercado Bom Preço"},
+ "shop": {"id": "a1b2c3d4-0001-4000-8000-000000000001", "name": "Loja Centro"},
+ "shops": [{"id": "a1b2c3d4-0001-4000-8000-000000000001", "name": "Loja Centro"}],
+ "period": {"key": "7d", "label": "7 dias", "date_from": "2026-11-10", "date_to": "2026-11-16", "from": "2026-11-10T00:00:00-03:00", "to": "2026-11-17T00:00:00-03:00"},
+ "permissions": ["sales"],
+ "sales": {"count": 1, "revenue_cents": 100, "average_ticket_cents": 100, "cancelled_count": 0, "cancelled_cents": 0, "returns_cents": 0, "net_revenue_cents": 100},
+ "payments": {"cash_cents": 100, "pix_cents": 0, "card_credit_cents": 0, "card_debit_cents": 0, "other_cents": 0, "received_total_cents": 100, "credit_account_cents": 0, "store_credit_cents": 0, "credit_received_cents": 0},
+ "series": {"kind": "day", "points": [{"key": "2026-11-10", "label": "10/11", "count": 1, "revenue_cents": 100}]},
+ "cash": null, "stock": null, "credit": null, "terminals": null,
+ "campo_futuro": {"qualquer": 1}}

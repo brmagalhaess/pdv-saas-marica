@@ -1,0 +1,9 @@
+{"id": "7e5d4c3b-2a19-4f8e-9d7c-6b5a49382717", "scope": "platform",
+ "user": {"id": 7, "name": "Paula", "email": "paula@crowntech.com.br"},
+ "tenant": null, "all_shops": true, "shops": [],
+ "permissions": ["sales", "cash", "stock", "credit", "terminals"],
+ "reason": "Atendimento", "granted_by": {"id": 1, "name": "Bruno", "email": "admin@crowntech.com.br"},
+ "granted_at": "2026-11-16T14:00:00-03:00", "expires_on": "2026-12-31",
+ "status": "revoked", "status_text": "Revogado",
+ "revoked_at": "2026-11-17T09:00:00-03:00", "revoked_by": {"id": 1, "name": "Bruno", "email": "admin@crowntech.com.br"},
+ "revoke_reason": "Saiu da equipe", "devices_active": 0}

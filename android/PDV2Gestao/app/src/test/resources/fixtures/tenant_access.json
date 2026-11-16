@@ -1,0 +1,1 @@
+{"id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10", "name": "Mercado Bom Preço", "all_shops": false, "shops": [{"id": "a1b2c3d4-0001-4000-8000-000000000001", "name": "Loja Centro"}], "permissions": ["sales", "cash", "stock", "credit", "terminals"], "access_expires_on": null}
