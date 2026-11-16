@@ -1,0 +1,83 @@
+{
+  "results": [
+    {
+      "id": "6e5d4c3b-2a19-4f8e-9d7c-6b5a49382716",
+      "scope": "tenant",
+      "user": {
+        "id": 12,
+        "name": "Ana Souza",
+        "email": "ana@mercadobompreco.com.br"
+      },
+      "tenant": {
+        "id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10",
+        "name": "Mercado Bom Preço"
+      },
+      "all_shops": false,
+      "shops": [
+        {
+          "id": "a1b2c3d4-0001-4000-8000-000000000001",
+          "name": "Loja Centro"
+        }
+      ],
+      "permissions": [
+        "sales",
+        "cash",
+        "stock",
+        "credit",
+        "terminals"
+      ],
+      "reason": "Dona da empresa pediu acesso ao app",
+      "granted_by": {
+        "id": 1,
+        "name": "Bruno",
+        "email": "admin@crowntech.com.br"
+      },
+      "granted_at": "2026-11-16T14:00:00-03:00",
+      "expires_on": null,
+      "status": "active",
+      "status_text": "Ativo",
+      "revoked_at": null,
+      "revoked_by": null,
+      "revoke_reason": "",
+      "devices_active": 1
+    },
+    {
+      "id": "7f6e5d4c-3b2a-4190-8e7d-6c5b4a392817",
+      "scope": "platform",
+      "user": {
+        "id": 7,
+        "name": "Carlos Suporte",
+        "email": "carlos@crowntech.com.br"
+      },
+      "tenant": null,
+      "all_shops": true,
+      "shops": [],
+      "permissions": [
+        "sales",
+        "cash",
+        "stock",
+        "credit",
+        "terminals"
+      ],
+      "reason": "Atendimento",
+      "granted_by": {
+        "id": 1,
+        "name": "Bruno",
+        "email": "admin@crowntech.com.br"
+      },
+      "granted_at": "2026-11-10T09:00:00-03:00",
+      "expires_on": "2026-12-31",
+      "status": "revoked",
+      "status_text": "Revogado",
+      "revoked_at": "2026-11-15T18:00:00-03:00",
+      "revoked_by": {
+        "id": 1,
+        "name": "Bruno",
+        "email": "admin@crowntech.com.br"
+      },
+      "revoke_reason": "Saiu da equipe",
+      "devices_active": 0
+    }
+  ],
+  "next_cursor": null
+}

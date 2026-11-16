@@ -1,0 +1,54 @@
+{
+  "id": "5c0e9a1b-2d3f-4e5a-8b7c-1d2e3f4a5b6c",
+  "created_at": "2026-11-16T13:58:40-03:00",
+  "received_at": "2026-11-16T13:58:43-03:00",
+  "status": "completed",
+  "shop": {
+    "id": "a1b2c3d4-0001-4000-8000-000000000001",
+    "name": "Loja Centro"
+  },
+  "terminal_name": "Caixa 1",
+  "station_name": "",
+  "operator_name": "Carla",
+  "seller_name": "",
+  "customer_name": "",
+  "gross_cents": 4800,
+  "promo_discount_cents": 110,
+  "discount_cents": 100,
+  "total_cents": 4590,
+  "change_cents": 0,
+  "items": [
+    {
+      "line": 1,
+      "name": "Arroz 5 kg",
+      "unit": "UN",
+      "quantity_milli": 1000,
+      "unit_price_cents": 2890,
+      "gross_cents": 2890,
+      "promo_discount_cents": 0,
+      "discount_cents": 100,
+      "line_total_cents": 2790
+    },
+    {
+      "line": 2,
+      "name": "Feijão 1 kg",
+      "unit": "UN",
+      "quantity_milli": 2000,
+      "unit_price_cents": 955,
+      "gross_cents": 1910,
+      "promo_discount_cents": 110,
+      "discount_cents": 0,
+      "line_total_cents": 1800
+    }
+  ],
+  "payments": [
+    {
+      "method": "pix",
+      "label": "Pix",
+      "amount_cents": 4590
+    }
+  ],
+  "returns": [],
+  "cancelled_at": null,
+  "cancellation_reason": ""
+}

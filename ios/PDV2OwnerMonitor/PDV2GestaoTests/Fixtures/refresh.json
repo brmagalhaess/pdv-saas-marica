@@ -1,0 +1,9 @@
+{
+  "tokens": {
+    "access_token": "pa_Q2xhdmUtZGUtdGVzdGUtYWNlc3NvLTEyMzQ1Njc4OTA",
+    "access_expires_at": "2026-11-16T14:18:12-03:00",
+    "access_expires_in": 900,
+    "refresh_token": "pr_Zm9vYmFyLXJlZnJlc2gtdG9rZW4tZGUtdGVzdGUtMTIzNDU2Nzg5MC1hYmNkZWY",
+    "refresh_expires_at": "2027-01-15T14:03:12-03:00"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "tenant": null,
+  "shops": [],
+  "members": [
+    {
+      "user_id": 7,
+      "name": "Carlos Suporte",
+      "email": "carlos@crowntech.com.br",
+      "role": "platform",
+      "role_text": "Equipe CrownTech",
+      "has_active_access": false
+    }
+  ]
+}

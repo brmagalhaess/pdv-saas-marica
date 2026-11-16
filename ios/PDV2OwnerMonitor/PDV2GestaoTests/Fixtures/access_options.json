@@ -1,0 +1,22 @@
+{
+  "tenant": {
+    "id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10",
+    "name": "Mercado Bom Preço"
+  },
+  "shops": [
+    {
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Loja Centro"
+    }
+  ],
+  "members": [
+    {
+      "user_id": 12,
+      "name": "Ana Souza",
+      "email": "ana@mercadobompreco.com.br",
+      "role": "owner",
+      "role_text": "Proprietário",
+      "has_active_access": false
+    }
+  ]
+}

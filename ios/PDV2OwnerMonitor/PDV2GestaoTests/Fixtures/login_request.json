@@ -1,0 +1,11 @@
+{
+  "email": "ana@mercadobompreco.com.br",
+  "password": "Senha-forte-1",
+  "device": {
+    "platform": "ios",
+    "name": "iPhone",
+    "model": "iPhone16,2",
+    "os_version": "iOS 26.1",
+    "app_version": "1.0.0 (1)"
+  }
+}

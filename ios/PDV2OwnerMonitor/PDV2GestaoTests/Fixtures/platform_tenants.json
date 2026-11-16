@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10",
+      "name": "Mercado Bom Preço",
+      "active": true,
+      "subscription_status": "active",
+      "subscription_status_text": "Ativa",
+      "shops_count": 2,
+      "terminals_total": 3,
+      "terminals_offline": 1,
+      "conflicts_open": 1,
+      "last_sale_at": "2026-11-16T13:58:40-03:00",
+      "last_seen_at": "2026-11-16T14:02:50-03:00",
+      "health": "attention",
+      "health_text": "Precisa de atenção"
+    }
+  ],
+  "next_cursor": "50"
+}

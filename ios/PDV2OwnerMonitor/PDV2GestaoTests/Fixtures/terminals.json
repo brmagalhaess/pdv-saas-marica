@@ -1,0 +1,19 @@
+{
+  "online_window_seconds": 300,
+  "results": [
+    {
+      "id": "7b6a5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d",
+      "name": "Caixa 1",
+      "shop": {
+        "id": "a1b2c3d4-0001-4000-8000-000000000001",
+        "name": "Loja Centro"
+      },
+      "status": "online",
+      "version": "2.1.0",
+      "last_seen_at": "2026-11-16T14:02:50-03:00",
+      "pending_events": 0,
+      "error": ""
+    }
+  ],
+  "next_cursor": null
+}

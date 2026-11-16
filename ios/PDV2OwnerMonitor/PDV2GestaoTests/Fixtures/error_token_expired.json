@@ -1,0 +1,4 @@
+{
+  "error": "Sessão expirada.",
+  "code": "token_expired"
+}

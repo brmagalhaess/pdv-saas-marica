@@ -1,0 +1,3 @@
+// Build Release: URL fixa de produção (o app recusa http fora do Debug).
+API_BASE_URL = https:/$()/pdv2.crowntech.com.br
+ALLOW_SERVER_OVERRIDE = NO
