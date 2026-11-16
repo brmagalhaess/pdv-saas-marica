@@ -92,6 +92,28 @@
     <footer class="brand-footer">PDV2 · um produto CrownTech · crowntech.com.br</footer>
   </section>
 
+  <section id="damagedView" class="gate hidden">
+    <div class="gate-card">
+      <div class="gate-main">
+        <div class="lockup lockup-lg"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+        <span class="eyebrow">Vendas paradas</span>
+        <h1>O banco de dados deste caixa está danificado</h1>
+        <p>O arquivo onde ficam as vendas deste computador não passou na verificação de integridade. Para não piorar o problema, o caixa não vende enquanto ele não for restaurado. O que já foi enviado ao servidor da empresa continua salvo no painel.</p>
+        <ol class="guide-steps">
+          <li>Não reinstale o programa nem apague arquivos. Se puder, chame o suporte antes de continuar.</li>
+          <li>Feche o PDV2 e pare o serviço <strong>PDV2</strong> (ou encerre a janela do terminal).</li>
+          <li>Guarde o arquivo danificado: renomeie <code id="damagedDatabase"></code> para <code>terminal-danificado.sqlite3</code>.</li>
+          <li>Copie o backup mais recente da lista abaixo para a mesma pasta, com o nome <code>terminal.sqlite3</code>.</li>
+          <li>Abra o PDV2 de novo e confira as últimas vendas. As que foram feitas depois do backup e ainda não tinham sido enviadas precisam ser lançadas outra vez.</li>
+        </ol>
+        <h2 class="guide-title">Backups locais encontrados</h2>
+        <div id="damagedBackups" class="mini-list"></div>
+        <p class="hint">Detalhe técnico para o suporte: <code id="damagedProblem"></code></p>
+        <button id="damagedRetryBtn" class="btn primary big" type="button">Verificar de novo</button>
+      </div>
+    </div>
+  </section>
+
   <div id="appView" class="app hidden">
     <header id="statusBar" class="statusbar" data-tone="ok">
       <div class="lockup" title="PDV2 por CrownTech"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
@@ -227,7 +249,8 @@
         </div>
         <div class="card"><h2>Sincronização</h2><p id="systemError" class="hint"></p><div class="inline-controls"><button id="syncNowBtn" class="btn primary">Sincronizar agora</button><button id="bootstrapBtn" class="btn">Atualizar catálogo e licença</button><a href="/api/export" id="exportLink" class="btn link-button">Exportar dados locais</a></div></div>
         <div class="card"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="btn">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div>
-        <div class="card"><h2>Versão e atualizações</h2><p id="currentVersion" class="hint">Versão instalada: —</p><p id="releaseInfo" class="hint">Nenhuma versão consultada.</p><a id="releaseLink" class="btn link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">O terminal apenas verifica o manifesto assinado. A instalação é manual.</p></div>
+        <div id="leaseCard" class="card"><h2>Licença offline</h2><p id="leaseInfo" class="hint">Consultando a licença…</p><button id="leaseRenewBtn" class="btn" type="button">Renovar licença agora</button><p class="hint">A licença é renovada sozinha sempre que o caixa fala com o servidor. Sem internet, este caixa continua vendendo até a data acima.</p></div>
+        <div id="updateCard" class="card"><h2>Atualização</h2><p id="currentVersion" class="hint">Versão instalada: —</p><p id="updateAvailable" class="hint">Versão disponível: —</p><p id="updateState" class="hint">Estado: —</p><button id="updateApplyBtn" class="btn primary" type="button" disabled>Atualizar agora</button><p id="updateBlocked" class="hint" role="status"></p><a id="releaseLink" class="btn link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">A nova versão é baixada e conferida sozinha. A instalação só acontece com o caixa fechado, depois de um backup; se algo der errado, a versão anterior volta.</p></div>
         <div class="card"><h2>Identificação</h2><pre id="identityInfo" class="identity"></pre></div>
         <div class="card"><h2>Em revisão</h2><p class="hint">Registros que o servidor recebeu e separou para o gestor conferir, e itens do catálogo que este caixa não pôde usar.</p><div id="reviewList" class="mini-list review-list"></div></div>
         <div class="card"><h2>Conflitos offline</h2><div id="conflictList" class="mini-list"></div></div>

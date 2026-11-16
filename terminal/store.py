@@ -17,9 +17,17 @@ from .printers import (LABEL_PRINTER_REQUIRED, PAYMENT_LABELS, label_bytes, layo
                        receipt_layout, voucher_layout)
 
 
-# The cloud issues a normal offline lease for 72h (past_due is 24h).
-# Keep this value exposed to the terminal UI and diagnostics.
+# Offline lease of a cloud that does not issue long leases (72h; past_due is 24h).
 OFFLINE_LEASE_SECONDS = 72 * 60 * 60
+# The operator is warned when the offline lease has this much time left or less...
+LEASE_WARNING_SECONDS = 7 * 24 * 60 * 60
+# ...but only once the lease is this old: an online terminal renews it all the time.
+LEASE_WARNING_MIN_AGE_SECONDS = 6 * 60 * 60
+# An expired lease never interrupts a cashier that is already open, up to this limit.
+EXPIRED_SHIFT_GRACE_SECONDS = 24 * 60 * 60
+# last_seen is persisted at most this often (it used to be written on every read).
+LAST_SEEN_WRITE_SECONDS = 60
+CORRUPTION_HINTS = ("malformed", "not a database")
 SELL_ROLES = {"owner", "admin", "manager", "cashier"}
 MANAGER_ROLES = {"owner", "admin", "manager"}
 CREDIT_METHODS = ("credit_account", "store_credit")
@@ -52,7 +60,13 @@ DISCOUNT_BPS = {"cashier": 1000, "manager": 5000, "admin": 10000, "owner": 10000
 MAX_SALE_ITEMS = 200
 MAX_SALE_PAYMENTS = 20
 PRODUCT_NAME_MAX = 180
+# Manager authorizations lock per requesting operator; the store-wide counter
+# only stops a brute force spread over several operators.
 MANAGER_OVERRIDE_KEY = "manager_override"
+MANAGER_OVERRIDE_FAILURES = 5
+MANAGER_OVERRIDE_GLOBAL_FAILURES = 30
+MANAGER_OVERRIDE_GLOBAL_WINDOW_SECONDS = 15 * 60
+MANAGER_OVERRIDE_LOCK_SECONDS = 300
 BUSINESS_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
@@ -190,7 +204,7 @@ class Store:
                     operator_id TEXT NOT NULL,created_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS outbox(
                     id TEXT PRIMARY KEY,event_type TEXT NOT NULL,aggregate_id TEXT NOT NULL,
-                    payload TEXT NOT NULL,created_at INTEGER NOT NULL,acked_at INTEGER);
+                    payload TEXT NOT NULL,created_at INTEGER NOT NULL,acked_at INTEGER,seq INTEGER);
                 CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(acked_at,created_at);
                 CREATE INDEX IF NOT EXISTS outbox_pending_order ON outbox(acked_at);
                 CREATE TABLE IF NOT EXISTS audit(
@@ -248,6 +262,7 @@ class Store:
                 conn.execute("ALTER TABLE sync_conflicts ADD COLUMN resolution TEXT NOT NULL DEFAULT ''")
             conn.commit()
             self._migrate_conflict_key(conn)
+            self._migrate_outbox_seq(conn)
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -255,6 +270,68 @@ class Store:
         # A previous process may have sent bytes before crashing. Never retry it silently.
         with self.transaction() as conn:
             conn.execute("UPDATE print_jobs SET status='uncertain',error='Processo interrompido durante impressão' WHERE status='sending'")
+
+    @staticmethod
+    def is_corruption(exc):
+        """True only for errors SQLite raises when the file itself is damaged."""
+        if not isinstance(exc, sqlite3.DatabaseError) or isinstance(
+                exc, (sqlite3.IntegrityError, sqlite3.ProgrammingError, sqlite3.InterfaceError)):
+            return False
+        return any(hint in str(exc).lower() for hint in CORRUPTION_HINTS)
+
+    @staticmethod
+    def quick_check(path):
+        """None when the SQLite file is healthy (or absent); otherwise what is wrong with it."""
+        path = Path(path)
+        if not path.exists():
+            return None
+        try:
+            with closing(sqlite3.connect(path, timeout=10)) as conn:
+                rows = [str(row[0]) for row in conn.execute("PRAGMA quick_check(5)")]
+        except sqlite3.DatabaseError as exc:
+            # Locked, unreadable or I/O trouble is not damage: let the start fail instead.
+            if not Store.is_corruption(exc):
+                raise
+            return str(exc) or type(exc).__name__
+        return None if rows == ["ok"] else "; ".join(rows)[:300] or "quick_check sem resposta"
+
+    @staticmethod
+    def local_backups(path):
+        """Backup copies next to a database, newest first, without opening the database."""
+        directory = Path(path).parent / "backups"
+        copies = sorted(directory.glob("terminal-*.sqlite3"), reverse=True) if directory.exists() else []
+        result = []
+        for copy in copies[:7]:
+            try:
+                stamp = int(copy.name.split("-")[1])
+            except (IndexError, ValueError):
+                stamp = None
+            result.append({"name": copy.name, "path": str(copy), "size_bytes": copy.stat().st_size,
+                           "created_at": stamp})
+        return result
+
+    @staticmethod
+    def _migrate_outbox_seq(conn):
+        """Delivery order is an explicit counter: the clock may run backwards."""
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(outbox)")}
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if "seq" not in columns:
+                conn.execute("ALTER TABLE outbox ADD COLUMN seq INTEGER")
+            if conn.execute("SELECT 1 FROM outbox WHERE seq IS NULL LIMIT 1").fetchone():
+                # rowid is the insertion order every reader already used; created_at only breaks
+                # ties that cannot exist. Rows numbered by a previous run keep their place.
+                last = conn.execute("SELECT COALESCE(MAX(seq),0) FROM outbox").fetchone()[0]
+                missing = [row[0] for row in conn.execute(
+                    "SELECT rowid FROM outbox WHERE seq IS NULL ORDER BY rowid,created_at")]
+                conn.executemany("UPDATE outbox SET seq=? WHERE rowid=?",
+                                 [(last + offset, rowid) for offset, rowid in enumerate(missing, start=1)])
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS outbox_seq ON outbox(seq)")
+            conn.execute("CREATE INDEX IF NOT EXISTS outbox_pending_seq ON outbox(acked_at,seq)")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
     @staticmethod
     def _migrate_conflict_key(conn):
@@ -357,7 +434,7 @@ class Store:
         return conn.execute("""SELECT 1 FROM audit
             WHERE action NOT IN ('terminal.paired', 'terminal.bootstrap',
                                  'terminal.unpaired', 'terminal.catalog_skipped',
-                                 'terminal.clock_corrected') LIMIT 1""").fetchone() is not None
+                                 'terminal.clock_corrected', 'terminal.release_key_pinned') LIMIT 1""").fetchone() is not None
 
     @staticmethod
     def _clear_company_cache(conn):
@@ -373,7 +450,8 @@ class Store:
                     "terminal_id", "terminal_name", "license_hint", "lease", "public_key", "cloud_url",
                     "discount_max_bps", "issuer_profile", "business_hours", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at",
-                    "last_heartbeat_at", "last_heartbeat_error", "bootstrap_summary", "catalog_skipped"):
+                    "last_heartbeat_at", "last_heartbeat_error", "bootstrap_summary", "catalog_skipped",
+                    "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at"):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
 
     def ensure_pairable(self):
@@ -390,7 +468,9 @@ class Store:
             raise TerminalError("Terminal ainda não pareado", 409)
         event = {"event_id": event_id, "type": event_type, "aggregate_id": aggregate_id,
                  "identity": identity, "data": data}
-        conn.execute("INSERT INTO outbox VALUES (?,?,?,?,?,NULL)",
+        # Callers hold BEGIN IMMEDIATE, so the next number cannot be taken twice.
+        conn.execute("""INSERT INTO outbox(id,event_type,aggregate_id,payload,created_at,acked_at,seq)
+                        VALUES (?,?,?,?,?,NULL,(SELECT COALESCE(MAX(seq),0)+1 FROM outbox))""",
                      (event_id, event_type, aggregate_id, _json(event), _now_ms()))
         return event_id
 
@@ -418,7 +498,7 @@ class Store:
     def pending_events(self, limit=50):
         with self.connection() as conn:
             return [json.loads(row["payload"]) for row in conn.execute(
-                "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid LIMIT ?", (limit,))]
+                "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY seq LIMIT ?", (limit,))]
 
     def ack_events(self, ids):
         with self.transaction() as conn:
@@ -581,39 +661,89 @@ class Store:
             self._set_meta(conn, "release_checked_at", str(_now_ms()))
 
     def lease_status(self, now=None):
-        """Verify signed lease and block new sales after its offline expiry."""
-        from shared.licensing import LicenseError, verify_lease
+        """Verify the signed lease and say what this terminal may still do offline.
+
+        can_sell: sales and the other cashier operations. An expired lease keeps
+        them for the cashier that is already open (a shift is never cut in the middle).
+        can_open_cash: a new cashier needs a lease that is still valid.
+        """
+        from shared.licensing import CLOCK_TOLERANCE_SECONDS, LicenseError, verify_lease
 
         now = int(time.time()) if now is None else int(now)
-        with self.transaction() as conn:
+        with self.connection() as conn:
             envelope_raw = self._meta(conn, "lease")
             key = self._meta(conn, "public_key")
             if not envelope_raw or not key:
-                return {"state": "unpaired", "can_sell": False, "reason": "Terminal não pareado"}
+                return {"state": "unpaired", "can_sell": False, "can_open_cash": False,
+                        "reason": "Terminal não pareado"}
             last_seen = int(self._meta(conn, "last_seen") or 0)
-            if last_seen and now + 300 < last_seen:
-                return {"state": "clock_rollback", "can_sell": False,
-                        "reason": "Relógio do computador voltou; ajuste a hora"}
+            if last_seen and now + CLOCK_TOLERANCE_SECONDS < last_seen:
+                return {"state": "clock_rollback", "can_sell": False, "can_open_cash": False,
+                        "reason": "Relógio do computador voltou; ajuste a hora",
+                        "clock": {"problem": "behind", "computer_time": now, "reference_time": last_seen}}
             envelope = json.loads(envelope_raw)
-            claims = envelope.get("payload", {})
-            expires = claims.get("expires_at")
-            if type(expires) is not int:
-                return {"state": "invalid", "can_sell": False, "reason": "Licença inválida"}
+            claims = envelope.get("payload", {}) if isinstance(envelope, dict) else {}
+            expires, issued = claims.get("expires_at"), claims.get("issued_at")
+            invalid = {"state": "invalid", "can_sell": False, "can_open_cash": False, "reason": "Licença inválida"}
+            if type(expires) is not int or type(issued) is not int:
+                return invalid
             expected = {field: self._meta(conn, field) for field in
                         ("tenant_id", "shop_id", "terminal_id", "device_id")}
             try:
                 verify_lease(envelope, key, expected=expected, now=now, last_seen=last_seen or None)
             except LicenseError:
-                state = "expired" if now >= expires else "invalid"
-                return {"state": state, "can_sell": False,
-                        "reason": "Prazo offline expirado; conecte para renovar" if state == "expired" else "Licença inválida",
-                        "expires_at": expires}
-            if now > last_seen:
-                self._set_meta(conn, "last_seen", str(now))
-            return {"state": "active", "can_sell": True, "reason": "Licença ativa",
-                    "expires_at": expires, "offline_seconds_max": OFFLINE_LEASE_SECONDS,
-                    "plan_status": claims.get("status"), "features": claims.get("features", []),
-                    "business_hours": claims.get("business_hours", {})}
+                if now < expires:
+                    return dict(invalid, expires_at=expires)
+                try:
+                    # Past its date, but is it this terminal's own signed lease?
+                    verify_lease(envelope, key, expected=expected, now=expires - 1)
+                except LicenseError:
+                    return dict(invalid, expires_at=expires)
+                cash = conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone()
+                grace_until = expires + EXPIRED_SHIFT_GRACE_SECONDS
+                shift = bool(cash) and now < grace_until
+                result = {"state": "expired", "can_sell": shift, "can_open_cash": False, "expires_at": expires,
+                          "reason": ("Licença offline vencida. Este caixa aberto continua vendendo; conecte à "
+                                     "internet para renovar antes de abrir o próximo caixa") if shift
+                          else "Prazo offline expirado; conecte para renovar"}
+                if shift:
+                    result["grace_until"] = grace_until
+                # The cloud showed the clock was ahead and nobody fixed it since.
+                skew = int(self._meta(conn, "clock_skew") or 0)
+                checked = int(self._meta(conn, "clock_checked_at") or 0)
+                if skew > CLOCK_TOLERANCE_SECONDS and now >= checked - CLOCK_TOLERANCE_SECONDS and now - skew < expires:
+                    result["clock"] = {"problem": "ahead", "computer_time": now, "reference_time": now - skew}
+                    result["reason"] = "Relógio do computador está adiantado; ajuste a hora"
+                return result
+            remaining = expires - now
+            warning = remaining <= LEASE_WARNING_SECONDS and now - issued >= LEASE_WARNING_MIN_AGE_SECONDS
+            days_left = max(0, remaining // 86400)
+            if not warning:
+                reason = "Licença ativa"
+            elif days_left >= 1:
+                reason = (f"Licença offline vence em {days_left} dia{'s' if days_left > 1 else ''}; "
+                          "conecte este caixa à internet para renovar")
+            else:
+                reason = "Licença offline vence hoje; conecte este caixa à internet para renovar"
+            status = {"state": "active", "can_sell": True, "can_open_cash": True, "reason": reason,
+                      "expires_at": expires, "issued_at": issued, "seconds_left": remaining,
+                      "days_left": days_left, "warning": warning,
+                      "offline_seconds_max": expires - issued,
+                      "plan_status": claims.get("status"), "features": claims.get("features", []),
+                      "business_hours": claims.get("business_hours", {})}
+        if now - last_seen >= LAST_SEEN_WRITE_SECONDS:
+            self.touch_last_seen(now)
+        return status
+
+    def touch_last_seen(self, now=None):
+        """Advance the anti-rollback mark; it never moves backwards here."""
+        now = int(time.time()) if now is None else int(now)
+        try:
+            with self.transaction() as conn:
+                if now > int(self._meta(conn, "last_seen") or 0):
+                    self._set_meta(conn, "last_seen", str(now))
+        except sqlite3.OperationalError:
+            pass  # a busy database only delays the mark; the next read writes it
 
     def business_hours_status(self, now=None):
         """Evaluate the last signed company schedule using the terminal clock."""
@@ -651,6 +781,104 @@ class Store:
         if not status["can_sell"]:
             raise TerminalError(status["reason"], 403)
 
+    def _pin_release_key(self, conn, response):
+        """The release key is pinned by the first authenticated answer that brings it."""
+        from shared.licensing import key_id
+
+        value = response.get("release_public_key") if isinstance(response, dict) else None
+        if not isinstance(value, str) or not value.strip() or self._meta(conn, "release_public_key"):
+            return
+        try:
+            fingerprint = key_id(value)
+        except ValueError:  # LicenseError included
+            return
+        self._set_meta(conn, "release_public_key", value)
+        self._audit(conn, None, "terminal.release_key_pinned", None, fingerprint)
+
+    def _accept_lease(self, conn, lease, key, server_time=None):
+        """Verify a lease the cloud just sent and re-anchor the clock mark on it.
+
+        A lease newer than the stored one is judged at its own signed issue time:
+        a wrong computer clock must not stop the renewal, lease_status reports it.
+        Anything else (a replay) faces the normal clock checks.
+        """
+        from shared.licensing import CLOCK_TOLERANCE_SECONDS, LicenseError, verify_lease
+
+        expected = {field: self._meta(conn, field) for field in
+                    ("tenant_id", "shop_id", "terminal_id", "device_id")}
+        try:
+            previous_issued = int(json.loads(self._meta(conn, "lease") or "{}")["payload"]["issued_at"])
+        except (KeyError, TypeError, ValueError):
+            previous_issued = 0
+        try:
+            issued = lease["payload"]["issued_at"]
+        except (KeyError, TypeError):
+            issued = None
+        fresh = type(issued) is int and issued > previous_issued
+        try:
+            claims = verify_lease(lease, key, expected=expected)
+        except LicenseError:
+            if not fresh:
+                raise
+            claims = verify_lease(lease, key, expected=expected, now=issued)
+        if not fresh:
+            return claims
+        now, last_seen = int(time.time()), int(self._meta(conn, "last_seen") or 0)
+        anchor = issued
+        if type(server_time) is int and abs(server_time - issued) <= CLOCK_TOLERANCE_SECONDS:
+            anchor = max(anchor, server_time)
+        clock_ok = abs(now - anchor) <= CLOCK_TOLERANCE_SECONDS
+        if clock_ok and last_seen <= now + CLOCK_TOLERANCE_SECONDS:
+            anchor = max(anchor, last_seen)
+        elif clock_ok:
+            # The clock was ahead and has been corrected: without this the
+            # cashier stays blocked until the old mark passes.
+            self._audit(conn, None, "terminal.clock_corrected", None, f"last_seen={last_seen}")
+        self._set_meta(conn, "last_seen", str(anchor))
+        self._set_meta(conn, "clock_skew", str(0 if clock_ok else now - anchor))
+        self._set_meta(conn, "clock_checked_at", str(now))
+        return claims
+
+    def _store_lease(self, conn, lease, claims):
+        max_discount = claims.get("max_discount_bps", 10000)
+        if type(max_discount) is not int or not 0 <= max_discount <= 10000:
+            raise TerminalError("Limite de desconto da licença inválido", 403)
+        self._set_meta(conn, "lease", _json(lease))
+        self._set_meta(conn, "discount_max_bps", str(max_discount))
+        self._set_meta(conn, "business_hours", _json(claims.get("business_hours") or {}))
+
+    def apply_lease(self, response):
+        """Renewal that does not depend on the catalog (POST /api/v1/terminal/lease)."""
+        from shared.licensing import LicenseError, payload_digest
+
+        with self.transaction() as conn:
+            key = self._meta(conn, "public_key")
+            if not key or response.get("public_key") != key:
+                raise TerminalError("Chave pública não corresponde à chave fixada", 409)
+            lease = response.get("lease")
+            try:
+                claims = self._accept_lease(conn, lease, key, response.get("server_time"))
+            except (LicenseError, TypeError) as exc:
+                raise TerminalError("Licença renovada inválida", 403) from exc
+            operators = response.get("operators")
+            if isinstance(operators, list):
+                if claims.get("operators_hash") != payload_digest(operators):
+                    raise TerminalError("Lista de operadores não corresponde à licença assinada", 403)
+                self._apply_operators(conn, operators, [])
+            self._store_lease(conn, lease, claims)
+            self._pin_release_key(conn, response)
+            self._set_meta(conn, "lease_renewed_at", str(_now_ms()))
+        return {"expires_at": claims["expires_at"]}
+
+    def mark_lease_attempt(self):
+        """Hourly throttle also for a cloud that has no lease route yet."""
+        with self.transaction() as conn:
+            self._set_meta(conn, "lease_renewed_at", str(_now_ms()))
+
+    def record_audit(self, operator_id, action, subject_id=None, detail=None):
+        with self.transaction() as conn:
+            self._audit(conn, operator_id, action, subject_id, detail)
+
     def set_pairing(self, response, cloud_url):
         from shared.licensing import LicenseError, verify_lease
 
@@ -684,6 +912,7 @@ class Store:
             if response.get("issuer"):
                 self._set_meta(conn, "issuer_profile", _json(response["issuer"]))
             self._set_meta(conn, "cloud_url", cloud_url)
+            self._pin_release_key(conn, response)
             self._audit(conn, None, "terminal.paired", response["terminal_id"])
 
     @staticmethod
@@ -691,7 +920,7 @@ class Store:
         """Return local stock effects not yet reflected by the cloud balance."""
         deltas = defaultdict(int)
         events = [json.loads(row[0]) for row in conn.execute(
-            "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid")]
+            "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY seq")]
         for event in events:
             event_type = event.get("type")
             data = event.get("data") or {}
@@ -711,7 +940,7 @@ class Store:
         return deltas
 
     def apply_bootstrap(self, response):
-        from shared.licensing import CLOCK_TOLERANCE_SECONDS, LicenseError, payload_digest, verify_lease
+        from shared.licensing import LicenseError, payload_digest
 
         products = response.get("products")
         operators = response.get("operators")
@@ -722,36 +951,18 @@ class Store:
             key = self._meta(conn, "public_key")
             if not key or response.get("public_key") != key:
                 raise TerminalError("Chave pública não corresponde à chave fixada", 409)
-            expected = {field: self._meta(conn, field) for field in
-                        ("tenant_id", "shop_id", "terminal_id", "device_id")}
             lease = response.get("lease")
             try:
-                claims = verify_lease(lease, key, expected=expected)
+                claims = self._accept_lease(conn, lease, key, response.get("server_time"))
             except (LicenseError, TypeError) as exc:
                 raise TerminalError("Licença do catálogo inválida", 403) from exc
             if not isinstance(operators, list):
                 raise TerminalError("Catálogo ou operadores inválidos")
             if claims.get("operators_hash") != payload_digest(operators):
                 raise TerminalError("Lista de operadores não corresponde à licença assinada", 403)
-            max_discount = claims.get("max_discount_bps", 10000)
-            if type(max_discount) is not int or not 0 <= max_discount <= 10000:
-                raise TerminalError("Limite de desconto da licença inválido", 403)
             self._apply_operators(conn, operators, skipped)
-            try:
-                previous_issued = int(json.loads(self._meta(conn, "lease") or "{}")["payload"]["issued_at"])
-            except (KeyError, TypeError, ValueError):
-                previous_issued = 0
-            now, last_seen = int(time.time()), int(self._meta(conn, "last_seen") or 0)
-            # The PC clock was ahead and has been corrected. A lease the cloud
-            # signed just now, newer than the stored one, proves the current
-            # time; without this the cashier stays blocked until the old mark passes.
-            if (last_seen > now + CLOCK_TOLERANCE_SECONDS and claims["issued_at"] > previous_issued
-                    and abs(now - claims["issued_at"]) <= CLOCK_TOLERANCE_SECONDS):
-                self._set_meta(conn, "last_seen", str(now))
-                self._audit(conn, None, "terminal.clock_corrected", None, f"last_seen={last_seen}")
-            self._set_meta(conn, "lease", _json(lease))
-            self._set_meta(conn, "discount_max_bps", str(max_discount))
-            self._set_meta(conn, "business_hours", _json(claims.get("business_hours") or {}))
+            self._store_lease(conn, lease, claims)
+            self._pin_release_key(conn, response)
         if not isinstance(products, list):
             raise TerminalError("Catálogo ou operadores inválidos")
         with self.transaction() as conn:
@@ -915,17 +1126,17 @@ class Store:
         marks = ",".join("?" for _ in operator_ids)
         conn.execute("UPDATE operators SET active=0" + (f" WHERE id NOT IN ({marks})" if operator_ids else ""),
                      operator_ids)
-        # The manager-PIN lockout is not tied to one operator: a bootstrap
+        # The manager-PIN lockouts are kept under their own keys: a bootstrap
         # (every 30 seconds, or on demand) must never give back the attempts.
-        conn.execute("DELETE FROM login_attempts WHERE operator_id<>?" +
+        conn.execute("DELETE FROM login_attempts WHERE operator_id NOT LIKE ? ESCAPE '\\'" +
                      (f" AND operator_id NOT IN ({marks})" if operator_ids else ""),
-                     [MANAGER_OVERRIDE_KEY, *operator_ids])
+                     [_like(MANAGER_OVERRIDE_KEY) + "%", *operator_ids])
 
     @staticmethod
     def _pending_credit_effects(conn):
         """Fiado and store-credit effects of events the cloud has not acknowledged."""
         effects = defaultdict(lambda: [0, 0])  # customer_id -> [open fiado, store credit]
-        for (payload,) in conn.execute("SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid"):
+        for (payload,) in conn.execute("SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY seq"):
             event = json.loads(payload)
             data = event.get("data") or {}
             kind = event.get("type")
@@ -1127,37 +1338,63 @@ class Store:
             raise TerminalError("Operador ou PIN inválido", 401)
         return result
 
-    def manager_override(self, pin):
+    def manager_override(self, pin, requester_id=None):
+        """Check a manager PIN typed on behalf of `requester_id` (the logged operator).
+
+        Wrong PINs lock only that requester. Without one (maintenance on the
+        login screen) the attempts are counted apart and never lock the cashier.
+        """
         from shared.security import verify_pin
 
         if not isinstance(pin, str) or not pin:
             raise TerminalError("PIN de gerente necessário", 403)
         now = int(time.time())
+        own_key = f"{MANAGER_OVERRIDE_KEY}:{requester_id or 'maintenance'}"
+        keys = (own_key, MANAGER_OVERRIDE_KEY) if requester_id else (own_key,)
         lock_query = "SELECT failures,locked_until FROM login_attempts WHERE operator_id=?"
+
+        def ensure_unlocked(conn):
+            for key in keys:
+                attempts = conn.execute(lock_query, (key,)).fetchone()
+                if attempts and attempts["locked_until"] > now:
+                    raise TerminalError("Muitas tentativas de autorização; aguarde", 429)
+
         with self.connection() as conn:
-            attempts = conn.execute(lock_query, (MANAGER_OVERRIDE_KEY,)).fetchone()
-            if attempts and attempts["locked_until"] > now:
-                raise TerminalError("Muitas tentativas de autorização; aguarde", 429)
+            ensure_unlocked(conn)
             managers = conn.execute(
                 "SELECT id,pin_hash FROM operators WHERE active=1 AND role IN ('owner','admin','manager')").fetchall()
         # Same reason as in login(): no PBKDF2 while holding the write lock.
         matched = next((row for row in managers if verify_pin(pin, row["pin_hash"])), None)
         with self.transaction() as conn:
-            attempts = conn.execute(lock_query, (MANAGER_OVERRIDE_KEY,)).fetchone()
-            if attempts and attempts["locked_until"] > now:
-                raise TerminalError("Muitas tentativas de autorização; aguarde", 429)
+            ensure_unlocked(conn)
             if matched and conn.execute(
                     "SELECT 1 FROM operators WHERE id=? AND active=1 AND pin_hash=? AND role IN ('owner','admin','manager')",
                     (matched["id"], matched["pin_hash"])).fetchone():
-                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (MANAGER_OVERRIDE_KEY,))
+                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (own_key,))
                 return matched["id"]
+            upsert = """INSERT INTO login_attempts VALUES (?,?,?)
+                ON CONFLICT(operator_id) DO UPDATE SET failures=excluded.failures,locked_until=excluded.locked_until"""
+            attempts = conn.execute(lock_query, (own_key,)).fetchone()
             failures = (attempts["failures"] if attempts else 0) + 1
-            conn.execute("""INSERT INTO login_attempts VALUES (?,?,?)
-                ON CONFLICT(operator_id) DO UPDATE SET failures=excluded.failures,locked_until=excluded.locked_until""",
-                (MANAGER_OVERRIDE_KEY, failures, now + 300 if failures >= 5 else 0))
+            conn.execute(upsert, (own_key, failures,
+                                  now + MANAGER_OVERRIDE_LOCK_SECONDS if failures >= MANAGER_OVERRIDE_FAILURES else 0))
+            if requester_id:
+                # Store-wide ceiling, counted inside a time window so honest typos never add up.
+                window = int(self._meta(conn, "manager_override_window") or 0)
+                attempts = conn.execute(lock_query, (MANAGER_OVERRIDE_KEY,)).fetchone()
+                total = attempts["failures"] if attempts else 0
+                if now - window >= MANAGER_OVERRIDE_GLOBAL_WINDOW_SECONDS or now < window:
+                    total = 0
+                    self._set_meta(conn, "manager_override_window", str(now))
+                total += 1
+                locked = total >= MANAGER_OVERRIDE_GLOBAL_FAILURES
+                conn.execute(upsert, (MANAGER_OVERRIDE_KEY, 0 if locked else total,
+                                      now + MANAGER_OVERRIDE_LOCK_SECONDS if locked else 0))
+                if locked:
+                    self._audit(conn, requester_id, "manager_override.store_locked")
         raise TerminalError("PIN de gerente inválido", 403)
 
-    def authorize_discount(self, pin, gross_cents, discount_cents):
+    def authorize_discount(self, pin, gross_cents, discount_cents, operator_id=None):
         """Validate a manager PIN and the company discount ceiling before checkout."""
         self.ensure_sale_allowed()
         gross = _positive_int(gross_cents, "Total da venda")
@@ -1170,7 +1407,7 @@ class Store:
             configured_limit = 10000
         if discount * 10000 > gross * configured_limit:
             raise TerminalError("Desconto acima do limite configurado pela administração", 403)
-        self.manager_override(pin)
+        self.manager_override(pin, operator_id)
         return {"authorized": True}
 
     def products(self, query="", category=""):
@@ -1308,7 +1545,10 @@ class Store:
             return self._cash_summary(conn, self._open_cash(conn))
 
     def open_cash(self, operator_id, opening_cents):
-        self.ensure_sale_allowed()
+        status = self.lease_status()
+        if not status["can_open_cash"]:
+            raise TerminalError("Licença offline vencida; conecte este caixa à internet para renovar antes "
+                                "de abrir um novo caixa" if status["state"] == "expired" else status["reason"], 403)
         schedule = self.business_hours_status()
         if schedule["configured"] and not schedule["open"]:
             raise TerminalError("Fora do horário de funcionamento da empresa; o caixa não pode ser aberto agora", 403)
@@ -1347,7 +1587,7 @@ class Store:
         # Fechar o caixa é uma operação de supervisão. A validação acontece
         # antes de alterar a sessão para que um PIN inválido nunca deixe o
         # operador em um estado parcialmente fechado.
-        supervisor_id = self.manager_override(manager_pin)
+        supervisor_id = self.manager_override(manager_pin, operator_id)
         counted_cents = _positive_int(counted_cents, "Valor contado", zero=True)
         with self.transaction() as conn:
             cash = self._open_cash(conn)
@@ -1368,7 +1608,8 @@ class Store:
 
     def authorize_item_removal(self, operator, manager_pin=None):
         """Require a supervisor PIN when a cashier removes a line from a cart."""
-        authorizer = operator["id"] if operator.get("role") in MANAGER_ROLES else self.manager_override(manager_pin)
+        authorizer = (operator["id"] if operator.get("role") in MANAGER_ROLES
+                      else self.manager_override(manager_pin, operator["id"]))
         with self.transaction() as conn:
             self._audit(conn, operator["id"], "cart.item_removed_authorized", None, f"authorizer={authorizer}")
         return {"authorized": True, "authorizer_id": authorizer}
@@ -1422,7 +1663,8 @@ class Store:
         seller_id = request.get("seller_id") or None
         if seller_id is not None:
             seller_id = _str(seller_id, "Vendedor")
-        override_id = self.manager_override(request.get("manager_pin")) if request.get("manager_pin") else None
+        override_id = (self.manager_override(request.get("manager_pin"), operator["id"])
+                       if request.get("manager_pin") else None)
         with self.transaction() as conn:
             old = conn.execute("SELECT snapshot FROM sales WHERE request_id=?", (request_id,)).fetchone()
             if old:
@@ -1581,7 +1823,8 @@ class Store:
     def void_sale(self, operator, sale_id, reason, manager_pin=None):
         reason = _str(reason, "Motivo do cancelamento", 240)
         self.ensure_sale_allowed()
-        authorizer = operator["id"] if operator["role"] in MANAGER_ROLES else self.manager_override(manager_pin)
+        authorizer = (operator["id"] if operator["role"] in MANAGER_ROLES
+                      else self.manager_override(manager_pin, operator["id"]))
         with self.transaction() as conn:
             row = conn.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
             if not row:
@@ -1653,7 +1896,8 @@ class Store:
         wanted = request.get("items")
         if not isinstance(wanted, list) or not wanted:
             raise TerminalError("Informe os itens devolvidos")
-        supervisor = operator["id"] if operator["role"] in MANAGER_ROLES else self.manager_override(request.get("manager_pin"))
+        supervisor = (operator["id"] if operator["role"] in MANAGER_ROLES
+                      else self.manager_override(request.get("manager_pin"), operator["id"]))
         with self.transaction() as conn:
             old = conn.execute("SELECT * FROM sale_returns WHERE id=?", (return_id,)).fetchone()
             if old:
@@ -1846,13 +2090,13 @@ class Store:
                     "sales": sales,
                     "audit": [dict(row) for row in conn.execute("SELECT * FROM audit ORDER BY created_at")],
                     "pending_events": [json.loads(row["payload"]) for row in conn.execute(
-                        "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid")],
+                        "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY seq")],
                     # Received by the cloud but not applied there: kept for manual review.
                     "quarantined_events": [
                         {"reason": row["reason"], "message": row["message"], "status": row["status"],
                          "event": json.loads(row["payload"])} for row in conn.execute(
                             """SELECT q.reason,q.message,q.status,o.payload FROM sync_quarantine q
-                               JOIN outbox o ON o.id=q.event_id ORDER BY o.rowid""")]}
+                               JOIN outbox o ON o.id=q.event_id ORDER BY o.seq""")]}
 
     def has_local_activity(self):
         """True once this terminal created something worth an automatic backup."""
@@ -1861,11 +2105,9 @@ class Store:
                        for table in ("sales", "cash_sessions", "cash_movements", "outbox"))
 
     def backup_status(self):
-        directory = self.path.parent / "backups"
-        copies = sorted(directory.glob("terminal-*.sqlite3"), reverse=True) if directory.exists() else []
-        return {"directory": str(directory), "last_backup_at": self.meta().get("last_backup_at"),
-                "copies": [{"name": path.name, "size_bytes": path.stat().st_size}
-                           for path in copies[:7]]}
+        return {"directory": str(self.path.parent / "backups"), "last_backup_at": self.meta().get("last_backup_at"),
+                "copies": [{"name": copy["name"], "size_bytes": copy["size_bytes"]}
+                           for copy in self.local_backups(self.path)]}
 
     def backup_now(self):
         """Create a transaction-consistent SQLite snapshot without exposing it over HTTP."""

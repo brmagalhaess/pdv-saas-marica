@@ -237,7 +237,7 @@ async function authorizeRemoval(title, text) {
 }
 
 /* ---------- views, status bar ---------- */
-function showView(view) { for (const id of ['pairView', 'loginView', 'appView']) $(id).classList.toggle('hidden', id !== view); }
+function showView(view) { for (const id of ['pairView', 'loginView', 'damagedView', 'appView']) $(id).classList.toggle('hidden', id !== view); }
 // shortText is what narrow monitors show while the state is the normal one.
 function setChip(id, chipState, text, title = '', shortText = '') {
   const chip = $(id), label = chip.lastElementChild;
@@ -267,16 +267,20 @@ function renderStatus() {
     indicator.pending ? `${indicator.pending} registro(s) aguardando envio ao servidor da empresa.` : 'Nada aguardando envio.');
   $('reviewChip').classList.toggle('hidden', !indicator.review);
   setChip('reviewChip', 'warn', indicator.reviewLabel, 'Registros que o servidor separou para revisão do gestor. As vendas seguintes continuam sendo enviadas. Toque para ver os detalhes.');
-  const leaseText = {active: 'Licença ativa', expired: 'Licença vencida', clock_rollback: 'Relógio incorreto', invalid: 'Licença inválida'}[license.state] || 'Licença pendente';
-  setChip('leaseChip', license.can_sell ? 'ok' : 'danger', leaseText, license.reason || '', license.can_sell ? 'Licença' : '');
+  const leaseText = license.clock ? 'Relógio incorreto' : license.warning ? leaseWarningText(license)
+    : {active: 'Licença ativa', expired: 'Licença vencida', clock_rollback: 'Relógio incorreto', invalid: 'Licença inválida'}[license.state] || 'Licença pendente';
+  // Warn: about to expire, or expired while the open cashier keeps selling.
+  const leaseState = !license.can_sell ? 'danger' : (license.warning || license.state !== 'active') ? 'warn' : 'ok';
+  setChip('leaseChip', leaseState, leaseText, license.reason || '', leaseState === 'ok' ? 'Licença' : '');
   setChip('cashChip', !operator ? 'muted' : session.cash ? 'ok' : 'danger', session.cash ? 'Caixa aberto' : 'Caixa fechado',
     session.cash ? `Aberto às ${timeText(session.cash.opened_at)} com ${money(session.cash.opening_cents)}` : 'Abra o caixa (F12) para vender.', session.cash ? 'Caixa' : '');
   const hours = session.hours || {};
   $('hoursChip').classList.toggle('hidden', !hours.configured || hours.open);
   setChip('hoursChip', 'warn', 'Fora do horário', 'Fora do horário de funcionamento da empresa. Um caixa já aberto continua ativo.');
-  const release = session.sync?.release;
-  $('releaseChip').classList.toggle('hidden', !release);
-  setChip('releaseChip', 'warn', release ? `Versão ${release.version} disponível` : '', 'Há uma atualização do terminal. Veja em Sistema.');
+  const update = session.update || {}, staged = update.state === 'staged' && update.staged_version;
+  $('releaseChip').classList.toggle('hidden', !staged && !update.available);
+  setChip('releaseChip', 'muted', staged ? `Atualização ${update.staged_version} pronta` : update.available ? `Versão ${update.available.version} disponível` : '',
+    staged ? 'A nova versão já foi baixada. Com o caixa fechado, o gerente toca em Atualizar agora, na aba Sistema.' : 'Há uma atualização do terminal. Veja em Sistema.');
   renderPrinterChip();
   renderScaleChip();
   $('statusBar').dataset.tone = C.statusTone({loggedIn: !!operator, sells: canSell(operator?.role), canSell: !!license.can_sell,
@@ -287,6 +291,39 @@ function renderStatus() {
     : '<strong>Este terminal ainda não está conectado</strong><small>Informe a chave da licença e o código criado no painel da empresa.</small>';
   const count = session.operators?.length || 0, at = session.sync?.bootstrap_at;
   $('operatorSyncStatus').textContent = session.paired ? `${count} ${count === 1 ? 'operador disponível' : 'operadores disponíveis'} neste caixa${at ? ' · atualizado em ' + dateTimeText(at) : ''}. Os logins já baixados funcionam sem internet.` : '';
+}
+const leaseWarningText = license => (license.days_left >= 1 ? `Licença vence em ${license.days_left} dia${license.days_left > 1 ? 's' : ''}` : 'Licença vence hoje');
+// What the sale panel shows while the license (or the clock it depends on) stops the cashier.
+function licenseBlock(license = {}) {
+  if (license.clock) {
+    const computer = dateTimeText(license.clock.computer_time * 1000).slice(0, -3), reference = dateTimeText(license.clock.reference_time * 1000).slice(0, -3);
+    return {title: 'Acerte a data e a hora deste computador', recheck: true,
+      text: license.clock.problem === 'behind'
+        ? `O relógio está atrasado: este computador marca ${computer}, mas o caixa já registrou atividade em ${reference}.`
+        : `O relógio está adiantado: este computador marca ${computer}, mas a hora certa é perto de ${reference}.`,
+      steps: ['Clique com o botão direito no relógio do Windows, no canto da tela, e escolha “Ajustar data e hora”.',
+        'Ligue “Definir horário automaticamente” e toque em “Sincronizar agora”. Sem internet, acerte a data e a hora à mão.',
+        'Volte a esta tela e toque em “Verificar de novo”. Nenhuma venda é perdida.']};
+  }
+  if (license.state === 'expired') return {title: 'Licença offline vencida', recheck: true,
+    text: 'O prazo para vender sem internet terminou. Conecte este computador à internet e toque em “Verificar de novo”: a licença é renovada sozinha e nada do que foi vendido se perde.'};
+  return {title: 'Vendas bloqueadas', recheck: true, text: license.reason || 'Licença indisponível. Conecte o terminal à internet para renovar.'};
+}
+async function recheckLicense() {
+  const result = await api('/api/license/renew', 'POST', {});
+  await poll();
+  const license = state.session?.license || {};
+  if (license.can_sell && !license.clock) toast(result.renewed ? 'Licença renovada. Caixa liberado.' : 'Tudo certo. Caixa liberado.');
+  else toast(result.error ? `Ainda bloqueado: ${result.error}` : `Ainda bloqueado: ${license.reason || 'licença indisponível'}`, true);
+  if (state.tab === 'system') await loadSystem();
+}
+function renderDamaged(info) {
+  $('damagedDatabase').textContent = info.database || 'terminal.sqlite3';
+  $('damagedProblem').textContent = info.problem || 'sem detalhe';
+  const copies = info.backups || [];
+  $('damagedBackups').innerHTML = copies.length
+    ? copies.map((copy, index) => `<div class="mini-row"><span><strong>${esc(copy.name)}</strong>${index ? '' : ' · mais recente'}<br><small>${esc(copy.path)}</small></span><small>${copy.created_at ? dateTimeText(copy.created_at) : ''}</small></div>`).join('')
+    : `<p class="list-empty">Nenhum backup local encontrado em ${esc(info.backup_directory || '')}. Chame o suporte: o histórico enviado ao servidor pode ser recuperado pelo painel.</p>`;
 }
 function renderPrinterChip() {
   const printer = state.printer;
@@ -351,6 +388,7 @@ function applySession(session) {
 async function loadSession() {
   const fresh = await fetchSession();
   if (!fresh) return;
+  if (fresh.damaged) { state.csrf = fresh.csrf; renderDamaged(fresh.damaged); showView('damagedView'); return; }
   applySession(fresh);
   const session = state.session;
   if (!session.paired) { showView('pairView'); return; }
@@ -814,14 +852,14 @@ function renderPanels() {
   const session = state.session;
   if (!session?.operator) return;
   let blocked = null;
-  if (!session.license?.can_sell) blocked = {title: 'Vendas bloqueadas', text: session.license?.reason || 'Licença indisponível. Conecte o terminal à internet para renovar.'};
+  if (!session.license?.can_sell) blocked = licenseBlock(session.license);
   else if (!session.cash && canSell(role())) blocked = {title: 'Caixa fechado', text: 'Informe o dinheiro em espécie da gaveta para abrir o caixa e começar a vender.', open: true};
   const signature = JSON.stringify(blocked);
   const panel = $('blockedPanel');
   panel.classList.toggle('hidden', !blocked);
   if (blocked && panel.dataset.signature !== signature) {
     panel.dataset.signature = signature;
-    panel.innerHTML = `<h2>${esc(blocked.title)}</h2><p>${esc(blocked.text)}</p>${blocked.open ? '<button type="button" class="btn primary big" data-action="closeCash">Abrir caixa <kbd>F12</kbd></button>' : ''}`;
+    panel.innerHTML = `<h2>${esc(blocked.title)}</h2><p>${esc(blocked.text)}</p>${blocked.steps ? `<ol class="guide-steps">${blocked.steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>` : ''}${blocked.recheck ? '<button type="button" class="btn primary big" data-action="recheckLicense">Verificar de novo</button>' : ''}${blocked.open ? '<button type="button" class="btn primary big" data-action="closeCash">Abrir caixa <kbd>F12</kbd></button>' : ''}`;
   }
   const done = !blocked && state.done;
   $('donePanel').classList.toggle('hidden', !done);
@@ -1661,6 +1699,7 @@ const ACTIONS = {
   returnSale: {label: 'Devolução ou troca', words: 'devolver trocar estorno', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: returnFlow},
   discardSale: {label: 'Cancelar a venda atual', words: 'descartar limpar nova venda', sale: true, why: needsCart, pin: () => role() === 'cashier', run: discardSale},
   scale: {label: 'Balança e etiquetas', words: 'peso serial conectar', sell: true, run: scaleDialog},
+  recheckLicense: {label: 'Verificar licença e relógio de novo', words: 'licenca renovar hora data relogio', run: recheckLicense},
   refreshCatalog: {label: 'Atualizar catálogo e operadores', words: 'sincronizar produtos precos', run: async () => { await refreshOperators(); await poll(); await refreshCartProducts(); }},
   lock: {label: 'Trocar operador (bloquear caixa)', words: 'bloquear sair trocar', run: lockTerminal},
   logout: {label: 'Sair', words: 'logout encerrar', why: () => (state.session?.cash ? 'Feche o caixa antes de sair' : ''), run: logout},
@@ -1836,7 +1875,9 @@ async function loadPrinters() {
 }
 async function loadSystem() {
   const result = await api('/api/sync'), sync = result.sync, license = result.license, indicator = syncIndicator(sync, Date.now());
-  $('currentVersion').textContent = $('aboutVersion').textContent = `Versão instalada: ${result.version || '—'}`;
+  $('aboutVersion').textContent = `Versão instalada: ${result.version || '—'}`;
+  renderLease(license);
+  api('/api/update/status').then(renderUpdate).catch(() => { $('updateState').textContent = 'Estado: não foi possível consultar a atualização.'; });
   $('systemPending').textContent = sync.pending;
   $('systemReview').textContent = indicator.review;
   $('systemConflicts').textContent = sync.conflicts ?? 0;
@@ -1844,10 +1885,6 @@ async function loadSystem() {
   $('systemLease').textContent = license.expires_at ? new Date(license.expires_at * 1000).toLocaleString('pt-BR') : license.reason;
   $('systemError').textContent = indicator.detail;
   $('identityInfo').textContent = JSON.stringify({connection: state.session.connection, device_id: state.session.device_id, paired: state.session.paired, license: license.state, heartbeat_at: sync.last_heartbeat_at}, null, 2);
-  $('releaseInfo').textContent = sync.release ? `Versão ${sync.release.version} · ${sync.release.notes || 'Manifesto assinado verificado'}` : (sync.release_error || 'Nenhuma versão estável publicada.');
-  const link = $('releaseLink');
-  link.classList.toggle('hidden', !sync.release);
-  if (sync.release) link.href = sync.release.url; else link.removeAttribute('href');
   if (!canManage(role())) { $('auditList').textContent = 'Auditoria disponível para gerentes e administradores.'; $('conflictList').textContent = 'Conflitos disponíveis para gerentes e administradores.'; $('reviewList').textContent = 'Detalhes disponíveis para gerentes e administradores.'; return; }
   loadReview().then(data => { $('reviewList').innerHTML = reviewMarkup(data); }).catch(() => { $('reviewList').textContent = 'Não foi possível carregar os registros em revisão.'; });
   try {
@@ -1855,6 +1892,30 @@ async function loadSystem() {
     $('auditList').innerHTML = audit.events.map(event => `<div class="mini-row"><span>${esc(event.action)}${event.subject_id ? ' · ' + esc(String(event.subject_id).slice(0, 8)) : ''}</span><small>${dateTimeText(event.created_at)}</small></div>`).join('') || 'Sem eventos.';
     $('conflictList').innerHTML = (conflicts.conflicts || []).map(conflict => `<div class="mini-row"><span>${esc(conflict.reason)} · ${esc(conflict.aggregate_id)}</span><small>${esc(conflict.status)}</small></div>`).join('') || 'Sem conflitos locais.';
   } catch { $('auditList').textContent = 'Não foi possível carregar a auditoria.'; $('conflictList').textContent = 'Não foi possível carregar os conflitos.'; }
+}
+function renderLease(license = {}) {
+  const until = license.expires_at ? new Date(license.expires_at * 1000).toLocaleString('pt-BR') : '';
+  const attention = !!license.warning || license.state !== 'active';
+  $('leaseCard').classList.toggle('attention', attention);
+  $('leaseInfo').textContent = !attention ? `Vale até ${until} (${license.days_left} dia${license.days_left === 1 ? '' : 's'} sem precisar de internet).`
+    : `${license.reason || 'Licença indisponível'}${until ? ` · ${license.state === 'expired' ? 'venceu em' : 'vale até'} ${until}` : ''}`;
+}
+const updateStateNames = {idle: 'nenhuma atualização em andamento', downloading: 'baixando a nova versão…', staged: 'nova versão baixada e conferida, pronta para instalar',
+  applying: 'instalando a nova versão; o caixa reinicia sozinho', failed: 'a última tentativa falhou; a versão anterior continua em uso'};
+function renderUpdate(update = {}) {
+  const version = update.staged_version || update.available?.version, cashOpen = !!state.session?.cash, manager = canManage(role());
+  $('currentVersion').textContent = `Versão instalada: ${update.current_version || '—'}`;
+  $('updateAvailable').textContent = version ? `Versão disponível: ${version}${update.available?.notes ? ' · ' + update.available.notes : ''}` : 'Versão disponível: nenhuma. Este caixa está atualizado.';
+  $('updateState').textContent = `Estado: ${updateStateNames[update.state] || update.state || '—'}${update.error ? ' · ' + update.error : ''}`;
+  const reason = !update.supported ? update.blocked_reason : !version ? '' : cashOpen ? 'Feche o caixa para atualizar.' : !manager ? 'Somente gerentes podem atualizar.'
+    : update.can_apply ? '' : (update.blocked_reason || 'A nova versão ainda está sendo preparada.');
+  const button = $('updateApplyBtn');
+  button.classList.toggle('hidden', !update.supported);
+  button.disabled = !(update.can_apply && !cashOpen && manager);
+  $('updateBlocked').textContent = reason || '';
+  const link = $('releaseLink'), manual = !update.supported && update.available?.url;
+  link.classList.toggle('hidden', !manual);
+  if (manual) link.href = update.available.url; else link.removeAttribute('href');
 }
 const eventTypeNames = {'sale.completed': 'Venda', 'sale.voided': 'Cancelamento de venda', 'sale.returned': 'Devolução', 'cash.opened': 'Abertura de caixa', 'cash.closed': 'Fechamento de caixa', 'cash.movement': 'Sangria ou suprimento', 'stock.adjusted': 'Ajuste de estoque', 'credit.received': 'Recebimento de fiado'};
 const skippedKindNames = {product: 'Produto', barcode: 'Código de barras', operator: 'Operador', customer: 'Cliente', promotion: 'Promoção', payment_method: 'Forma de pagamento'};
@@ -2074,6 +2135,14 @@ $('printJobs').addEventListener('click', event => {
   })().catch(error => toast(error.message, true));
 });
 on('syncNowBtn', 'click', async () => { const result = await api('/api/sync/now', 'POST', {}); toast(`${result.sent} registro(s) enviados`); await poll(); await loadSystem(); });
+on('leaseRenewBtn', 'click', recheckLicense);
+on('updateApplyBtn', 'click', async () => {
+  if (!(await confirmDialog('Atualizar o PDV2 agora?', 'O caixa fica fora do ar por cerca de um minuto e volta sozinho. Antes é feito um backup do banco; se a nova versão não subir, a anterior é restaurada.', 'Atualizar agora'))) return;
+  await api('/api/update/apply', 'POST', {});
+  toast('Atualização iniciada. O caixa reinicia em instantes.');
+  api('/api/update/status').then(renderUpdate).catch(() => {});
+});
+$('damagedRetryBtn').addEventListener('click', () => window.location.reload());
 on('backupBtn', 'click', async () => { const copy = await api('/api/backups', 'POST', {}); toast(`Backup criado: ${copy.name}`); await loadBackups(); });
 on('bootstrapBtn', 'click', async () => { await api('/api/bootstrap', 'POST', {}); toast('Catálogo e licença atualizados'); await poll(); await loadSystem(); });
 

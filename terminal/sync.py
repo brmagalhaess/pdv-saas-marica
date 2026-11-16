@@ -11,8 +11,17 @@ import requests
 from .printers import send_bytes
 from .store import TerminalError
 
+try:  # the automatic updater ships with the installed build; the terminal works without it
+    from . import updater
+except ImportError:
+    updater = None
+
 
 VERSION = os.environ.get("PDV_VERSION", "2.0.0")
+# Tells the cloud this build accepts leases longer than the old 72 hours.
+CAPABILITIES = "long-lease"
+CAPABILITY_HEADERS = {"X-PDV-Capabilities": CAPABILITIES}
+LEASE_RENEW_INTERVAL_MS = 60 * 60 * 1000
 # The cloud takes at most 50 events and 1 MB per request; stay well below it.
 MAX_BATCH_EVENTS = 50
 MAX_BATCH_BYTES = 512 * 1024
@@ -56,6 +65,10 @@ def _request(method, url, **kwargs):
         raise TerminalError("Sem conexão com o servidor; dados locais preservados", 503) from exc
 
 
+def _auth_headers(meta):
+    return {"Authorization": "Bearer " + meta["token"], **CAPABILITY_HEADERS}
+
+
 def pair(store, cloud_url, license_key, code):
     cloud_url = validate_cloud_url(cloud_url)
     if not isinstance(license_key, str) or not 8 <= len(license_key.strip()) <= 160:
@@ -64,7 +77,7 @@ def pair(store, cloud_url, license_key, code):
         raise TerminalError("Código de pareamento inválido")
     # Reject a reused local database before consuming the cloud's one-time code.
     store.ensure_pairable()
-    response = _request("POST", cloud_url + "/api/v1/terminal/pair",
+    response = _request("POST", cloud_url + "/api/v1/terminal/pair", headers=dict(CAPABILITY_HEADERS),
                         json={"license_key": license_key.strip(), "code": code.strip(),
                               "device_id": store.identity()["device_id"],
                               "version": VERSION})
@@ -76,7 +89,7 @@ def refresh_bootstrap(store):
     meta = store.meta()
     if not meta.get("token") or not meta.get("cloud_url"):
         raise TerminalError("Terminal ainda não pareado", 409)
-    headers = {"Authorization": "Bearer " + meta["token"]}
+    headers = _auth_headers(meta)
     first = None
     products = []
     cursor = None
@@ -113,8 +126,33 @@ def refresh_bootstrap(store):
     return result
 
 
+def renew_lease(store, force=False):
+    """Renew the offline lease on its own route, which does not depend on the catalog.
+
+    At most once an hour unless forced. Returns None when it was not due or the
+    cloud does not have the route yet (the bootstrap keeps renewing in that case).
+    """
+    meta = store.meta()
+    if not meta.get("token") or not meta.get("cloud_url"):
+        raise TerminalError("Terminal ainda não pareado", 409)
+    if not force and int(time.time() * 1000) - int(meta.get("lease_renewed_at") or 0) < LEASE_RENEW_INTERVAL_MS:
+        return None
+    try:
+        response = _request("POST", meta["cloud_url"] + "/api/v1/terminal/lease", headers=_auth_headers(meta),
+                            json={"version": VERSION, "client_time": int(time.time())})
+    except TerminalError as exc:
+        if getattr(exc, "remote_status", None) in (404, 405):
+            store.mark_lease_attempt()
+            return None
+        raise
+    if "lease" not in response:
+        store.mark_lease_attempt()
+        return None
+    return store.apply_lease(response)
+
+
 def check_release(store):
-    """Verify signed metadata using the public key pinned at device pairing."""
+    """Verify signed metadata with the pinned release key (the license key on older pairings)."""
     from shared.licensing import LicenseError
     from shared.releases import verify_release
 
@@ -123,14 +161,15 @@ def check_release(store):
         raise TerminalError("Terminal não pareado", 409)
     response = _request("GET", meta["cloud_url"] +
                         "/api/v1/ops/releases/current?component=terminal&channel=stable")
-    if response.get("public_key") and response["public_key"] != meta["public_key"]:
+    release_key = meta.get("release_public_key") or meta["public_key"]
+    if response.get("public_key") and response["public_key"] != release_key:
         raise TerminalError("Chave de atualização diferente da chave fixada", 403)
     envelope = response.get("release")
     if envelope is None:
         store.set_release_result()
         return None
     try:
-        payload = verify_release(envelope, meta["public_key"])
+        payload = verify_release(envelope, release_key)
     except LicenseError as exc:
         raise TerminalError("Manifesto de atualização sem assinatura válida", 403) from exc
     if payload.get("component") != "terminal" or payload.get("channel") != "stable":
@@ -166,7 +205,7 @@ def sync_once(store):
     while True:
         try:
             response = _request("POST", meta["cloud_url"] + "/api/v1/terminal/sync",
-                                headers={"Authorization": "Bearer " + meta["token"]},
+                                headers=_auth_headers(meta),
                                 json={"events": events})
             break
         except TerminalError as exc:
@@ -204,7 +243,7 @@ def heartbeat_once(store):
         last_error = f"Catálogo: {status['catalog_skipped']} item(ns) ignorado(s) pelo terminal"
     try:
         response = _request("POST", meta["cloud_url"] + "/api/v1/terminal/heartbeat",
-                            headers={"Authorization": "Bearer " + meta["token"]},
+                            headers=_auth_headers(meta),
                             json={"version": VERSION, "pending_events": status["pending"],
                                   "last_error": last_error[:300],
                                   "client_time": int(time.time())})
@@ -284,13 +323,22 @@ class Worker:
         except Exception as exc:
             errors.append(_describe(exc))
             paired = False
+        online = False
         if paired:
             try:
                 heartbeat_at = int(self.store.meta().get("last_heartbeat_at") or 0)
                 if int(time.time() * 1000) - heartbeat_at > 30 * 1000:
                     heartbeat_once(self.store)
+                meta = self.store.meta()
+                online = bool(meta.get("last_heartbeat_at")) and not meta.get("last_heartbeat_error")
             except Exception as exc:
                 errors.append("Heartbeat: " + _describe(exc))
+            try:
+                # Every contact that worked renews the lease and re-anchors the clock.
+                if online:
+                    renew_lease(self.store)
+            except Exception as exc:
+                errors.append("Licença: " + _describe(exc))
             try:
                 result = sync_once(self.store)
                 if result["remaining"]:
@@ -306,6 +354,16 @@ class Worker:
                     refresh_bootstrap(self.store)
             except Exception as exc:
                 errors.append(_describe(exc))
+        try:
+            # Keeps the anti-rollback mark moving while no browser is asking for the license.
+            self.store.lease_status()
+        except Exception as exc:
+            errors.append(_describe(exc))
+        if updater is not None and paired:
+            try:
+                updater.auto_step(self.store, online)
+            except Exception as exc:
+                errors.append("Atualização: " + _describe(exc))
         return errors
 
     def run(self):
