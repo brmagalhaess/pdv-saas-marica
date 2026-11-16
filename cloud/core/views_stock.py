@@ -1,10 +1,10 @@
 """One central ledger for manual, receipt and terminal sale movements."""
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.http import JsonResponse
 
 from .api_common import APIError, audit, digest, endpoint, fields, membership_context, method, money, page, payload, product_quantity, scoped, text
-from .models import Product, Shop, StockMovement, StockReceipt, StockReceiptItem, Supplier
+from .models import Product, Shop, StockMovement, StockReceipt, StockReceiptItem, StockTransferItem, Supplier
 from .serializers import movement as movement_data, receipt as receipt_data
 from .stock_balance import balance, balances, tenant_quantity
 
@@ -28,7 +28,8 @@ def _paging(request):
 @endpoint
 def stock(request):
     method(request, "GET")
-    member = membership_context(request)
+    # Not for the cashier: the balance would defeat the blind inventory count.
+    member = membership_context(request, roles=STOCK_READ)
     shop = scoped(Shop, member.tenant, request.GET.get("shop_id"))
     query = request.GET.get("q", "").strip()
     if len(query) > 120:
@@ -57,7 +58,7 @@ def movements(request):
     tenant = member.tenant
     if request.method == "GET":
         shop = scoped(Shop, tenant, request.GET.get("shop_id"))
-        rows = StockMovement.objects.filter(tenant=tenant, shop=shop)
+        rows = StockMovement.objects.filter(tenant=tenant, shop=shop).select_related("product")
         product_id = request.GET.get("product_id")
         if product_id:
             product = scoped(Product, tenant, product_id)
@@ -98,7 +99,7 @@ def receipts(request):
                                 write=request.method == "POST")
     tenant = member.tenant
     if request.method == "GET":
-        rows = StockReceipt.objects.filter(tenant=tenant).prefetch_related("items__product")
+        rows = StockReceipt.objects.filter(tenant=tenant).select_related("supplier").prefetch_related("items__product")
         shop_id = request.GET.get("shop_id")
         if shop_id:
             rows = rows.filter(shop=scoped(Shop, tenant, shop_id))
@@ -174,7 +175,10 @@ def record_receipt(tenant, actor, shop, supplier, reference, key, content_hash, 
             # Receipts are the only source of purchase cost.  Product.cost_cents
             # stores the weighted moving average used by margin reports.
             product = Product.objects.select_for_update().get(pk=product.pk)
-            previous_quantity = tenant_quantity(tenant, product)
+            # Goods in transit between shops are in no balance but still owned at the old cost.
+            in_transit = (StockTransferItem.objects.filter(transfer__tenant=tenant, transfer__status="sent", product=product)
+                          .aggregate(v=Sum("quantity_milli"))["v"] or 0)
+            previous_quantity = tenant_quantity(tenant, product) + in_transit
             if previous_quantity > 0 and product.cost_cents not in (None, 0):
                 total_quantity = previous_quantity + qty
                 average = ((previous_quantity * product.cost_cents) + (qty * cost)

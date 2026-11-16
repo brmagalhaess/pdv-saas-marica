@@ -63,7 +63,8 @@ def sync_conflict(row):
 
 def movement(row):
     return {"id": str(row.id), "shop_id": str(row.shop_id),
-            "product_id": str(row.product_id), "delta_milli": row.delta_milli,
+            "product_id": str(row.product_id), "product_name": row.product.name, "sku": row.product.sku,
+            "unit": row.product.unit, "delta_milli": row.delta_milli,
             "source": row.source, "reason": row.reason, "reference": row.reference,
             "created_at": iso(row.created_at),
             "terminal_id": str(row.terminal_id) if row.terminal_id else None,
@@ -73,6 +74,7 @@ def movement(row):
 def receipt(row):
     return {"id": str(row.id), "shop_id": str(row.shop_id),
             "supplier_id": str(row.supplier_id) if row.supplier_id else None,
+            "supplier_name": row.supplier.name if row.supplier_id else None,
             "reference": row.reference, "idempotency_key": row.idempotency_key,
             "source_file": {"name": row.source_file_name, "mime": row.source_file_mime,
                             "size": row.source_file_size, "sha256": row.source_file_sha256}
@@ -81,7 +83,7 @@ def receipt(row):
             "items": [{"product_id": str(item.product_id), "quantity_milli": item.quantity_milli,
                        "unit_cost_cents": item.unit_cost_cents,
                        "average_cost_cents": item.average_cost_cents,
-                       "product_name": item.product.name, "unit": item.product.unit}
+                       "product_name": item.product.name, "sku": item.product.sku, "unit": item.product.unit}
                       for item in row.items.all()]}
 
 

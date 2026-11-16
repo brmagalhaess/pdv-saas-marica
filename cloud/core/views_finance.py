@@ -6,7 +6,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from .api_common import APIError, audit, endpoint, fields, membership_context, method, money, page, payload, require_feature, scoped, text
-from .models import Customer, FinanceEntry, Shop, Supplier
+from .models import Commission, Customer, FinanceEntry, Shop, Supplier
 from .serializers import finance as finance_data
 
 READ = {"owner", "admin", "manager", "finance", "viewer"}
@@ -72,8 +72,6 @@ def finance_detail(request, pk):
         fields(data, ("description", "amount_cents", "due_date", "shop_id", "customer_id", "supplier_id"))
         if not data:
             raise APIError("Informe ao menos um campo")
-        if row.sale_id and set(data) & {"amount_cents", "customer_id", "shop_id"}:
-            raise APIError("Fiado gerado por venda: altere apenas descrição ou vencimento; use devolução ou cancelamento da venda", 409)
     values = {}
     for key, value in data.items():
         if key == "description":
@@ -91,10 +89,25 @@ def finance_detail(request, pk):
         else:
             values[key] = value
     with transaction.atomic():
+        # Settlement, fiado receipt and returns change this row under the same lock.
+        row = FinanceEntry.objects.select_for_update().get(pk=row.pk)
+        if row.status != "open":
+            raise APIError("Título não está aberto", 409)
+        if row.sale_id and set(values) & {"status", "amount_cents", "customer", "shop"}:
+            raise APIError("Fiado gerado por venda: altere apenas descrição ou vencimento; use devolução ou cancelamento da venda", 409)
+        detail = {"fields": list(values)}
+        commissions = Commission.objects.filter(finance_entry=row)
+        if "amount_cents" in values and values["amount_cents"] != row.amount_cents and commissions.exists():
+            raise APIError("Título de comissão: o valor vem das comissões fechadas; exclua o título para refazer o fechamento", 409)
+        if request.method == "DELETE":
+            # A cancelled commission payable gives the commissions back to "pending".
+            reopened = commissions.update(status="pending", paid_at=None, finance_entry=None)
+            if reopened:
+                detail["commissions_reopened"] = reopened
         for key, value in values.items():
             setattr(row, key, value)
-        row.save()
-        audit(member.tenant, member.user, "finance.updated", row, {"fields": list(values)})
+        row.save(update_fields=list(values))
+        audit(member.tenant, member.user, "finance.updated", row, detail)
     return JsonResponse(finance_data(row))
 
 
