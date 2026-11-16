@@ -1,6 +1,8 @@
 from django.utils import timezone
 
 from .api_common import iso
+from .models import Subscription
+from .station_logic import config_stations, is_hub
 
 
 def plan(p):
@@ -8,6 +10,7 @@ def plan(p):
             "price_month_cents": p.price_month_cents,
             "price_year_cents": p.price_year_cents,
             "terminal_limit": p.terminal_limit, "shop_limit": p.shop_limit,
+            "max_stations": p.max_stations,
             "features": p.features, "active": p.active}
 
 
@@ -49,6 +52,11 @@ def terminal(row):
     send_only = (row.previous_token_hash and row.previous_token_expires_at
                  and row.previous_token_expires_at > timezone.now())
     mirror = row.config.get("mirror") if isinstance(row.config, dict) else None
+    # Additional registers ("caixas adicionais") linked to this terminal, as it last reported.
+    hub = is_hub(row)
+    stations = config_stations(row)
+    allowed = (Subscription.objects.filter(tenant_id=row.tenant_id)
+               .values_list("plan__max_stations", flat=True).first() or 0) if hub else 0
     return {"id": str(row.id), "shop_id": str(row.shop_id), "name": row.name,
             "device_id": row.device_id, "version": row.version,
             "revoked": row.revoked, "paired": bool(row.token_hash),
@@ -59,7 +67,9 @@ def terminal(row):
             # While set, the replaced computer may still send its sales queue.
             "send_only_until": iso(row.previous_token_expires_at) if send_only else None,
             "previous_device_id": row.previous_device_id,
-            "mirror_enabled": mirror.get("enabled") if isinstance(mirror, dict) else None}
+            "mirror_enabled": mirror.get("enabled") if isinstance(mirror, dict) else None,
+            "hub": hub, "max_stations": allowed, "stations": stations,
+            "stations_used": sum(not item["revoked"] for item in stations)}
 
 
 def sync_conflict(row):
@@ -118,6 +128,7 @@ def sale(row, detail=False):
               "operator_name": row.operator_name_snapshot,
               "seller_id": str(row.seller_id) if row.seller_id else None,
               "seller_name": row.seller_name_snapshot,
+              "station_id": row.station_id, "station_name": row.station_name,
               "request_id": row.request_id, "gross_cents": row.gross_cents,
               "discount_cents": row.discount_cents, "total_cents": row.total_cents,
               "change_cents": row.change_cents, "status": row.status,

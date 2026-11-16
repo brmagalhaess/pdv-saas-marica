@@ -21,11 +21,13 @@ from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from .api_common import APIError, audit, digest
+from .station_logic import MAIN_STATION_ID
 from .models import (CashMovement, CashSession, CreditReceipt, FinanceEntry, Sale, SaleItem, SalePayment,
                      SaleReturn, SyncEvent, Terminal)
 
 SECTIONS = ("config", "cash_session", "sale", "credit_receipt")
-CURSOR_MAX = 2000
+CURSOR_MAX = 4000
+OPEN_MAX = 64  # one open cash session per register of the shop
 # p: records sent · cf: config · cs/co/so: cash sessions sent/open/stale open omitted ·
 # cm/cmc: cash movements · s/sc/sv: sales, cents, voided · r/rc: returns · cr/crc: credit receipts
 COUNTERS = ("p", "cf", "cs", "co", "so", "cm", "cmc", "s", "sc", "sv", "r", "rc", "cr", "crc")
@@ -50,7 +52,7 @@ class _State:
 
     def encode(self, section, key, counters):
         raw = json.dumps({"v": 1, "t": self.terminal_id, "cutoff": self.cutoff, "asof": self.asof.isoformat(),
-                          "open": [str(pk) for pk in self.open_ids], "sec": section, "key": key,
+                          "open": [pk.hex for pk in self.open_ids], "sec": section, "key": key,
                           "n": counters, "total": self.total}, separators=(",", ":"))
         return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
@@ -67,7 +69,7 @@ def _decode(text, terminal, now, history_days):
         if asof.tzinfo is None or type(cutoff) is not int or type(total) is not int or total < 0:
             raise ValueError
         open_ids = [uuid.UUID(value) for value in data["open"]]
-        if len(open_ids) > 1 or data["sec"] not in SECTIONS:
+        if len(open_ids) > OPEN_MAX or data["sec"] not in SECTIONS:
             raise ValueError
         if (not isinstance(counters, dict) or set(counters) != set(COUNTERS)
                 or any(type(value) is not int or value < 0 for value in counters.values())):
@@ -86,8 +88,8 @@ def _decode(text, terminal, now, history_days):
 
 
 def _sessions(terminal, state):
-    # The terminal admits a single open cash session: only the newest open one
-    # travels; older ones left open in the cloud are counted as omitted.
+    # The terminal admits one open cash session per register: only the newest open
+    # one of each travels; older ones left open in the cloud are counted as omitted.
     return (CashSession.objects.filter(tenant=terminal.tenant, terminal=terminal)
             .filter(Q(opened_at__gte=state.cutoff_at, closed_at__isnull=False) | Q(id__in=state.open_ids))
             .order_by("opened_at", "id"))
@@ -126,6 +128,7 @@ def _session_records(rows):
                                           "reason": row.reason, "operator_id": _member_id(row.operator_id),
                                           "created_at": ms(row.created_at)})
     return [{"kind": "cash_session", "id": str(row.id), "operator_id": _member_id(row.operator_id),
+             "station_id": row.station_id, "station_name": row.station_name,
              "opening_cents": row.opening_cents, "opened_at": ms(row.opened_at), "closed_at": ms(row.closed_at),
              "counted_cents": row.counted_cents, "expected_cents": row.expected_cents,
              "incomplete": row.incomplete, "movements": movements[row.id]} for row in rows]
@@ -184,7 +187,8 @@ def _sale_records(terminal, rows):
     for row in rows:
         event_id, data = originals.get(row.id) or (None, None)
         voided = row.status in ("cancelled", "refunded")
-        records.append({"kind": "sale", "id": str(row.id), "event_id": event_id,
+        # station_id stays outside "data": the content hash of the sale does not cover it.
+        records.append({"kind": "sale", "id": str(row.id), "event_id": event_id, "station_id": row.station_id,
                         "status": "voided" if voided else "completed",
                         "voided_at": ms(row.cancelled_at) if voided else None,
                         "void_reason": row.cancellation_reason if voided else "",
@@ -258,16 +262,28 @@ def _totals(n):
 
 
 def current_open_session_ids(terminal):
-    """Id of the cash session that is really open on the terminal: zero or one.
+    """Ids of the cash sessions that are really open on the terminal: zero or
+    one per register of the shop, oldest first.
 
-    The terminal admits a single open cash session, so a session still open in
-    the cloud counts only when it is the newest session of the terminal. An
-    open one older than any other session was closed at the counter and its
-    closing never arrived (replaced computer, quarantined event): it is stale.
+    Each register admits a single open cash session, so a session still open in
+    the cloud counts only when it is the newest session of its register. An
+    open one older than another session of the same register was closed at the
+    counter and its closing never arrived (replaced computer, quarantined
+    event): it is stale. Sessions without a label belong to the main register.
     """
-    newest = (CashSession.objects.filter(tenant=terminal.tenant, terminal=terminal)
-              .order_by("-opened_at", "-id").values_list("id", "closed_at").first())
-    return [newest[0]] if newest and newest[1] is None else []
+    sessions = CashSession.objects.filter(tenant=terminal.tenant, terminal=terminal)
+    found = []
+    for station_id in (sessions.filter(closed_at__isnull=True).order_by()
+                       .values_list("station_id", flat=True).distinct()):
+        if station_id in ("", MAIN_STATION_ID):
+            of_station = sessions.filter(station_id__in=("", MAIN_STATION_ID))
+        else:
+            of_station = sessions.filter(station_id=station_id)
+        newest = of_station.order_by("-opened_at", "-id").values_list("opened_at", "id", "closed_at").first()
+        if newest and newest[2] is None and newest[:2] not in found:
+            found.append(newest[:2])
+    # More open registers than a terminal can hold: the most recent ones travel.
+    return [pk for _, pk in sorted(found)[-OPEN_MAX:]]
 
 
 def _start(terminal, history_days):

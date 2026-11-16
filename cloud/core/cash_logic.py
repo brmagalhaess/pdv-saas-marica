@@ -10,6 +10,7 @@ from datetime import datetime, timezone as utc_timezone
 
 from .models import CashMovement, CashSession, CreditReceipt, Membership, Sale, SalePayment, SaleReturn
 from .sale_logic import open_conflict
+from .station_logic import station_of
 
 CASH_EVENTS = ("cash.opened", "cash.closed", "cash.withdrawn", "cash.supplied")
 
@@ -44,7 +45,9 @@ def apply_cash_event(terminal, event, conflicts=None):
         session.opening_cents = data["opening_cents"]
         session.opened_at = when
         session.incomplete = False
-        session.save(update_fields=["operator", "opening_cents", "opened_at", "incomplete"])
+        session.station_id, session.station_name = station_of(event)
+        session.save(update_fields=["operator", "opening_cents", "opened_at", "incomplete",
+                                    "station_id", "station_name"])
     elif kind == "cash.closed":
         session = _session(terminal, event["aggregate_id"], when)
         previous = (session.closed_at, session.counted_cents, session.expected_cents)

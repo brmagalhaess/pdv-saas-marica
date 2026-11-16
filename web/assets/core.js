@@ -388,6 +388,64 @@ export function canTransferTerminal(row) {
   return Boolean(row && row.paired && !row.revoked);
 }
 
+// Caixas da loja (fase 3) --------------------------------------------------------
+// "Caixa principal" is the shop's server computer (the terminal marked as hub);
+// "caixas adicionais" are the other computers linked to it. Every helper accepts
+// answers of an older cloud, which do not carry these fields.
+
+export const MAIN_STATION_ID = "server";
+export const hubConfirmText = "Os caixas adicionais ligados ao principal atual deixam de funcionar até serem ligados ao novo.";
+
+function activeStations(row) {
+  return (Array.isArray(row?.stations) ? row.stations : [])
+    .filter(item => item && typeof item === "object" && !item.revoked && typeof item.id === "string");
+}
+
+export function stationCountText(count) {
+  const total = Math.max(0, Math.trunc(Number(count) || 0));
+  return "Principal + " + total + (total === 1 ? " adicional" : " adicionais");
+}
+
+// Column "Caixas" of Terminais: text and the names of the additional registers.
+export function terminalStationsView(row) {
+  if (!row || row.revoked || row.hub !== true) return { text: "—", names: [] };
+  const names = activeStations(row).map(item => String(item.name || "").trim() || "Caixa sem nome");
+  const used = Number.isSafeInteger(row.stations_used) ? row.stations_used : names.length;
+  const limit = Number.isSafeInteger(row.max_stations) ? row.max_stations : null;
+  return { text: stationCountText(used) + (limit === null ? "" : " (plano: até " + limit + ")"), names };
+}
+
+export function canSetHub(row) {
+  return Boolean(row && row.paired && !row.revoked && row.hub === false);
+}
+
+export function stationLimitText(license) {
+  const limit = license?.max_stations;
+  return Number.isSafeInteger(limit) && limit >= 0 ? "Caixas adicionais incluídos por loja: " + limit : "";
+}
+
+// Column "Caixa" of Caixas and of a sale: the main register carries no name of its own.
+export function stationLabel(row) {
+  const name = typeof row?.station_name === "string" ? row.station_name.trim() : "";
+  if (name) return name;
+  const id = typeof row?.station_id === "string" ? row.station_id : "";
+  return !id || id === MAIN_STATION_ID ? "Caixa principal" : "Caixa adicional";
+}
+
+// Choices of the "Caixa" filter: every register, the main one, then the additional
+// ones the terminals reported and the ones seen in the rows already loaded.
+export function stationFilterOptions(terminals = [], rows = []) {
+  const options = [["", "Todos os caixas"], [MAIN_STATION_ID, "Caixa principal"]], seen = new Set(["", MAIN_STATION_ID]);
+  const add = (id, name) => {
+    if (typeof id !== "string" || seen.has(id)) return;
+    seen.add(id);
+    options.push([id, String(name || "").trim() || "Caixa adicional"]);
+  };
+  (Array.isArray(terminals) ? terminals : []).forEach(terminal => activeStations(terminal).forEach(item => add(item.id, item.name)));
+  (Array.isArray(rows) ? rows : []).forEach(row => add(row?.station_id, row?.station_name));
+  return options;
+}
+
 export const transferConfirmText = "Use quando o computador do caixa quebrou ou foi trocado. As vendas dos últimos 90 dias e o fiado em aberto voltam no computador novo. Se o antigo ainda liga, feche o caixa nele e espere a fila zerar antes.";
 
 // Plain-language warnings shown with the recovery code.

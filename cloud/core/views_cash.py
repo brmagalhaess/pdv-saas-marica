@@ -5,6 +5,7 @@ from django.http import JsonResponse
 from .api_common import APIError, endpoint, iso, membership_context, method, page, scoped, uuid_value
 from .cash_logic import session_summary
 from .models import CashSession, Shop, Terminal
+from .station_logic import MAIN_STATION_ID, STATION_ID
 
 READ = {"owner", "admin", "manager", "finance", "viewer"}
 
@@ -16,6 +17,7 @@ def _name(member):
 def cash_session_data(row, detail=False):
     result = {"id": str(row.id), "shop_id": str(row.shop_id), "terminal_id": str(row.terminal_id),
               "terminal_name": row.terminal.name, "operator_name": _name(row.operator),
+              "station_id": row.station_id, "station_name": row.station_name,
               "opening_cents": row.opening_cents, "opened_at": iso(row.opened_at),
               "closed_at": iso(row.closed_at), "status": "closed" if row.closed_at else "open",
               "closed_by_name": _name(row.closed_by), "supervisor_name": _name(row.supervisor),
@@ -47,6 +49,12 @@ def cash_sessions(request):
         rows = rows.filter(shop=scoped(Shop, member.tenant, request.GET["shop_id"]))
     if request.GET.get("terminal_id"):
         rows = rows.filter(terminal=scoped(Terminal, member.tenant, request.GET["terminal_id"]))
+    station = request.GET.get("station_id")
+    if station:
+        if not STATION_ID.fullmatch(station):
+            raise APIError("Caixa inválido")
+        # Shifts of the main register sent by terminals older than "stations" carry no label.
+        rows = rows.filter(station_id__in=(station, "") if station == MAIN_STATION_ID else (station,))
     status = request.GET.get("status")
     if status == "open":
         rows = rows.filter(closed_at__isnull=True)

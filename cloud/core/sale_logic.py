@@ -11,6 +11,7 @@ from .api_common import APIError, audit, digest, fields, money, quantity, scoped
 from .models import (Commission, Customer, FiscalDocument, Membership, PaymentMethod, Product, Promotion, Sale, SaleItem,
                      SalePayment, SaleReturn, SaleReturnItem, StockMovement, SyncConflict)
 from .stock_balance import balance
+from .station_logic import station_of
 
 UNITS = ("UN", "KG", "L")
 FISCAL_AUTHORIZED = ("authorized", "cancel_pending")
@@ -210,6 +211,7 @@ def persist_sale(terminal, event, conflicts=None):
     for product, _, qty, *_ in validated["items"]:
         quantities[product.id] += qty
         products[product.id] = product
+    station = station_of(event)
     stock_status = "negative" if any(products[pid].stock_controlled and
                                      balance(tenant, shop, products[pid]) - qty < 0
                                      for pid, qty in quantities.items()) else "ok"
@@ -221,6 +223,7 @@ def persist_sale(terminal, event, conflicts=None):
                                seller_name_snapshot=validated["seller"].name if validated["seller"] else "",
                                request_id=validated["request_id"],
                                cash_session_id=validated["cash_session_id"],
+                               station_id=station[0], station_name=station[1],
                                content_hash=content_hash, gross_cents=validated["gross_cents"],
                                discount_cents=validated["discount_cents"], total_cents=validated["total_cents"],
                                promo_discount_cents=validated["promo_discount_cents"],

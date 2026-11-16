@@ -101,7 +101,7 @@ class PlanForm(forms.ModelForm):
 class PlanAdmin(admin.ModelAdmin):
     form = PlanForm
     actions = None
-    list_display = ("slug", "name", "price_month_cents", "terminal_limit", "shop_limit", "active")
+    list_display = ("slug", "name", "price_month_cents", "terminal_limit", "shop_limit", "max_stations", "active")
     search_fields = ("slug", "name")
 
     def get_readonly_fields(self, request, obj=None):
