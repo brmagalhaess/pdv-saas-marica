@@ -1,18 +1,26 @@
-"""Non-fiscal thermal receipt and label rendering plus local spool transports."""
+"""Thermal receipt (DANFE NFC-e or non-fiscal) and label rendering plus local spool transports."""
 
 import base64
 import json
 import os
+import re
 import socket
 import shutil
 import subprocess
 import time
 import textwrap
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pathlib import Path
+
+BRAND_LINE = "PDV2 - crowntech.com.br"
+FISCAL_STATES = ("none", "authorized", "contingency", "homologation")
+HOMOLOGATION_ENVIRONMENTS = ("homologation", "homologacao", "homologação", "sandbox", "2")
+PAYMENT_LABELS = {"cash": "Dinheiro", "pix": "Pix", "card": "Cartão", "card_credit": "Cartão de crédito",
+                  "card_debit": "Cartão de débito", "credit_account": "A prazo", "store_credit": "Crédito na loja",
+                  "other": "Outros"}
 
 
 def qr_svg_data_uri(value, scale=4):
@@ -55,24 +63,36 @@ def _qr_escpos(value, size=5):
             + b"\x1d\x28\x6b\x03\x00\x31\x51\x30")
 
 
-def _money(cents):
+def _amount(cents):
     cents = int(cents)
     whole, fraction = divmod(abs(cents), 100)
     amount = f"{whole:,}".replace(",", ".")
-    return f"R$ {'-' if cents < 0 else ''}{amount},{fraction:02d}"
+    return f"{'-' if cents < 0 else ''}{amount},{fraction:02d}"
+
+
+def _money(cents):
+    return f"R$ {_amount(cents)}"
 
 
 def _clean(value, length=80):
     return "".join(ch for ch in str(value) if ch.isprintable() and ch not in "^~\r\n").strip()[:length]
 
 
+def _digits(value):
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
 def _document(value):
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    digits = _digits(value)
     if len(digits) == 14:
         return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
     if len(digits) == 11:
         return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
     return _clean(value or "", 30)
+
+
+def _document_label(value, unknown="CNPJ/CPF"):
+    return {14: "CNPJ", 11: "CPF"}.get(len(_digits(value)), unknown)
 
 
 def _quantity(milli):
@@ -87,232 +107,394 @@ def _receipt_text(value):
         {code: None for code in range(32)})
 
 
-def _receipt_date(value):
+def _receipt_zone():
     try:
-        date = (datetime.fromtimestamp(value / 1000, ZoneInfo("America/Sao_Paulo"))
+        return ZoneInfo("America/Sao_Paulo")
+    except Exception:
+        # Windows has no IANA database unless tzdata is installed. Brazil has
+        # had no daylight saving time since 2019, so a fixed offset is right.
+        return timezone(timedelta(hours=-3))
+
+
+def _receipt_date(value):
+    # Runs inside the sale transaction: a date must never abort a sale.
+    try:
+        zone = _receipt_zone()
+        date = (datetime.fromtimestamp(value / 1000, zone)
                 if isinstance(value, (int, float)) else datetime.fromisoformat(str(value).replace("Z", "+00:00")))
         if date.tzinfo:
-            date = date.astimezone(ZoneInfo("America/Sao_Paulo"))
+            date = date.astimezone(zone)
         return date.strftime("%d/%m/%Y %H:%M:%S")
-    except (TypeError, ValueError, OverflowError, OSError):
-        return _receipt_text(value)
+    except Exception:
+        try:
+            return _receipt_text(value)
+        except Exception:
+            return ""
 
 
-def receipt_layout(sale, width=80):
-    """One layout shared by the browser and the raw ESC/POS spool.
+def _padded(value, length):
+    value = str(value if value is not None else "").strip()
+    return value.zfill(length) if value.isdigit() else value
+
+
+def _homologation(sale):
+    fiscal = sale.get("fiscal") or {}
+    environment = fiscal.get("environment") or (sale.get("issuer") or {}).get("fiscal_environment")
+    return str(environment or "").strip().lower() in HOMOLOGATION_ENVIRONMENTS
+
+
+def fiscal_state(sale):
+    """Return none | authorized | contingency | homologation for a sale.
+
+    Reads the explicit fiscal["state"] or the older authorized/access_key/
+    protocol shape. Incomplete data is never promoted: a fiscal document needs
+    the access key, and an authorized one also needs the protocol.
+    """
+    fiscal = sale.get("fiscal") or {}
+    if not fiscal.get("access_key"):
+        return "none"
+    state = fiscal.get("state")
+    if state not in FISCAL_STATES:
+        state = ("authorized" if fiscal.get("authorized") and fiscal.get("protocol")
+                 else "contingency" if fiscal.get("contingency") else "none")
+    if state in ("authorized", "homologation") and not fiscal.get("protocol"):
+        return "none"
+    if state == "authorized" and _homologation(sale):
+        return "homologation"
+    return state
+
+
+def fiscal_message(state, homologation=False):
+    """Lines of the DANFE fiscal message area as (text, bold) pairs."""
+    lines = []
+    if state == "contingency":
+        lines += [("EMITIDA EM CONTINGÊNCIA", True), ("Pendente de autorização", False)]
+    if state == "homologation" or (homologation and state == "contingency"):
+        lines.append(("EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO - SEM VALOR FISCAL", True))
+    return lines
+
+
+class _Layout:
+    """Block builder shared by the receipt and the vouchers.
 
     Width is paper width; font A uses 12 dots per character at 203 dpi.
     The 80 mm TM-T20 has a 576-dot (72 mm) printable area / 48 columns.
     58 mm uses a conservative 384-dot area / 32 columns across printers.
     """
-    width = 58 if width == 58 else 80
-    columns = 32 if width == 58 else 48
-    blocks = []
 
-    def text(value, align="left", bold=False, tall=False, wide=False):
-        lines = textwrap.wrap(_receipt_text(value), columns // 2 if wide else columns, break_long_words=True,
-                              break_on_hyphens=False) or [""]
-        blocks.append({"kind": "text", "align": align, "bold": bold, "tall": tall, "wide": wide, "lines": lines})
+    def __init__(self, width):
+        self.width = 58 if width == 58 else 80
+        self.columns = 32 if self.width == 58 else 48
+        self.blocks = []
 
-    def pair(label, value, bold=False, tall=False):
+    def _wrap(self, value, limit, balance=False):
+        value = _receipt_text(value)
+        lines = textwrap.wrap(value, limit, break_long_words=True, break_on_hyphens=False) or [""]
+        if balance and len(lines) > 1:
+            # Even out centered lines without adding a line or splitting a word.
+            start = max(max(len(word) for word in value.split()), -(-len(value) // len(lines)))
+            for narrower in range(start, limit):
+                even = textwrap.wrap(value, narrower, break_long_words=True, break_on_hyphens=False)
+                if len(even) == len(lines):
+                    return even
+        return lines
+
+    def _append(self, lines, align="left", bold=False, tall=False, wide=False, small=False):
+        block = {"kind": "text", "align": align, "bold": bold, "tall": tall, "wide": wide, "lines": lines}
+        if small:
+            block["small"] = True  # fine print: font B on paper, smaller type on screen
+        self.blocks.append(block)
+
+    def text(self, value, align="left", bold=False, tall=False, wide=False, small=False):
+        self._append(self._wrap(value, self.columns // 2 if wide else self.columns, align == "center"),
+                     align, bold, tall, wide, small)
+
+    def pair(self, label, value, bold=False, tall=False, indent=0):
         label, value = _receipt_text(label), _receipt_text(value)
+        if indent + len(label) + len(value) + 1 > self.columns:
+            indent = 0  # narrow paper gives up the indent before using a second line
         # Long labels/large totals wrap rather than cutting a value or column.
-        if len(label) + len(value) + 1 > columns:
-            text(label, bold=bold)
-            text(value, align="right", bold=bold, tall=tall)
+        if len(label) + len(value) + 1 > self.columns:
+            self.text(label, bold=bold)
+            self.text(value, align="right", bold=bold, tall=tall)
         else:
-            blocks.append({"kind": "text", "align": "left", "bold": bold, "tall": tall,
-                           "lines": [label.ljust(columns - len(value)) + value]})
+            self._append([(" " * indent + label).ljust(self.columns - len(value)) + value], bold=bold, tall=tall)
 
-    def rule():
-        blocks.append({"kind": "rule"})
+    def flow(self, parts, sep=" ", align="center", bold=False):
+        """Pack short parts into lines; a part that fits a line is never split."""
+        lines = []
+        for part in (_receipt_text(part) for part in parts):
+            if not part:
+                continue
+            if lines and len(lines[-1]) + len(sep) + len(part) <= self.columns:
+                lines[-1] += sep + part
+            else:
+                lines.extend(self._wrap(part, self.columns))
+        if lines:
+            self._append(lines, align, bold)
 
-    issuer = sale.get("issuer") or {}
+    def url(self, value):
+        """Centered address broken after a separator instead of mid-word."""
+        value, lines = _receipt_text(value), []
+        while len(value) > self.columns:
+            cut = max(value.rfind(mark, 1, self.columns) for mark in "/?&=.") + 1 or self.columns
+            lines.append(value[:cut])
+            value = value[cut:]
+        self._append(lines + [value], "center")
+
+    def rule(self):
+        self.blocks.append({"kind": "rule"})
+
+    def header(self, issuer, address=True):
+        trade_name, legal_name = issuer.get("trade_name"), issuer.get("legal_name")
+        if trade_name or legal_name:
+            # Double width would leave only 16 columns on 58 mm paper.
+            self.text(trade_name or legal_name, "center", bold=True, tall=True, wide=self.width == 80)
+        if trade_name and legal_name and trade_name != legal_name:
+            self.text(legal_name, "center")
+        document = _document(issuer.get("document"))
+        self.flow([f"{_document_label(issuer.get('document'))} {document}" if document else "",
+                   f"IE {issuer['state_registration']}" if issuer.get("state_registration") else ""], sep="  ")
+        address = (issuer.get("address") or {}) if address else {}
+        street = ", ".join(str(address[key]) for key in ("line", "number") if address.get(key))
+        if address.get("complement"):
+            street += f" - {address['complement']}"
+        if street:
+            self.text(street, "center")
+        city = "/".join(str(address[key]) for key in ("city", "state") if address.get(key))
+        place = " - ".join(part for part in (str(address.get("neighborhood") or ""), city) if part)
+        if place:
+            self.text(place, "center")
+        if address.get("zip"):
+            zipcode = _digits(address["zip"])
+            self.text("CEP " + (zipcode[:5] + "-" + zipcode[5:] if len(zipcode) == 8 else str(address["zip"])),
+                      "center")
+        if self.blocks:
+            self.rule()
+
+    def access_key(self, value):
+        key = "".join(str(value).split())
+        groups = [key[i:i + 4] for i in range(0, len(key), 4)]
+        per_line = 6 if self.columns == 48 else 4
+        self._append([line for i in range(0, len(groups), per_line)
+                      for line in self._wrap(" ".join(groups[i:i + per_line]), self.columns)], "center")
+
+    def qr(self, value):
+        value = str(value or "")
+        if not value or len(value.encode("utf-8")) > 700:
+            # The key printed above still allows the lookup; never fail a sale here.
+            self.text("QR Code indisponível. Consulte pela chave de acesso.", "center")
+            return
+        # Include a four-module quiet zone when sizing the symbol. Epson
+        # silently skips QR codes whose modules exceed its print area.
+        try:
+            import qrcode
+            qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=4)
+            qr.add_data(value, optimize=0); qr.make(fit=True)
+            modules = len(qr.get_matrix())
+        except ImportError:
+            modules = 117  # conservative upper bound for the accepted payload
+        # At least 25 mm (200 dots) of symbol whenever the paper allows it.
+        wanted = max(3 if self.width == 58 else 4, -(-200 // (modules - 8)))
+        module_size = max(1, min(16, wanted, (self.columns * 12) // modules))
+        self.blocks.append({"kind": "qr", "value": value, "data_uri": qr_svg_data_uri(value),
+                            "module_size": module_size, "width_mm": round(modules * module_size * 25.4 / 203, 2),
+                            "label": "Consulta via leitor de QR Code"})
+
+    def brand(self):
+        self.text(BRAND_LINE, "center", small=True)
+
+    def result(self, **extra):
+        return {"paper_width_mm": self.width, "printable_width_mm": 48 if self.width == 58 else 72,
+                "columns": self.columns, "bottom_feed_mm": 20, "blocks": self.blocks, **extra}
+
+
+def receipt_layout(sale, width=80, copy="Via consumidor"):
+    """One layout shared by the browser and the raw ESC/POS spool.
+
+    Follows the DANFE NFC-e order for 80 mm (48 columns) and 58 mm (32 columns).
+    sale["fiscal"] drives the document: state (none | authorized | contingency |
+    homologation, see fiscal_state), access_key, protocol, number, series,
+    issued_at, authorized_at, url_consulta, qr_url, infcpl, taxes_cents,
+    taxes_federal_cents / taxes_state_cents / taxes_municipal_cents, taxes_source.
+    """
+    out = _Layout(width)
     fiscal = sale.get("fiscal") or {}
-    authorized = bool(fiscal.get("authorized") and fiscal.get("access_key") and fiscal.get("protocol"))
-    trade_name, legal_name = issuer.get("trade_name"), issuer.get("legal_name")
-    text(trade_name or legal_name or "COMPROVANTE DE VENDA", "center", bold=True, tall=True, wide=True)
-    if trade_name and legal_name and trade_name != legal_name:
-        text(legal_name, "center")
-    document = _document(issuer.get("document"))
-    if document:
-        text(f"CNPJ/CPF: {document}", "center")
-    if issuer.get("state_registration"):
-        text(f"IE: {issuer['state_registration']}", "center")
-    address = issuer.get("address") or {}
-    street = ", ".join(str(address[key]) for key in ("line", "number") if address.get(key))
-    if address.get("complement"):
-        street += f" - {address['complement']}"
-    if street:
-        text(street, "center")
-    place = " - ".join(str(address[key]) for key in ("neighborhood", "city", "state") if address.get(key))
-    if place:
-        text(place, "center")
-    if address.get("zip"):
-        zipcode = "".join(ch for ch in str(address['zip']) if ch.isdigit())
-        text("CEP: " + (zipcode[:5] + "-" + zipcode[5:] if len(zipcode) == 8 else str(address['zip'])), "center")
-    rule()
-    text("DANFE NFC-e" if authorized else "COMPROVANTE NAO FISCAL", "center", bold=True)
-    if sale.get("status") == "voided":
-        text("*** VENDA CANCELADA ***", "center", bold=True, tall=True)
-    if sale.get("created_at"):
-        text(_receipt_date(sale['created_at']), "center")
-    text(f"Venda: {str(sale.get('id', ''))[:16]}")
-    if sale.get("terminal_name"):
-        text(f"Caixa: {sale['terminal_name']}")
-    if sale.get("operator_name"):
-        text(f"Operador: {sale['operator_name']}")
-    if sale.get("seller_name"):
-        text(f"Vendedor: {sale['seller_name']}")
-    rule()
-    text("ITENS DA COMPRA", bold=True)
-    for index, item in enumerate(sale.get("items", []), 1):
-        code = f"{item['sku']} - " if item.get("sku") else ""
-        description = f"{index:02d} {code}{item['name']}"
-        if item.get("ncm"):
-            description += f" | NCM: {item['ncm']}"
-        text(description, bold=True)
-        if item.get("promo_discount_cents"):
-            pair(f"  Promocao: {item.get('promotion_name') or ''}", f"-{_money(item['promo_discount_cents'])}")
-        qty = (_quantity(item['quantity_milli']) if item['unit'] == "UN"
+    items = sale.get("items", [])
+    payments = sale.get("payments", [])
+    voided = sale.get("status") == "voided"
+    # A cancelled sale is never reprinted as a valid DANFE.
+    state = "none" if voided else fiscal_state(sale)
+    number, series = _padded(fiscal.get("number"), 9), _padded(fiscal.get("series"), 3)
+
+    out.header(sale.get("issuer") or {})
+    if state == "none":
+        out.text("COMPROVANTE DE VENDA", "center", bold=True)
+        out.text("NÃO É DOCUMENTO FISCAL", "center")
+    else:
+        out.text("DOCUMENTO AUXILIAR DA NOTA FISCAL DE CONSUMIDOR ELETRÔNICA", "center", bold=True)
+    if voided:
+        out.text("*** VENDA CANCELADA ***", "center", bold=True, tall=True)
+    if state == "none" and sale.get("created_at"):
+        out.text(_receipt_date(sale["created_at"]), "center")
+    out.rule()
+
+    out.text("# CÓDIGO DESCRIÇÃO")
+    out.pair("QTDE UN x VL UNIT", "VL TOTAL", indent=4)
+    for index, item in enumerate(items, 1):
+        out.text(" ".join(part for part in (f"{index:03d}", str(item.get("sku") or ""), str(item["name"])) if part))
+        qty = (_quantity(item["quantity_milli"]) if item["unit"] == "UN"
                else f"{item['quantity_milli'] // 1000},{item['quantity_milli'] % 1000:03d}")
-        unit_label = f"{qty} {item['unit']} | Unit:"
-        unit_price = _money(item['unit_price_cents'])
-        item_total = f"Total item: {_money(item['line_total_cents'])}"
-        if len(unit_label) + len(unit_price) + len(item_total) + 2 <= columns:
-            pair(f"{unit_label} {unit_price}", item_total)
-        else:
-            # Narrow paper and large amounts keep each price with its label.
-            pair(unit_label, unit_price)
-            pair("Total item:", _money(item['line_total_cents']))
-        if item.get("discount_cents"):
-            pair("Desconto no item", _money(item['discount_cents']))
-    rule()
-    pair("Quantidade de itens", str(len(sale.get("items", []))))
-    pair("Subtotal", _money(sale['gross_cents']))
+        promo, discount = item.get("promo_discount_cents") or 0, item.get("discount_cents") or 0
+        gross = item.get("gross_cents")
+        if gross is None:  # sales stored before the line kept its own gross value
+            gross = item["line_total_cents"] + promo + discount
+        out.pair(f"{qty} {item['unit']} x {_amount(item['unit_price_cents'])}", _amount(gross), indent=4)
+        if promo:
+            out.pair(f"Promoção: {item.get('promotion_name') or ''}", f"-{_amount(promo)}", indent=4)
+        if discount:
+            out.pair("Desconto no item", f"-{_amount(discount)}", indent=4)
+    out.rule()
+
+    out.pair("Qtde. total de itens", str(len(items)))
+    out.pair("Valor total R$", _amount(sale["gross_cents"]))
     if sale.get("promo_discount_cents"):
-        pair("Promocoes", f"-{_money(sale['promo_discount_cents'])}")
-    pair("Descontos", _money(sale['discount_cents']))
-    text("")
-    pair("TOTAL A PAGAR", _money(sale['total_cents']), bold=True, tall=True)
-    rule()
-    pair("FORMA DE PAGAMENTO", "VALOR PAGO", bold=True)
-    methods = {"cash": "Dinheiro", "pix": "Pix", "card": "Cartao", "card_credit": "Cartao de credito",
-               "card_debit": "Cartao de debito", "credit_account": "A prazo (fiado)", "store_credit": "Credito na loja"}
+        out.pair("Promoções", f"-{_amount(sale['promo_discount_cents'])}")
+    if sale.get("discount_cents"):
+        out.pair("Desconto R$", f"-{_amount(sale['discount_cents'])}")
+    out.pair("VALOR A PAGAR R$", _amount(sale["total_cents"]), bold=True, tall=True)
+    out.pair("FORMA DE PAGAMENTO", "VALOR PAGO", bold=True)
     names = sale.get("payment_names") or {}
-    for payment in sale.get("payments", []):
-        label = names.get(payment.get("payment_method_id")) or methods.get(payment['method'], payment['method'])
-        pair(label, _money(payment['amount_cents']))
-    if len(sale.get("payments", [])) > 1:
-        pair("Total recebido", _money(sum(p['amount_cents'] for p in sale['payments'])))
-    if any(p['method'] == "cash" for p in sale.get("payments", [])):
-        pair("Troco", _money(sale.get('change_cents', 0)), bold=True)
-    rule()
-    if sale.get("customer_name") or sale.get("customer_document"):
-        text("CONSUMIDOR", "center", bold=True)
-        if sale.get("customer_name"):
-            text(sale['customer_name'], "center")
-        if sale.get("customer_document"):
-            text(f"CPF/CNPJ: {_document(sale['customer_document'])}", "center")
+    for payment in payments:
+        label = names.get(payment.get("payment_method_id")) or PAYMENT_LABELS.get(payment["method"], payment["method"])
+        out.pair(label, _amount(payment["amount_cents"]))
+    if sale.get("change_cents") or any(payment["method"] == "cash" for payment in payments):
+        out.pair("Troco R$", _amount(sale.get("change_cents") or 0))
+    out.rule()
+
+    messages = fiscal_message(state, _homologation(sale))
+    if messages:
+        for message, bold in messages:
+            out.text(message, "center", bold=bold)
+        out.rule()
+    if state != "none":
+        url = fiscal.get("url_consulta") or fiscal.get("consult_url")
+        if url:
+            out.text("Consulte pela Chave de Acesso em", "center")
+            out.url(url)
+        else:
+            out.text("Chave de Acesso", "center")
+        out.access_key(fiscal["access_key"])
+        out.rule()
+
+    customer_document = _document(sale.get("customer_document"))
+    if customer_document:
+        customer = f"CONSUMIDOR {_document_label(sale['customer_document'], 'CPF/CNPJ')} {customer_document}"
+        out.text(" - ".join(str(part) for part in (customer, sale.get("customer_name")) if part), "center")
+    elif sale.get("customer_name"):
+        out.text(f"CONSUMIDOR: {sale['customer_name']}", "center")
     else:
-        text("CONSUMIDOR NAO IDENTIFICADO", "center")
-    if authorized:
-        rule()
-        text(f"NFC-e: {fiscal.get('number', '')}  Serie: {fiscal.get('series', '')}", "center", bold=True)
-        text("CHAVE DE ACESSO", "center")
-        key = str(fiscal['access_key']).replace(" ", "")
-        text(" ".join(key[i:i + 4] for i in range(0, len(key), 4)), "center")
-        text(f"Protocolo: {fiscal['protocol']}", "center")
-        if fiscal.get("authorized_at"):
-            text(_receipt_date(fiscal['authorized_at']), "center")
-        qr_url = fiscal.get("qr_url")
-        if qr_url and len(str(qr_url).encode('utf-8')) <= 700:
-            # Include a four-module quiet zone when sizing the symbol. Epson
-            # silently skips QR codes whose modules exceed its print area.
-            try:
-                import qrcode
-                qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=4)
-                qr.add_data(str(qr_url), optimize=0); qr.make(fit=True)
-                modules = len(qr.get_matrix())
-            except ImportError:
-                modules = 117  # conservative upper bound for the accepted payload
-            module_size = min(5 if width == 58 else 6, (columns * 12) // modules)
-            blocks.append({"kind": "qr", "value": qr_url, "data_uri": qr_svg_data_uri(qr_url),
-                           "module_size": module_size, "width_mm": round(modules * module_size * 25.4 / 203, 2),
-                           "label": "Consulte pelo QR Code"})
-        if fiscal.get("taxes_cents") is not None:
-            pair("Tributos informados", _money(fiscal['taxes_cents']))
-    else:
-        rule()
-        text("NFC-e nao emitida", "center")
-        text("Documento sem valor fiscal", "center")
-    text("")
-    text("OBRIGADO PELA PREFERENCIA!", "center", bold=True)
-    text("Volte sempre", "center")
-    return {"paper_width_mm": width, "printable_width_mm": 48 if width == 58 else 72,
-            "columns": columns, "bottom_feed_mm": 20, "blocks": blocks}
+        out.text("CONSUMIDOR NÃO IDENTIFICADO", "center")
+    out.rule()
+
+    if state != "none":
+        issued_at = fiscal.get("issued_at") or sale.get("created_at")
+        out.flow([f"NFC-e nº {number}" if number else "NFC-e", f"Série {series}" if series else "",
+                  _receipt_date(issued_at) if issued_at else ""], bold=True)
+        if state != "contingency":
+            out.flow(["Protocolo de autorização:", fiscal["protocol"]])
+            if fiscal.get("authorized_at"):
+                out.flow(["Data de autorização:", _receipt_date(fiscal["authorized_at"])])
+        elif copy:
+            out.text(copy, "center")
+        out.qr(fiscal.get("qr_url"))
+        out.rule()
+    elif voided and fiscal.get("access_key"):
+        out.flow(["NFC-e CANCELADA", f"nº {number}" if number else "", f"Série {series}" if series else ""],
+                 bold=True)
+        out.access_key(fiscal["access_key"])
+        if fiscal.get("cancel_protocol"):
+            out.flow(["Protocolo de cancelamento:", fiscal["cancel_protocol"]])
+        out.rule()
+
+    taxes = fiscal.get("taxes_cents")
+    if taxes is None:
+        taxes = sale.get("taxes_cents")
+    if taxes is not None:
+        label = ("Tributos Totais Incidentes (Lei Federal 12.741/2012):" if state != "none"
+                 else "Tributos aprox. (Lei 12.741/2012):")
+        out.text(f"{label} {_money(taxes)}")
+        spheres = (("Federal", "taxes_federal_cents"), ("Estadual", "taxes_state_cents"),
+                   ("Municipal", "taxes_municipal_cents"))
+        out.flow([f"{name} {_money(fiscal[key])}" for name, key in spheres if fiscal.get(key) is not None]
+                 + [f"Fonte: {fiscal['taxes_source']}" if fiscal.get("taxes_source") else ""],
+                 sep=" · ", align="left")
+        out.rule()
+    if state != "none" and fiscal.get("infcpl"):
+        out.text(fiscal["infcpl"])
+    terminal = _receipt_text(sale.get("terminal_name"))
+    out.flow([f"Venda: {str(sale['id'])[:8]}" if sale.get("id") else "",
+              terminal if not terminal or terminal.lower().startswith("caixa") else f"Caixa: {terminal}",
+              f"Operador: {sale['operator_name']}" if sale.get("operator_name") else "",
+              f"Vendedor: {sale['seller_name']}" if sale.get("seller_name") else ""], sep=" · ", align="left")
+    out.text("Obrigado pela preferência!", "center", bold=True)
+    out.brand()
+    return out.result(fiscal_state=state)
 
 
 def receipt_bytes(sale, width=80):
     """Render the shared receipt with explicit Epson width, font and alignment."""
-    return layout_bytes(receipt_layout(sale, width))
+    layout = receipt_layout(sale, width)
+    payload = layout_bytes(layout)
+    if layout["fiscal_state"] == "contingency":
+        # Contingency prints two copies; each one ends with its own partial cut.
+        payload += layout_bytes(receipt_layout(sale, width, copy="Via estabelecimento"))
+    return payload
+
+
+# Fixed voucher texts that callers may still send without accents.
+_VOUCHER_WORDS = {"DEVOLUCAO": "DEVOLUÇÃO", "Devolucao": "Devolução", "Credito": "Crédito",
+                  "disponivel": "disponível"}
+_VOUCHER_WORD = re.compile(r"\b(" + "|".join(_VOUCHER_WORDS) + r")\b")
+
+
+def _voucher_text(value):
+    return _VOUCHER_WORD.sub(lambda match: _VOUCHER_WORDS[match.group(1)], str(value or ""))
 
 
 def voucher_layout(doc, width=80):
-    """Non-fiscal voucher (return, fiado payment) sharing the receipt look.
+    """Non-fiscal voucher (return, fiado payment) sharing the receipt skeleton.
 
     doc: {"title", "issuer", "created_at", "reference", "rows": [["pair", label, value] |
     ["text", value] | ["rule"]], "customer_name", "signature": bool}
     """
-    width = 58 if width == 58 else 80
-    columns = 32 if width == 58 else 48
-    blocks = []
-
-    def text(value, align="left", bold=False, tall=False, wide=False):
-        lines = textwrap.wrap(_receipt_text(value), columns // 2 if wide else columns, break_long_words=True,
-                              break_on_hyphens=False) or [""]
-        blocks.append({"kind": "text", "align": align, "bold": bold, "tall": tall, "wide": wide, "lines": lines})
-
-    def pair(label, value, bold=False):
-        label, value = _receipt_text(label), _receipt_text(value)
-        if len(label) + len(value) + 1 > columns:
-            text(label, bold=bold)
-            text(value, align="right", bold=bold)
-        else:
-            blocks.append({"kind": "text", "align": "left", "bold": bold, "tall": False,
-                           "lines": [label.ljust(columns - len(value)) + value]})
-
-    issuer = doc.get("issuer") or {}
-    text(issuer.get("trade_name") or issuer.get("legal_name") or "PDV2", "center", bold=True, tall=True)
-    document = _document(issuer.get("document"))
-    if document:
-        text(f"CNPJ/CPF: {document}", "center")
-    blocks.append({"kind": "rule"})
-    text(doc["title"], "center", bold=True, tall=True)
-    text("COMPROVANTE NAO FISCAL", "center")
+    out = _Layout(width)
+    out.header(doc.get("issuer") or {}, address=False)
+    out.text(_voucher_text(doc["title"]), "center", bold=True, tall=True)
+    out.text("NÃO É DOCUMENTO FISCAL", "center")
     if doc.get("created_at"):
-        text(_receipt_date(doc["created_at"]), "center")
+        out.text(_receipt_date(doc["created_at"]), "center")
     if doc.get("reference"):
-        text(doc["reference"])
-    blocks.append({"kind": "rule"})
+        out.text(_voucher_text(doc["reference"]))
+    out.rule()
     for row in doc.get("rows", []):
         if row[0] == "pair":
-            pair(row[1], row[2], bold=len(row) > 3 and row[3])
+            out.pair(_voucher_text(row[1]), _voucher_text(row[2]), bold=len(row) > 3 and row[3])
         elif row[0] == "rule":
-            blocks.append({"kind": "rule"})
+            out.rule()
         else:
-            text(row[1])
+            out.text(row[1])
     if doc.get("customer_name"):
-        blocks.append({"kind": "rule"})
-        text(f"Cliente: {doc['customer_name']}", "center")
+        out.rule()
+        out.text(f"Cliente: {doc['customer_name']}", "center")
     if doc.get("signature"):
-        text("")
-        text("")
-        text("_" * min(columns, 36), "center")
-        text("Assinatura do cliente", "center")
-    text("")
-    return {"paper_width_mm": width, "printable_width_mm": 48 if width == 58 else 72,
-            "columns": columns, "bottom_feed_mm": 20, "blocks": blocks}
+        out.text("")
+        out.text("")
+        out.text("_" * min(out.columns, 36), "center")
+        out.text("Assinatura do cliente", "center")
+    out.text("")
+    out.brand()
+    return out.result()
 
 
 def layout_bytes(layout):
@@ -323,6 +505,9 @@ def layout_bytes(layout):
     output.extend(b"\x1bM\x00\x1b \x00\x1bt\x02\x1b3\x20")  # font A, no spacing, CP850, 32-dot lines
     for block in layout['blocks']:
         kind = block['kind']
+        small = bool(block.get('small'))
+        if small:
+            output.extend(b"\x1bM\x01")  # font B for the fine print
         alignment = {'left': 0, 'center': 1, 'right': 2}.get(block.get('align'), 0)
         output.extend(b"\x1ba" + bytes([alignment]))
         output.extend(b"\x1bE" + bytes([int(block.get('bold', False))]))
@@ -333,6 +518,8 @@ def layout_bytes(layout):
         else:
             lines = ['-' * layout['columns']] if kind == 'rule' else block['lines']
             output.extend(('\n'.join(lines) + '\n').encode('cp850', 'replace'))
+        if small:
+            output.extend(b"\x1bM\x00")
     # Function B advances to the cutter plus 20 mm, compensating the
     # TM-T20 printhead-to-cutter gap before the partial cut.
     output.extend(b"\x1d!\x00\x1bE\x00\x1ba\x00\x1dVB\xa0")
