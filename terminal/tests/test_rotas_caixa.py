@@ -137,7 +137,7 @@ class CaixaPageTests(unittest.TestCase):
     def test_page_has_brand_sale_screen_and_key_ruler(self):
         self.assertIn("Frente de caixa", self.html)
         self.assertRegex(self.html, r'class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span>')
-        self.assertEqual(self.html.count(BRAND_FOOTER), 3)  # pairing, login/lock and the "Sobre" card
+        self.assertEqual(self.html.count(BRAND_FOOTER), 4)  # pairing, recovery, login/lock and the "Sobre" card
         for element_id in ("statusBar", "productSearch", "lastItem", "cartItems", "cartTotal", "paymentMethods",
                            "payCash", "changeValue", "donePanel", "keyBar"):
             self.assertIn(f'id="{element_id}"', self.html)

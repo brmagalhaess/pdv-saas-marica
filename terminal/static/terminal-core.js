@@ -218,7 +218,59 @@
     }).join('');
   }
 
-  return {SHORTCUTS, PAY_KEYS, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
+  /* ---------- "Recuperar minha loja" and the second-disk copy ---------- */
+  const count = value => (Number(value) || 0).toLocaleString('pt-BR');
+  const plural = (value, one, many) => `${count(value)} ${Number(value) === 1 ? one : many}`;
+  // Which of the four steps the recovery screen shows for the restore status of the terminal.
+  function restoreStep(restore) {
+    if (!restore || !restore.active) return restore && restore.finished_at ? 'done' : 'start';
+    return restore.state === 'awaiting_backup' ? 'backup' : 'progress';
+  }
+  // Bar, line under it and notice of step 2. `failed` is true when the last request did not even reach this terminal.
+  function restoreProgress(restore, failed = false) {
+    const info = restore || {};
+    const percent = Math.max(0, Math.min(100, Math.round(Number(info.percent) || 0)));
+    const importing = info.state === 'importing', second = Number(info.pass) === 2;
+    let line = Number(info.total) > 0
+      ? `${count(info.applied)} de ${count(info.total)} registros · não desligue o computador`
+      : 'Começando… não desligue o computador';
+    if (importing) line = 'Enviando as vendas da cópia de segurança · não desligue o computador';
+    else if (second) line = `Conferindo de novo com a cópia de segurança · ${line}`;
+    let notice = '';
+    if (info.paused) notice = info.error || 'A recuperação parou. Toque em “Tentar de novo”.';
+    else if (failed) notice = 'Sem resposta deste caixa. Continuamos sozinhos em instantes.';
+    else if (info.error) notice = /transferido/i.test(info.error) ? info.error
+      : 'Sem internet. Continuamos sozinhos quando a conexão voltar.';
+    return {percent, line, notice, retry: !!info.paused};
+  }
+  // "1.180 vendas · R$ 9.876,54" of step 4, from the totals checked against the cloud.
+  function restoreSummary(restore) {
+    const counts = (restore && restore.counts) || {};
+    const parts = [`${plural(counts.sales, 'venda', 'vendas')} · ${money(counts.sales_cents)}`];
+    if (counts.cash_sessions) parts.push(plural(counts.cash_sessions, 'caixa', 'caixas'));
+    if (counts.returns) parts.push(plural(counts.returns, 'devolução', 'devoluções'));
+    if (counts.credit_receipts) parts.push(plural(counts.credit_receipts, 'recebimento de fiado', 'recebimentos de fiado'));
+    return parts.join(' · ');
+  }
+  // What came back after reading a backup copy, in one sentence.
+  function restoreImportText(result) {
+    const imported = Number(result && result.imported) || 0;
+    if (imported) return `${plural(imported, 'registro', 'registros')} da cópia de segurança ${imported === 1 ? 'será enviado' : 'serão enviados'} ao servidor.`;
+    if (Number(result && result.foreign)) return 'Esta cópia é de outra loja. Nada foi trazido.';
+    return 'A cópia não tinha nada além do que o servidor já guardava.';
+  }
+  // Card "Cópia de segurança em outro disco" of the Sistema tab.
+  function mirrorCard(status) {
+    const info = status || {};
+    if (!info.supported) return {text: info.message || 'Cópia em segundo disco indisponível nesta instalação', tone: 'muted', canChoose: false, canCopy: false, attention: false};
+    if (!info.enabled) return {text: 'Desligada. Escolha um pendrive ou outro disco para guardar a cópia.', tone: 'warn', canChoose: true, canCopy: false, attention: true};
+    const ok = info.state === 'ok';
+    return {text: `${info.message || (ok ? 'Cópia de segurança em dia' : 'Cópia de segurança atrasada')} · ${info.directory || ''}`.replace(/ · $/, ''),
+            tone: ok ? 'ok' : info.state === 'late' ? 'warn' : 'danger', canChoose: true, canCopy: info.state !== 'no_key', attention: !ok};
+  }
+
+  return {restoreStep, restoreProgress, restoreSummary, restoreImportText, mirrorCard,
+          SHORTCUTS, PAY_KEYS, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
           parseMoney, parsePercent, parseQty, parseScanInput, ean13Valid, scaleLabel, scaleLabelQuantity,
           scaleReading, createWeightGate, scaleTarget, discountCents, discountNeedsPin, syncIndicator,
           statusTone, keepSelection, paymentOptions, receiptDimensions, receiptBlocksMarkup};

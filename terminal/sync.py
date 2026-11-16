@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import time
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -16,6 +16,11 @@ try:  # the automatic updater ships with the installed build; the terminal works
 except ImportError:
     updater = None
 
+try:  # the second-disk copy is optional too; nothing here depends on it
+    from . import mirror
+except ImportError:
+    mirror = None
+
 
 VERSION = os.environ.get("PDV_VERSION", "2.0.0")
 # Tells the cloud this build accepts leases longer than the old 72 hours.
@@ -25,6 +30,9 @@ LEASE_RENEW_INTERVAL_MS = 60 * 60 * 1000
 # The cloud takes at most 50 events and 1 MB per request; stay well below it.
 MAX_BATCH_EVENTS = 50
 MAX_BATCH_BYTES = 512 * 1024
+RESTORE_PAGE_SIZE = 200
+# One restore pass at a time, whoever asks (the worker or the recovery screen).
+_RESTORE_LOCK = threading.Lock()
 
 
 def validate_cloud_url(url):
@@ -52,6 +60,9 @@ def _json_response(response):
         reason = body.get("error") if isinstance(body, dict) else None
         error = TerminalError(f"Servidor recusou pedido ({response.status_code}): {reason or 'erro'}", 502)
         error.remote_status = response.status_code
+        # Stable code of the cloud (terminal_transferred, invalid_cursor...) and the whole answer.
+        error.remote_code = body.get("code") if isinstance(body, dict) else None
+        error.remote_body = body
         raise error
     if not isinstance(body, dict):
         raise TerminalError("Resposta inesperada do servidor", 502)
@@ -67,6 +78,15 @@ def _request(method, url, **kwargs):
 
 def _auth_headers(meta):
     return {"Authorization": "Bearer " + meta["token"], **CAPABILITY_HEADERS}
+
+
+def _note_transfer(store, exc):
+    """The cloud answered that this terminal now lives on another computer."""
+    if getattr(exc, "remote_code", None) != "terminal_transferred":
+        return False
+    body = getattr(exc, "remote_body", None)
+    store.mark_transferred(body.get("send_only_until") if isinstance(body, dict) else None)
+    return True
 
 
 def pair(store, cloud_url, license_key, code):
@@ -86,6 +106,14 @@ def pair(store, cloud_url, license_key, code):
 
 
 def refresh_bootstrap(store):
+    try:
+        return _refresh_bootstrap(store)
+    except TerminalError as exc:
+        _note_transfer(store, exc)
+        raise
+
+
+def _refresh_bootstrap(store):
     meta = store.meta()
     if not meta.get("token") or not meta.get("cloud_url"):
         raise TerminalError("Terminal ainda não pareado", 409)
@@ -144,6 +172,7 @@ def renew_lease(store, force=False):
         if getattr(exc, "remote_status", None) in (404, 405):
             store.mark_lease_attempt()
             return None
+        _note_transfer(store, exc)
         raise
     if "lease" not in response:
         store.mark_lease_attempt()
@@ -212,8 +241,12 @@ def sync_once(store):
             if getattr(exc, "remote_status", None) == 413 and len(events) > 1:
                 events = events[:len(events) // 2]  # body too large: retry with half
                 continue
+            _note_transfer(store, exc)  # send-only period over: the queue stays here, untouched
             store.set_sync_result(str(exc))
             raise
+    if response.get("send_only") is True:
+        # Old computer of a transferred terminal: the cloud still takes its queue for a few days.
+        store.mark_transferred(response.get("send_only_until"))
     expected = [event["event_id"] for event in events]
     if response.get("accepted_event_ids") != expected:
         store.set_sync_result("Confirmação incompleta do servidor")
@@ -248,11 +281,65 @@ def heartbeat_once(store):
                                   "last_error": last_error[:300],
                                   "client_time": int(time.time())})
     except TerminalError as exc:
+        _note_transfer(store, exc)
         store.set_heartbeat_result(str(exc))
         raise
     store.set_heartbeat_result()
     store.clear_sync_error()
     return response
+
+
+def restore_step(store, max_pages=20):
+    """Advance the recovery of the shop on a new computer. Returns store.restore_status().
+
+    Safe to call from the worker and from the recovery screen at the same time, and
+    again after any failure: the cursor kept in the database says where to resume.
+    """
+    if not _RESTORE_LOCK.acquire(blocking=False):
+        return store.restore_status()
+    try:
+        _restore_run(store, max_pages)
+    except TerminalError as exc:
+        # No connection, cloud refusing, bad page: nothing is lost, the next pass tries again.
+        _note_transfer(store, exc)
+        store.set_restore_error(str(exc))
+    finally:
+        _RESTORE_LOCK.release()
+    return store.restore_status()
+
+
+def _restore_run(store, max_pages):
+    status = store.restore_status()
+    if not status["active"] or status["paused"]:
+        return
+    if status["state"] == "importing":
+        # The queue read from the backup copy goes up first; then everything comes down again.
+        for _ in range(40):
+            if not sync_once(store)["remaining"]:
+                break
+        if not store.restore_second_pass():
+            return
+    elif status["state"] not in ("pending", "restoring"):
+        return  # awaiting_backup: waits for the person's answer
+    meta = store.meta()
+    if not meta.get("token") or not meta.get("cloud_url"):
+        raise TerminalError("Terminal ainda não pareado", 409)
+    for _ in range(max(1, int(max_pages))):
+        cursor = store.meta().get("restore_cursor") or ""
+        url = (meta["cloud_url"] + f"/api/v1/terminal/restore?limit={RESTORE_PAGE_SIZE}&cursor="
+               + quote(cursor, safe=""))
+        try:
+            page = _request("GET", url, headers=_auth_headers(meta))
+        except TerminalError as exc:
+            if getattr(exc, "remote_code", None) != "invalid_cursor" or not cursor:
+                raise
+            # The cloud no longer accepts this position: start over, counting one attempt.
+            if store.restore_restart()["paused"]:
+                return
+            continue
+        result = store.apply_restore(page, cursor)
+        if result.get("skipped") or result["state"] != "restoring" or store.restore_status()["paused"]:
+            return
 
 
 def print_once(store):
@@ -324,6 +411,22 @@ class Worker:
             errors.append(_describe(exc))
             paired = False
         online = False
+        try:
+            transferred = paired and self.store.is_transferred()
+        except Exception as exc:
+            errors.append(_describe(exc))
+            transferred = False
+        if transferred:
+            # This terminal moved to another computer. All that is left to do here is
+            # deliver the queue, for as long as the cloud still takes it.
+            try:
+                if self.store.sync_status()["pending"]:
+                    result = sync_once(self.store)
+                    if result["remaining"]:
+                        self.stop_event.wait(0.1)
+            except Exception as exc:
+                errors.append(_describe(exc))
+            return errors
         if paired:
             try:
                 heartbeat_at = int(self.store.meta().get("last_heartbeat_at") or 0)
@@ -339,6 +442,19 @@ class Worker:
                     renew_lease(self.store)
             except Exception as exc:
                 errors.append("Licença: " + _describe(exc))
+            try:
+                # A new computer brings the shop's data back before it may sell.
+                if self.store.restore_status()["active"]:
+                    restored = restore_step(self.store)
+                    if restored["error"]:
+                        errors.append("Recuperação: " + restored["error"])
+            except Exception as exc:
+                errors.append("Recuperação: " + _describe(exc))
+            try:
+                # Printing or backup-copy setup changed: tell the cloud, so it can come back later.
+                self.store.ensure_config_event()
+            except Exception as exc:
+                errors.append(_describe(exc))
             try:
                 result = sync_once(self.store)
                 if result["remaining"]:

@@ -147,6 +147,7 @@ def _write_active_profile(data_dir, name):
 # /api/bootstrap is reachable from the login screen: keep it from being hammered.
 BOOTSTRAP_CALLS = 6
 BOOTSTRAP_WINDOW_SECONDS = 60
+MIRROR_UNAVAILABLE = "Cópia em segundo disco indisponível nesta instalação"
 
 
 def create_app(config=None):
@@ -320,6 +321,57 @@ def create_app(config=None):
             status.update(can_apply=False, blocked_reason="Feche o caixa para atualizar")
         return status
 
+    def mirror_status():
+        """What mirror.status says, or a plain "not here" when this build has no second-disk copy."""
+        if sync.mirror is None:
+            return {"supported": False, "enabled": False, "state": "off", "message": MIRROR_UNAVAILABLE}
+        try:
+            return sync.mirror.status(store)
+        except Exception as exc:
+            app.logger.error("Cópia em segundo disco falhou ao informar o estado: %s", type(exc).__name__)
+            return {"supported": True, "enabled": False, "state": "error",
+                    "message": "Não foi possível consultar a cópia de segurança"}
+
+    def require_mirror():
+        if sync.mirror is None:
+            raise TerminalError(MIRROR_UNAVAILABLE, 409)
+        return sync.mirror
+
+    def mirror_call(action, func, *args, **kwargs):
+        """Run one operation of the copy; only its own errors (TerminalError) reach the screen as they are."""
+        try:
+            return func(*args, **kwargs)
+        except TerminalError:
+            raise
+        except Exception as exc:
+            app.logger.error("Cópia em segundo disco: %s falhou: %s", action, type(exc).__name__)
+            raise TerminalError("Não foi possível concluir a operação da cópia de segurança. Confira o disco "
+                                "e tente de novo.", 500) from exc
+
+    def start_mirror(target):
+        if sync.mirror is None or target is None:
+            return
+        try:
+            app.extensions["terminal_mirror"] = sync.mirror.start(target)
+        except Exception as exc:  # the copy never keeps the cashier from starting
+            app.logger.error("Cópia em segundo disco não iniciou: %s", type(exc).__name__)
+
+    def stop_mirror():
+        handle = app.extensions.pop("terminal_mirror", None)
+        if handle is not None:
+            try:
+                handle.stop()
+            except Exception as exc:
+                app.logger.error("Cópia em segundo disco não parou: %s", type(exc).__name__)
+
+    def require_restore(*states):
+        status = store.restore_status()
+        if not status["active"]:
+            raise TerminalError("Restauração não está em andamento", 409)
+        if states and status["state"] not in states:
+            raise TerminalError("A recuperação não está esperando a cópia de segurança", 409)
+        return status
+
     @app.get("/")
     def index():
         return render_template("index.html")
@@ -359,6 +411,9 @@ def create_app(config=None):
                         "hours": store.business_hours_status(),
                         "cash": store.cash_state(), "sync": store.sync_status(),
                         "update": update_status(),
+                        "restore": store.restore_status(),
+                        "mirror": mirror_status() if sync.mirror is not None else None,
+                        "default_cloud_url": os.environ.get("PDV_CLOUD_URL", ""),
                         "payment_methods": store.payment_methods()})
 
     @app.post("/api/unpair")
@@ -388,6 +443,7 @@ def create_app(config=None):
         if old_worker:
             old_worker.stop()
             worker = None
+            stop_mirror()
         try:
             if current.pending_events():
                 raise TerminalError("Sincronize os eventos pendentes antes de criar outro perfil", 409)
@@ -405,6 +461,7 @@ def create_app(config=None):
                 worker = sync.Worker(store)
                 worker.start()
                 app.extensions["terminal_worker"] = worker
+                start_mirror(store)
             session.clear()
             return jsonify({"profile": profile_name, "paired": False, "preserved_backup": backup})
         except Exception:
@@ -418,6 +475,7 @@ def create_app(config=None):
                 worker = sync.Worker(store)
                 worker.start()
                 app.extensions["terminal_worker"] = worker
+                start_mirror(store)
             raise
 
     @app.post("/api/pair")
@@ -425,6 +483,102 @@ def create_app(config=None):
         data = body()
         result = sync.pair(store, data.get("cloud_url"), data.get("license_key"), data.get("code"))
         return jsonify({"paired": True, "bootstrap": result})
+
+    @app.post("/api/restore/start")
+    def restore_start():
+        # "Recuperar minha loja": same pairing as /api/pair, with the recovery code of the panel.
+        data = body()
+        result = sync.pair(store, data.get("cloud_url") or os.environ.get("PDV_CLOUD_URL", ""),
+                           data.get("license_key"), data.get("code"))
+        status = store.restore_status()
+        return jsonify({"paired": True, "recovery": status["active"], "restore": status, "bootstrap": result})
+
+    @app.get("/api/restore/status")
+    def restore_state():
+        return jsonify({"restore": store.restore_status()})
+
+    @app.post("/api/restore/step")
+    def restore_advance():
+        body()
+        require_restore()
+        # A connection failure comes back in restore.error with HTTP 200: the screen keeps trying.
+        return jsonify({"restore": sync.restore_step(store, max_pages=3)})
+
+    @app.post("/api/restore/retry")
+    def restore_retry():
+        body()
+        return jsonify({"restore": store.restore_retry()})
+
+    @app.get("/api/restore/backups")
+    def restore_backups():
+        require_restore("awaiting_backup")
+        if sync.mirror is None:
+            return jsonify({"supported": False, "candidates": []})
+        directory = request.args.get("directory", "").strip() or None
+        return jsonify({"supported": True, "candidates": mirror_call(
+            "procura de cópias", sync.mirror.candidates, store.identity(), directory)})
+
+    @app.post("/api/restore/import-backup")
+    def restore_import_backup():
+        data = body()
+        require_restore("awaiting_backup")
+        mirror = require_mirror()
+        directory, replica_id = data.get("directory"), data.get("replica_id")
+        if not isinstance(directory, str) or not directory.strip() or len(directory) > 1000:
+            raise TerminalError("Informe a pasta ou o disco onde está a cópia de segurança")
+        if replica_id is not None and (not isinstance(replica_id, str) or not 0 < len(replica_id) <= 200):
+            raise TerminalError("Cópia de segurança inválida")
+        try:
+            key = json.loads(store.meta().get("mirror_key") or "null")
+        except ValueError:
+            key = None
+        if not isinstance(key, dict):
+            raise TerminalError("Conecte este caixa à internet para liberar a cópia de segurança.", 409)
+        found = mirror_call("leitura da cópia", mirror.read_pending, directory.strip(), key, store.identity(),
+                            replica_id)
+        events = found.get("events") if isinstance(found, dict) else None
+        result = store.import_outbox_from_mirror(events if isinstance(events, list) else [])
+        return jsonify({**result, "restore": store.restore_status()})
+
+    @app.post("/api/restore/skip-backup")
+    def restore_skip_backup():
+        body()
+        return jsonify({"restore": store.restore_skip_backup()})
+
+    @app.get("/api/mirror/status")
+    @authenticated()
+    def mirror_state(_operator):
+        return jsonify(mirror_status())
+
+    @app.get("/api/mirror/drives")
+    @authenticated(*MANAGER_ROLES)
+    def mirror_drives(_operator):
+        mirror = require_mirror()
+        return jsonify({"drives": mirror_call("lista de discos", mirror.drives, store)})
+
+    @app.post("/api/mirror/config")
+    @authenticated(*MANAGER_ROLES)
+    def mirror_config(operator):
+        data = body()
+        mirror = require_mirror()
+        directory = data.get("directory")
+        if directory is not None and (not isinstance(directory, str) or not directory.strip()
+                                      or len(directory) > 1000):
+            raise TerminalError("Informe a pasta ou o disco da cópia de segurança")
+        directory = directory.strip() if directory else None
+        result = mirror_call("configuração", mirror.configure, store, directory,
+                             allow_same_volume=os.environ.get("PDV_ENV", "production") in ("development", "test"))
+        store.record_audit(operator["id"], "mirror.configured", None,
+                           ("ligada: " + directory)[:300] if directory else "desligada")
+        store.ensure_config_event()
+        return jsonify(result)
+
+    @app.post("/api/mirror/snapshot")
+    @authenticated(*MANAGER_ROLES)
+    def mirror_snapshot(_operator):
+        body()
+        mirror = require_mirror()
+        return jsonify(mirror_call("cópia imediata", mirror.snapshot_now, store))
 
     @app.post("/api/bootstrap")
     def bootstrap():
@@ -717,4 +871,5 @@ def create_app(config=None):
         worker = sync.Worker(store)
         worker.start()
         app.extensions["terminal_worker"] = worker
+        start_mirror(store)
     return app

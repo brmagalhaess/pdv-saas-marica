@@ -48,6 +48,7 @@
           <label class="field"><span>Código de pareamento deste caixa</span><input id="pairCode" autocomplete="off" spellcheck="false" placeholder="Código temporário do painel" required></label>
           <button class="btn primary big" type="submit">Conectar este terminal</button>
         </form>
+        <button id="restoreOpenBtn" class="btn big" type="button">Recuperar minha loja (troquei de computador)</button>
         <p class="hint">A licença identifica a assinatura; o código de pareamento autoriza este dispositivo por uma única vez. Depois, cada operador entra com o próprio PIN.</p>
         <p class="hint">Identificação deste dispositivo: <code id="deviceId"></code></p>
         <details class="maintenance">
@@ -55,6 +56,58 @@
           <button id="newProfileBtn" class="btn ghost danger" type="button">Criar novo perfil para outra empresa</button>
           <p class="hint">Preserva o banco atual em um backup e cria um diretório de dados separado para o próximo pareamento.</p>
         </details>
+      </div>
+    </div>
+    <footer class="brand-footer">PDV2 · um produto CrownTech · crowntech.com.br</footer>
+  </section>
+
+  <section id="restoreView" class="gate hidden">
+    <div class="gate-card">
+      <div class="gate-main">
+        <div class="lockup lockup-lg"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+        <div id="restoreStart" class="restore-step">
+          <span class="eyebrow">Passo 1 de 4</span>
+          <h1>Recuperar minha loja</h1>
+          <p>Use quando o computador do caixa foi trocado. No painel da empresa, abra <strong>Terminais</strong>, toque em <strong>Trocar de computador</strong> e copie os dois dados abaixo.</p>
+          <form id="restoreForm" class="form-stack">
+            <label id="restoreCloudField" class="field"><span>Endereço do servidor da empresa</span><input id="restoreCloudUrl" type="url" placeholder="Endereço HTTPS informado no painel"></label>
+            <label class="field"><span>Chave da licença</span><input id="restoreLicenseKey" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PDV2-…" required></label>
+            <label class="field"><span>Código de recuperação</span><input id="restoreCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" required></label>
+            <button class="btn primary big" type="submit">Recuperar minha loja</button>
+          </form>
+          <button id="restoreBackBtn" class="btn ghost" type="button">Voltar: este é um caixa novo</button>
+          <p class="hint">O código de recuperação vale 30 minutos e só funciona uma vez.</p>
+        </div>
+        <div id="restoreProgress" class="restore-step hidden">
+          <span class="eyebrow">Passo 2 de 4</span>
+          <h1>Trazendo seus dados</h1>
+          <div id="restoreBar" class="restore-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Andamento da recuperação"><span id="restoreBarFill"></span></div>
+          <p id="restoreLine" class="restore-line" aria-live="polite">Começando…</p>
+          <p id="restoreNotice" class="restore-notice hidden" role="status"></p>
+          <button id="restoreRetryBtn" class="btn primary big hidden" type="button">Tentar de novo</button>
+          <p class="hint">As vendas dos últimos 90 dias e o fiado em aberto voltam para este computador. O caixa só libera a venda quando tudo estiver conferido.</p>
+        </div>
+        <div id="restoreBackup" class="restore-step hidden">
+          <span class="eyebrow">Passo 3 de 4</span>
+          <h1>Você tem uma cópia de segurança?</h1>
+          <p>Os dados que estavam no servidor já voltaram. Se o computador antigo guardava uma cópia em pendrive ou em outro disco, ela pode trazer as últimas vendas que ainda não tinham sido enviadas.</p>
+          <div class="inline-controls"><button id="restoreHasBackupBtn" class="btn primary big" type="button">Tenho uma cópia de segurança</button><button id="restoreSkipBtn" class="btn big" type="button">Não tenho, continuar</button></div>
+          <div id="restoreBackupPanel" class="hidden">
+            <p id="restoreBackupInfo" class="hint" aria-live="polite">Procurando cópias de segurança…</p>
+            <div id="restoreBackupList" class="mini-list"></div>
+            <form id="restoreFolderForm" class="form-stack">
+              <label class="field"><span>Ou informe a pasta onde está a cópia</span><input id="restoreFolder" type="text" autocomplete="off" spellcheck="false" placeholder="Ex.: E:\ ou /Volumes/PENDRIVE"></label>
+              <button class="btn" type="submit">Procurar nesta pasta</button>
+            </form>
+          </div>
+        </div>
+        <div id="restoreDone" class="restore-step hidden">
+          <span class="eyebrow">Passo 4 de 4</span>
+          <h1>Tudo pronto</h1>
+          <p id="restoreSummary" class="restore-line"></p>
+          <p class="hint">Os números acima foram conferidos com o servidor da empresa. Carrinhos em espera e a fila de impressão do computador antigo não voltam.</p>
+          <button id="restoreEnterBtn" class="btn primary big" type="button">Entrar no caixa</button>
+        </div>
       </div>
     </div>
     <footer class="brand-footer">PDV2 · um produto CrownTech · crowntech.com.br</footer>
@@ -249,6 +302,7 @@
         </div>
         <div class="card"><h2>Sincronização</h2><p id="systemError" class="hint"></p><div class="inline-controls"><button id="syncNowBtn" class="btn primary">Sincronizar agora</button><button id="bootstrapBtn" class="btn">Atualizar catálogo e licença</button><a href="/api/export" id="exportLink" class="btn link-button">Exportar dados locais</a></div></div>
         <div class="card"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="btn">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div>
+        <div id="mirrorCard" class="card"><h2>Cópia de segurança em outro disco</h2><p id="mirrorInfo" class="hint">Consultando a cópia de segurança…</p><p id="mirrorDetail" class="hint"></p><div class="inline-controls"><button id="mirrorChooseBtn" class="btn" type="button">Escolher disco</button><button id="mirrorSnapshotBtn" class="btn" type="button">Copiar agora</button></div><p class="hint">Um pendrive ou segundo disco guarda uma cópia protegida de tudo o que este caixa registra. Se este computador quebrar, as vendas que ainda não tinham ido para a internet voltam por ela.</p></div>
         <div id="leaseCard" class="card"><h2>Licença offline</h2><p id="leaseInfo" class="hint">Consultando a licença…</p><button id="leaseRenewBtn" class="btn" type="button">Renovar licença agora</button><p class="hint">A licença é renovada sozinha sempre que o caixa fala com o servidor. Sem internet, este caixa continua vendendo até a data acima.</p></div>
         <div id="updateCard" class="card"><h2>Atualização</h2><p id="currentVersion" class="hint">Versão instalada: —</p><p id="updateAvailable" class="hint">Versão disponível: —</p><p id="updateState" class="hint">Estado: —</p><button id="updateApplyBtn" class="btn primary" type="button" disabled>Atualizar agora</button><p id="updateBlocked" class="hint" role="status"></p><a id="releaseLink" class="btn link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">A nova versão é baixada e conferida sozinha. A instalação só acontece com o caixa fechado, depois de um backup; se algo der errado, a versão anterior volta.</p></div>
         <div class="card"><h2>Identificação</h2><pre id="identityInfo" class="identity"></pre></div>
