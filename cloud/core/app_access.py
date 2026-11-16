@@ -1,8 +1,11 @@
 """Granting and revoking PDV2 Gestão access: rules and JSON shared by the web panel and the app."""
+import logging
+import secrets
 import uuid
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
+from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q
 from django.utils import timezone
@@ -10,8 +13,10 @@ from django.utils import timezone
 from .api_common import PLATFORM_GROUPS, APIError, audit, text
 from .app_auth import (ALL_PERMISSIONS, active_access_q, fail, platform_eligible, revoke_device,
                        revoke_user_devices, tenant_accesses)
-from .models import AccountDeletionRequest, AppAccess, AppDevice, Membership, Shop, Tenant
+from .models import AccountDeletionRequest, AppAccess, AppDevice, Membership, PlatformMFA, Shop, Tenant
 from .monitoring import _midnight, local_iso
+
+logger = logging.getLogger(__name__)
 
 PERMISSION_TEXT = {"sales": "Vendas", "cash": "Caixa", "stock": "Estoque", "credit": "Fiado",
                    "terminals": "Terminais e conflitos"}
@@ -21,8 +26,13 @@ ROLE_TEXT = {"owner": "Proprietário", "admin": "Administrador", "manager": "Ger
              "cashier": "Operador de caixa", "inventory": "Estoque", "finance": "Financeiro", "viewer": "Consulta"}
 NOT_STAFF_MESSAGE = ("Essa pessoa não é da equipe CrownTech. Dê um papel de plataforma em "
                      "Usuários e permissões primeiro.")
+# The e-mail sent when the request is done is best effort (SMTP may be down), so it is not promised here.
 DELETION_MESSAGE = ("Recebemos seu pedido. Seu login será desativado e seus dados pessoais apagados em até "
-                    "15 dias. Você vai receber a confirmação por e-mail.")
+                    "15 dias.")
+WEB_IDENTITY_MESSAGE = ("Pedido feito pelo site, sem login: confirme com a pessoa pelo e-mail da conta "
+                        "que o pedido é dela antes de atender.")
+DELETED_NAME = "Conta excluída"
+DELETED_DEVICE_NAME = "Aparelho removido"
 
 
 def user_ref(user):
@@ -379,26 +389,84 @@ def request_deletion(user, email, source, note, ip):
     return pending
 
 
+def mask_email(email):
+    """Keep only enough of the address to recognize the request later ("a***@dominio.com")."""
+    local, _, domain = (email or "").partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "***"
+
+
+def erase_personal_data(user, actor):
+    """Deletion of the person's account (LGPD): disable the login and wipe what identifies them.
+
+    The user row itself stays (sales, cash sessions and audit events point to it with PROTECT and
+    are company records the law keeps), but it no longer holds a name, e-mail or usable password.
+    Devices keep only their token hashes, so a phone still signed in gets "device_revoked".
+    """
+    now = timezone.now()
+    placeholder = f"excluido-{secrets.token_hex(8)}@conta-excluida.invalid"
+    user.username = user.email = placeholder
+    user.first_name = user.last_name = ""
+    user.is_active = False
+    user.set_unusable_password()
+    user.save(update_fields=["username", "email", "first_name", "last_name", "is_active", "password"])
+    AppAccess.objects.filter(user=user, revoked_at__isnull=True).update(
+        revoked_at=now, revoked_by=actor, revoke_reason="Exclusão de conta")
+    revoke_user_devices(user, "account_deletion", actor)
+    AppDevice.objects.filter(user=user).update(
+        name=DELETED_DEVICE_NAME, model="", os_version="", last_ip="", push_provider="", push_token=None,
+        mfa_challenge_hash=None, mfa_challenge_expires_at=None)
+    memberships = Membership.objects.filter(user=user).update(active=False, name=DELETED_NAME, pin_hash="")
+    PlatformMFA.objects.filter(user=user).delete()
+    return {"memberships_disabled": memberships}
+
+
+def _send_deletion_done_email(email):
+    """Best effort: the deletion is done even when the mail server is down."""
+    try:
+        send_mail("PDV2: sua conta foi excluída",
+                  "Olá. Atendemos seu pedido: seu login no PDV2 (aplicativo e painel) foi desativado e seus "
+                  "dados pessoais foram apagados. Os dados da empresa, como vendas e notas, continuam com a "
+                  "empresa, como exige a lei.\n\nPDV2 · CrownTech",
+                  None, [email], fail_silently=False)
+    except Exception:  # noqa: BLE001 - never undo a finished deletion because of e-mail
+        logger.warning("account deletion e-mail not sent", exc_info=True)
+
+
 def resolve_deletion(actor, row, data):
-    only_keys(data, ("status", "note"), ("status",))
+    only_keys(data, ("status", "note", "identity_confirmed"), ("status",))
     if data["status"] not in ("done", "rejected"):
         fail("invalid_request", "Situação inválida.")
+    confirmed = data.get("identity_confirmed", False)
+    if not isinstance(confirmed, bool):
+        fail("invalid_request", "Confirmação inválida.")
     note = text(data.get("note", ""), "Observação", 500, optional=True)
+    notify = None
     with transaction.atomic():
         row = AccountDeletionRequest.objects.select_for_update().select_related("user").get(pk=row.pk)
         if row.status != "pending":
             fail("conflict", "Este pedido já foi atendido.")
         user = row.user
-        if data["status"] == "done" and user is not None:
-            if user.is_superuser:
-                fail("conflict", "A conta principal do SaaS não pode ser desativada por aqui.")
-            user.is_active = False
-            user.save(update_fields=["is_active"])
-            AppAccess.objects.filter(user=user, revoked_at__isnull=True).update(
-                revoked_at=timezone.now(), revoked_by=actor, revoke_reason="Exclusão de conta")
-            revoke_user_devices(user, "account_deletion", actor)
+        detail = {"status": data["status"], "user_id": user.pk if user else None, "source": row.source}
+        if data["status"] == "done":
+            if user is not None:
+                if user.is_superuser:
+                    fail("conflict", "A conta principal do SaaS não pode ser desativada por aqui.")
+                # Anyone can type an e-mail in the public form: only the signed-in app request proves
+                # who asked. A web request is done only after the admin confirmed it with the owner.
+                if row.source == "web" and not confirmed:
+                    fail("conflict", WEB_IDENTITY_MESSAGE)
+                notify = user.email
+                detail.update(erase_personal_data(user, actor))
+            detail["identity_confirmed"] = row.source == "app" or confirmed
+            # Every request of this person keeps no readable e-mail, note or IP.
+            same = AccountDeletionRequest.objects.filter(Q(pk=row.pk) | (Q(user=user) if user else Q(pk=row.pk)))
+            for other in same:
+                other.email, other.note, other.ip = mask_email(other.email), "", ""
+                other.save(update_fields=["email", "note", "ip"])
+            row.refresh_from_db()
         row.status, row.handled_by, row.handled_at, row.handled_note = data["status"], actor, timezone.now(), note
         row.save(update_fields=["status", "handled_by", "handled_at", "handled_note"])
-        audit(None, actor, "app.account_deletion_resolved", row, {"status": row.status,
-                                                                  "user_id": user.pk if user else None})
+        audit(None, actor, "app.account_deletion_resolved", row, detail)
+        if notify:
+            transaction.on_commit(lambda: _send_deletion_done_email(notify))
     return AccountDeletionRequest.objects.select_related("user", "handled_by").get(pk=row.pk)

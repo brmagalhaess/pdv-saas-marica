@@ -289,29 +289,35 @@ def refresh(request):
         device = reused
     if device.revoked_at is not None:
         fail("device_revoked")
-    if reused is not None:
-        if device.refresh_rotated_at and now - device.refresh_rotated_at <= REFRESH_REUSE_GRACE:
-            # The answer of the previous refresh was lost: hand out a new pair; the old token
-            # keeps its "previous" mark so a later reuse is still caught.
-            if not platform_in_session(device, device.user) and not tenant_accesses(device.user).exists():
-                revoke_device(device, "access_ended")
-                fail("app_access_denied")
-            return JsonResponse({"tokens": issue_tokens(device, now)})
-        revoke_device(device, "refresh_reuse")
-        audit(None, device.user, "app.refresh_reuse_detected", device, {})
-        fail("device_revoked")
     if not device.user.is_active:
         revoke_device(device, "user_inactive")
+        fail("device_revoked")
+    if reused is not None and not (device.refresh_rotated_at and
+                                   now - device.refresh_rotated_at <= REFRESH_REUSE_GRACE):
+        revoke_device(device, "refresh_reuse")
+        audit(None, device.user, "app.refresh_reuse_detected", device, {})
         fail("device_revoked")
     if device.refresh_expires_at is None or device.refresh_expires_at <= now:
         fail("refresh_invalid")
     if not platform_in_session(device, device.user) and not tenant_accesses(device.user).exists():
         revoke_device(device, "access_ended")
         fail("app_access_denied")
-    changed = AppDevice.objects.filter(pk=device.pk, refresh_hash=hashed).update(refresh_hash=None)
+    if reused is None:
+        changed = AppDevice.objects.filter(pk=device.pk, refresh_hash=hashed).update(refresh_hash=None)
+        rotate_from = hashed
+    else:
+        # The answer of the previous refresh may have been lost (grace of 30 s). The pair being
+        # replaced (R2) becomes the "previous" one: if whoever holds it uses it later, that is a
+        # reuse and the device is revoked. Without this, a stolen R1 used in the grace window
+        # would silently take the session while the real app only got "refresh_invalid".
+        current = device.refresh_hash
+        changed = (current is not None and
+                   AppDevice.objects.filter(pk=device.pk, refresh_hash=current, previous_refresh_hash=hashed)
+                   .update(refresh_hash=None))
+        rotate_from = current
     if not changed:
         fail("refresh_invalid")
-    return JsonResponse({"tokens": issue_tokens(device, now, rotate_from=hashed)})
+    return JsonResponse({"tokens": issue_tokens(device, now, rotate_from=rotate_from)})
 
 
 @app_endpoint

@@ -19,7 +19,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .api_common import PLATFORM_GROUPS, APIError, client_ip, take_rate
-from .models import AppAccess, AppDevice, Membership, RateLimit, Shop, Tenant
+from .models import AccountDeletionRequest, AppAccess, AppDevice, Membership, RateLimit, Shop, Tenant
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,8 @@ MFA_CHALLENGE_TTL = timedelta(minutes=10)
 REFRESH_REUSE_GRACE = timedelta(seconds=30)
 SEEN_EVERY = timedelta(seconds=60)
 PENDING_DEVICE_TTL = timedelta(days=1)
+# Security records (IP of access) are kept 6 months, as the privacy policy says.
+SECURITY_LOG_TTL = timedelta(days=180)
 MAX_ACTIVE_DEVICES = 10
 ALL_PERMISSIONS = list(AppAccess.PERMISSIONS)
 
@@ -200,8 +202,12 @@ def enforce_device_limit(device):
 
 
 def cleanup_pending_devices():
-    AppDevice.objects.filter(activated_at__isnull=True,
-                             created_at__lt=timezone.now() - PENDING_DEVICE_TTL).delete()
+    """Lazy housekeeping on every sign-in: unfinished devices and IPs older than 6 months."""
+    now = timezone.now()
+    AppDevice.objects.filter(activated_at__isnull=True, created_at__lt=now - PENDING_DEVICE_TTL).delete()
+    old = now - SECURITY_LOG_TTL
+    AppDevice.objects.filter(last_seen_at__lt=old).exclude(last_ip="").update(last_ip="")
+    AccountDeletionRequest.objects.filter(created_at__lt=old).exclude(ip="").update(ip="")
 
 
 # Who may use the app -------------------------------------------------------

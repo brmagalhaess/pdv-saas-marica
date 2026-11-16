@@ -4160,14 +4160,29 @@ async function platformAppAccessPage() {
   function resolveDeletion(row, status) {
     const done = status === "done";
     const form = el("form", "auth-form");
-    form.append(info(done ? "Desativa o login desta pessoa no app e no painel." : "O pedido fica registrado como recusado; o login continua ativo.", done));
+    form.append(info(done ? "Desativa o login desta pessoa no app e no painel e apaga o nome, o e-mail e os aparelhos dela. Não dá para desfazer." : "O pedido fica registrado como recusado; o login continua ativo.", done));
+    if (row.note) form.append(info("Motivo informado: " + row.note));
+    // Anyone can type an e-mail on the public page: the admin must confirm with the account owner first.
+    const needsIdentity = done && row.source === "web" && !!row.user;
+    let identity = null;
+    if (needsIdentity) {
+      form.append(info("Pedido feito pelo site, sem login: qualquer pessoa pode digitar o e-mail de outra. Confirme com a pessoa pelo e-mail da conta antes de atender.", true));
+      const line = el("label", "checkbox-line"); identity = el("input");
+      identity.type = "checkbox"; identity.id = "app-deletion-identity"; identity.required = true;
+      line.append(identity, el("span", "", "Confirmei com a pessoa, pelo e-mail da conta, que o pedido é dela."));
+      form.append(line);
+    }
     const note = el("textarea"); note.id = "app-deletion-note"; note.maxLength = 500;
     form.append(appField("Observação (opcional)", note));
     const message = formMessage(form), submit = formButtons(form, done ? "Marcar como atendido" : "Recusar pedido");
     form.addEventListener("submit", async event => {
-      event.preventDefault(); submit.disabled = true;
+      event.preventDefault();
+      if (identity && !identity.checked) { message.textContent = "Marque a confirmação antes de atender o pedido."; return; }
+      submit.disabled = true;
       try {
-        await api.post("/platform/account-deletions/" + row.id + "/resolve", { status, note: note.value.trim() }, { tenant:false });
+        const body = { status, note: note.value.trim() };
+        if (identity) body.identity_confirmed = true;
+        await api.post("/platform/account-deletions/" + row.id + "/resolve", body, { tenant:false });
         closeDialog(); toast(done ? "Pedido atendido." : "Pedido recusado."); renderRoute();
       } catch (error) { handleError(error, message); submit.disabled = false; }
     });
@@ -4179,7 +4194,8 @@ async function platformAppAccessPage() {
     if (token !== state.renderId) return;
     deletionBox.lastChild.remove();
     deletionBox.append(pagedContent(result, "/platform/account-deletions?status=all", [
-      { label: "E-mail", render: row => row.email }, { label: "Origem", render: row => row.source === "app" ? "App" : "Site" },
+      { label: "E-mail", render: row => row.email }, { label: "Origem", render: row => row.source === "app" ? "App" : "Site (sem login)" },
+      { label: "Motivo", render: row => row.note || "—" },
       { label: "Data", render: row => dateTime(row.created_at) },
       { label: "Estado", render: row => statusBadge(row.status_text || row.status) }
     ], row => row.status !== "pending" ? [] : [

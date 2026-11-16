@@ -13,6 +13,7 @@ import pyotp
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import Group
+from django.core import mail
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
@@ -342,14 +343,44 @@ class AppTokenTests(AppBase):
         again = self.refresh(old_refresh)
         self.assertEqual(again.status_code, 200, again.content)
         newest = again.json()["tokens"]
-        # After 30 s the old refresh is a stolen token: the device is revoked.
+        # After 30 s the pair it replaced is a stolen token: the device is revoked.
         AppDevice.objects.filter(pk=self.device.pk).update(refresh_rotated_at=timezone.now() - timedelta(seconds=31))
-        self.assertCode(self.refresh(old_refresh), 401, "device_revoked")
+        self.assertCode(self.refresh(pair["refresh_token"]), 401, "device_revoked")
         self.device.refresh_from_db()
         self.assertEqual(self.device.revoke_reason, "refresh_reuse")
         self.assertCode(self.get("/api/v1/app/me", newest["access_token"]), 401, "device_revoked")
         self.assertCode(self.refresh(newest["refresh_token"]), 401, "device_revoked")
         self.assertTrue(AuditEvent.objects.filter(action="app.refresh_reuse_detected").exists())
+
+    def test_old_refresh_after_grace_is_reuse(self):
+        old_refresh = self.tokens["refresh_token"]
+        self.assertEqual(self.refresh(old_refresh).status_code, 200)
+        AppDevice.objects.filter(pk=self.device.pk).update(refresh_rotated_at=timezone.now() - timedelta(seconds=31))
+        self.assertCode(self.refresh(old_refresh), 401, "device_revoked")
+        self.assertEqual(AppDevice.objects.get(pk=self.device.pk).revoke_reason, "refresh_reuse")
+
+    def test_stolen_refresh_in_grace_window_is_caught_when_the_real_app_refreshes(self):
+        stolen = self.tokens["refresh_token"]
+        legit = self.refresh(stolen).json()["tokens"]           # real app: R1 -> R2
+        thief = self.refresh(stolen)                             # attacker: R1 within 30 s -> R3
+        self.assertEqual(thief.status_code, 200, thief.content)
+        AppDevice.objects.filter(pk=self.device.pk).update(refresh_rotated_at=timezone.now() - timedelta(minutes=15))
+        # The real app uses R2 later: reuse detected, the whole device (and the thief) is out.
+        self.assertCode(self.refresh(legit["refresh_token"]), 401, "device_revoked")
+        self.assertEqual(AppDevice.objects.get(pk=self.device.pk).revoke_reason, "refresh_reuse")
+        self.assertTrue(AuditEvent.objects.filter(action="app.refresh_reuse_detected").exists())
+        self.assertCode(self.refresh(thief.json()["tokens"]["refresh_token"]), 401, "device_revoked")
+        self.assertCode(self.get("/api/v1/app/me", thief.json()["tokens"]["access_token"]), 401, "device_revoked")
+
+    def test_grace_window_checks_user_and_expiry(self):
+        stolen = self.tokens["refresh_token"]
+        self.assertEqual(self.refresh(stolen).status_code, 200)
+        AppDevice.objects.filter(pk=self.device.pk).update(refresh_expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertCode(self.refresh(stolen), 401, "refresh_invalid")
+        AppDevice.objects.filter(pk=self.device.pk).update(refresh_expires_at=timezone.now() + timedelta(days=1))
+        type(self.owner).objects.filter(pk=self.owner.pk).update(is_active=False)
+        self.assertCode(self.refresh(stolen), 401, "device_revoked")
+        self.assertEqual(AppDevice.objects.get(pk=self.device.pk).revoke_reason, "user_inactive")
 
     def test_unknown_and_expired_refresh(self):
         self.assertCode(self.refresh("pr_" + "z" * 40), 401, "refresh_invalid")
@@ -430,6 +461,29 @@ class AppTokenTests(AppBase):
         request = AccountDeletionRequest.objects.get()
         self.assertEqual((request.source, request.status, request.note), ("app", "pending", "Não uso mais"))
         self.assertTrue(AuditEvent.objects.filter(action="app.account_deletion_requested").exists())
+        self.assertNotIn("e-mail", response.json()["message"])
+
+    def test_app_deletion_request_is_done_without_extra_confirmation(self):
+        self.call("POST", "/api/v1/app/account/deletion-request", self.tokens["access_token"], {})
+        request = AccountDeletionRequest.objects.get()
+        self.client.force_login(self.root)
+        done = self.client.post(f"/api/v1/platform/account-deletions/{request.id}/resolve",
+                                data=json.dumps({"status": "done"}), content_type="application/json")
+        self.assertEqual(done.status_code, 200, done.content)
+        self.owner.refresh_from_db()
+        self.assertFalse(self.owner.is_active)
+        self.assertTrue(self.owner.email.endswith("@conta-excluida.invalid"))
+
+    def test_old_ips_are_cleared_after_six_months(self):
+        AppDevice.objects.filter(pk=self.device.pk).update(last_ip="177.10.20.30",
+                                                           last_seen_at=timezone.now() - timedelta(days=181))
+        old = AccountDeletionRequest.objects.create(email="x@y.test", source="web", ip="177.1.1.1")
+        AccountDeletionRequest.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=181))
+        fresh = AccountDeletionRequest.objects.create(email="z@y.test", source="web", ip="177.2.2.2")
+        self.signed_in(self.owner)
+        self.assertEqual(AppDevice.objects.get(pk=self.device.pk).last_ip, "")
+        self.assertEqual(AccountDeletionRequest.objects.get(pk=old.pk).ip, "")
+        self.assertEqual(AccountDeletionRequest.objects.get(pk=fresh.pk).ip, "177.2.2.2")
 
 
 class AppScopeTests(AppBase):
@@ -889,13 +943,42 @@ class WebPlatformAppAccessTests(AppBase):
         self.assertEqual(set(pending[0]), DELETION_KEYS)
         mine = next(row for row in pending if row["user"])
         self.assertEqual((mine["source"], mine["status_text"]), ("web", "Pendente"))
-        done = self.client.post(f"/api/v1/platform/account-deletions/{mine['id']}/resolve",
-                                data=json.dumps({"status": "done", "note": "Confirmado por e-mail"}),
-                                content_type="application/json")
+        # Anyone can type someone else's e-mail on the site: without the admin's confirmation, nothing happens.
+        blind = self.client.post(f"/api/v1/platform/account-deletions/{mine['id']}/resolve",
+                                 data=json.dumps({"status": "done"}), content_type="application/json")
+        self.assertCode(blind, 409, "conflict")
+        self.assertIn("confirme com a pessoa", blind.json()["error"])
+        self.owner.refresh_from_db()
+        self.assertTrue(self.owner.is_active)
+        self.assertEqual(self.get("/api/v1/app/me", tokens["access_token"]).status_code, 200)
+        owner_email = self.owner.email
+        mail.outbox.clear()
+        with self.captureOnCommitCallbacks(execute=True):
+            done = self.client.post(f"/api/v1/platform/account-deletions/{mine['id']}/resolve",
+                                    data=json.dumps({"status": "done", "note": "Confirmado por e-mail",
+                                                     "identity_confirmed": True}),
+                                    content_type="application/json")
         self.assertEqual(done.status_code, 200, done.content)
         self.assertEqual(done.json()["status"], "done")
+        self.assertNotEqual(done.json()["email"], owner_email)
+        # The personal data is really gone, not only the login.
         self.owner.refresh_from_db()
         self.assertFalse(self.owner.is_active)
+        self.assertFalse(self.owner.has_usable_password())
+        self.assertNotIn(owner_email.split("@")[0], self.owner.email + self.owner.username)
+        self.assertEqual((self.owner.first_name, self.owner.last_name), ("", ""))
+        self.assertFalse(Membership.objects.filter(user=self.owner, active=True).exists())
+        self.assertFalse(Membership.objects.filter(user=self.owner).exclude(name="Conta excluída").exists())
+        for device in AppDevice.objects.filter(user=self.owner):
+            self.assertEqual((device.name, device.model, device.os_version, device.last_ip),
+                             ("Aparelho removido", "", "", ""))
+        request_row = AccountDeletionRequest.objects.get(pk=mine["id"])
+        self.assertEqual((request_row.note, request_row.ip), ("", ""))
+        self.assertNotIn(owner_email.split("@")[0][1:], request_row.email)
+        detail = AuditEvent.objects.get(action="app.account_deletion_resolved").detail
+        self.assertNotIn(owner_email, json.dumps(detail))
+        self.assertTrue(detail["identity_confirmed"])
+        self.assertEqual([message.to for message in mail.outbox], [[owner_email]])
         self.assertFalse(AppAccess.objects.filter(user=self.owner, revoked_at__isnull=True).exists())
         self.assertCode(self.get("/api/v1/app/me", tokens["access_token"]), 401, "device_revoked")
         self.assertTrue(AuditEvent.objects.filter(action="app.account_deletion_resolved").exists())

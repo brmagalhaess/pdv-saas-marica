@@ -75,7 +75,7 @@ Corpo: `{"error": "<frase para leigo>", "code": "<codigo>"}` (às vezes com extr
 ## 3. Tokens
 
 - `access` = `pa_…` (15 min), `refresh` = `pr_…` (60 dias; 30 dias se o aparelho fez TOTP), desafio de MFA `pm_…` (10 min). O servidor guarda só o SHA-256.
-- Cada refresh devolve um **par novo** e reinicia o prazo. O refresh anterior, usado de novo em até 30 s (resposta perdida), ainda recebe um par novo; depois de 30 s é tratado como roubo: o aparelho é revogado (`device_revoked`) e o evento `app.refresh_reuse_detected` vai para a auditoria.
+- Cada refresh devolve um **par novo** e reinicia o prazo. O refresh anterior, usado de novo em até 30 s (resposta perdida), ainda recebe um par novo; depois de 30 s é tratado como roubo: o aparelho é revogado (`device_revoked`) e o evento `app.refresh_reuse_detected` vai para a auditoria. Nesse caso de tolerância, o par que estava valendo vira o "anterior": se alguém usar esse par depois (por exemplo, o app verdadeiro quando um ladrão usou o refresh antigo dentro dos 30 s), também é reuso e o aparelho é revogado. Por isso os apps precisam renovar uma vez por vez (single-flight). Usuário inativo e refresh vencido são conferidos também na tolerância.
 - Até 10 aparelhos ativos por pessoa; no 11º login o aparelho usado há mais tempo é desconectado.
 - O app guarda o refresh no Keychain/Keystore e o access só em memória; renova uma requisição por vez.
 
@@ -216,7 +216,7 @@ Regras: motivo de 3 a 240 caracteres; pelo menos uma permissão; só lojas ativa
 
 ### 4.5 Painel web e páginas públicas
 
-- Painel (sessão + CSRF, só superusuário): `GET/POST /api/v1/platform/app-access`, `PATCH …/<id>`, `POST …/<id>/revoke`, `GET …/options`, `GET /api/v1/platform/app-devices`, `POST …/<id>/revoke`, `GET /api/v1/platform/account-deletions?status=pending|all`, `POST …/<id>/resolve` `{"status":"done"|"rejected","note"}`.
+- Painel (sessão + CSRF, só superusuário): `GET/POST /api/v1/platform/app-access`, `PATCH …/<id>`, `POST …/<id>/revoke`, `GET …/options`, `GET /api/v1/platform/app-devices`, `POST …/<id>/revoke`, `GET /api/v1/platform/account-deletions?status=pending|all`, `POST …/<id>/resolve` `{"status":"done"|"rejected","note","identity_confirmed?"}` (pedido do site exige `identity_confirmed: true` para `done`).
 - Tela: **Plataforma > Acessos ao app** (`/platform/#app_access`) com Acessos, Aparelhos conectados e Pedidos de exclusão de conta.
 - Pública: `POST /api/v1/public/account-deletion` `{"email","note?"}` → sempre 202 com a mesma mensagem; não desconecta ninguém (só o próprio titular, pelo app, faz isso).
 - Páginas: `/privacidade/`, `/suporte/`, `/excluir-conta/` (também no sitemap).
@@ -224,9 +224,10 @@ Regras: motivo de 3 a 240 caracteres; pelo menos uma permissão; só lojas ativa
 ### 4.6 Exclusão de conta
 
 1. A pessoa pede no app (**Mais > Conta > Excluir minha conta**) ou em `/excluir-conta/`.
-2. Pelo app: todos os aparelhos saem na hora. Pela página: só o pedido fica registrado.
-3. O superusuário confere (de preferência respondendo ao e-mail da conta) e marca **Atendido** no painel em até 15 dias: o login é desativado e todos os acessos e aparelhos são revogados. Superusuário não pode ser desativado por aí.
-4. Dados pessoais apagados; dados fiscais e de vendas da empresa ficam pelo prazo legal.
+2. Pelo app: todos os aparelhos saem na hora. Pela página: só o pedido fica registrado (qualquer pessoa pode digitar o e-mail de outra).
+3. O superusuário marca **Atendido** no painel em até 15 dias. Pedido feito pelo site só pode ser atendido com `"identity_confirmed": true` (caixa "Confirmei com a pessoa, pelo e-mail da conta, que o pedido é dela."); sem isso a nuvem responde 409. Superusuário não pode ser desativado por aí.
+4. Ao atender, a nuvem apaga os dados pessoais na hora: o usuário fica inativo, sem senha utilizável, com e-mail/usuário trocados por um valor aleatório (`excluido-…@conta-excluida.invalid`) e nome vazio; os vínculos com empresas ficam inativos com nome "Conta excluída"; acessos ao app revogados; aparelhos ficam só com os hashes dos tokens (nome "Aparelho removido", sem modelo, sistema, IP nem push); a MFA de plataforma é apagada; o pedido guarda só o e-mail mascarado (`d***@dominio`), sem motivo nem IP. A auditoria `app.account_deletion_resolved` não leva dado pessoal. Um aviso é enviado ao e-mail antigo (melhor esforço: se o SMTP falhar, só fica no log). O registro do usuário continua existindo porque vendas, caixas e auditoria apontam para ele (dados da empresa pelo prazo legal).
+5. Registros de IP (`AppDevice.last_ip` e `AccountDeletionRequest.ip`) com mais de 6 meses são limpos a cada novo login no app.
 
 ### 4.7 Auditoria
 
