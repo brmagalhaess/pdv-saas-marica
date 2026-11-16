@@ -457,7 +457,8 @@ class CashSession(models.Model):
     supervisor = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
                                    related_name="supervised_cash_sessions")
     counted_cents = models.PositiveBigIntegerField(null=True, blank=True)
-    expected_cents = models.PositiveBigIntegerField(null=True, blank=True)
+    # Signed: a cash sale cancelled after a withdrawal leaves the drawer owing.
+    expected_cents = models.BigIntegerField(null=True, blank=True)
     difference_cents = models.BigIntegerField(null=True, blank=True)
     # True when a movement or close arrived for a session whose opening was
     # never received; the opening amount is then unknown.
@@ -646,18 +647,20 @@ class SyncEvent(models.Model):
 
 
 class SyncConflict(models.Model):
-    """Durable reconciliation record for an accepted offline event.
+    """Durable reconciliation record for an offline event.
 
-    A terminal is allowed to finish a sale while disconnected. If the central
-    ledger discovers that the sale makes a shop balance negative, the sale is
-    kept for audit and this record sends the decision to the business admin.
+    What happened at the counter is a fact: the event is accepted and every
+    divergence from the central records (negative balance, discount above the
+    current limit, sale already reversed in the panel...) becomes one row per
+    reason for the business admin. `rejected_event` marks an event that could
+    not be applied at all and was quarantined with its original payload.
     """
     STATUS = [(s, s) for s in ("open", "acknowledged", "resolved", "ignored")]
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="sync_conflicts")
     shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
     terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT)
-    event_id = models.CharField(max_length=64, unique=True)
+    event_id = models.CharField(max_length=64)
     event_type = models.CharField(max_length=40)
     aggregate_id = models.CharField(max_length=160)
     reason = models.CharField(max_length=120, default="negative_stock")
@@ -670,6 +673,8 @@ class SyncConflict(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        constraints = [models.UniqueConstraint(fields=["terminal", "event_id", "reason"],
+                                               name="sync_conflict_event_reason_unique")]
         indexes = [models.Index(fields=["tenant", "status", "-created_at"]),
                    models.Index(fields=["terminal", "status", "-created_at"])]
 

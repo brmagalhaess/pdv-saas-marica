@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from .api_common import APIError, audit, digest, fields, money, quantity, scoped, text, uuid_value
 from .models import (Commission, CreditReceipt, Customer, CustomerCredit, FinanceEntry, Membership, Sale, SaleReturn,
-                     SaleReturnItem, StockMovement, SyncConflict)
+                     SaleReturnItem, StockMovement)
 
 CREDIT_METHODS = ("credit_account", "store_credit")
 TERMINAL_REFUNDS = ("cash", "store_credit", "account")
@@ -72,20 +72,22 @@ def reverse_sale_credit(sale):
                       "description": f"Crédito devolvido pela venda cancelada {str(sale.id)[:8]}"})
 
 
-def validate_return(data, tenant, aggregate_id, origin="terminal"):
+def validate_return(data, tenant, aggregate_id, origin="terminal", sale=None):
     """Validate a return. Terminal returns already happened at the counter (money
-    left the drawer), so an over-return is accepted and reported in `exceeded`
-    for the admin; panel returns are refused instead."""
+    left the drawer), so an over-return or a return of a sale reversed in the
+    panel is accepted and reported in `exceeded` / `reversed` for the admin;
+    panel returns are refused instead. `sale` is the row already locked by the caller."""
     from .sale_logic import event_time
     required = ("sale_id", "items", "total_cents", "refund_method", "reason", "operator_id", "created_at")
     allowed = required + ("customer_id", "supervisor_id", "cash_session_id")
     if not isinstance(data, dict) or set(data) - set(allowed) or any(k not in data for k in required):
         raise APIError("Campos inválidos ou ausentes")
     uuid_value(aggregate_id, "Devolução")
-    sale = Sale.objects.filter(tenant=tenant, pk=uuid_value(data["sale_id"], "Venda")).first()
+    if sale is None:
+        sale = Sale.objects.filter(tenant=tenant, pk=uuid_value(data["sale_id"], "Venda")).first()
     if sale is None:
         raise APIError("Venda da devolução não encontrada", 404)
-    if sale.status != "completed":
+    if sale.status != "completed" and origin != "terminal":
         raise APIError("Venda cancelada não aceita devolução", 409)
     refund = data["refund_method"]
     if refund not in (TERMINAL_REFUNDS if origin == "terminal" else PANEL_REFUNDS):
@@ -133,11 +135,15 @@ def validate_return(data, tenant, aggregate_id, origin="terminal"):
     return {"sale": sale, "customer": customer, "refund": refund, "items": normalized, "total": total,
             "reason": text(data["reason"], "Motivo", 240), "operator": member("operator_id"),
             "supervisor": member("supervisor_id"), "cash_session_id": text(data.get("cash_session_id") or "", "Caixa", 160, optional=True),
-            "created_at": event_time(data["created_at"]), "exceeded": exceeded}
+            "created_at": event_time(data["created_at"]), "exceeded": exceeded,
+            "reversed": sale.status != "completed"}
 
 
 def _persist_return(tenant, shop, terminal, return_id, v, content_hash, created_by=None):
     sale = Sale.objects.select_for_update().get(pk=v["sale"].pk)
+    # A sale reversed in the panel already got its stock, fiado and commission
+    # back: only the refund handed over at the counter is recorded.
+    reversed_sale = v.get("reversed", False)
     ret = SaleReturn.objects.create(id=return_id, tenant=tenant, shop=shop, terminal=terminal, created_by=created_by,
                                     sale=sale, customer=v["customer"], operator=v["operator"],
                                     supervisor=v["supervisor"], cash_session_id=v["cash_session_id"],
@@ -145,14 +151,14 @@ def _persist_return(tenant, shop, terminal, return_id, v, content_hash, created_
                                     content_hash=content_hash, created_at=v["created_at"])
     for product, qty, amount in v["items"]:
         SaleReturnItem.objects.create(sale_return=ret, product=product, quantity_milli=qty, amount_cents=amount)
-        if product.stock_controlled:
+        if product.stock_controlled and not reversed_sale:
             StockMovement.objects.create(tenant=tenant, shop=shop, product=product, delta_milli=qty,
                                          source="return", reason=f"Devolução: {v['reason']}"[:240],
                                          reference=str(ret.id), terminal=terminal, sale=sale, actor=created_by,
                                          idempotency_key=f"return:{ret.id}:{product.id}")
     if v["refund"] == "store_credit":
         _issue_credit(ret, v["customer"], v["total"], "return", f"Devolução da venda {str(sale.id)[:8]}")
-    elif v["refund"] == "account":
+    elif v["refund"] == "account" and not reversed_sale:
         remaining = v["total"]
         for entry in FinanceEntry.objects.select_for_update().filter(sale=sale, kind="receivable", status="open").order_by("due_date"):
             if remaining <= 0:
@@ -169,7 +175,8 @@ def _persist_return(tenant, shop, terminal, return_id, v, content_hash, created_
         if remaining > 0:  # fiado already paid: the customer keeps the difference as credit
             _issue_credit(ret, v["customer"] or sale.customer, remaining, "account_overpaid",
                           f"Devolução de fiado já pago, venda {str(sale.id)[:8]}")
-    commission = Commission.objects.filter(sale=sale, reversal=False).exclude(status="cancelled").first()
+    commission = (None if reversed_sale else
+                  Commission.objects.filter(sale=sale, reversal=False).exclude(status="cancelled").first())
     if commission and sale.total_cents:
         share = int((Decimal(commission.amount_cents) * v["total"] / sale.total_cents).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         if share:
@@ -181,26 +188,39 @@ def _persist_return(tenant, shop, terminal, return_id, v, content_hash, created_
     return ret
 
 
-def apply_return(terminal, event):
-    """Terminal return from sync. Returns (sale_return, conflict_or_None)."""
+def apply_return(terminal, event, conflicts=None):
+    """Terminal return from sync. Returns (sale_return, first conflict or None);
+    every conflict opened is appended to `conflicts`."""
+    from .sale_logic import open_conflict
     tenant = terminal.tenant
-    content_hash = digest(event["data"])
-    previous = SaleReturn.objects.filter(pk=uuid_value(event["aggregate_id"])).first()
+    data = event["data"]
+    content_hash = digest(data)
+    previous = SaleReturn.objects.filter(pk=uuid_value(event["aggregate_id"], "Devolução")).first()
     if previous:
         if previous.tenant_id != tenant.id or previous.content_hash != content_hash:
             raise APIError("Devolução já recebida com conteúdo diferente", 409)
         return previous, None
-    v = validate_return(event["data"], tenant, event["aggregate_id"], origin="terminal")
+    # Lock the sale before validating so a panel return or reversal cannot slip in between.
+    sale = Sale.objects.select_for_update().filter(tenant=tenant, pk=uuid_value(data.get("sale_id"), "Venda")).first()
+    v = validate_return(data, tenant, event["aggregate_id"], origin="terminal", sale=sale)
     ret = _persist_return(tenant, terminal.shop, terminal, uuid_value(event["aggregate_id"]), v, content_hash)
-    conflict = None
+    found = []
     if v["exceeded"]:
-        conflict, _ = SyncConflict.objects.get_or_create(
-            event_id=event["event_id"],
-            defaults={"tenant": tenant, "shop": terminal.shop, "terminal": terminal, "event_type": event["type"],
-                      "aggregate_id": event["aggregate_id"], "reason": "return_exceeds_sold",
-                      "detail": {"items": v["exceeded"], "sale_id": str(v["sale"].id),
-                                 "message": "Devolução no caixa acima do disponível (provável devolução já registrada no painel). Confira o estoque e o reembolso."}})
-    return ret, conflict
+        found.append(open_conflict(
+            terminal, event, "return_exceeds_sold",
+            "Devolução no caixa acima do disponível (provável devolução já registrada no painel). Confira o estoque e o reembolso.",
+            items=v["exceeded"], sale_id=str(v["sale"].id)))
+    if v["reversed"]:
+        found.append(open_conflict(
+            terminal, event, "return_on_reversed_sale",
+            "Devolução no caixa de uma venda já cancelada ou estornada no painel. "
+            "O reembolso já saiu do caixa: confira se o cliente recebeu duas vezes.",
+            sale_id=str(v["sale"].id), sale_status=v["sale"].status, refund_method=v["refund"], total_cents=v["total"],
+            items=[{"product_id": str(product.id), "product_name": product.name, "quantity_milli": qty,
+                    "amount_cents": amount} for product, qty, amount in v["items"]]))
+    if conflicts is not None:
+        conflicts.extend(found)
+    return ret, found[0] if found else None
 
 
 def panel_return(member, sale, data):
@@ -231,10 +251,12 @@ def panel_return(member, sale, data):
     return _persist_return(member.tenant, sale.shop, None, return_id, v, digest(payload), created_by=member.user)
 
 
-def apply_credit_receipt(terminal, event):
+def apply_credit_receipt(terminal, event, conflicts=None):
     """Fiado paid at the terminal: settle oldest open receivables, splitting a
-    partially paid one; anything above the open balance becomes store credit."""
-    from .sale_logic import event_time
+    partially paid one; anything above the open balance becomes store credit.
+    The money is already in the drawer, so a customer deactivated meanwhile
+    is still credited and reported in `conflicts`."""
+    from .sale_logic import event_time, open_conflict
     data = event["data"]
     previous = CreditReceipt.objects.filter(pk=uuid_value(event["aggregate_id"])).first()
     if previous:
@@ -242,12 +264,14 @@ def apply_credit_receipt(terminal, event):
             raise APIError("Recebimento já registrado com outros dados", 409)
         return previous
     tenant = terminal.tenant
-    customer = scoped(Customer, tenant, data["customer_id"])
+    customer = Customer.objects.filter(tenant=tenant, pk=uuid_value(data["customer_id"], "Cliente")).first()
+    if customer is None:
+        raise APIError("Cliente do recebimento de fiado não encontrado", 404)
     when = event_time(data["created_at"])
     receipt = CreditReceipt.objects.create(
         id=uuid_value(event["aggregate_id"]), tenant=tenant, shop=terminal.shop, terminal=terminal, customer=customer,
         operator=Membership.objects.filter(tenant=tenant, pk=uuid_value(data["operator_id"], "Operador")).first(),
-        method=data["method"], amount_cents=data["amount_cents"], cash_session_id=data.get("cash_session_id", ""),
+        method=data["method"], amount_cents=data["amount_cents"], cash_session_id=data.get("cash_session_id") or "",
         created_at=when)
     remaining = receipt.amount_cents
     for entry in (FinanceEntry.objects.select_for_update()
@@ -274,6 +298,14 @@ def apply_credit_receipt(terminal, event):
                       "description": "Pagamento de fiado acima do saldo em aberto"})
     audit(tenant, None, "customer.credit_received_terminal", receipt,
           {"amount_cents": receipt.amount_cents, "method": receipt.method, "to_store_credit_cents": remaining})
+    if not customer.active:
+        conflict = open_conflict(terminal, event, "customer_inactive",
+                                 "Fiado recebido no caixa de um cliente desativado no cadastro.",
+                                 customer_id=str(customer.id), customer_name=customer.name,
+                                 amount_cents=receipt.amount_cents, method=receipt.method,
+                                 to_store_credit_cents=remaining)
+        if conflicts is not None:
+            conflicts.append(conflict)
     return receipt
 
 
