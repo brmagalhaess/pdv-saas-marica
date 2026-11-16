@@ -21,6 +21,9 @@
 #endif
 #define ServiceName "PDV2Service"
 #define FirewallRule "PDV2 - Servidor da loja"
+#define TerminalPort "8010"
+#define LegacyMarker "\AppData\Local\PDV2\.venv"
+#define LegacyRunningExit "3"
 
 [Setup]
 AppId={{6F0B8E7C-52C1-4C55-9A3D-0E7B1F4C2D91}
@@ -99,6 +102,55 @@ begin
   Exec(FileName, Params, '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
+function RunHiddenCode(const FileName, Params: String): Integer;
+var
+  Code: Integer;
+begin
+  Result := -1;
+  if Exec(FileName, Params, '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Result := Code;
+end;
+
+function PowerShellExe(): String;
+begin
+  Result := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+end;
+
+{ The old per-user install (terminal\install-windows.ps1) starts at logon as
+  "<LOCALAPPDATA>\PDV2\.venv\Scripts\python.exe -m terminal" on the same port.
+  Same rule as is_legacy_process in terminal\service_win.py. }
+procedure StopLegacyTerminal();
+begin
+  RunHidden(PowerShellExe(),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+    'Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.Name -like ''python*'' -and ' +
+    '(($_.ExecutablePath -like ''*{#LegacyMarker}\*'') -or ($_.CommandLine -like ''*{#LegacyMarker}\*'')) } | ' +
+    'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"');
+end;
+
+{ True while anything still listens on the terminal port. }
+function TerminalPortBusy(): Boolean;
+begin
+  Result := RunHiddenCode(PowerShellExe(),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+    '$c = New-Object Net.Sockets.TcpClient; ' +
+    'try { $c.Connect(''127.0.0.1'', {#TerminalPort}); $c.Close(); exit 1 } catch { exit 0 }"') = 1;
+end;
+
+function WaitTerminalPortFree(): Boolean;
+var
+  Attempt: Integer;
+begin
+  Result := True;
+  for Attempt := 1 to 10 do
+  begin
+    if not TerminalPortBusy() then
+      exit;
+    Sleep(500);
+  end;
+  Result := False;
+end;
+
 procedure StopRunningCopy();
 begin
   { "net stop" waits for the clean stop. The service itself is never killed:
@@ -130,9 +182,18 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopRunningCopy();
-  RemoveOtherVersions();
   Result := '';
+  StopRunningCopy();
+  StopLegacyTerminal();
+  { Nothing was copied or migrated yet: stopping here leaves the machine as it was. }
+  if not WaitTerminalPortFree() then
+  begin
+    Result := 'O PDV2 antigo ainda está aberto neste computador (a porta {#TerminalPort} continua em uso).' + #13#10 + #13#10 +
+      'Feche o PDV2 antigo - a janela preta "PDV2-Terminal" ou o processo python.exe no Gerenciador de Tarefas - ' +
+      'e execute o instalador de novo. Nenhum dado foi alterado.';
+    exit;
+  end;
+  RemoveOtherVersions();
 end;
 
 { Old per-user installs: terminal\install-windows.ps1 used %LOCALAPPDATA%\PDV2\data
@@ -180,8 +241,16 @@ begin
   if not FileExists(Data + '\terminal.sqlite3') then
   begin
     Legacy := LegacyCandidates();
-    if Legacy <> '' then
-      RunHidden(Service, '--migrate-legacy' + Legacy);
+    if (Legacy <> '') and (RunHiddenCode(Service, '--migrate-legacy' + Legacy) = {#LegacyRunningExit}) then
+    begin
+      { The old terminal came back after PrepareToInstall. Without a database in the
+        new folder the next run of the installer migrates again, so the service is
+        not registered now (it would create an empty database). }
+      SuppressibleMsgBox('O PDV2 antigo voltou a abrir durante a instalação e os dados dele NÃO foram copiados.' + #13#10 + #13#10 +
+        'Feche o PDV2 antigo e execute o instalador de novo. Até lá o PDV2 novo não será iniciado.',
+        mbError, MB_OK, IDOK);
+      exit;
+    end;
   end;
   SaveStringToFile(ExpandConstant('{app}\current.txt'), '{#AppVersion}' + #10, False);
   { Registers PDV2Service (automatic start, restart on failure) and starts it. }

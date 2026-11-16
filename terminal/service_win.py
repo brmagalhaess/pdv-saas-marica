@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -373,6 +374,66 @@ def legacy_candidates(local_appdata):
     return [base / "data", base]
 
 
+# The development installer ran "<LOCALAPPDATA>\PDV2\.venv\Scripts\python.exe -m terminal"
+# from the Startup folder. installer/pdv2.iss carries the same marker.
+LEGACY_PROCESS_MARKER = "\\AppData\\Local\\PDV2\\.venv\\"
+LEGACY_RUNNING_EXIT = 3
+LEGACY_RUNNING_REASON = ("o PDV2 antigo ainda está aberto neste computador; "
+                         "feche-o e execute o instalador de novo")
+
+
+def is_legacy_process(name, executable="", command_line=""):
+    """True for the Python process of the old per-user install (and only for it)."""
+    if not str(name or "").lower().startswith("python"):
+        return False
+    marker = LEGACY_PROCESS_MARKER.lower()
+    return any(marker in str(text or "").lower().replace("/", "\\") for text in (executable, command_line))
+
+
+def legacy_stop_command(system_root=None):
+    """PowerShell that ends the old terminal, applying is_legacy_process to every process."""
+    pattern = f"*{LEGACY_PROCESS_MARKER}*"
+    script = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.Name -like 'python*' "
+              f"-and (($_.ExecutablePath -like '{pattern}') -or ($_.CommandLine -like '{pattern}')) }} | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+    root = system_root or os.environ.get("SystemRoot") or r"C:\Windows"
+    return [root + r"\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]
+
+
+def stop_legacy_processes(platform=None, run=subprocess.run):
+    if not paths.is_windows(platform):
+        return False
+    try:
+        run(legacy_stop_command(), capture_output=True, timeout=60,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
+def port_in_use(port, host="127.0.0.1", timeout=1.0):
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def legacy_migration_blocker(busy, attempts=10, interval=0.5, sleep=time.sleep):
+    """Why the old data cannot be copied now, or None when it is safe.
+
+    While something still answers on the terminal port the old terminal is alive:
+    it keeps writing to the old database and the new service could not listen.
+    """
+    for attempt in range(max(1, attempts)):
+        if not busy():
+            return None
+        if attempt + 1 < attempts:
+            sleep(interval)
+    return LEGACY_RUNNING_REASON
+
+
 def migrate_legacy_data(source, target):
     """Copy an old per-user data folder to the machine folder. Never overwrites."""
     source, target = Path(source), Path(target)
@@ -441,6 +502,11 @@ def main(argv=None):
     config = service_config()
     log = setup_logging(config["service_log"], "pdv2.service")
     if argv[:1] == ["--migrate-legacy"]:
+        stop_legacy_processes()
+        blocker = legacy_migration_blocker(lambda: port_in_use(config["port"]))
+        if blocker:
+            log.error("Migração de dados antigos cancelada: %s", blocker)
+            return LEGACY_RUNNING_EXIT
         for source in argv[1:]:
             try:
                 result = migrate_legacy_data(source, config["data_dir"])

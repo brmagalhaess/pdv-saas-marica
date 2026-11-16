@@ -386,5 +386,128 @@ class LegacyMigrationTests(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class LegacyTerminalStillRunningTests(unittest.TestCase):
+    VENV_PYTHON = r"C:\Users\Caixa\AppData\Local\PDV2\.venv\Scripts\python.exe"
+
+    def test_recognises_only_the_python_of_the_old_install(self):
+        self.assertTrue(service_win.is_legacy_process("python.exe", self.VENV_PYTHON, ""))
+        # The venv launcher re-executes the base interpreter with the original command line.
+        self.assertTrue(service_win.is_legacy_process(
+            "python.exe", r"C:\Python312\python.exe", f'"{self.VENV_PYTHON.upper()}" -m terminal'))
+        self.assertTrue(service_win.is_legacy_process("pythonw.exe", self.VENV_PYTHON.replace("\\", "/")))
+        self.assertFalse(service_win.is_legacy_process("python.exe", r"C:\Python312\python.exe", "python -m http.server"))
+        self.assertFalse(service_win.is_legacy_process("PDV2Server.exe", r"C:\Program Files\PDV2\app-2.0.1\PDV2Server.exe"))
+        self.assertFalse(service_win.is_legacy_process("powershell.exe", "", f"-Command ... '*{service_win.LEGACY_PROCESS_MARKER}*'"))
+        self.assertFalse(service_win.is_legacy_process(None, None, None))
+
+    def test_stop_command_filters_by_the_same_marker_and_spares_itself(self):
+        command = service_win.legacy_stop_command(r"C:\Windows")
+        self.assertEqual(command[0], r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        script = command[-1]
+        self.assertIn(f"-like '*{service_win.LEGACY_PROCESS_MARKER}*'", script)
+        self.assertIn("$_.Name -like 'python*'", script)
+        self.assertIn("$_.ProcessId -ne $PID", script)
+        self.assertIn("Stop-Process", script)
+
+    def test_stop_runs_only_on_windows_and_survives_a_missing_powershell(self):
+        calls = []
+        self.assertFalse(service_win.stop_legacy_processes("darwin", run=lambda *a, **k: calls.append(a)))
+        self.assertEqual(calls, [])
+        self.assertTrue(service_win.stop_legacy_processes("win32", run=lambda *a, **k: calls.append(a)))
+        self.assertEqual(calls[0][0], service_win.legacy_stop_command())
+
+        def missing(*args, **kwargs):
+            raise FileNotFoundError("powershell")
+        self.assertFalse(service_win.stop_legacy_processes("win32", run=missing))
+
+    def test_blocker_waits_for_the_port_and_gives_up_in_portuguese(self):
+        naps = []
+        answers = iter([True, True, False])
+        self.assertIsNone(service_win.legacy_migration_blocker(lambda: next(answers), sleep=naps.append))
+        self.assertEqual(naps, [0.5, 0.5])
+        naps.clear()
+        reason = service_win.legacy_migration_blocker(lambda: True, attempts=3, sleep=naps.append)
+        self.assertIn("PDV2 antigo ainda está aberto", reason)
+        self.assertEqual(naps, [0.5, 0.5], "no sleep after the last attempt")
+        self.assertIsNone(service_win.legacy_migration_blocker(lambda: False, sleep=naps.append))
+
+    def test_port_in_use_sees_a_real_listener(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = listener.getsockname()[1]
+            self.assertTrue(service_win.port_in_use(port))
+        self.assertFalse(service_win.port_in_use(port, timeout=0.5))
+
+
+class MigrateLegacyCommandTests(unittest.TestCase):
+    """`PDV2Service.exe --migrate-legacy`, as the installer calls it."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.source = root / "Local" / "PDV2" / "data"
+        self.target = root / "ProgramData" / "PDV2"
+        Store(self.source / "terminal.sqlite3").set_release_result(error="venda pendente")
+        self.listener = socket.socket()
+        self.addCleanup(self.listener.close)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(32)  # nobody accepts: the backlog must hold every probe
+        config = {"data_dir": self.target, "port": self.listener.getsockname()[1],
+                  "service_log": root / "logs" / "service.log"}
+        for patcher in (patch.object(service_win, "service_config", return_value=config),
+                        patch.object(service_win, "stop_legacy_processes"),
+                        patch.object(service_win.time, "sleep")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self.drop_log_handlers)
+
+    @staticmethod
+    def drop_log_handlers():
+        logger = logging.getLogger("pdv2.service")
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_refuses_to_copy_while_the_old_terminal_answers(self):
+        self.assertEqual(service_win.main(["--migrate-legacy", str(self.source)]), service_win.LEGACY_RUNNING_EXIT)
+        service_win.stop_legacy_processes.assert_called_once()
+        self.assertFalse((self.target / "terminal.sqlite3").exists(),
+                         "no database in the target, so the next installer run migrates again")
+
+    def test_copies_once_the_port_is_free(self):
+        self.listener.close()
+        self.assertEqual(service_win.main(["--migrate-legacy", str(self.source)]), 0)
+        self.assertEqual(Store(self.target / "terminal.sqlite3").meta()["release_error"], "venda pendente")
+
+
+class InstallerScriptTests(unittest.TestCase):
+    """pdv2.iss cannot be compiled here; this pins the order that protects the old data."""
+
+    def setUp(self):
+        self.script = (ROOT / "installer" / "pdv2.iss").read_text(encoding="utf-8")
+
+    def test_shares_marker_port_and_exit_code_with_the_service(self):
+        marker = service_win.LEGACY_PROCESS_MARKER.rstrip("\\")
+        self.assertIn(f'#define LegacyMarker "{marker}"', self.script)
+        self.assertEqual(self.script.count("-like ''*{#LegacyMarker}\\*''"), 2)
+        self.assertIn(f'#define LegacyRunningExit "{service_win.LEGACY_RUNNING_EXIT}"', self.script)
+        self.assertIn(f'#define TerminalPort "{paths.terminal_port({})}"', self.script)
+
+    def test_old_terminal_is_stopped_and_the_port_checked_before_anything_is_touched(self):
+        prepare = self.script.split("function PrepareToInstall", 1)[1].split("end;\n\n", 1)[0]
+        order = [prepare.index(step) for step in
+                 ("StopRunningCopy();", "StopLegacyTerminal();", "WaitTerminalPortFree()", "exit;", "RemoveOtherVersions();")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("Feche o PDV2 antigo", prepare)
+
+    def test_refused_migration_does_not_register_the_service(self):
+        post = self.script.split("procedure CurStepChanged", 1)[1].split("procedure CurUninstallStepChanged", 1)[0]
+        refused = post.index("= {#LegacyRunningExit}")
+        self.assertLess(refused, post.index("exit;", refused))
+        self.assertLess(post.index("exit;", refused), post.index("'--install'"))
+
+
 if __name__ == "__main__":
     unittest.main()

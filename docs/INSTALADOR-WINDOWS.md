@@ -25,11 +25,11 @@
 
 Passo a passo do instalador (`installer/pdv2.iss`):
 
-1. Para o serviço (`net stop`), fecha o atalho e remove pastas `app-*` de versões anteriores.
+1. Para o serviço (`net stop`) e fecha o atalho. **Encerra o PDV2 antigo** (o `python.exe` de `%LOCALAPPDATA%\PDV2\.venv` que o instalador de desenvolvimento deixava subir no login) e confere que a porta 8010 ficou livre. Se a porta continuar em uso, a instalação **para aqui**, com a mensagem "feche o PDV2 antigo e execute o instalador de novo", antes de copiar ou migrar qualquer coisa. Só então remove as pastas `app-*` de versões anteriores.
 2. Apaga `updates\` (um download pela metade não vale para a instalação nova).
 3. Copia o programa para `app-<versão>\` e para `bin\`.
 4. Restringe `C:\ProgramData\PDV2` ao sistema e aos administradores.
-5. **Migra uma instalação antiga:** se ainda não existe banco em `C:\ProgramData\PDV2`, procura `terminal.sqlite3` em `%LOCALAPPDATA%\PDV2\data` e `%LOCALAPPDATA%\PDV2` de todos os usuários e copia o primeiro que achar (banco por cópia consistente do SQLite, `session.key`, perfis e backups). O original fica onde estava. Também remove o atalho de inicialização do instalador antigo.
+5. **Migra uma instalação antiga:** se ainda não existe banco em `C:\ProgramData\PDV2`, procura `terminal.sqlite3` em `%LOCALAPPDATA%\PDV2\data` e `%LOCALAPPDATA%\PDV2` de todos os usuários e copia o primeiro que achar (banco por cópia consistente do SQLite, `session.key`, perfis e backups). O original fica onde estava. Também remove o atalho de inicialização do instalador antigo. A cópia só acontece com o terminal antigo parado: `PDV2Service.exe --migrate-legacy` tenta encerrá-lo de novo e, se a porta 8010 ainda responder, não copia nada, devolve o código 3 e o instalador avisa e **não registra o serviço** (sem banco no destino, a próxima execução do instalador migra de novo). Isso evita que vendas feitas no terminal antigo depois da cópia fiquem para trás.
 6. Grava `current.txt`, registra o serviço e o inicia.
 7. Oferece "Abrir o PDV2 agora".
 
@@ -173,7 +173,8 @@ Use um servidor HTTPS de teste e duas versões geradas pelo `build.ps1` (por exe
 ### 7.7 Instalar por cima, migrar e desinstalar
 
 - [ ] Instalar uma versão mais nova por cima com o instalador completo: dados preservados, serviço de volta, pastas de versões antigas removidas.
-- [ ] Máquina com a instalação antiga (`terminal\install-windows.ps1`, dados em `%LOCALAPPDATA%\PDV2\data`): fechar o PDV2 antigo, instalar. As vendas e o pareamento aparecem no novo; o atalho antigo de inicialização sumiu; `C:\ProgramData\PDV2\migrated-from.txt` aponta a origem.
+- [ ] Máquina com a instalação antiga (`terminal\install-windows.ps1`, dados em `%LOCALAPPDATA%\PDV2\data`), **com o PDV2 antigo aberto e uma venda ainda não sincronizada**: instalar. O instalador encerra o antigo sozinho; `http://127.0.0.1:8010/health` passa a ser respondido pelo serviço novo. As vendas e o pareamento aparecem no novo; o atalho antigo de inicialização sumiu; `C:\ProgramData\PDV2\migrated-from.txt` aponta a origem.
+- [ ] Simular a falha em encerrar o antigo (por exemplo, outro programa ocupando a porta 8010): o instalador para com a mensagem em português, nada é copiado para `C:\ProgramData\PDV2` e o terminal antigo continua com todos os dados. Liberar a porta e instalar de novo: migra normalmente.
 - [ ] O mesmo, com a instalação antiga feita por **outro usuário** do Windows que não o administrador que instala.
 - [ ] Desinstalar pelo Painel de Controle: serviço removido, `Program Files\PDV2` apagado, atalhos removidos, regra de firewall removida (se existia) e **`C:\ProgramData\PDV2` intacto**. Reinstalar e confirmar que os dados voltam.
 - [ ] Marcar "servidor da loja" na instalação: a regra `PDV2 - Servidor da loja` aparece no firewall, restrita à sub-rede local.
