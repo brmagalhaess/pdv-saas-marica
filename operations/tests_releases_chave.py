@@ -106,3 +106,18 @@ class ReleaseKeyTests(TestCase):
         self.assertIsNone(self.client.get(CURRENT + '?current=2.0.0').json()['release'])
         for invalid in ('?current=2.0', '?current=', '?current=a.b.c'):
             self.assertEqual(self.client.get(CURRENT + invalid).status_code, 400, invalid)
+
+
+class ProductionReleaseKeyTests(TestCase):
+    def test_production_compose_requires_the_dedicated_pair(self):
+        # Terminals pin the first release key they receive: production must fail the deploy instead of falling back.
+        import re
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / 'compose.production.yaml'
+        if not path.exists():
+            self.skipTest('compose.production.yaml fora da imagem')
+        compose = path.read_text()
+        for secret, variable in (('release_private', 'PDV_RELEASE_PRIVATE_KEY_PATH'), ('release_public', 'PDV_RELEASE_PUBLIC_KEY_PATH')):
+            line = re.search(r'^  %s: (.*)$' % secret, compose, flags=re.MULTILINE).group(1)
+            self.assertIn('${%s:?' % variable, line)
+            self.assertNotIn('LICENSE', line)

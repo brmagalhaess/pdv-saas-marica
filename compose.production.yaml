@@ -97,9 +97,10 @@ services:
 secrets:
   license_private: {file: "${PDV_LICENSE_PRIVATE_KEY_PATH:?Set private key path on host}"}
   license_public: {file: "${PDV_LICENSE_PUBLIC_KEY_PATH:?Set public key path on host}"}
-  # Release manifests use their own key pair; without one the license pair signs them.
-  release_private: {file: "${PDV_RELEASE_PRIVATE_KEY_PATH:-${PDV_LICENSE_PRIVATE_KEY_PATH}}"}
-  release_public: {file: "${PDV_RELEASE_PUBLIC_KEY_PATH:-${PDV_LICENSE_PUBLIC_KEY_PATH}}"}
+  # Dedicated pair, required: terminals pin the first release key they receive,
+  # so silently falling back to the license pair here could never be undone.
+  release_private: {file: "${PDV_RELEASE_PRIVATE_KEY_PATH:?Set release private key path on host}"}
+  release_public: {file: "${PDV_RELEASE_PUBLIC_KEY_PATH:?Set release public key path on host}"}
 volumes:
   postgres_data:
   backup_status:
