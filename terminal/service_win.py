@@ -297,8 +297,7 @@ def run_server(env=None):
     env = os.environ if env is None else env
     from waitress.server import create_server
 
-    from .app import create_app
-    from .sync import watch_worker
+    from . import runtime
 
     installed = paths.read_pointer(paths.install_root(env)) is not None
     data = Path(paths.data_dir(env, installed=installed))
@@ -306,12 +305,14 @@ def run_server(env=None):
         # Started by hand on an installed machine: still use the machine data folder.
         os.environ["PDV_TERMINAL_DATA"] = str(data)
     log = setup_logging(data / "logs" / "terminal.log", "pdv2.terminal")
-    setup_logging(data / "logs" / "terminal.log", "waitress")
+    for name in ("waitress", "pdv2.runtime", "pdv2.lan", "pdv2.station"):
+        setup_logging(data / "logs" / "terminal.log", name)
     host = env.get("PDV_TERMINAL_HOST", "127.0.0.1")
     port = paths.terminal_port(env)
     try:
-        app = create_app({"START_WORKER": True})
-        watch_worker(lambda: app.extensions.get("terminal_worker"))
+        # Shop server (caixa principal) or station (caixa adicional): mode.json decides.
+        current = runtime.create(env)
+        app = current.app
         server = create_server(app, host=host, port=port, threads=6)
     except Exception:
         # No traceback dialog: a windowed program in the service session would hang on it.
@@ -330,9 +331,7 @@ def run_server(env=None):
         log.info("Parada solicitada")
         stopping.set()
         try:
-            worker = app.extensions.get("terminal_worker")
-            if worker is not None:
-                worker.stop()
+            current.stop()
             server.close()
         finally:
             # Idle keep-alive connections would hold the loop open; data is already durable.
@@ -341,7 +340,8 @@ def run_server(env=None):
 
     if stop_file or env.get("PDV_SUPERVISED") == "1":
         threading.Thread(target=watch, name="pdv-stop-watch", daemon=True).start()
-    log.info("Terminal PDV2 %s em http://%s:%s", paths.source_version(env), host, port)
+    log.info("Terminal PDV2 %s (%s) em http://%s:%s", paths.source_version(env),
+             "caixa adicional" if current.mode == "station" else "caixa principal", host, port)
     try:
         server.run()
     except Exception:

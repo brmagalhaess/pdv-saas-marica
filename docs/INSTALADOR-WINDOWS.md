@@ -22,7 +22,10 @@
 | Serviço `PDV2Service` | Início automático, reinício em falha (5 s, 5 s, depois a cada 30 s). Roda como sistema. |
 | Atalhos | Área de trabalho (opcional) e menu Iniciar, apontando para `bin\PDV2.exe`. |
 | `<outro disco>\PDV2-copia-de-seguranca\` | Só depois que o gerente escolhe um disco em **Sistema → Cópia de segurança em outro disco**. Cópia cifrada do banco e diário das vendas. O instalador e o desinstalador não tocam nesta pasta. |
-| Firewall | Nada por padrão. A opção "Este computador será o servidor da loja" (desmarcada) cria a regra `PDV2 - Servidor da loja` para TCP 8011 e UDP 8012, só para a rede local. A rede local entre caixas é a fase 3; hoje nada escuta nessas portas. |
+| `C:\ProgramData\PDV2\mode.json` | Papel deste computador: `server` (caixa principal, o padrão quando o arquivo não existe) ou `station` (caixa adicional). Escrito pela própria tela; ver a seção 9. |
+| `C:\ProgramData\PDV2\lan\` | Só no caixa principal com caixas adicionais: `cert.pem` e `key.pem` da rede entre caixas. Apagar a pasta cria outra identidade e todos os caixas adicionais têm de ser ligados de novo. |
+| `C:\ProgramData\PDV2\station.json` | Só no caixa adicional: endereço e impressão digital do caixa principal e o token deste caixa. |
+| Firewall | A opção "Este computador será o servidor da loja" (desmarcada) cria a regra `PDV2 - Servidor da loja` para TCP 8011 e UDP 8012, só para a rede local. Sem a opção, o próprio serviço cria a mesma regra na primeira vez em que o caixa principal abre a rede entre caixas (plano com caixas adicionais). O caixa adicional não precisa de regra: ele só faz conexões de saída. |
 
 Passo a passo do instalador (`installer/pdv2.iss`):
 
@@ -205,4 +208,41 @@ Formato e regras em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md). O caix
 - **A volta de versão não desfaz mudanças de esquema do banco.** As migrações do terminal são aditivas; se uma versão futura fizer uma mudança incompatível, publique-a como `installer` e planeje a volta com restauração de backup.
 - **Um instalador mais antigo por cima de um mais novo** é aceito pelo Inno Setup; o banco pode ter sido migrado pela versão nova.
 - **Cópia em outro disco e conta de sistema:** o serviço roda como SYSTEM e não enxerga unidade de rede mapeada por um usuário; use pendrive, HD externo ou caminho UNC liberado para a conta do computador. Pendrive em FAT/exFAT não tem permissão por arquivo: o conteúdo é cifrado, mas `manifest.json` mostra o nome da empresa, da loja e do caixa.
-- **Token da nuvem cifrado com DPAPI** e a escuta de rede local (porta 8011) não fazem parte desta fase.
+- **Token da nuvem cifrado com DPAPI** não faz parte desta fase.
+- **Caixa adicional não se atualiza sozinho** nesta fase: a tela vem do caixa principal e o protocolo entre eles é versionado; quando for preciso, a tela pede ("Atualize este caixa") e instala-se por este mesmo instalador.
+- **Vínculo confia no primeiro contato:** o código de 6 números viaja dentro de TLS ainda não fixado; alguém já dentro da rede da loja, atacando no minuto do vínculo, poderia se passar pelo caixa principal.
+- **Reinício fora do serviço:** rodando à mão (`python -m terminal`), a troca de modo reexecuta o processo; se falhar, feche e abra o PDV2 de novo. Instalado, quem reinicia é o serviço.
+
+## 9. Caixa principal e caixas adicionais (rede da loja)
+
+O mesmo instalador serve para os dois papéis. O que muda é o arquivo `mode.json` na pasta de dados, escrito pela tela.
+
+| Papel | O que roda | Portas |
+|---|---|---|
+| Caixa principal (`server`) | O terminal de sempre em `127.0.0.1:8010`, mais a rede entre caixas quando o plano inclui caixas adicionais | TCP 8011 (TLS) e UDP 8012 (busca), entrada, só rede local |
+| Caixa adicional (`station`) | Uma ponte em `127.0.0.1:8010` que repassa tudo ao caixa principal; não tem banco de dados | Nenhuma de entrada |
+
+- **Virar caixa adicional:** no computador novo, na tela de ativação, "Este é um caixa adicional". O serviço reinicia sozinho (arquivo `updates\restart.request`, o mesmo da atualização) e abre a tela `/station/`.
+- **Ligar ao principal:** no caixa principal, **Sistema → Adicionar caixa** mostra 6 números por 5 minutos; no adicional, digitar os números. Se a busca automática não achar, digitar o endereço que aparece na tela do principal.
+- **Voltar a ser principal:** na tela do caixa adicional sem vínculo, "Este computador é o caixa principal? Voltar".
+- **Caixa principal fora do ar:** o adicional para de vender, mostra o diagnóstico e tenta de novo a cada 2 segundos. Depois de 1 minuto oferece "Assumir como caixa principal" (pede PIN de gerente).
+- **Impressão:** o recibo da venda feita no caixa adicional sai na impressora configurada **naquele** computador.
+- **Variáveis para suporte e testes:** `PDV_MODE` (`server`/`station`, vence o arquivo), `PDV_LAN_PORT` (padrão 8011), `PDV_DISCOVERY_PORT` (padrão 8012), `PDV_LAN_HOST` (padrão `0.0.0.0`).
+
+### 9.1 Testes manuais em Windows real (dois computadores na mesma rede)
+
+- [ ] Principal com plano sem caixas adicionais: `netstat -ano | findstr 8011` não mostra nada.
+- [ ] Principal com plano que inclui caixas: 8011 em escuta; regra `PDV2 - Servidor da loja` presente (`netsh advfirewall firewall show rule name="PDV2 - Servidor da loja"`), mesmo sem ter marcado a opção no instalador.
+- [ ] Adicional: escolher "Este é um caixa adicional"; a tela `/station/` aparece em até 10 s sem fechar o navegador; achar o principal sozinho; digitar o código; cair na tela de PIN.
+- [ ] Vender no adicional: o estoque muda na tela do principal na hora; o recibo sai na impressora do adicional.
+- [ ] Rede marcada como **Pública** em um dos dois: o adicional mostra a orientação de mudar para Particular.
+- [ ] Puxar o cabo do principal no meio de uma venda: aviso "O caixa principal está fora do ar"; recolocar o cabo; repetir a venda; ela aparece uma única vez.
+- [ ] Reiniciar o Windows do principal: o adicional volta sozinho, sem novo código.
+- [ ] Trocar o IP do principal (renovar DHCP): o adicional acha o novo endereço e avisa que corrigiu.
+- [ ] Remover o caixa em **Sistema → Caixas da loja**: o adicional mostra "Este caixa foi removido".
+- [ ] Antivírus/SmartScreen não bloqueiam a escuta em 8011 nem a busca em 8012.
+- [ ] **Velocidade da tela do adicional:** com as ferramentas do navegador abertas (F12 → Rede) no caixa adicional, bipar 10 itens. Cada chamada `/api/...` deve responder em poucas dezenas de milissegundos, parecido com o principal. Se ficar perto de 200 ms a mais por chamada, é o atraso de Nagle/ACK (o servidor da loja liga `TCP_NODELAY` e manda cabeçalhos e corpo de uma vez; em loopback esse atraso não aparece, por isso a medição é manual).
+- [ ] **Quatro adicionais vendendo ao mesmo tempo** (ou o máximo do plano): nenhuma venda devolve "O caixa principal está ocupado". O limite de conexões é 128 ou 12 por caixa do plano, o que for maior.
+- [ ] **Resposta perdida na impressão:** fazer uma venda no adicional e puxar o cabo dele logo em seguida; recolocar. O recibo aparece na fila de impressão do adicional como "incerto" e pode ser reimpresso, sem reiniciar o PDV2.
+- [ ] **Banco danificado no principal** (suporte: renomear `terminal.sqlite3` com o serviço parado e corromper uma cópia): o adicional mostra "O caixa principal está com o banco de dados danificado. Chame o suporte.", sem diagnóstico de rede e sem o botão de assumir.
+- [ ] **Dois terminais na mesma loja:** com o principal das estações desligado e outro terminal da mesma loja ligado, o adicional continua em "fora do ar" e oferece "Assumir como caixa principal" depois de 1 minuto (não pede código do outro terminal).

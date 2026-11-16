@@ -236,3 +236,16 @@ class DamagedDatabaseProbeTests(unittest.TestCase):
         from terminal import updater
         self.assertFalse(updater.probe_responding(self._serve(200, {"status": "ok", "service": "outro"})))
         self.assertFalse(updater.probe_responding("http://127.0.0.1:9/health", timeout=0.5))
+
+    def test_station_mode_answers_the_same_health_contract(self):
+        """The shortcut does not care about the mode: a caixa adicional counts as running."""
+        from terminal import station, updater
+
+        with tempfile.TemporaryDirectory() as temp:
+            body = station.create_app({"TESTING": True, "DATA_DIR": temp}).test_client().get("/health").json
+        self.assertEqual((body["status"], body["service"], body["mode"]), ("ok", "terminal-local", "station"))
+        url = self._serve(200, body)
+        self.assertTrue(updater.probe_responding(url))
+        self.assertTrue(updater.probe_health(url))
+        self.assertEqual(launcher.cashier_url({}), "http://127.0.0.1:8010/",
+                         "the browser of a station still opens the loopback address")

@@ -1,0 +1,65 @@
+/* PDV2 · tela do caixa adicional. Sozinha de propósito: tem de abrir com o caixa principal fora do ar. */
+:root{
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --bg:#edf2f1;--surface:#ffffff;--ink:#102630;--muted:#4a6068;--line:#d3dedc;
+  --brand:#148765;--brand-strong:#0f7557;--on-brand:#ffffff;
+  --warn:#8a5300;--warn-soft:#fdf0d5;--danger:#b3261e;--danger-soft:#fde9e7;--ok:#0f7557;
+  --focus:#102630;--shadow:0 1px 2px rgba(16,38,48,.06),0 8px 24px rgba(16,38,48,.07);
+  color-scheme:light;
+}
+:root[data-theme="dark"]{
+  --bg:#0b1a21;--surface:#12252e;--ink:#eef5f3;--muted:#a8bcc1;--line:#2c4753;
+  --brand:#46d3aa;--brand-strong:#2fbf96;--on-brand:#04261c;
+  --warn:#f2c466;--warn-soft:#3a2e12;--danger:#ff9a90;--danger-soft:#44201d;--ok:#5adbb4;
+  --focus:#E6AC43;--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.28);
+  color-scheme:dark;
+}
+:root[data-theme="contrast"]{
+  --bg:#000000;--surface:#000000;--ink:#ffffff;--muted:#e6e6e6;--line:#ffffff;
+  --brand:#6dffd0;--brand-strong:#6dffd0;--on-brand:#000000;
+  --warn:#ffd84d;--warn-soft:#2b2200;--danger:#ff8f85;--danger-soft:#3a0c08;--ok:#6dffd0;
+  --focus:#ffff00;--shadow:none;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{margin:0;min-height:100dvh;background:var(--bg);color:var(--ink);font:400 16px/1.45 var(--font)}
+h1,p,ul{margin:0}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{cursor:not-allowed}
+.hidden{display:none!important}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.gate{min-height:100dvh;display:grid;grid-template-rows:1fr auto;justify-items:center}
+.gate-card{align-self:center;width:min(560px,calc(100% - 32px));margin:24px 0 8px;padding:28px;border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:var(--shadow)}
+.gate-card section,.gate-card section>div,.form-stack{display:grid;gap:14px;align-content:start;min-width:0}
+.gate-card h1{font-size:26px;line-height:1.2;letter-spacing:-.01em;overflow-wrap:anywhere}
+.lockup{display:flex;align-items:baseline;gap:8px;margin-bottom:18px}
+.lockup-name{font-size:22px;font-weight:800;letter-spacing:-.02em}
+.lockup-by{color:var(--muted);font-size:14px}
+.eyebrow{display:block;color:var(--brand-strong);font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.hint{color:var(--muted);font-size:14px}
+.lead{font-weight:600}
+.field{display:grid;gap:5px;min-width:0;color:var(--muted);font-size:14px;font-weight:600}
+.field input{width:100%;min-width:0;height:48px;padding:0 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font-size:16px;font-weight:500}
+.field input:focus{outline:3px solid var(--focus);outline-offset:1px;border-color:var(--brand)}
+.field input.code{height:60px;font-size:28px;font-weight:700;letter-spacing:.18em;text-align:center;font-variant-numeric:tabular-nums}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font-weight:600;font-size:15px;line-height:1.2;text-align:center}
+.btn.big{min-height:52px;font-size:16px}
+.btn:hover:not(:disabled){border-color:var(--brand)}
+.btn:disabled{opacity:.55}
+.btn.primary{background:var(--brand-strong);border-color:var(--brand-strong);color:var(--on-brand)}
+.btn.danger{border-color:var(--danger);color:var(--danger)}
+.link{justify-self:start;padding:6px 0;border:0;background:none;color:var(--brand-strong);font-weight:600;text-align:left;text-decoration:underline}
+.actions{display:flex;flex-wrap:wrap;gap:10px}
+.actions .btn{flex:1 1 200px}
+.error{padding:10px 12px;border-radius:10px;background:var(--danger-soft);color:var(--danger);font-weight:600}
+.warning{padding:12px 14px;border-radius:10px;background:var(--warn-soft);color:var(--warn);font-weight:600}
+.diagnosis{display:grid;gap:8px;padding:0;list-style:none}
+.diagnosis li{padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+.diagnosis li.problem{border-color:var(--warn);background:var(--warn-soft)}
+.diagnosis li strong{display:block}
+.diagnosis li span{color:var(--muted);font-size:14px}
+.diagnosis li.problem span{color:var(--ink)}
+.brand-footer{padding:12px 16px 16px;color:var(--muted);font-size:14px;text-align:center}
+@media (max-width:480px){.gate-card{padding:20px}.gate-card h1{font-size:22px}}
