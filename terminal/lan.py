@@ -39,7 +39,13 @@ except ImportError:
 LAN_API = 1
 MIN_API = 1
 DEFAULT_PORT = 8011
-MAX_CONNECTIONS = 32
+# Floor of simultaneous connections. A station in use holds about nine (six threads of its
+# local web server, the monitor, the print agent and the replica puller), so the real limit
+# grows with the stations of the plan: see LanServer.connection_limit.
+MAX_CONNECTIONS = 128
+CONNECTIONS_PER_STATION = 12
+MAX_CONNECTIONS_CEILING = 1024
+BUSY_DRAIN_BYTES = 2 * 256 * 1024
 MAX_BODY = 256 * 1024
 IDLE_SECONDS = 30
 HANDSHAKE_SECONDS = 10
@@ -65,6 +71,8 @@ HOP_BY_HOP = frozenset(("connection", "keep-alive", "proxy-authenticate", "proxy
                         "trailer", "transfer-encoding", "upgrade", "proxy-connection"))
 _JOB_DONE = re.compile(r"/lan/v1/print/([A-Za-z0-9_-]{1,64})/done")
 _STATION_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+SERVER_STATION_ID = "server"
+PREVIOUS_SERVER_PREFIX = "anterior-"
 _BUSY = json.dumps({"error": "O caixa principal está ocupado. Tente de novo em instantes.",
                     "code": "server_busy"}, ensure_ascii=False).encode("utf-8")
 log = logging.getLogger("pdv2.lan")
@@ -213,6 +221,13 @@ def _generation(meta):
         return 1
 
 
+def reserved_station(station_id):
+    """True for the identities that never belong to another computer: the caixa principal
+    itself and the caixa of the computer that was the principal before a promotion."""
+    text = str(station_id or "").lower()
+    return text == SERVER_STATION_ID or text.startswith(PREVIOUS_SERVER_PREFIX)
+
+
 class _Headers(dict):
     """Request headers handed to replica_net: lookups ignore case."""
 
@@ -242,6 +257,9 @@ class _Handler(BaseHTTPRequestHandler):
     timeout = IDLE_SECONDS
     server_version = "PDV2-LAN"
     sys_version = ""
+    # Headers and body leave in ONE write (flushed at the end of each request): two small
+    # writes would meet Nagle + delayed ACK and cost up to ~200 ms per answer on a real network.
+    wbufsize = 64 * 1024
 
     def log_message(self, format, *args):  # noqa: A002 - signature of the base class
         return None  # nothing about a request is written anywhere
@@ -388,6 +406,9 @@ class _Handler(BaseHTTPRequestHandler):
                 raise _Refused(429, "Muitas tentativas. Aguarde um minuto.", "too_many_attempts") from None
             raise refusal from None
         station = {"id": str(found["id"]), "name": str(found.get("name") or "")}
+        if reserved_station(station["id"]):
+            # Whatever the database says, nobody on the network is the caixa principal.
+            raise _Refused(401, "Este caixa não está vinculado ao caixa principal.", "station_unauthorized")
         manager.touch(store, station["id"], address, _clean(self.headers.get("X-PDV-Station-Version"), 20),
                       _clean(self.headers.get("X-PDV-Station-Host"), 64))
         return station
@@ -406,8 +427,8 @@ class _Handler(BaseHTTPRequestHandler):
                 data.get(key) is not None and not isinstance(data.get(key), str)
                 for key in ("name", "hostname", "app_version", "station_id")):
             raise _Refused(400, "Dados de vínculo inválidos.", "bad_request")
-        if previous is not None and not _STATION_ID.fullmatch(previous):
-            previous = None
+        if previous is not None and (not _STATION_ID.fullmatch(previous) or reserved_station(previous)):
+            previous = None  # malformed or reserved ("server", "anterior-…"): links as a new caixa
         try:
             result = store.enroll_station(code[:32], name=_clean(data.get("name"), 40),
                                           hostname=_clean(data.get("hostname"), 64),
@@ -415,6 +436,10 @@ class _Handler(BaseHTTPRequestHandler):
                                           station_id=previous, address=address)
         except Exception as exc:
             raise self._store_error(exc, "invalid_code") from None
+        if reserved_station(result.get("station_id")):
+            log.error("Vínculo recusado: o banco devolveu uma identidade reservada")
+            raise _Refused(409, "Não foi possível vincular este caixa. Peça um novo código no caixa principal.",
+                           "invalid_code")
         manager.poke()
         info = manager.server_info(store)
         self._json(200, {"api": LAN_API, "station_id": result["station_id"],
@@ -577,6 +602,27 @@ class _Handler(BaseHTTPRequestHandler):
 
 # ----------------------------------------------------------------- listener
 
+def _drain_request(sock):
+    """Reads one request (headers and declared body) and throws it away. Best effort."""
+    data = b""
+    try:
+        while b"\r\n\r\n" not in data and len(data) < 65536:
+            chunk = sock.recv(8192)
+            if not chunk:
+                return
+            data += chunk
+        head, _mark, rest = data.partition(b"\r\n\r\n")
+        found = re.search(rb"(?im)^content-length:[ \t]*(\d{1,9})[ \t]*\r?$", head)
+        remaining = min(int(found.group(1)) if found else 0, BUSY_DRAIN_BYTES) - len(rest)
+        while remaining > 0:
+            chunk = sock.recv(min(65536, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+    except (OSError, ssl.SSLError, ValueError):
+        return
+
+
 class _Listener(ThreadingHTTPServer):
     daemon_threads = True
     # On Windows SO_REUSEADDR would let a second process take the same port in silence.
@@ -593,10 +639,11 @@ class _Listener(ThreadingHTTPServer):
     def process_request(self, request, client_address):
         # Accept thread: nothing slow here. The TLS handshake runs in the connection thread.
         with self._guard:
-            refuse = self._count >= 2 * MAX_CONNECTIONS
+            limit = self.manager.connection_limit
+            refuse = self._count >= 2 * limit
             if not refuse:
                 self._count += 1
-                over = self._count > MAX_CONNECTIONS
+                over = self._count > limit
                 self._sockets.add(request)
         if refuse:
             self.shutdown_request(request)
@@ -608,11 +655,18 @@ class _Listener(ThreadingHTTPServer):
         tls = None
         try:
             request.settimeout(3 if over else HANDSHAKE_SECONDS)
+            try:
+                request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
             tls = self.manager.context.wrap_socket(request, server_side=True)
             with self._guard:
                 self._sockets.discard(request)
                 self._sockets.add(tls)
             if over:
+                # Read the request first: closing with unread data becomes a reset, and the
+                # station would take "busy" for "sent and lost".
+                _drain_request(tls)
                 tls.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json; charset=utf-8\r\n"
                             b"X-PDV-Lan-Error: server_busy\r\nConnection: close\r\nContent-Length: "
                             + str(len(_BUSY)).encode("ascii") + b"\r\n\r\n" + _BUSY)
@@ -676,6 +730,7 @@ class LanServer:
         self._blocked = {}
         self._enrolls = {}
         self._touched = {}
+        self.connection_limit = MAX_CONNECTIONS
 
     # -- state
     @property
@@ -698,9 +753,22 @@ class LanServer:
         except Exception:
             return False  # a store without stations (older core) never opens the port
 
+    def _connection_limit(self):
+        """Room for every caixa of the plan (and the ones already linked) in the busiest hour."""
+        store = self._store()
+        stations = 0
+        if store is not None:
+            try:
+                stations = max(int(store.station_limit().get("limit") or 0),
+                               sum(1 for item in store.stations() if not item.get("is_server")))
+            except Exception:
+                stations = 0
+        return min(max(MAX_CONNECTIONS, CONNECTIONS_PER_STATION * (stations + 1)), MAX_CONNECTIONS_CEILING)
+
     def evaluate(self):
         with self._lock:
             wanted = self._wanted()
+            self.connection_limit = self._connection_limit()
             if wanted and not self.running:
                 self._open()
             elif not wanted and self.running:

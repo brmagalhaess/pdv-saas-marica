@@ -19,6 +19,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+import unittest.mock
 from unittest.mock import MagicMock
 
 from terminal import lan, lanclient
@@ -696,16 +697,63 @@ class BridgeTests(LanCase):
 
     def test_connections_above_the_limit_get_503(self):
         _station, token = self.store.add_station()
-        previous, lan.MAX_CONNECTIONS = lan.MAX_CONNECTIONS, 2
-        self.addCleanup(setattr, lan, "MAX_CONNECTIONS", previous)
+        self.addCleanup(setattr, lan, "MAX_CONNECTIONS", lan.MAX_CONNECTIONS)
+        self.addCleanup(setattr, lan, "CONNECTIONS_PER_STATION", lan.CONNECTIONS_PER_STATION)
+        lan.MAX_CONNECTIONS, lan.CONNECTIONS_PER_STATION = 2, 0
+        self.server.evaluate()
         held = [self.client(token) for _ in range(2)]
         for client in held:
             self.assertEqual(self.call("GET", "/lan/v1/ping", client=client)[0].status, 200)
         response, data = self.call("GET", "/lan/v1/ping", token=token)
         self.assertEqual((response.status, data["code"]), (503, "server_busy"))
+        # A POST with a body is read before the refusal: the caixa gets "busy", never a reset
+        # that would look like "sent and lost".
+        for _attempt in range(5):
+            response, data = self.call("POST", "/api/sales", token=token, body=b"x" * 200_000)
+            self.assertEqual((response.status, data["code"], response.headers["x-pdv-lan-error"]),
+                             (503, "server_busy", "server_busy"))
+        self.assertEqual(self.app.calls, [])
         held[0].close()
         wait_for(lambda: self.server._listener._count <= 1, message="connection released")
         self.assertEqual(self.call("GET", "/lan/v1/ping", token=token)[0].status, 200)
+
+    def test_limit_has_room_for_every_station_of_the_plan(self):
+        # About nine connections per caixa in use: four caixas need 36, more than the old 32.
+        self.assertGreaterEqual(self.server.connection_limit, 128)
+        self.store.limit = 50
+        self.server.evaluate()
+        self.assertEqual(self.server.connection_limit, lan.CONNECTIONS_PER_STATION * 51)
+        self.store.limit = 5000
+        self.server.evaluate()
+        self.assertEqual(self.server.connection_limit, lan.MAX_CONNECTIONS_CEILING)
+        self.store.limit = 2
+        self.server.evaluate()
+        _station, token = self.store.add_station()
+        held = [self.client(token) for _ in range(40)]
+        statuses = [self.call("GET", "/lan/v1/ping", client=client)[0].status for client in held]
+        self.assertEqual(statuses, [200] * 40)
+
+    def test_answers_leave_without_nagle_and_in_one_write(self):
+        _station, token = self.store.add_station()
+        client = self.client(token)
+        self.assertEqual(self.call("GET", "/lan/v1/ping", client=client)[0].status, 200)
+        sockets = list(self.server._listener._sockets)
+        self.assertEqual(len(sockets), 1)
+        self.assertTrue(sockets[0].getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+        self.assertGreater(lan._Handler.wbufsize, 0, "headers and body are buffered into one write")
+        writes = []
+        real = ssl.SSLSocket.send
+
+        def send(sock, data, *args):
+            if sock is sockets[0]:
+                writes.append(bytes(data))
+            return real(sock, data, *args)
+
+        with unittest.mock.patch.object(ssl.SSLSocket, "send", send):
+            response, data = self.call("GET", "/api/echo", client=client)
+        self.assertEqual((response.status, data["path"]), (200, "/api/echo"))
+        self.assertEqual(len(writes), 1, "one TLS record carries headers and body")
+        self.assertIn(b"\r\n\r\n{", writes[0])
 
     def test_stopping_the_listener_drops_open_connections(self):
         _station, token = self.store.add_station()
@@ -777,6 +825,29 @@ class EnrollTests(LanCase):
         self.store.code = "483921"
         self.assertEqual(self.enroll("483921", station_id="../../x")[0].status, 409)
         self.assertIsNone(self.store.enrolls[-1]["station_id"], "a malformed id is not passed on")
+
+    def test_reserved_identities_are_never_given_to_another_computer(self):
+        # The row "server" always exists in the real database, and "anterior-…" after a promotion.
+        for reserved in ("server", "SERVER", "anterior-1a2b3c4d"):
+            self.store.rows[reserved] = {"name": "Caixa principal", "token": secrets.token_urlsafe(32),
+                                         "revoked": False, "created": -1}
+        self.store.limit = 10
+        for number, reserved in enumerate(("server", "SERVER", "anterior-1a2b3c4d")):
+            self.store.code = f"48392{number}"
+            response, data = self.enroll(self.store.code, station_id=reserved)
+            self.assertEqual(response.status, 200)
+            self.assertIsNone(self.store.enrolls[-1]["station_id"], "a reserved id is not passed on")
+            self.assertNotIn(data["station_id"].lower(), ("server", "anterior-1a2b3c4d"))
+        # Even a token that the database accepts as "server" is nobody on the network.
+        response, data = self.call("GET", "/lan/v1/ping", token=self.store.rows["server"]["token"])
+        self.assertEqual((response.status, data["code"]), (401, "station_unauthorized"))
+        self.store.queue("server", b"do principal")
+        response, data = self.call("POST", "/lan/v1/print/next", token=self.store.rows["server"]["token"], body={})
+        self.assertEqual(response.status, 401)
+        self.assertEqual(len(self.store.jobs["server"]), 1, "the queue of the caixa principal stays there")
+        response, _data = self.call("GET", "/api/echo", token=self.store.rows["anterior-1a2b3c4d"]["token"])
+        self.assertEqual(response.status, 401)
+        self.assertEqual(self.app.calls, [])
 
     def test_secrets_are_not_logged(self):
         self.store.code = "483920"

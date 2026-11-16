@@ -69,6 +69,7 @@ REFUSAL_TEXTS = {
 }
 NOT_FOUND_TEXT = ("Não encontrei o caixa principal neste endereço. Confira o número e se o computador "
                   "principal está ligado.")
+DAMAGED_TEXT = "O caixa principal está com o banco de dados danificado. Chame o suporte."
 PROMOTION_UNAVAILABLE = "Assumir como caixa principal não está disponível nesta instalação."
 log = logging.getLogger("pdv2.station")
 
@@ -250,6 +251,14 @@ class Station:
                 if self.status not in ("unlinked", "revoked"):
                     self.status, self.reason = "incompatible", code
                     self.down_since = self._down_mono = None
+            elif code == "server_damaged":
+                # The server is ON and answering: this is not a network problem, and taking
+                # over is not offered (the monitor keeps asking; it leaves this state alone).
+                if self.status not in ("unlinked", "revoked"):
+                    self.status, self.reason = "damaged", code
+                    self.down_since = self._down_mono = None
+                    self.error, self.error_kind = "banco de dados danificado", ""
+                    self.relink = None
             elif code != "server_busy" and response.status < 500:
                 self.mark_up()
         return code
@@ -380,8 +389,12 @@ class Station:
                 self._adopt_address(address, number)
                 return "ip_changed"
             # Another certificate: ask who it is WITHOUT the token.
+            # Only the SAME terminal with a new certificate (a promoted computer) asks for a
+            # new link. Another terminal of the shop is as foreign as another shop: it must
+            # neither capture this caixa nor hide the offer to take over.
             other = self._hello_at(address, number, presented)
-            if other and server.get("shop_id") and other.get("shop_id") == server["shop_id"]:
+            if (other and server.get("shop_id") and other.get("shop_id") == server["shop_id"]
+                    and (not server.get("terminal_id") or other.get("terminal_id") == server["terminal_id"])):
                 with self.lock:
                     self.status, self.reason = "relink", ""
                     self.relink = {"host": other.get("host") or address, "address": address, "port": number,
@@ -592,7 +605,14 @@ class Station:
                     return 0
             printed = 0
             while printed < 20 and not self._stop.is_set():
-                status, body = self.lan_json("POST", "/lan/v1/print/next", {})
+                try:
+                    status, body = self.lan_json("POST", "/lan/v1/print/next", {})
+                except LanError:
+                    # The answer may be the one that got lost: the server already marked a job
+                    # as "sending" and it never arrived here. Ask for /print/recover on the next
+                    # round, so the receipt leaves "sending" and can be printed again.
+                    self._recovered = False
+                    raise
                 job = body.get("job") if status == 200 and isinstance(body, dict) else None
                 if not isinstance(job, dict) or not isinstance(job.get("id"), str):
                     break
@@ -910,6 +930,8 @@ def create_app(config=None):
         if not station.can_promote():
             if station.status == "up":
                 return refuse(409, "O caixa principal voltou a responder. Não é preciso assumir.", "server_alive")
+            if station.status == "damaged":
+                return refuse(409, DAMAGED_TEXT, "server_damaged")
             return refuse(409, "Aguarde: só é possível assumir depois de um minuto com o caixa principal "
                                "fora do ar.", "too_early")
         if station.server_alive():
@@ -971,7 +993,7 @@ def create_app(config=None):
         if code in ("station_revoked", "station_unauthorized"):
             upstream.close()
             return redirect("/station/", 302) if wants_html else refuse(403, REFUSAL_TEXTS[code], code)
-        if code in ("station_outdated", "server_outdated") and wants_html:
+        if code in ("station_outdated", "server_outdated", "server_damaged") and wants_html:
             upstream.close()
             return redirect("/station/", 302)
         if request.method == "GET" and request.path == "/api/print/discover" and upstream.status == 200:

@@ -4,7 +4,7 @@
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
-  var views = ['viewLoading', 'viewLink', 'viewDown', 'viewIncompatible', 'viewPromote', 'viewWorking'];
+  var views = ['viewLoading', 'viewLink', 'viewDown', 'viewDamaged', 'viewIncompatible', 'viewPromote', 'viewWorking'];
   var state = { status: null, target: null, wizard: false, working: false, searching: false, lastSearch: 0, manual: false };
 
   function show(view) {
@@ -296,7 +296,12 @@
       wizardStep('promoteProgress');
       followPromotion();
     }).catch(function (error) {
-      if (error.code === 'server_alive') { closeWizard(); return; }
+      if (error.code === 'server_alive' || error.code === 'server_damaged') {
+        // Fecha o assistente, mas diz por quê: sem a mensagem a tela só voltava para "fora do ar".
+        closeWizard();
+        setText('downNote', error.message);
+        return;
+      }
       setText('promoteError', error.message);
     }).then(function () { button.disabled = false; });
   });
@@ -309,6 +314,7 @@
     if (state.wizard && status.state === 'down') return;
     state.wizard = false;
     if (status.state === 'down') { renderDown(status); return; }
+    if (status.state === 'damaged') { show('viewDamaged'); return; }
     if (status.state === 'incompatible') {
       show('viewIncompatible');
       $('incompatibleTitle').textContent = status.reason === 'server_outdated'

@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from terminal import lan, paths, station
-from terminal.lanclient import LanClient
+from terminal.lanclient import LanClient, LanError
 
 try:
     from terminal.tests.test_lan import HOST, FakeApp, FakeError, FakeStore, LanCase, wait_for
@@ -223,6 +223,13 @@ class LocalRoutesTests(StationCase):
                        "'X-PDV-Station-Local': '1'"):
             self.assertIn(needle, script)
         self.assertNotIn("innerHTML", script)
+        self.assertIn("status.state === 'damaged'", script)
+        self.assertNotIn("if (error.code === 'server_alive') { closeWizard(); return; }", script,
+                         "the wizard never closes without saying why")
+        self.assertIn("setText('downNote', error.message)", script)
+        page = (STATIC.parent / "templates" / "station.html").read_text(encoding="utf-8")
+        self.assertIn('id="viewDamaged"', page)
+        self.assertIn("O caixa principal está com o banco de dados danificado. Chame o suporte.", page)
 
     def test_foreign_host_is_refused(self):
         app, _bridge = self.station_app()
@@ -877,6 +884,29 @@ class RediscoveryTests(StationCase):
         self.assertEqual(client.get("/api/echo", base_url=BASE).json["station"]["id"], bridge.test_id)
         self.assertEqual(client.get("/station/api/status", base_url=BASE).json["state"], "up")
 
+    def test_another_terminal_of_the_same_shop_is_ignored(self):
+        # Terminal 1 (the former hub, still listening) must not capture the caixas of Terminal 2
+        # when Terminal 2 breaks, nor hide "Assumir como caixa principal".
+        announced = []
+        app, bridge = self.station_app(DISCOVER=lambda shop_id=None: announced, PROMOTE_AFTER_SECONDS=0)
+        self.assertEqual(bridge.check_once(), "up")
+        self.server.stop()
+        other_store = FakeStore(shop_id=self.store.shop_id)
+        self.assertNotEqual(other_store.terminal_id, self.store.terminal_id)
+        other_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(other_temp.cleanup)
+        other = lan.start(FakeApp(other_store, other_temp.name), host=HOST, port=0)
+        self.addCleanup(other.stop)
+        announced.append(self.announce(other, other_store))
+        bridge._last_discover = 0.0
+        self.assertEqual(bridge.check_once(), "down")
+        self.assertIsNone(bridge.rediscover(force=True))
+        self.assertIsNone(bridge.relink)
+        self.assertEqual(other_store.auth_tokens, [])
+        with patch.object(station, "promotion", FakePromotion()):
+            status = app.test_client().get("/station/api/status", base_url=BASE).json
+        self.assertEqual((status["state"], status["can_promote"]), ("down", True))
+
     def test_another_shop_is_ignored(self):
         announced = []
         app, bridge = self.station_app(DISCOVER=lambda shop_id=None: announced)
@@ -925,6 +955,33 @@ class PrintAgentTests(StationCase):
         self.assertEqual(self.store.recovered, [bridge.test_id])
         self.assertEqual(len(self.store.jobs["server"]), 1)
         self.assertFalse((bridge.test_dir / station.PRINT_PENDING_FILE).exists())
+
+    def test_lost_answer_of_print_next_asks_for_recover_again(self):
+        lose = []
+
+        class Lossy(LanClient):
+            def request(self, method, path, **options):
+                response = super().request(method, path, **options)
+                if path == "/lan/v1/print/next" and lose:
+                    lose.pop()
+                    response.close()  # the server already took the job; the answer never arrives
+                    raise LanError("timeout", "sem resposta", sent=True, kind="timeout")
+                return response
+
+        _app, bridge, sent = self.agent(CLIENT_FACTORY=Lossy)
+        self.assertEqual(bridge.print_once(), 0)
+        self.assertEqual(self.store.recovered, [bridge.test_id])
+        job = self.store.queue(bridge.test_id, b"recibo")
+        lose.append(True)
+        with self.assertRaises(LanError):
+            bridge.print_once()
+        self.assertEqual((sent, self.store.sending), ([], {job: bridge.test_id}))
+        self.assertEqual(bridge.check_once(), "up")
+        self.assertEqual(bridge.print_once(), 0)
+        self.assertEqual(self.store.recovered, [bridge.test_id, bridge.test_id],
+                         "the server is told to release the job that never arrived")
+        self.assertEqual(bridge.print_once(), 0)
+        self.assertEqual(len(self.store.recovered), 2, "and only once per lost contact")
 
     def test_default_transport_is_the_local_printer_driver(self):
         app, bridge = self.station_app()
@@ -1064,6 +1121,36 @@ class PromotionTests(StationCase):
         self.assertEqual((response.status_code, response.json["code"]), (409, "server_alive"))
         self.assertFalse((bridge.test_dir / "mode.json").exists())
         self.restart.assert_not_called()
+
+    def test_damaged_database_of_the_server_is_not_out_of_reach(self):
+        app, bridge = self.station_app(PROMOTE_AFTER_SECONDS=0)
+        client = app.test_client()
+        self.assertEqual(bridge.check_once(), "up")
+        self.app.extensions["terminal_store"] = None
+        self.assertEqual(bridge.check_once(), "damaged")
+        status = client.get("/station/api/status", base_url=BASE).json
+        self.assertEqual((status["state"], status["reason"], status["can_promote"], status["diagnosis"]),
+                         ("damaged", "server_damaged", False, []))
+        self.assertIsNone(status["server"]["down_since"])
+        self.assertEqual(client.get("/health", base_url=BASE).json["server"], "down")
+        page = client.get("/", base_url=BASE)
+        self.assertEqual((page.status_code, page.headers["Location"]), (302, "/station/"))
+        answer = client.get("/api/session", base_url=BASE)
+        self.assertEqual((answer.status_code, answer.json["damaged"]), (503, True))
+        self.assertIn("banco de dados danificado", answer.json["error"])
+        response = self.start(client)
+        self.assertEqual((response.status_code, response.json), (409, {
+            "error": "O caixa principal está com o banco de dados danificado. Chame o suporte.",
+            "code": "server_damaged"}))
+        self.assertEqual(self.promotion.calls, [])
+        # Repaired: the caixa comes back alone.
+        self.app.extensions["terminal_store"] = self.store
+        self.assertEqual(bridge.check_once(), "up")
+        # And a server that is really off after that is "down" again, with the usual diagnosis.
+        self.app.extensions["terminal_store"] = None
+        self.assertEqual(bridge.check_once(), "damaged")
+        self.server.stop()
+        self.assertEqual(bridge.check_once(), "down")
 
     def test_start_needs_confirmation_and_pin(self):
         app, bridge = self.station_app()

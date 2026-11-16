@@ -241,3 +241,8 @@ O mesmo instalador serve para os dois papéis. O que muda é o arquivo `mode.jso
 - [ ] Trocar o IP do principal (renovar DHCP): o adicional acha o novo endereço e avisa que corrigiu.
 - [ ] Remover o caixa em **Sistema → Caixas da loja**: o adicional mostra "Este caixa foi removido".
 - [ ] Antivírus/SmartScreen não bloqueiam a escuta em 8011 nem a busca em 8012.
+- [ ] **Velocidade da tela do adicional:** com as ferramentas do navegador abertas (F12 → Rede) no caixa adicional, bipar 10 itens. Cada chamada `/api/...` deve responder em poucas dezenas de milissegundos, parecido com o principal. Se ficar perto de 200 ms a mais por chamada, é o atraso de Nagle/ACK (o servidor da loja liga `TCP_NODELAY` e manda cabeçalhos e corpo de uma vez; em loopback esse atraso não aparece, por isso a medição é manual).
+- [ ] **Quatro adicionais vendendo ao mesmo tempo** (ou o máximo do plano): nenhuma venda devolve "O caixa principal está ocupado". O limite de conexões é 128 ou 12 por caixa do plano, o que for maior.
+- [ ] **Resposta perdida na impressão:** fazer uma venda no adicional e puxar o cabo dele logo em seguida; recolocar. O recibo aparece na fila de impressão do adicional como "incerto" e pode ser reimpresso, sem reiniciar o PDV2.
+- [ ] **Banco danificado no principal** (suporte: renomear `terminal.sqlite3` com o serviço parado e corromper uma cópia): o adicional mostra "O caixa principal está com o banco de dados danificado. Chame o suporte.", sem diagnóstico de rede e sem o botão de assumir.
+- [ ] **Dois terminais na mesma loja:** com o principal das estações desligado e outro terminal da mesma loja ligado, o adicional continua em "fora do ar" e oferece "Assumir como caixa principal" depois de 1 minuto (não pede código do outro terminal).
