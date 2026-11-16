@@ -12,7 +12,8 @@ from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from shared.licensing import LicenseError, load_private_key, load_public_key, payload_digest, sign_lease
+from shared.licensing import MAX_LEASE_SECONDS, LicenseError, load_private_key, load_public_key, payload_digest, sign_lease
+from shared.releases import load_release_public_key
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
 from .models import Customer, Membership, Product, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .cash_logic import CASH_EVENTS, apply_cash_event
@@ -27,6 +28,8 @@ from .stock_balance import balance
 logger = logging.getLogger(__name__)
 
 DEVICE_ROLES = {"owner", "admin"}
+LONG_LEASE_CAPABILITY = "long-lease"
+LEGACY_LEASE_SECONDS = 72 * 3600
 EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "credit.received", "stock.adjusted", "cash.opened", "cash.closed",
                "cash.withdrawn", "cash.supplied"}
 
@@ -83,11 +86,30 @@ def _issuer_profile(tenant):
     }
 
 
-def _lease(terminal, operators=None):
+def _long_lease(request):
+    """Terminals that accept leases above the legacy ceiling declare it per request."""
+    declared = request.headers.get("X-PDV-Capabilities", "")
+    return LONG_LEASE_CAPABILITY in {item.strip().lower() for item in declared[:400].split(",")}
+
+
+def _release_public_key():
+    """Pinned by the terminal to verify release manifests; never blocks a lease."""
+    try:
+        return load_release_public_key()
+    except LicenseError:
+        logger.error("Chave de versões indisponível; resposta segue sem release_public_key")
+        return None
+
+
+def _lease(terminal, operators=None, long_lease=False):
     sub, effective_status, deadline = _subscription_can_issue(terminal.tenant)
     operators = _operators(terminal.tenant) if operators is None else operators
     now = int(time.time())
-    seconds = 24 * 3600 if effective_status == "past_due" else 72 * 3600
+    seconds = LEGACY_LEASE_SECONDS
+    if long_lease:
+        seconds = min(max(sub.plan.offline_days, 1) * 86400, MAX_LEASE_SECONDS)
+    if effective_status == "past_due":
+        seconds = min(seconds, 24 * 3600)
     expires = min(now + seconds, int(deadline.timestamp()))
     if expires <= now:
         raise APIError("Assinatura sem prazo de licença", 403)
@@ -253,7 +275,7 @@ def pair(request):
             row.pairing_expires_at = None
             row.last_seen_at = timezone.now()
             row.save()
-            lease, public_key = _lease(row)
+            lease, public_key = _lease(row, long_lease=_long_lease(request))
             audit(row.tenant, None, "terminal.paired", row, {"device_id": device_id})
     except IntegrityError as exc:
         raise APIError("Dispositivo já vinculado ou código já utilizado", 409) from exc
@@ -264,7 +286,23 @@ def pair(request):
                          "tenant": {"id": str(row.tenant_id), "name": row.tenant.name},
                          "shop": {"id": str(row.shop_id), "name": row.shop.name},
                          "terminal": terminal_data(row), "issuer": _issuer_profile(row.tenant),
-                         "lease": lease, "public_key": public_key})
+                         "lease": lease, "public_key": public_key,
+                         "release_public_key": _release_public_key(), "server_time": int(time.time())})
+
+
+@csrf_exempt
+@endpoint
+def lease(request):
+    """Renew the offline lease without touching the catalog."""
+    method(request, "POST")
+    terminal = _bearer_terminal(request)
+    take_rate(f"lease:{terminal.pk}", 30, 600)
+    operators = _operators(terminal.tenant)
+    envelope, public_key = _lease(terminal, operators, _long_lease(request))
+    response = JsonResponse({"lease": envelope, "public_key": public_key, "operators": operators,
+                             "server_time": int(time.time()), "release_public_key": _release_public_key()})
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @csrf_exempt
@@ -273,7 +311,7 @@ def bootstrap(request):
     method(request, "GET")
     terminal = _bearer_terminal(request)
     operators = _operators(terminal.tenant)
-    lease, public_key = _lease(terminal, operators)
+    lease, public_key = _lease(terminal, operators, _long_lease(request))
     try:
         limit = int(request.GET.get("limit", "500"))
         offset = int(request.GET.get("cursor", "0"))
@@ -310,6 +348,7 @@ def bootstrap(request):
                          "terminal": terminal_data(terminal), "issuer": _issuer_profile(terminal.tenant), "products": products,
                          "next_cursor": str(offset + limit) if len(rows) > limit else None,
                          "operators": operators, "lease": lease, "public_key": public_key,
+                         "release_public_key": _release_public_key(), "server_time": int(time.time()),
                          "license_hint": terminal.tenant.subscription.license_key.replace("-", "")[-4:]})
 
 

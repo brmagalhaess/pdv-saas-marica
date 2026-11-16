@@ -49,6 +49,7 @@ urlpatterns = [
     path("api/v1/terminals/<uuid:pk>", terminal.terminal_detail),
     path("api/v1/terminal/pair", terminal.pair),
     path("api/v1/terminal/bootstrap", terminal.bootstrap),
+    path("api/v1/terminal/lease", terminal.lease),
     path("api/v1/terminal/heartbeat", terminal.heartbeat),
     path("api/v1/terminal/sync", terminal.sync),
     path("api/v1/label-settings", labels.label_settings),

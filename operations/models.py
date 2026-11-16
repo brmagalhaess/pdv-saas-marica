@@ -60,6 +60,8 @@ class ProductRelease(models.Model):
     sha256=models.CharField(max_length=64)
     size_bytes=models.PositiveBigIntegerField()
     notes=models.TextField(blank=True)
+    kind=models.CharField(max_length=20,blank=True,default='')
+    min_version=models.CharField(max_length=50,blank=True,default='')
     active=models.BooleanField(default=True)
     published_at=models.DateTimeField(auto_now_add=True)
     class Meta:

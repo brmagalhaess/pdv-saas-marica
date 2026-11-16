@@ -2,6 +2,7 @@
 import secrets
 import uuid
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 
@@ -24,6 +25,8 @@ class Plan(models.Model):
     price_year_cents = models.PositiveBigIntegerField(default=0)
     terminal_limit = models.PositiveIntegerField(default=1)
     shop_limit = models.PositiveIntegerField(default=1)
+    # Days a terminal may keep selling without reaching the cloud.
+    offline_days = models.PositiveSmallIntegerField(default=30, validators=[MinValueValidator(1), MaxValueValidator(45)])
     features = models.JSONField(default=list)
     active = models.BooleanField(default=True)
 
