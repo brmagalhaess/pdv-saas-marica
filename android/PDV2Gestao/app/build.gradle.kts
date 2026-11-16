@@ -57,9 +57,9 @@ android {
         release {
             buildConfigField("String", "API_BASE_URL", "\"https://pdv2.crowntech.com.br\"")
             buildConfigField("boolean", "ALLOW_SERVER_OVERRIDE", "false")
-            // v1.0: sem R8 para não quebrar kotlinx.serialization; rever depois.
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // R8 ligado: o pacote cai de 14 MB para poucos MB; regras em proguard-rules.pro.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasUploadKey) signingConfig = signingConfigs.getByName("release")
         }
