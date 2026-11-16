@@ -27,7 +27,7 @@ class LicenseTests(unittest.TestCase):
             verify_lease(self.lease,self.public,now=self.claims["expires_at"])
         with self.assertRaises(LicenseError):
             verify_lease(self.lease,self.public,now=1700000100,last_seen=1700001000)
-        bad = dict(self.claims, expires_at=1700604801)
+        bad = dict(self.claims, expires_at=1700000000+45*86400+1)
         with self.assertRaises(LicenseError): sign_lease(bad,self.private)
 
     def test_pin_hash_is_salted_and_verifies(self):

@@ -2991,6 +2991,7 @@ const planFields=[
   {key:"price_year_cents",label:"Preço anual (R$)",type:"money",required:true,min:0},
   {key:"terminal_limit",label:"Limite de terminais",type:"number",required:true,min:1},
   {key:"shop_limit",label:"Limite de lojas",type:"number",required:true,min:1},
+  {key:"offline_days",label:"Dias sem internet",type:"number",required:true,min:1,max:45,default:30,help:"Por quantos dias o caixa continua vendendo sem falar com a nuvem (1 a 45). Nunca passa do período pago."},
   {key:"active",label:"Plano disponível para novas assinaturas",type:"checkbox",default:true,full:true},
   {key:"features",label:"Recursos (JSON)",type:"json",required:true,default:[],full:true,help:"Lista JSON de códigos de recursos. Ex.: [\"cloud_dashboard\", \"stock\"]."}
 ];
@@ -3008,6 +3009,8 @@ async function planForm(record) {
       payload.terminal_limit=Number(payload.terminal_limit);
       payload.shop_limit=Number(payload.shop_limit);
       if(!Number.isSafeInteger(payload.terminal_limit)||!Number.isSafeInteger(payload.shop_limit)||payload.terminal_limit<1||payload.shop_limit<1)throw new Error("Os limites precisam ser inteiros maiores que zero.");
+      payload.offline_days=Number(payload.offline_days);
+      if(!Number.isSafeInteger(payload.offline_days)||payload.offline_days<1||payload.offline_days>45)throw new Error("Dias sem internet precisa ser um número inteiro de 1 a 45.");
       if(!editing&&!/^[a-z0-9-]+$/.test(payload.slug))throw new Error("O identificador aceita letras minúsculas, números e hífen.");
       if(!Array.isArray(payload.features)||payload.features.some(feature=>typeof feature!=="string"))throw new Error("Recursos deve ser uma lista JSON de textos.");
       if(editing&&record.slug===signupPlanSlug&&record.active&&payload.active===false&&
@@ -3038,6 +3041,7 @@ async function platformPlans() {
       {label:"Mensal",render:row=>money(row.price_month_cents)},
       {label:"Anual",render:row=>money(row.price_year_cents)},
       {label:"Terminais",render:row=>row.terminal_limit},{label:"Lojas",render:row=>row.shop_limit},
+      {label:"Dias sem internet",render:row=>row.offline_days??"—"},
       {label:"Estado",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
     ],platformEdit()?row=>[{label:"Editar",onClick:()=>planForm(row).catch(handleError)}]:null,
       empty("Nenhum plano","Cadastre o primeiro plano comercial."),{tenant:false}));
@@ -3454,6 +3458,8 @@ function releaseForm() {
     {key:"url",label:"URL HTTPS do pacote",type:"url",required:true,full:true,max:2000},
     {key:"sha256",label:"SHA-256 do arquivo",required:true,full:true,max:64},
     {key:"size_bytes",label:"Tamanho em bytes",type:"number",required:true,min:1},
+    {key:"kind",label:"Tipo de pacote",type:"select",choices:[["","Não informado"],["bundle","Atualização automática (zip)"],["installer","Instalador completo"]]},
+    {key:"min_version",label:"Versão mínima do terminal",placeholder:"2.0.0",max:50,help:"Opcional. Terminais abaixo desta versão não recebem a oferta."},
     {key:"notes",label:"Notas da versão",type:"textarea",full:true,max:4000}
   ];
   formFor(fields).then(form=>{
@@ -3468,6 +3474,8 @@ function releaseForm() {
         if(!/^\d+\.\d+\.\d+$/.test(body.version))throw new Error("Use versão no formato 2.0.0.");
         if(!/^[0-9a-f]{64}$/.test(body.sha256))throw new Error("O SHA-256 precisa ter 64 caracteres hexadecimais minúsculos.");
         if(!Number.isSafeInteger(body.size_bytes)||body.size_bytes<1)throw new Error("Tamanho inválido.");
+        for(const key of ["kind","min_version"])if(!body[key])delete body[key];
+        if(body.min_version&&!/^\d+\.\d+\.\d+$/.test(body.min_version))throw new Error("Use a versão mínima no formato 2.0.0.");
         await api.post("/ops/releases",body,{tenant:false});
         closeDialog();toast("Versão publicada.");renderRoute();
       }catch(error){handleError(error,message);submit.disabled=false;}
@@ -3501,6 +3509,8 @@ async function releasesPage() {
       {label:"Componente",render:row=>row.component==="cloud"?"Nuvem":"Terminal"},
       {label:"Canal",render:row=>row.channel==="pilot"?"Piloto":"Estável"},
       {label:"Versão",render:row=>row.version},
+      {label:"Tipo",render:row=>({bundle:"Atualização automática",installer:"Instalador completo"})[row.kind]||"—"},
+      {label:"Versão mínima",render:row=>row.min_version||"—"},
       {label:"Pacote",render:row=>{const a=el("a","",row.url);a.href=row.url;a.target="_blank";a.rel="noopener noreferrer";return a;}},
       {label:"Publicado",render:row=>dateTime(row.published_at)},
       {label:"Estado",render:row=>statusBadge(row.active?"Ativa":"Retirada")}
