@@ -193,6 +193,7 @@
           </div>
           <p class="hint">Quantidades em unidade, kg ou litro conforme o produto. Ajustes ficam auditados e aguardam sincronização.</p>
         </div>
+        <p id="stockCount" class="hint" role="status"></p>
         <div id="stockList" class="card list-card"></div>
       </section>
 
@@ -228,6 +229,7 @@
         <div class="card"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="btn">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div>
         <div class="card"><h2>Versão e atualizações</h2><p id="currentVersion" class="hint">Versão instalada: —</p><p id="releaseInfo" class="hint">Nenhuma versão consultada.</p><a id="releaseLink" class="btn link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">O terminal apenas verifica o manifesto assinado. A instalação é manual.</p></div>
         <div class="card"><h2>Identificação</h2><pre id="identityInfo" class="identity"></pre></div>
+        <div class="card"><h2>Em revisão</h2><p class="hint">Registros que o servidor recebeu e separou para o gestor conferir, e itens do catálogo que este caixa não pôde usar.</p><div id="reviewList" class="mini-list review-list"></div></div>
         <div class="card"><h2>Conflitos offline</h2><div id="conflictList" class="mini-list"></div></div>
         <div class="card"><h2>Auditoria recente</h2><div id="auditList" class="mini-list"></div></div>
         <div class="card about-card">

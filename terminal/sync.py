@@ -154,6 +154,11 @@ def sync_once(store):
     """Acknowledges only a complete, ordered server response after cloud commit."""
     events = _fit_batch(store.pending_events(MAX_BATCH_EVENTS))
     if not events:
+        # Nothing left to deliver: an old delivery error must not outlive a cloud
+        # that is answering (the heartbeat is the contact made with an empty queue).
+        status = store.sync_status()
+        if status["last_sync_error"] and status["last_heartbeat_at"] and not status["last_heartbeat_error"]:
+            store.clear_sync_error()
         return {"sent": 0, "remaining": 0}
     meta = store.meta()
     if not meta.get("token") or not meta.get("cloud_url"):

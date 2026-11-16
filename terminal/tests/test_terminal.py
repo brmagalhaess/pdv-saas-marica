@@ -178,7 +178,7 @@ class TerminalTests(unittest.TestCase):
             "customer_name": "Cliente antigo"})
         self.store.close_cash(self.cashier_id, 700, "654321")
         self.store.ack_events([event["event_id"] for event in self.store.pending_events()])
-        response = self.client.post("/api/unpair", json={"confirm": True},
+        response = self.client.post("/api/unpair", json={"confirm": True, "manager_pin": "654321"},
                                     headers={"X-CSRF-Token": self.csrf()})
         self.assertEqual(response.status_code, 409, response.json)
         self.assertIn("diretório de dados", response.json["error"])
@@ -193,7 +193,7 @@ class TerminalTests(unittest.TestCase):
     def test_new_profile_preserves_database_and_is_selected_after_restart(self):
         old_path = self.store.path
         old_device = self.store.identity()["device_id"]
-        response = self.client.post("/api/new-profile", json={"confirm": True},
+        response = self.client.post("/api/new-profile", json={"confirm": True, "manager_pin": "654321"},
                                     headers={"X-CSRF-Token": self.csrf()})
         self.assertEqual(response.status_code, 200, response.json)
         self.assertTrue(old_path.exists())
