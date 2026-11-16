@@ -160,7 +160,7 @@ class CopiaEDiarioTests(MirrorCase):
         path = self.store.path.parent / "mirror.json"
         state = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(set(state), {"v", "directory", "enabled", "last_snapshot_at", "last_journal_at",
-                                      "journal_seq", "last_error", "last_error_at"})
+                                      "journal_seq", "last_error", "last_error_at", "device_id"})
         if os.name == "posix":
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(list(path.parent.glob("*.tmp")), [])

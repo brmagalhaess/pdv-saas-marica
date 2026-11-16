@@ -173,7 +173,8 @@ def _state_path(store):
 
 def _default_state():
     return {"v": 1, "directory": None, "enabled": False, "last_snapshot_at": None,
-            "last_journal_at": None, "journal_seq": 0, "last_error": "", "last_error_at": None}
+            "last_journal_at": None, "journal_seq": 0, "last_error": "", "last_error_at": None,
+            "device_id": None}
 
 
 def _load_state(store):
@@ -192,6 +193,7 @@ def _load_state(store):
         if type(state[name]) is not int:
             state[name] = None
     state["last_error"] = state["last_error"] if isinstance(state["last_error"], str) else ""
+    state["device_id"] = state["device_id"] if isinstance(state["device_id"], str) else None
     return state
 
 
@@ -643,6 +645,15 @@ def _begin(store, state):
     key = _meta_key(meta)
     if key is None or not meta.get("terminal_id") or not meta.get("device_id"):
         return None
+    if (meta.get("restore_state") or "done") != "done":
+        # Recuperação em andamento: este banco ainda não tem nada próprio para proteger, e uma
+        # réplica nova e vazia apareceria na frente da cópia antiga que a pessoa veio buscar.
+        return None
+    if state["device_id"] not in (None, meta["device_id"]):
+        # O banco desta pasta foi trocado (apagado e recuperado): os contadores eram do anterior.
+        state.update(journal_seq=0, last_snapshot_at=None, last_journal_at=None)
+        _NEXT_DUE.pop(_store_id(store), None)
+    state["device_id"] = meta["device_id"]
     return _Run(store, state, meta, key[0], key[1])
 
 
@@ -1070,7 +1081,11 @@ def _matches(manifest, identity):
 
 
 def candidates(identity, directory=None):
-    """Réplicas à vista: as deste caixa primeiro, depois as mais recentes. Nunca levanta."""
+    """Réplicas à vista: as deste caixa primeiro, depois as mais recentes. Nunca levanta.
+
+    A réplica gravada por este mesmo banco (``current_device``) fica por último entre as do
+    caixa: ela só tem o que já está na fila daqui, nunca as vendas do computador antigo.
+    """
     identity = identity if isinstance(identity, dict) else {}
     result = []
     try:
@@ -1091,7 +1106,7 @@ def candidates(identity, directory=None):
                 })
     except Exception:
         pass
-    result.sort(key=lambda item: (not item["matches"], -item["updated_at"]))
+    result.sort(key=lambda item: (not item["matches"], item["current_device"], -item["updated_at"]))
     return result
 
 

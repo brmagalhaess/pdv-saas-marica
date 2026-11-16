@@ -314,14 +314,18 @@ function terminalAccessBox(license) {
   return box;
 }
 
-let dialogCleanup = null;
+let dialogCleanup = null, dialogPersistent = false;
 function closeDialog() {
   if (dialogCleanup) dialogCleanup();
   dialogCleanup = null;
+  dialogPersistent = false;
   $("#dialog-root").replaceChildren();
 }
-function openDialog(title, subtitle, content) {
+// options.persistent: shows something that cannot be shown again (Esc, the backdrop, × and a change of
+// section do not close it; only its own button does). options.dirty: asks before closing from the start.
+function openDialog(title, subtitle, content, options = {}) {
   closeDialog();
+  dialogPersistent = Boolean(options.persistent);
   const previous = document.activeElement;
   const overlay = el("div", "dialog-backdrop");
   const panel = el("section", "dialog");
@@ -334,8 +338,9 @@ function openDialog(title, subtitle, content) {
   titleNode.id = "dialog-title";
   text.append(titleNode);
   if (subtitle) text.append(el("p", "", subtitle));
-  const close = button("×", closeDialog, "ghost", "dialog-close");
+  const close = button("×", () => (options.dirty ? dismiss() : closeDialog()), "ghost", "dialog-close");
   close.setAttribute("aria-label", "Fechar janela");
+  close.hidden = dialogPersistent;
   head.append(text, close);
   const body = el("div", "dialog-body");
   body.append(content);
@@ -343,10 +348,13 @@ function openDialog(title, subtitle, content) {
   overlay.append(panel);
   $("#dialog-root").append(overlay);
   // Escape or a click on the backdrop must not silently discard a filled form.
-  let dirty = false, pressedBackdrop = false;
+  let dirty = Boolean(options.dirty), pressedBackdrop = false;
   panel.addEventListener("input", () => { dirty = true; });
   panel.addEventListener("change", () => { dirty = true; });
-  const dismiss = () => { if (!dirty || window.confirm("Fechar a janela e descartar o que foi preenchido?")) closeDialog(); };
+  const dismiss = () => {
+    if (options.persistent) return;
+    if (!dirty || window.confirm(options.confirmText || "Fechar a janela e descartar o que foi preenchido?")) closeDialog();
+  };
   const keydown = event => {
     if (event.key === "Escape") dismiss();
     if (event.key !== "Tab") return;
@@ -2682,10 +2690,11 @@ function transferDialog(result) {
   transferSteps(result).forEach(text => steps.append(el("li", "", text)));
   body.append(steps, detailList([["Terminal", result.name], ["Código válido até", dateTime(result.recovery_expires_at)]]),
     copyableValue("Endereço do servidor", localDocker() ? "http://cloud:8080" : location.origin, "Informe só se o programa pedir."),
-    info("O computador antigo só deixa de vender quando o novo usar este código. Se o código não for usado, nada muda."));
+    info("Nada muda até o computador novo usar este código. Depois disso, o antigo para de vender assim que se conectar à internet."));
   const actions = el("div", "form-actions");
   actions.append(button("Concluir", renderRoute)); body.append(actions);
-  openDialog("Trocar de computador", "Anote a chave e o código antes de fechar esta janela.", body);
+  openDialog("Trocar de computador", "Anote a chave e o código antes de fechar esta janela.", body,
+    { dirty: true, confirmText: "Fechar sem anotar o código? Ele não aparece de novo: será preciso gerar outro." });
 }
 function terminalTransfer(row) {
   const content = el("div");
@@ -2704,9 +2713,17 @@ function backupKeyDialog(result) {
   const body = el("div");
   body.append(info("Esta chave não será mostrada de novo. Anote ou imprima e guarde fora do computador do caixa.", true),
     copyableValue("Chave da cópia de segurança", result.key, "Identificação " + String(result.key_id || "").slice(0, 8) + "…"));
+  body.append(info("Você não precisa desta chave para trocar de computador: o caixa novo recebe sozinho pela internet. Ela serve só para o suporte abrir a cópia do pendrive em um caso extremo."));
+  const confirmField = el("label", "checkbox-line full"), confirm = el("input");
+  confirm.type = "checkbox"; confirm.id = "backup-key-noted";
+  confirmField.append(confirm, el("span", "", " Anotei a chave e guardei em lugar seguro"));
+  body.append(confirmField);
   const actions = el("div", "form-actions");
-  actions.append(button("Já guardei a chave", renderRoute)); body.append(actions);
-  openDialog("Chave da cópia de segurança", "Ela abre a cópia que o caixa grava em outro disco ou pendrive.", body);
+  const done = button("Já guardei a chave", renderRoute); done.disabled = true;
+  confirm.addEventListener("change", () => { done.disabled = !confirm.checked; });
+  actions.append(done); body.append(actions);
+  // Shown once by the cloud: this window only closes through its own button.
+  openDialog("Chave da cópia de segurança", "Esta janela só fecha depois que você marcar que anotou a chave.", body, { persistent: true });
 }
 function backupKeyBox(status) {
   const box = surface("Chave da cópia de segurança", "Protege a cópia de segurança que o caixa grava em outro disco ou pendrive. O caixa recebe a chave sozinho pela internet.");
@@ -3960,7 +3977,8 @@ function renderBrand() {
 renderBrand();
 // pwa.js announces a new service worker; the running page still holds the old script.
 window.addEventListener("pdv2:update",()=>toast("Há uma versão nova do PDV2. Recarregue a página para atualizar."));
-window.addEventListener("hashchange",renderRoute);
+// A window that shows something only once holds the change of section until it is closed.
+window.addEventListener("hashchange",()=>{ if(!dialogPersistent) renderRoute(); });
 $("#tenant-selector").addEventListener("change",async event=>{
   const id=event.currentTarget.value;
   const membership=state.memberships.find(item=>String(item.tenant_id)===String(id));

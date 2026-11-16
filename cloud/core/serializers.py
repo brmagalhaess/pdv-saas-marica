@@ -45,6 +45,7 @@ def member(row):
 
 
 def terminal(row):
+    # Mirror of the newest replaced computer (the list lives in TerminalFormerToken).
     send_only = (row.previous_token_hash and row.previous_token_expires_at
                  and row.previous_token_expires_at > timezone.now())
     mirror = row.config.get("mirror") if isinstance(row.config, dict) else None

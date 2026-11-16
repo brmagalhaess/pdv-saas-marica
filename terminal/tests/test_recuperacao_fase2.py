@@ -635,13 +635,16 @@ class TransferredTests(RecoveryCase):
         with self.assertRaisesRegex(TerminalError, "transferido"):
             old.open_cash(self.cashier_id, 0)
         self.cloud.calls.clear()
+        worker = sync.Worker(old)
         with self.online():
-            errors = sync.Worker(old).run_once()
-        self.assertEqual((errors, self.cloud.calls), ([], ["sync"]))  # no heartbeat, license, catalog or restore
+            errors = worker.run_once()
+        # No license, catalog or restore; one heartbeat now and then asks whether the hand-over
+        # was given up (the expected refusal is not an error).
+        self.assertEqual((errors, self.cloud.calls), ([], ["sync", "heartbeat"]))
         self.assertEqual(self.cloud.events[-1]["type"], "cash.closed")
         self.cloud.calls.clear()
         with self.online():
-            self.assertEqual(sync.Worker(old).run_once(), [])
+            self.assertEqual(worker.run_once(), [])
         self.assertEqual(self.cloud.calls, [])  # empty queue: nothing left to do here
         self.assertEqual([row["action"] for row in self.rows("audit")].count("terminal.transferred"), 1)
         self.assertIsNone(old.ensure_config_event())
@@ -1134,9 +1137,15 @@ class StuckScreenTests(RouteCase):
         self.assertEqual(self.post("/api/restore/abandon").status_code, 409)                    # needs the confirmation
         self.assertEqual(self.post("/api/restore/abandon", {"confirm": True}).status_code, 403)  # and a manager
         self.assertTrue(self.store.restore_status()["active"])
-        answer = self.post("/api/restore/abandon", {"confirm": True, "manager_pin": "654321"})
+        device_before = self.store.identity()["device_id"]
+        with patch.object(sync, "_request", side_effect=revoked) as transport:  # the cloud refuses the release too
+            answer = self.post("/api/restore/abandon", {"confirm": True, "manager_pin": "654321"})
         self.assertEqual(answer.status_code, 200, answer.json)
-        self.assertEqual((answer.json["paired"], answer.json["restore"]["active"]), (False, False))
+        self.assertEqual((answer.json["paired"], answer.json["restore"]["active"], answer.json["released"]),
+                         (False, False, False))
+        self.assertTrue(transport.call_args.args[1].endswith("/api/v1/terminal/release"))
+        # A new identity: the cloud may still list the old one as owner of the terminal given up.
+        self.assertNotEqual(self.store.identity()["device_id"], device_before)
         session = self.client.get("/api/session").json
         self.assertEqual((session["paired"], session["restore"]["active"], session["cash"]), (False, False, None))
         self.assertEqual(self.rows("sales"), [])
@@ -1231,6 +1240,131 @@ class TransferredScreenTests(RouteCase):
         self.assertEqual(closed.status_code, 200, closed.json)
 
 
+class IntegrationFindingsTests(RecoveryCase):
+    """What only showed when cloud, terminal and second-disk copy met."""
+
+    def test_pairing_survives_a_computer_clock_one_hour_behind(self):
+        store = Store(Path(self.temp.name) / "relogio" / "terminal.sqlite3")
+        answer = self.pairing_answer(store, recovery=True, server_time=int(time.time()))
+        behind = time.time() - 3600
+        with patch("time.time", return_value=behind):
+            store.set_pairing(answer, "http://127.0.0.1:8000")   # the cloud already made the swap
+            status = store.lease_status()
+        self.assertEqual(store.identity()["terminal_id"], self.terminal_id)
+        self.assertEqual(store.restore_status()["state"], "pending")
+        self.assertEqual((status["can_sell"], status["clock"]["problem"]), (False, "behind"))
+        self.assertIn("ajuste a hora", status["reason"])
+        # Clock fixed: nothing else to do.
+        self.assertEqual(store.lease_status()["state"], "active")
+
+    def test_pairing_still_refuses_a_license_of_another_device_or_a_bad_signature(self):
+        store = Store(Path(self.temp.name) / "falso" / "terminal.sqlite3")
+        other = self.pairing_answer(self.old)  # signed for the old computer
+        forged = self.pairing_answer(store)
+        forged["lease"] = dict(forged["lease"], signature="A" * len(forged["lease"]["signature"]))
+        for answer in (other, forged):
+            with self.assertRaisesRegex(TerminalError, "Licença do pareamento inválida"):
+                store.set_pairing(answer, "http://127.0.0.1:8000")
+            self.assertIsNone(store.identity()["terminal_id"])
+            self.assertNotIn("token", store.meta())
+
+    def test_send_only_period_over_is_said_and_the_worker_stops_insisting(self):
+        old = self.old
+        old.open_cash(self.cashier_id, 0)
+        self.sell(old, "ficou-aqui")
+        self.cloud.transferred = dict(TransferredTests.BODY, send_only_until=None)
+        with self.online(), self.assertRaises(TerminalError):
+            sync.sync_once(old)
+        status = old.lease_status()
+        self.assertEqual((status["state"], status["send_only_closed"], status["send_only_until"],
+                          status["pending_events"]), ("transferred", True, None, 2))
+        self.assertIn("prazo para este computador enviar terminou e 2 registro(s)", status["reason"])
+        self.assertNotIn("continuam subindo", status["reason"])
+        self.cloud.calls.clear()
+        worker = sync.Worker(old)
+        with self.online():
+            self.assertEqual(worker.run_once(), [])
+            self.assertEqual(worker.run_once(), [])
+        self.assertEqual(self.cloud.calls, ["heartbeat"])   # one question, no upload repeated forever
+        self.assertEqual(len(old.pending_events()), 2)
+        # A date from the cloud opens the door again.
+        old.mark_transferred("2026-12-20T12:00:00+00:00")
+        status = old.lease_status()
+        self.assertEqual((status["send_only_closed"], status["send_only_until"]), (False, "2026-12-20T12:00:00+00:00"))
+        self.assertIn("continuam subindo", status["reason"])
+
+    def test_hand_over_given_up_brings_the_old_computer_back(self):
+        old = self.old
+        old.open_cash(self.cashier_id, 0)
+        self.cloud.transferred = TransferredTests.BODY
+        with self.online(), self.assertRaises(TerminalError):
+            sync.heartbeat_once(old)
+        self.assertFalse(old.lease_status()["can_sell"])
+        self.cloud.transferred = None            # "Desistir da recuperação" on the new computer
+        with self.online():
+            self.assertEqual(sync.Worker(old).run_once(), [])
+        status = old.lease_status()
+        self.assertEqual((status["state"], status["can_sell"]), ("active", True))
+        for key in ("transferred_at", "send_only_until", "send_only_closed"):
+            self.assertNotIn(key, old.meta())
+        self.assertEqual([row["action"] for row in self.rows("audit")].count("terminal.transfer_undone"), 1)
+        self.sell(old, "de-volta")
+        # The same is learned from an upload answered as the current computer.
+        old.mark_transferred("2026-12-20T12:00:00+00:00")
+        with self.online():
+            sync.sync_once(old)
+        self.assertFalse(old.is_transferred())
+
+    def test_another_copy_can_be_read_while_the_first_one_is_checked(self):
+        self.old_day()
+        events = self.old.pending_events(500)
+        self.cloud.ingest(events[:-3])
+        items = [{"seq": index, "event_id": event["event_id"], "created_at": 1, "event": event}
+                 for index, event in enumerate(events, start=1)]
+        new = self.new_computer()
+        self.finish_first_pass()
+        new.import_outbox_from_mirror(items[-3:-1])   # a copy that lost its last line
+        with self.online():
+            for _ in range(2):
+                sync.sync_once(new)
+            self.assertTrue(new.restore_second_pass())
+        self.assertEqual((new.restore_status()["state"], new.restore_status()["pass"]), ("restoring", 2))
+        result = new.import_outbox_from_mirror(items[-3:])   # the second disk has it
+        self.assertEqual((result["imported"], result["already_present"]), (1, 2))
+        self.assertEqual(new.restore_status()["state"], "importing")
+        self.assertEqual(new.restore_status()["import"]["imported"], 3)
+        with self.online():
+            status = sync.restore_step(new)
+        self.assertEqual((status["state"], status["pass"]), ("done", 2))
+        self.assertEqual(len(self.cloud.events), len(events))
+        with self.assertRaises(TerminalError):
+            new.import_outbox_from_mirror(items)     # finished: the cashier is selling again
+
+
+class FirstCopyFailedRouteTests(RouteCase):
+    def test_first_copy_that_failed_is_not_audited_as_working(self):
+        self.start(recovery=False)
+        self.login(self.manager_id, "654321")
+        fake = FakeMirror(enabled=False)
+        answers = iter([{"state": "no_key", "message": "Conecte este caixa à internet uma vez para liberar a cópia de segurança",
+                         "last_error": ""},
+                        {"state": "error", "message": "Não foi possível gravar a cópia de segurança.",
+                         "last_error": "O disco da cópia de segurança está cheio."},
+                        {"state": "ok", "message": "Cópia de segurança em dia", "last_error": ""}])
+        fake.configure = lambda store, directory, allow_same_volume=False: {
+            "supported": True, "enabled": True, "directory": directory, **next(answers)}
+        with mirror_module(fake), patch.dict("os.environ", {"PDV_ENV": "test"}):
+            states = [self.post("/api/mirror/config", {"directory": "/mnt/pendrive"}).json["state"] for _ in range(3)]
+        self.assertEqual(states, ["no_key", "error", "ok"])
+        details = [row["detail"] for row in self.rows("audit") if row["action"] == "mirror.configured"]
+        self.assertIn("primeira cópia falhou (Conecte este caixa à internet", details[0])
+        self.assertIn("primeira cópia falhou (O disco da cópia de segurança está cheio.)", details[1])
+        self.assertEqual(details[2], "ligada: /mnt/pendrive")
+        script = (STATIC / "terminal.js").read_text(encoding="utf-8")
+        self.assertIn("status.state === 'ok'", script)
+        self.assertIn("A primeira cópia não foi feita", script)
+
+
 class ScreenTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1252,6 +1386,7 @@ class ScreenTests(unittest.TestCase):
         # Every element the script wires exists in the page.
         for element in ("restoreOpenBtn", "restoreBackBtn", "restoreForm", "restoreRetryBtn", "restoreHasBackupBtn",
                         "restoreFolderForm", "restoreSkipBtn", "restoreEnterBtn", "restoreBackupList",
+                        "restoreImportNotice", "mirrorChip",
                         "restoreBarFill", "restoreLine", "restoreNotice", "restoreSummary", "restoreCloudField",
                         "mirrorCard", "mirrorInfo", "mirrorDetail", "mirrorChooseBtn", "mirrorSnapshotBtn"):
             self.assertIn(f'id="{element}"', self.html, element)
@@ -1272,6 +1407,21 @@ class ScreenTests(unittest.TestCase):
             starting: C.restoreProgress({active: true, state: 'pending', percent: 0}).line,
             summary: C.restoreSummary({counts: {sales: 1180, sales_cents: 98765432, cash_sessions: 92, returns: 1, credit_receipts: 31}}),
             imported: [C.restoreImportText({imported: 2}), C.restoreImportText({imported: 0, foreign: 3}), C.restoreImportText({imported: 0})],
+            refusals: [C.restoreErrorText('Servidor recusou pedido (401): Terminal não autenticado'),
+                       C.restoreErrorText('Servidor recusou pedido (403): Este caixa foi transferido para outro computador.'),
+                       C.restoreErrorText('Servidor recusou pedido (429): Muitas tentativas')],
+            importNotice: [C.restoreImportNotice({imported: 2, warnings: []}),
+                           C.restoreImportNotice({imported: 2, warnings: ['Uma linha do diário estava ilegível e foi ignorada.']})],
+            transferred: [C.transferredBlock({send_only_until: '2026-12-17T12:00:00+00:00'}, 4, Date.parse('2026-11-16T12:00:00Z')),
+                          C.transferredBlock({send_only_until: '2026-11-10T12:00:00+00:00'}, 4, Date.parse('2026-11-16T12:00:00Z')),
+                          C.transferredBlock({send_only_until: null, send_only_closed: true}, 1, Date.parse('2026-11-16T12:00:00Z')),
+                          C.transferredBlock({send_only_until: '2026-12-17T12:00:00+00:00'}, 0, Date.parse('2026-11-16T12:00:00Z'))],
+            chips: [C.mirrorNotice(null), C.mirrorNotice({supported: true, enabled: false, state: 'off'}),
+                    C.mirrorNotice({supported: true, enabled: true, state: 'ok'}),
+                    C.mirrorNotice({supported: true, enabled: true, state: 'error', message: 'Não foi possível gravar a cópia de segurança.',
+                                    last_error: 'O disco da cópia de segurança não foi encontrado.', pending_events: 7}),
+                    C.mirrorNotice({supported: true, enabled: true, state: 'late', message: 'Cópia de segurança atrasada'}),
+                    C.mirrorNotice({supported: true, enabled: true, state: 'no_key', message: 'Conecte este caixa'})],
             mirror: [C.mirrorCard({supported: false, message: 'Indisponível'}), C.mirrorCard({supported: true, enabled: false}),
                      C.mirrorCard({supported: true, enabled: true, state: 'ok', message: 'Cópia de segurança em dia', directory: 'E:\\\\'}),
                      C.mirrorCard({supported: true, enabled: true, state: 'no_key', message: 'Conecte este caixa'})],
@@ -1285,6 +1435,30 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(data["progress"], {"percent": 30, "notice": "", "retry": False,
                                             "line": "380 de 1.234 registros · não desligue o computador"})
         self.assertEqual(data["offline"], "Sem internet. Continuamos sozinhos quando a conexão voltar.")
+        # A refusal of the cloud is never "Sem internet": waiting does not solve it.
+        self.assertEqual(data["refusals"][0], "O servidor da empresa recusou este computador (Terminal não autenticado). "
+                         "Confira no painel se o terminal não foi revogado ou chame o suporte.")
+        self.assertEqual(data["refusals"][1], "Este caixa foi transferido para outro computador. "
+                         "Toque em “Desistir da recuperação”.")
+        self.assertIn("(Muitas tentativas)", data["refusals"][2])
+        self.assertEqual(data["importNotice"][0], "")
+        self.assertIn("Uma linha do diário estava ilegível", data["importNotice"][1])
+        self.assertIn("outro pendrive", data["importNotice"][1])
+        inside, expired, closed, empty = data["transferred"]
+        self.assertIn("Ainda faltam 4 registro(s)", inside["text"])
+        self.assertIn("17/12/2026", inside["text"])
+        for late in (expired, closed):
+            self.assertIn("prazo para este computador enviar terminou", late["text"])
+            self.assertIn("Não apague", late["steps"][0])
+            self.assertNotIn("até a fila zerar", late["text"])
+        self.assertIn("já está guardado no servidor", empty["text"])
+        for block in data["transferred"]:   # the open cashier lives on the new computer: never "feche-o (F12)"
+            self.assertNotIn("F12", " ".join(block["steps"]))
+        self.assertEqual(data["chips"][:3], [None, None, None])
+        self.assertEqual((data["chips"][3]["tone"], data["chips"][4]["tone"], data["chips"][5]["tone"]),
+                         ("danger", "warn", "warn"))
+        self.assertIn("não foi encontrado", data["chips"][3]["detail"])
+        self.assertIn("7 registro(s) só neste computador", data["chips"][3]["detail"])
         self.assertEqual((data["paused"]["retry"], data["paused"]["notice"]), (True, "Os dados não bateram"))
         self.assertIn("não desligue o computador", data["starting"])
         self.assertTrue(data["summary"].startswith("1.180 vendas · R$"), data["summary"])

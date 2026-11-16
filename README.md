@@ -109,6 +109,7 @@ As regressões de marca, landing, login, tela offline e manifesto ficam em `clou
 
 - [Auditoria de novembro/2026 e plano por ondas](docs/AUDITORIA-2026-11.md) (detalhes em [docs/auditoria-2026-11/](docs/auditoria-2026-11/))
 - [Arquitetura offline local: servidor da loja, estações e nuvem](docs/ARQUITETURA-OFFLINE-LOCAL.md)
+- [Recuperação e réplica em segundo disco (fase 2)](docs/RECUPERACAO-E-REPLICA.md)
 - [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md) (outubro/2026)
 - [Roadmap de completude e andamento](docs/ROADMAP-COMPLETUDE.md)
 - [Checklist de teste e promoção](docs/RELEASE-CHECKLIST.md)

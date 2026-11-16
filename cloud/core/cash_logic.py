@@ -47,14 +47,30 @@ def apply_cash_event(terminal, event, conflicts=None):
         session.save(update_fields=["operator", "opening_cents", "opened_at", "incomplete"])
     elif kind == "cash.closed":
         session = _session(terminal, event["aggregate_id"], when)
-        session.closed_at = when
-        session.counted_cents = data["counted_cents"]
-        session.expected_cents = data["expected_cents"]
-        session.difference_cents = data["difference_cents"]
-        session.closed_by = _member(tenant, data.get("operator_id"))
-        session.supervisor = _member(tenant, data.get("supervisor_id"))
-        session.save(update_fields=["closed_at", "counted_cents", "expected_cents",
-                                    "difference_cents", "closed_by", "supervisor"])
+        previous = (session.closed_at, session.counted_cents, session.expected_cents)
+        twice = previous[0] is not None and previous != (when, data["counted_cents"], data["expected_cents"])
+        if twice and conflicts is not None:
+            # After "Trocar de computador" the same shift may be closed on both computers.
+            # Both counts are kept for the administrator; the latest closing is the one shown.
+            conflicts.append(open_conflict(
+                terminal, event, "cash_closed_twice",
+                "Este caixa foi fechado duas vezes, em computadores diferentes, com valores diferentes. "
+                "Vale o fechamento mais recente; confira o dinheiro da gaveta.",
+                cash_session_id=str(session.id),
+                first={"closed_at": previous[0].isoformat(), "counted_cents": previous[1],
+                       "expected_cents": previous[2]},
+                second={"closed_at": when.isoformat(), "counted_cents": data["counted_cents"],
+                        "expected_cents": data["expected_cents"]}))
+        if not twice or when >= previous[0]:
+            # The latest closing wins whatever the order of arrival (also when history is rebuilt).
+            session.closed_at = when
+            session.counted_cents = data["counted_cents"]
+            session.expected_cents = data["expected_cents"]
+            session.difference_cents = data["difference_cents"]
+            session.closed_by = _member(tenant, data.get("operator_id"))
+            session.supervisor = _member(tenant, data.get("supervisor_id"))
+            session.save(update_fields=["closed_at", "counted_cents", "expected_cents",
+                                        "difference_cents", "closed_by", "supervisor"])
         if data["expected_cents"] < 0 and conflicts is not None:
             # Accepted as counted; the usual cause is a cash sale cancelled after a withdrawal.
             conflicts.append(open_conflict(

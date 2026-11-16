@@ -16,7 +16,7 @@ from django.utils import timezone
 from shared.licensing import generate_keypair
 from . import views_terminal
 from .models import (AuditEvent, CashSession, Customer, FinanceEntry, Membership, Plan, Product, Sale, Shop,
-                     Subscription, SyncConflict, SyncEvent, Tenant, Terminal)
+                     Subscription, SyncConflict, SyncEvent, Tenant, Terminal, TerminalFormerToken)
 
 DAY_MS = 86400 * 1000
 CODE_SHAPE = re.compile(r"[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}(-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}){2}")
@@ -315,8 +315,9 @@ class TokenSoEnvioTests(Fase2Base):
 
     def test_send_only_expires_after_its_deadline(self):
         self.swap()
-        Terminal.objects.filter(pk=self.terminal.pk).update(
-            previous_token_expires_at=timezone.now() - timedelta(seconds=1))
+        past = timezone.now() - timedelta(seconds=1)
+        TerminalFormerToken.objects.filter(terminal=self.terminal).update(expires_at=past)
+        Terminal.objects.filter(pk=self.terminal.pk).update(previous_token_expires_at=past)
         response = self.term("POST", "/api/v1/terminal/sync", {"events": [self.opened()]})
         self.assertEqual(response.status_code, 403)
         body = response.json()
@@ -524,6 +525,11 @@ class RestoreTests(Fase2Base):
                          {key: sale["data"][key] for key in ("request_id", "cash_session_id", "created_at",
                                                              "total_cents", "payments", "operator_id")})
         self.assertEqual(record["data"]["items"][0]["quantity_milli"], 1000)
+        # The reprinted receipt shows the code of the product, as the original one did.
+        self.assertEqual(record["data"]["items"][0]["sku"], "ARROZ")
+        Product.objects.filter(pk=self.product.pk).update(ncm="10063021")
+        again = next(row for row in self.restore("", 50).json()["records"] if row["kind"] == "sale")
+        self.assertEqual(again["data"]["items"][0]["ncm"], "10063021")
 
     def test_empty_terminal_and_invalid_requests(self):
         body = self.restore().json()
@@ -749,3 +755,129 @@ class ChaveDaCopiaTests(Fase2Base):
             # With the server key back, the same company key is delivered.
             key = self.term("POST", "/api/v1/terminal/lease", {}).json()["mirror_key"]
             self.assertEqual(len(key["key"]), 44)
+
+
+class IntegracaoTrocaTests(Fase2Base):
+    """Achados da integração das três frentes da fase 2."""
+
+    def heartbeat(self, token=None):
+        return self.term("POST", "/api/v1/terminal/heartbeat", {"pending_events": 0}, token=token)
+
+    def test_second_swap_keeps_the_first_old_computer_sending(self):
+        self.sync(self.opened())
+        token_b = self.pair(self.transfer()["recovery_code"], device="pc-b").json()["token"]
+        token_c = self.pair(self.transfer()["recovery_code"], device="pc-c").json()["token"]
+        self.assertEqual(TerminalFormerToken.objects.filter(terminal=self.terminal).count(), 2)
+        # The real old computer comes back online days later: it learns about the hand-over...
+        refused = self.heartbeat()
+        self.assertEqual((refused.status_code, refused.json()["code"]), (403, "terminal_transferred"))
+        self.assertIsNotNone(refused.json()["send_only_until"])
+        # ...and its queue still goes up, as does the one of the computer in the middle.
+        late = self.sale()
+        body = self.sync(late)
+        self.assertIs(body["send_only"], True)
+        own = TerminalFormerToken.objects.get(token_hash=sha(self.token))
+        self.assertEqual(body["send_only_until"], own.expires_at.isoformat())
+        self.assertTrue(Sale.objects.filter(pk=late["aggregate_id"]).exists())
+        self.assertIs(self.sync(self.sale(), token=token_b)["send_only"], True)
+        self.assertIs(self.sync(self.sale(), token=token_c)["send_only"], False)
+        row = Terminal.objects.get(pk=self.terminal.pk)
+        self.assertEqual((row.device_id, row.previous_device_id), ("pc-c", "pc-b"))  # mirror of the newest
+
+    def test_ending_send_only_closes_every_replaced_computer(self):
+        token_b = self.pair(self.transfer()["recovery_code"], device="pc-b").json()["token"]
+        self.pair(self.transfer()["recovery_code"], device="pc-c")
+        response = self.panel("PATCH", f"/api/v1/terminals/{self.terminal.id}", {"end_send_only": True})
+        self.assertIsNone(response.json()["send_only_until"])
+        for token in (self.token, token_b):
+            refused = self.term("POST", "/api/v1/terminal/sync", {"events": [self.opened()]}, token=token)
+            self.assertEqual((refused.status_code, refused.json()["code"], refused.json()["send_only_until"]),
+                             (403, "terminal_transferred", None))
+
+    def test_swap_of_a_cashier_that_never_synchronized_starts_in_recovery(self):
+        self.assertEqual(SyncEvent.objects.filter(terminal=self.terminal).count(), 0)
+        body = self.pair(self.transfer()["recovery_code"]).json()
+        self.assertIs(body["recovery"], True)
+        page = self.restore(token=body["token"]).json()
+        self.assertEqual((page["records"], page["done"]), ([], True))
+
+    def test_giving_up_the_recovery_returns_the_terminal_to_the_old_computer(self):
+        self.sync(self.opened())
+        new_token = self.swap()
+        self.assertEqual(self.heartbeat().status_code, 403)
+        response = self.term("POST", "/api/v1/terminal/release", {}, token=new_token)
+        self.assertEqual((response.status_code, response.json()["released"]), (200, True))
+        row = Terminal.objects.get(pk=self.terminal.pk)
+        self.assertEqual((row.device_id, row.token_hash), ("pc-antigo", sha(self.token)))
+        self.assertEqual((row.previous_token_hash, row.previous_device_id, row.transferred_at,
+                          row.previous_token_expires_at), (None, "", None, None))
+        self.assertFalse(TerminalFormerToken.objects.filter(terminal=self.terminal).exists())
+        audit = AuditEvent.objects.get(action="terminal.transfer_undone")
+        self.assertEqual(audit.detail, {"device_id": "pc-antigo", "given_up_device_id": "pc-novo"})
+        # The old computer is the cashier again; the one that gave up is nobody.
+        self.assertEqual(self.heartbeat().status_code, 200)
+        self.assertIs(self.sync(self.sale())["send_only"], False)
+        self.assertEqual(self.heartbeat(token=new_token).status_code, 401)
+        # And the computer that gave up may recover another cashier of the same company.
+        other = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa 02",
+                                        device_id="pc-quebrado", token_hash=sha("t" * 48))
+        code = self.panel("POST", f"/api/v1/terminals/{other.id}/transfer", {}).json()["recovery_code"]
+        self.assertEqual(self.pair(code, device="pc-novo").status_code, 200)
+
+    def test_release_undoes_only_the_last_swap_and_only_while_it_may_still_send(self):
+        token_b = self.pair(self.transfer()["recovery_code"], device="pc-b").json()["token"]
+        token_c = self.pair(self.transfer()["recovery_code"], device="pc-c").json()["token"]
+        self.assertIs(self.term("POST", "/api/v1/terminal/release", {}, token=token_c).json()["released"], True)
+        row = Terminal.objects.get(pk=self.terminal.pk)
+        self.assertEqual((row.device_id, row.previous_device_id), ("pc-b", "pc-antigo"))
+        self.assertEqual(self.heartbeat(token=token_b).status_code, 200)
+        self.assertIs(self.sync(self.opened())["send_only"], True)  # the first one keeps sending
+        # A replaced token cannot release anything; neither can the window that already closed.
+        self.assertEqual(self.term("POST", "/api/v1/terminal/release", {}).status_code, 403)
+        TerminalFormerToken.objects.filter(terminal=self.terminal).update(
+            expires_at=timezone.now() - timedelta(seconds=1))
+        response = self.term("POST", "/api/v1/terminal/release", {}, token=token_b)
+        self.assertEqual((response.status_code, response.json()["released"]), (200, False))
+        self.assertEqual(Terminal.objects.get(pk=self.terminal.pk).device_id, "pc-b")
+        self.assertEqual(AuditEvent.objects.filter(action="terminal.transfer_undone").count(), 1)
+
+    def test_configuration_sent_by_a_replaced_computer_does_not_win(self):
+        new_token = self.swap()
+        current = self.config(self.now, target="Etiqueta do novo")
+        self.sync(current, token=new_token)
+        stale = self.config(self.now + 60000, target="Cupom do antigo", mirror=False)
+        body = self.sync(stale)
+        self.assertEqual((body["send_only"], body["quarantined"]), (True, []))
+        self.assertTrue(SyncEvent.objects.filter(event_id=stale["event_id"]).exists())
+        self.assertEqual(Terminal.objects.get(pk=self.terminal.pk).config, current["data"])
+
+    def close(self, session, created_at, counted, expected):
+        return self.event("cash.closed", session, {"counted_cents": counted, "expected_cents": expected,
+                                                   "difference_cents": counted - expected,
+                                                   "created_at": created_at})
+
+    def test_same_shift_closed_on_both_computers_becomes_a_conflict(self):
+        self.sync(self.opened())
+        new_token = self.swap()
+        first = self.close(self.session_id, self.now + 1000, 12345, 11450)
+        self.assertEqual(self.sync(first)["conflicts"], [])
+        self.assertEqual(self.sync(first)["conflicts"], [])  # the same closing sent again is not a second one
+        second = self.close(self.session_id, self.now + 9000, 999, 11800)
+        body = self.sync(second, token=new_token)
+        self.assertEqual([row["reason"] for row in body["conflicts"]], ["cash_closed_twice"])
+        conflict = SyncConflict.objects.get(reason="cash_closed_twice")
+        self.assertEqual((conflict.detail["first"]["counted_cents"], conflict.detail["second"]["counted_cents"]),
+                         (12345, 999))
+        session = CashSession.objects.get(pk=self.session_id)
+        self.assertEqual((session.counted_cents, session.expected_cents, session.difference_cents),
+                         (999, 11800, 999 - 11800))
+
+    def test_older_closing_arriving_later_does_not_replace_the_newer_one(self):
+        self.sync(self.opened())
+        new_token = self.swap()
+        self.sync(self.close(self.session_id, self.now + 9000, 999, 11800), token=new_token)
+        body = self.sync(self.close(self.session_id, self.now + 1000, 12345, 11450))  # old queue, days later
+        self.assertEqual([row["reason"] for row in body["conflicts"]], ["cash_closed_twice"])
+        session = CashSession.objects.get(pk=self.session_id)
+        self.assertEqual((session.counted_cents, session.expected_cents), (999, 11800))
+        self.assertEqual(round(session.closed_at.timestamp() * 1000), self.now + 9000)

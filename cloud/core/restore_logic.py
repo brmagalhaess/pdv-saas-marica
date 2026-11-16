@@ -133,7 +133,8 @@ def _session_records(rows):
 
 def _rebuilt_sale_data(sale):
     """Fallback for a sale without its original event: same keys the terminal sends."""
-    items = [{"product_id": str(item.product_id), "name": item.name, "sku": "", "ncm": "", "unit": item.unit,
+    items = [{"product_id": str(item.product_id), "name": item.name, "sku": item.product.sku or "",
+              "ncm": item.product.ncm or "", "unit": item.unit,
               "stock_controlled": item.product.stock_controlled, "quantity_milli": item.quantity_milli,
               "unit_price_cents": item.unit_price_cents, "gross_cents": item.gross_cents,
               "promo_discount_cents": item.promo_discount_cents,

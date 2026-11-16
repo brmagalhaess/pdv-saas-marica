@@ -92,6 +92,7 @@
           <h1>Você tem uma cópia de segurança?</h1>
           <p>Os dados que estavam no servidor já voltaram. Se o computador antigo guardava uma cópia em pendrive ou em outro disco, ela pode trazer as últimas vendas que ainda não tinham sido enviadas.</p>
           <div class="inline-controls"><button id="restoreHasBackupBtn" class="btn primary big" type="button">Tenho uma cópia de segurança</button><button id="restoreSkipBtn" class="btn big" type="button">Não tenho, continuar</button></div>
+          <p id="restoreImportNotice" class="restore-notice hidden" role="alert"></p>
           <div id="restoreBackupPanel" class="hidden">
             <p id="restoreBackupInfo" class="hint" aria-live="polite">Procurando cópias de segurança…</p>
             <div id="restoreBackupList" class="mini-list"></div>
@@ -182,6 +183,7 @@
         <button type="button" id="scaleChip" class="chip" data-state="muted"><span class="dot"></span><span class="chip-text">Balança manual</span></button>
         <span id="hoursChip" class="chip hidden" data-state="warn" role="status"><span class="dot"></span><span class="chip-text"></span></span>
         <span id="releaseChip" class="chip hidden" data-state="warn"><span class="dot"></span><span class="chip-text"></span></span>
+        <span id="mirrorChip" class="chip hidden" data-state="warn" role="status"><span class="dot"></span><span class="chip-text"></span></span>
       </div>
       <time id="clock" class="sb-clock">--:--</time>
       <button type="button" id="operatorMenuBtn" class="sb-menu" aria-haspopup="dialog"><svg class="ico"><use href="#i-menu"/></svg><span>Menu</span></button>

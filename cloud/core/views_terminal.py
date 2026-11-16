@@ -16,7 +16,7 @@ from shared.licensing import MAX_LEASE_SECONDS, LicenseError, load_private_key, 
 from shared.releases import load_release_public_key
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
 from .models import Customer, Membership, Product, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
-from .models import CashSession
+from .models import CashSession, TerminalFormerToken
 from .backup_key import tenant_backup_key
 from .cash_logic import CASH_EVENTS, apply_cash_event
 from .credit_logic import apply_credit_receipt, apply_return, balances as credit_balances
@@ -161,11 +161,18 @@ def _pairing_code_hashes(code):
 
 
 def _send_only_until(terminal, now=None):
-    """Deadline while the replaced computer may still send its queue, else None."""
-    deadline = terminal.previous_token_expires_at
-    if terminal.previous_token_hash and deadline and deadline > (now or timezone.now()):
-        return deadline
-    return None
+    """Latest deadline while some replaced computer may still send its queue, else None."""
+    return (TerminalFormerToken.objects.filter(terminal=terminal, expires_at__gt=now or timezone.now())
+            .order_by("-expires_at").values_list("expires_at", flat=True).first())
+
+
+def _mirror_former_token(terminal):
+    """Terminal.previous_* show the newest hand-over to the panel; the list is the truth."""
+    newest = TerminalFormerToken.objects.filter(terminal=terminal).order_by("-transferred_at", "-expires_at").first()
+    terminal.previous_token_hash = newest.token_hash if newest else None
+    terminal.previous_token_expires_at = newest.expires_at if newest else None
+    terminal.previous_device_id = newest.device_id if newest else ""
+    terminal.transferred_at = newest.transferred_at if newest else None
 
 
 def _bearer_terminal(request, send_only_ok=False):
@@ -183,20 +190,23 @@ def _bearer_terminal(request, send_only_ok=False):
         Terminal.objects.filter(pk=terminal.pk).update(last_seen_at=timezone.now())
         terminal.send_only = False
         return terminal
-    # Token of the computer replaced by "Trocar de computador": it may only
-    # send what was left in its queue, for a few days. It never counts as
-    # presence (last_seen_at belongs to the new computer).
-    terminal = (Terminal.objects.select_related("tenant", "shop")
-                .filter(previous_token_hash=hashed, revoked=False).first())
-    if not terminal or not terminal.tenant.active:
+    # Token of a computer replaced by "Trocar de computador": it may only
+    # send what was left in its queue, until its own deadline. It never counts
+    # as presence (last_seen_at belongs to the current computer). Every replaced
+    # computer keeps its own row, so a second hand-over does not lock out the first.
+    former = (TerminalFormerToken.objects.select_related("terminal__tenant", "terminal__shop")
+              .filter(token_hash=hashed, terminal__revoked=False).first())
+    if not former or not former.terminal.tenant.active:
         raise APIError("Terminal não autenticado", 401)
-    deadline = _send_only_until(terminal)
+    terminal = former.terminal
+    deadline = former.expires_at if former.expires_at > timezone.now() else None
     if deadline and send_only_ok:
         terminal.send_only = True
+        terminal.send_only_until = deadline
         return terminal
     raise APIError(TRANSFERRED_MESSAGE, 403, code="terminal_transferred",
                    extra={"send_only_until": deadline.isoformat() if deadline else None,
-                          "transferred_at": terminal.transferred_at.isoformat() if terminal.transferred_at else None})
+                          "transferred_at": former.transferred_at.isoformat()})
 
 
 @endpoint
@@ -285,8 +295,10 @@ def terminal_detail(request, pk):
             row.pairing_expires_at = timezone.now() + timedelta(minutes=10)
         ended = bool(data.get("end_send_only")) and _send_only_until(row) is not None
         if ended:
-            # The hash stays: the old computer keeps hearing "transferido", not "não autenticado".
-            row.previous_token_expires_at = timezone.now()
+            # The rows stay: the old computers keep hearing "transferido", not "não autenticado".
+            now = timezone.now()
+            TerminalFormerToken.objects.filter(terminal=row, expires_at__gt=now).update(expires_at=now)
+            _mirror_former_token(row)
         row.save()
         audit(member.tenant, member.user, "terminal.updated", row, {"fields": list(data)})
         if ended:
@@ -382,11 +394,11 @@ def pair(request):
             transferred = bool(row.token_hash) and row.device_id != device_id
             if transferred:
                 # The replaced computer keeps a send-only token so the sales
-                # still in its queue reach the cloud. A previous hand-over is overwritten.
-                row.previous_token_hash = row.token_hash
-                row.previous_token_expires_at = now + timedelta(days=_send_only_days(row.tenant))
-                row.previous_device_id = row.device_id
-                row.transferred_at = now
+                # still in its queue reach the cloud. Earlier hand-overs keep theirs.
+                TerminalFormerToken.objects.create(
+                    terminal=row, token_hash=row.token_hash, device_id=row.device_id, transferred_at=now,
+                    expires_at=now + timedelta(days=_send_only_days(row.tenant)))
+                _mirror_former_token(row)
             token = secrets.token_urlsafe(48)
             row.device_id = device_id
             row.version = version
@@ -401,8 +413,9 @@ def pair(request):
                 audit(row.tenant, None, "terminal.transferred", row,
                       {"device_id": device_id, "previous_device_id": row.previous_device_id,
                        "send_only_until": row.previous_token_expires_at.isoformat()})
-            # With history in the cloud the terminal starts in recovery mode.
-            recovery = SyncEvent.objects.filter(terminal=row).exists()
+            # A replaced computer or history in the cloud: the terminal starts in recovery
+            # mode. A cashier that never synchronized still has its backup copy to read.
+            recovery = transferred or SyncEvent.objects.filter(terminal=row).exists()
     except IntegrityError as exc:
         raise APIError("Dispositivo já vinculado ou código já utilizado", 409) from exc
     reset_rate(limit_key)
@@ -416,6 +429,37 @@ def pair(request):
                          "terminal": terminal_data(row), "issuer": _issuer_profile(row.tenant),
                          "lease": lease, "public_key": public_key,
                          "release_public_key": _release_public_key(), "server_time": int(time.time())})
+
+
+@csrf_exempt
+@endpoint
+def release(request):
+    """"Desistir da recuperação": the computer that just took the terminal gives it back.
+
+    Only while the computer replaced last may still send: its token and device become
+    the current ones again and the hand-over is forgotten. Otherwise nothing changes.
+    """
+    method(request, "POST")
+    terminal = _bearer_terminal(request)
+    fields(payload(request), ())
+    with transaction.atomic():
+        row = Terminal.objects.select_for_update().select_related("tenant", "shop").get(pk=terminal.pk)
+        former = (TerminalFormerToken.objects.select_for_update().filter(terminal=row)
+                  .order_by("-transferred_at", "-expires_at").first())
+        undone = bool(
+            former and former.expires_at > timezone.now() and former.device_id
+            and not Terminal.objects.filter(tenant=row.tenant, device_id=former.device_id).exclude(pk=row.pk).exists()
+            and not Terminal.objects.filter(token_hash=former.token_hash).exists())
+        if undone:
+            given_up = row.device_id
+            row.token_hash, row.device_id = former.token_hash, former.device_id
+            row.last_seen_at = None
+            former.delete()
+            _mirror_former_token(row)
+            row.save()
+            audit(row.tenant, None, "terminal.transfer_undone", row,
+                  {"device_id": row.device_id, "given_up_device_id": given_up})
+    return JsonResponse({"released": undone, "terminal_id": str(row.id)})
 
 
 @csrf_exempt
@@ -737,7 +781,9 @@ def _intake(terminal, event, conflicts):
         apply_return(terminal, event, conflicts)
     elif event["type"] == "credit.received":
         apply_credit_receipt(terminal, event, conflicts)
-    elif event["type"] == "terminal.config":
+    elif event["type"] == "terminal.config" and not getattr(terminal, "send_only", False):
+        # A replaced computer no longer speaks for the terminal: its setup is kept
+        # as an event but never replaces the configuration of the current computer.
         _persist_config(terminal, event)
 
 
@@ -836,7 +882,7 @@ def sync(request):
     body = {"accepted_event_ids": accepted, "conflicts": conflicts, "quarantined": quarantined,
             "send_only": terminal.send_only}
     if terminal.send_only:
-        body["send_only_until"] = terminal.previous_token_expires_at.isoformat()
+        body["send_only_until"] = terminal.send_only_until.isoformat()
     return JsonResponse(body)
 
 

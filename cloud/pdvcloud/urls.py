@@ -56,6 +56,7 @@ urlpatterns = [
     path("api/v1/terminal/heartbeat", terminal.heartbeat),
     path("api/v1/terminal/sync", terminal.sync),
     path("api/v1/terminal/restore", terminal.restore),
+    path("api/v1/terminal/release", terminal.release),
     path("api/v1/label-settings", labels.label_settings),
     path("api/v1/sync/conflicts", terminal.conflicts),
     path("api/v1/sync/conflicts/<uuid:pk>", terminal.conflict_detail),

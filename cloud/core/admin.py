@@ -135,6 +135,10 @@ class TenantAdmin(admin.ModelAdmin):
     actions = None
     list_display = ("name", "trade_name", "document", "fiscal_environment", "active", "created_at")
     search_fields = ("name", "trade_name", "document")
+    # The key of the backup copy is never shown or edited here: a changed value makes
+    # every replica of the company unreadable exactly when it is needed.
+    exclude = ("backup_key_encrypted",)
+    readonly_fields = ("backup_key_id", "backup_key_revealed_at")
 
     def has_add_permission(self, request):
         # Companies are created by sign-up, together with owner, shop and subscription.
@@ -162,7 +166,7 @@ class TerminalAdmin(ReadOnlyAdmin):
     list_display = ("name", "tenant", "shop", "device_id", "version", "revoked", "last_seen_at")
     list_select_related = ("tenant", "shop")
     search_fields = ("name", "device_id", "tenant__name")
-    exclude = ("token_hash", "pairing_code_hash")
+    exclude = ("token_hash", "pairing_code_hash", "previous_token_hash")
 
 
 @admin.register(models.Membership, site=platform_admin)

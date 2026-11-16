@@ -295,6 +295,30 @@ class AdminValidationTests(AdminBase):
         self.assertTrue(AuditEvent.objects.filter(action="platform.tenant_updated", tenant=self.tenant,
                                                   actor=self.root).exists())
 
+    def test_backup_key_and_replaced_token_are_out_of_reach(self):
+        Tenant.objects.filter(pk=self.tenant.pk).update(backup_key_encrypted="cifrado-marcador",
+                                                        backup_key_id="abcd1234")
+        terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
+                                           token_hash="a" * 64, previous_token_hash="b" * 64)
+        request = self.client.get(self.tenant_url).wsgi_request
+        tenant_admin = platform_admin._registry[Tenant]
+        editable = tenant_admin.get_form(request, self.tenant).base_fields
+        for field in ("backup_key_encrypted", "backup_key_id", "backup_key_revealed_at"):
+            self.assertNotIn(field, editable)
+        self.assertNotContains(self.client.get(self.tenant_url), "cifrado-marcador")
+        shown = platform_admin._registry[Terminal].get_fields(request, terminal)
+        for field in ("token_hash", "pairing_code_hash", "previous_token_hash"):
+            self.assertNotIn(field, shown)
+        self.assertNotContains(self.client.get(f"/control/core/terminal/{terminal.pk}/change/"), "b" * 64)
+        # Posting the fields anyway changes nothing.
+        data = self.form_data(self.tenant_url, max_discount_bps="2000", backup_key_encrypted="",
+                              backup_key_id="trocada", backup_key_revealed_at_0="2026-01-01",
+                              backup_key_revealed_at_1="10:00:00")
+        self.assertEqual(self.client.post(self.tenant_url, data).status_code, 302)
+        self.tenant.refresh_from_db()
+        self.assertEqual((self.tenant.max_discount_bps, self.tenant.backup_key_encrypted, self.tenant.backup_key_id,
+                          self.tenant.backup_key_revealed_at), (2000, "cifrado-marcador", "abcd1234", None))
+
     def test_plan_and_company_cannot_be_deleted_or_company_created(self):
         self.assertEqual(self.client.post(f"/control/core/plan/{self.plan.pk}/delete/",
                                           {"post": "yes"}).status_code, 403)

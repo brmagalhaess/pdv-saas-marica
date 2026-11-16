@@ -218,8 +218,9 @@ class Terminal(models.Model):
     last_seen_at = models.DateTimeField(null=True, blank=True)
     heartbeat_pending_events = models.PositiveIntegerField(default=0)
     heartbeat_error = models.CharField(max_length=300, blank=True)
-    # "Trocar de computador": the token of the replaced computer may only send
-    # its remaining queue (POST terminal/sync) until previous_token_expires_at.
+    # "Trocar de computador": the token of a replaced computer may only send its
+    # remaining queue (POST terminal/sync). The tokens live in TerminalFormerToken;
+    # these four fields mirror the newest hand-over for the panel.
     previous_token_hash = models.CharField(max_length=64, unique=True, null=True, blank=True)
     previous_token_expires_at = models.DateTimeField(null=True, blank=True)
     previous_device_id = models.CharField(max_length=160, blank=True, default="")
@@ -229,6 +230,24 @@ class Terminal(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["tenant", "device_id"], condition=~Q(device_id=""), name="terminal_tenant_device_unique")]
+
+
+class TerminalFormerToken(models.Model):
+    """Token of a computer replaced by "Trocar de computador".
+
+    One row per replaced computer: a second hand-over (or one that was given up)
+    never takes the send-only door away from the computer that still holds sales.
+    Terminal.previous_* mirror the newest row for the panel.
+    """
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    terminal = models.ForeignKey(Terminal, on_delete=models.CASCADE, related_name="former_tokens")
+    token_hash = models.CharField(max_length=64, unique=True)
+    device_id = models.CharField(max_length=160, blank=True, default="")
+    expires_at = models.DateTimeField()
+    transferred_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [models.Index(fields=["terminal", "-transferred_at"], name="formertoken_term_when")]
 
 
 class Promotion(models.Model):

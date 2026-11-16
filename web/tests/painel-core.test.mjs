@@ -125,6 +125,7 @@ test("conflitos offline têm rótulo em português e caem no texto do detalhe qu
     payment_method_inactive: "Forma de pagamento desativada",
     promotion_changed: "Promoção alterada ou encerrada",
     cash_expected_negative: "Caixa fechado com esperado negativo",
+    cash_closed_twice: "Caixa fechado duas vezes (dois computadores)",
     void_already_reversed: "Cancelamento no caixa de venda já revertida no painel",
     void_after_return: "Cancelamento no caixa após devolução",
     fiscal_cancel_required: "Cancelar a NFC-e da venda estornada no caixa",
@@ -358,11 +359,20 @@ test("trocar de computador: avisos e passos em linguagem simples", () => {
   assert.match(transferConfirmText, /quebrou ou foi trocado/);
   assert.match(transferConfirmText, /últimos 90 dias e o fiado em aberto/);
   assert.deepEqual(transferWarnings({ pending_events: 0, open_cash_session: false }), []);
-  const both = transferWarnings({ pending_events: 3, open_cash_session: true, send_only_days: 7 });
+  // The deadline follows the cloud (offline license of the plan + 1 day; 31 on the default plan).
+  const both = transferWarnings({ pending_events: 3, open_cash_session: true, send_only_days: 31 });
   assert.equal(both.length, 2);
   assert.match(both[0], /caixa está aberto no computador antigo/);
-  assert.match(both[1], /^Faltam 3 registros .* por 7 dias/);
-  assert.match(transferWarnings({ pending_events: 1 })[0], /^Falta 1 registro /);
+  assert.match(both[1], /^Faltam 3 registros .* por 31 dias/);
+  assert.match(transferWarnings({ pending_events: 3, send_only_days: 8 })[0], /por 8 dias/);
+  // Without the field no number is invented.
+  const unknown = transferWarnings({ pending_events: 1 })[0];
+  assert.match(unknown, /^Falta 1 registro /);
+  assert.doesNotMatch(unknown, /\d+ dias/);
+  // An old computer that reported an empty queue may have kept selling offline: the deadline is always said.
+  const quiet = transferWarnings({ pending_events: 0, open_cash_session: false, send_only_days: 31 });
+  assert.equal(quiet.length, 1);
+  assert.match(quiet[0], /ainda consegue enviar o que vendeu por 31 dias/);
   const steps = transferSteps({ history_days: 90 });
   assert.equal(steps.length, 3);
   assert.match(steps[1], /Recuperar minha loja/);
@@ -378,7 +388,9 @@ test("chave da cópia de segurança: só o proprietário vê, uma única vez", (
   assert.match(backupKeyView(fresh, "admin").text, /Só o proprietário/);
   const shown = backupKeyView({ ...fresh, revealed_at: "2026-11-16T12:00:00+00:00", can_reveal: false }, "owner");
   assert.equal(shown.canReveal, false);
-  assert.equal(shown.text, "Chave já exibida em 16/11/2026 · identificação a1b2c3d4…");
+  assert.match(shown.text, /^Chave já exibida em 16\/11\/2026 · identificação a1b2c3d4…/);
+  assert.match(shown.text, /a recuperação da loja continua funcionando normalmente/);
+  assert.match(backupKeyView(fresh, "owner").text, /não precisa desta chave para trocar de computador/);
   assert.equal(backupKeyView({ exists: false, key_id: "", revealed_at: null, can_reveal: true }, "owner").canReveal, true);
 });
 
@@ -390,4 +402,11 @@ test("painel de terminais usa a troca de computador e a chave da cópia", async 
   assert.match(app, /label:"Cópia em 2º disco"/);
   assert.match(app, /"\/backup-key\/reveal", \{ confirm: true \}/);
   assert.match(app, /Mostrar a chave \(uma única vez\)/);
+  // The key is shown once: its window ignores Esc, the backdrop, × and a change of section.
+  assert.match(app, /\{ persistent: true \}/);
+  assert.match(app, /if \(options\.persistent\) return;/);
+  assert.match(app, /close\.hidden = dialogPersistent;/);
+  assert.match(app, /if\(!dialogPersistent\) renderRoute\(\)/);
+  assert.match(app, /done\.disabled = !confirm\.checked/);
+  assert.doesNotMatch(app, /só deixa de vender quando o novo usar este código/);
 });

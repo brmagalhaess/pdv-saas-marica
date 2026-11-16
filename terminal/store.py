@@ -76,7 +76,7 @@ RESTORE_META = ("restore_state", "restore_cursor", "restore_progress", "restore_
                 "restore_paused", "restore_error", "restore_started_at", "restore_finished_at",
                 "restore_totals", "restore_import")
 PHASE2_META = RESTORE_META + ("mirror_key", "cloud_capabilities", "transferred_at", "send_only_until",
-                              "config_synced_hash")
+                              "send_only_closed", "config_synced_hash")
 RESTORE_BLOCKED = "Este caixa ainda está trazendo os dados da loja. Aguarde terminar para vender."
 RESTORE_ABANDON_PENDING = ("Ainda há vendas da cópia de segurança esperando para subir ao servidor. "
                            "Ligue a internet e aguarde; se não resolver, chame o suporte.")
@@ -85,6 +85,11 @@ RESTORE_MISMATCH = ("Os dados trazidos não bateram com os do servidor. Toque em
                     "se continuar, chame o suporte.")
 TRANSFERRED_REASON = ("Este caixa foi transferido para outro computador. "
                       "As vendas que faltavam enviar continuam subindo.")
+TRANSFERRED_CLOSED_REASON = ("Este caixa foi transferido para outro computador. "
+                             "O prazo de envio deste computador terminou.")
+TRANSFERRED_STRANDED_REASON = ("Este caixa foi transferido para outro computador. O prazo para este computador "
+                               "enviar terminou e {count} registro(s) ficaram guardados só aqui. Não apague este "
+                               "computador: use a cópia de segurança no computador novo ou chame o suporte.")
 RESTORE_COUNTERS = ("position", "total", "sales", "sales_cents", "returns", "returns_cents", "credit_receipts",
                     "credit_receipts_cents", "cash_sessions", "cash_movements", "cash_movements_cents", "config")
 # Same values the cloud accepts in the terminal.config event.
@@ -733,10 +738,17 @@ class Store:
                 return {"state": "unpaired", "can_sell": False, "can_open_cash": False,
                         "reason": "Terminal não pareado"}
             if self._meta(conn, "transferred_at"):
-                # The shop moved to another computer: this one only delivers its queue.
+                # The shop moved to another computer: this one only delivers its queue,
+                # and only while the cloud still takes it.
+                closed = self._meta(conn, "send_only_closed") == "1"
+                pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0]
+                reason = TRANSFERRED_REASON
+                if closed:
+                    reason = (TRANSFERRED_STRANDED_REASON.format(count=pending) if pending
+                              else TRANSFERRED_CLOSED_REASON)
                 return {"state": "transferred", "can_sell": False, "can_open_cash": False,
-                        "reason": TRANSFERRED_REASON,
-                        "send_only_until": self._meta(conn, "send_only_until") or None}
+                        "reason": reason, "send_only_closed": closed, "pending_events": pending,
+                        "send_only_until": None if closed else self._meta(conn, "send_only_until") or None}
             last_seen = int(self._meta(conn, "last_seen") or 0)
             if last_seen and now + CLOCK_TOLERANCE_SECONDS < last_seen:
                 return {"state": "clock_rollback", "can_sell": False, "can_open_cash": False,
@@ -943,7 +955,7 @@ class Store:
             self._audit(conn, operator_id, action, subject_id, detail)
 
     def set_pairing(self, response, cloud_url):
-        from shared.licensing import LicenseError, verify_lease
+        from shared.licensing import LicenseError
 
         for key in ("token", "tenant_id", "shop_id", "terminal_id", "lease", "public_key"):
             if key not in response:
@@ -956,16 +968,18 @@ class Store:
             old_key = self._meta(conn, "public_key")
             if old_key and old_key != response["public_key"]:
                 raise TerminalError("Chave pública mudou; suporte precisa verificar o servidor", 409)
-            expected = {key: response[key] for key in ("tenant_id", "shop_id", "terminal_id")}
-            expected["device_id"] = self._meta(conn, "device_id")
-            try:
-                verify_lease(response["lease"], response["public_key"], expected=expected)
-            except LicenseError as exc:
-                raise TerminalError("Licença do pareamento inválida", 403) from exc
             self._clear_company_cache(conn)
             self._clear_connection_meta(conn)
-            for key in ("token", "tenant_id", "shop_id", "terminal_id", "lease", "public_key"):
-                self._set_meta(conn, key, _json(response[key]) if key == "lease" else response[key])
+            for key in ("token", "tenant_id", "shop_id", "terminal_id", "public_key"):
+                self._set_meta(conn, key, response[key])
+            try:
+                # The cloud has already handed the terminal to this computer: a wrong clock
+                # here must not undo that. Signature and identity are checked as always; the
+                # license is judged at its own issue time and lease_status asks for the clock.
+                self._accept_lease(conn, response["lease"], response["public_key"], response.get("server_time"))
+            except (LicenseError, TypeError) as exc:
+                raise TerminalError("Licença do pareamento inválida", 403) from exc
+            self._set_meta(conn, "lease", _json(response["lease"]))
             for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
                 value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
                 if value:
@@ -2347,6 +2361,17 @@ class Store:
             self._set_meta(conn, key, "")
         self._audit(conn, None, "terminal.restored", self._meta(conn, "terminal_id"), detail)
 
+    def _ensure_abandonable(self, conn):
+        if not self._restore_active(conn):
+            raise TerminalError("Restauração não está em andamento", 409)
+        if conn.execute("SELECT 1 FROM outbox WHERE acked_at IS NULL LIMIT 1").fetchone():
+            raise TerminalError(RESTORE_ABANDON_PENDING, 409)
+
+    def ensure_restore_abandonable(self):
+        """Checked before the cloud is asked to give the terminal back to the old computer."""
+        with self.connection() as conn:
+            self._ensure_abandonable(conn)
+
     def restore_abandon(self):
         """"Desistir da recuperação": this computer goes back to the first screen.
 
@@ -2354,15 +2379,15 @@ class Store:
         was blocked the whole time, so every row here came from the cloud and stays there.
         """
         with self.transaction() as conn:
-            if not self._restore_active(conn):
-                raise TerminalError("Restauração não está em andamento", 409)
-            if conn.execute("SELECT 1 FROM outbox WHERE acked_at IS NULL LIMIT 1").fetchone():
-                raise TerminalError(RESTORE_ABANDON_PENDING, 409)
+            self._ensure_abandonable(conn)
             self._clear_company_cache(conn)
             for table in ("sale_returns", "credit_receipts", "sales", "cash_movements", "cash_sessions",
                           "suspended_carts", "print_jobs", "outbox"):
                 conn.execute(f"DELETE FROM {table}")
             self._clear_connection_meta(conn)
+            # The cloud may still list the old identity as the owner of the terminal that was
+            # given up; a new one lets this computer recover another cashier of the same company.
+            self._set_meta(conn, "device_id", _uuid())
             self._audit(conn, None, "terminal.unpaired", None, "Recuperação abandonada")
         # Copies made since the pairing hold only what was just removed; left behind they
         # would count as another company's history and refuse the next pairing.
@@ -2572,7 +2597,10 @@ class Store:
         result = {"imported": 0, "already_present": 0, "foreign": 0, "invalid": 0, "first_seq": None, "last_seq": None}
         with self.transaction() as conn:
             state = self._meta(conn, "restore_state")
-            if state not in ("awaiting_backup", "importing"):
+            # Another copy may still be read while the first one goes up or is being checked
+            # (second pass): the queue never takes the same event twice.
+            again = state == "restoring" and (self._meta(conn, "restore_pass") or "1") == "2"
+            if state not in ("awaiting_backup", "importing") and not again:
                 raise TerminalError("A recuperação não está esperando a cópia de segurança", 409)
             identity = {key: self._meta(conn, key) for key in ("tenant_id", "shop_id", "terminal_id")}
             for item in events:
@@ -2601,17 +2629,29 @@ class Store:
             if result["imported"]:
                 self._local.outbox_dirty = True
                 self._set_meta(conn, "restore_state", "importing")
-                self._set_meta(conn, "restore_import", _json(result))
+                # What the screen and the support see is the sum of every copy read.
+                before = self._meta_json(self._meta(conn, "restore_import"), {})
+                total = dict(result)
+                for key in ("imported", "already_present", "foreign", "invalid"):
+                    total[key] += _int(before.get(key))
+                total["first_seq"] = before.get("first_seq") or result["first_seq"]
+                self._set_meta(conn, "restore_import", _json(total))
                 self._audit(conn, None, "restore.mirror_imported", identity["terminal_id"],
                             f"{result['imported']} registro(s) da cópia de segurança; "
                             f"{result['foreign']} de outra loja; {result['invalid']} inválido(s)")
         return result
 
     def mark_transferred(self, send_only_until=None):
-        """The cloud said this terminal now lives on another computer."""
+        """The cloud said this terminal now lives on another computer.
+
+        Without a date the cloud no longer takes the queue of this computer (the
+        send-only period ended or was closed in the panel).
+        """
         value = send_only_until if isinstance(send_only_until, str) else ""
+        closed = "" if value else "1"
         with self.connection() as conn:
-            if self._meta(conn, "transferred_at") and (self._meta(conn, "send_only_until") or "") == value:
+            if (self._meta(conn, "transferred_at") and (self._meta(conn, "send_only_until") or "") == value
+                    and (self._meta(conn, "send_only_closed") or "") == closed):
                 return
         with self.transaction() as conn:
             if not self._meta(conn, "transferred_at"):
@@ -2619,10 +2659,31 @@ class Store:
                 self._audit(conn, None, "terminal.transferred", self._meta(conn, "terminal_id"))
             if (self._meta(conn, "send_only_until") or "") != value:
                 self._set_meta(conn, "send_only_until", value)
+            if (self._meta(conn, "send_only_closed") or "") != closed:
+                self._set_meta(conn, "send_only_closed", closed)
+                if closed:
+                    self._audit(conn, None, "terminal.send_only_closed", self._meta(conn, "terminal_id"))
+
+    def clear_transferred(self):
+        """The cloud accepted this computer as the cashier again (the hand-over was given up)."""
+        with self.connection() as conn:
+            if not self._meta(conn, "transferred_at"):
+                return False
+        with self.transaction() as conn:
+            if not self._meta(conn, "transferred_at"):
+                return False
+            for key in ("transferred_at", "send_only_until", "send_only_closed"):
+                conn.execute("DELETE FROM meta WHERE key=?", (key,))
+            self._audit(conn, None, "terminal.transfer_undone", self._meta(conn, "terminal_id"))
+        return True
 
     def is_transferred(self):
         with self.connection() as conn:
             return bool(self._meta(conn, "transferred_at"))
+
+    def send_only_closed(self):
+        with self.connection() as conn:
+            return bool(self._meta(conn, "transferred_at")) and self._meta(conn, "send_only_closed") == "1"
 
     def _config_candidate(self, conn, enabled):
         """(terminal_id, data, digest) of the terminal.config still to be sent, or None."""

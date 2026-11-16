@@ -31,6 +31,8 @@ LEASE_RENEW_INTERVAL_MS = 60 * 60 * 1000
 MAX_BATCH_EVENTS = 50
 MAX_BATCH_BYTES = 512 * 1024
 RESTORE_PAGE_SIZE = 200
+# A computer that was replaced asks now and then whether the hand-over was given up.
+TRANSFER_PROBE_SECONDS = 5 * 60
 # One restore pass at a time, whoever asks (the worker or the recovery screen).
 _RESTORE_LOCK = threading.Lock()
 
@@ -103,6 +105,20 @@ def pair(store, cloud_url, license_key, code):
                               "version": VERSION})
     store.set_pairing(response, cloud_url)
     return refresh_bootstrap(store)
+
+
+def release_terminal(store):
+    """"Desistir da recuperação": ask the cloud to give the terminal back to the computer it
+    was taken from. Best effort: True only when the cloud undid the hand-over."""
+    meta = store.meta()
+    if not meta.get("token") or not meta.get("cloud_url"):
+        return False
+    try:
+        response = _request("POST", meta["cloud_url"] + "/api/v1/terminal/release",
+                            headers=_auth_headers(meta), json={})
+    except TerminalError:
+        return False  # offline, or a cloud without the route: the local way out still works
+    return response.get("released") is True
 
 
 def refresh_bootstrap(store):
@@ -245,8 +261,10 @@ def sync_once(store):
             store.set_sync_result(str(exc))
             raise
     if response.get("send_only") is True:
-        # Old computer of a transferred terminal: the cloud still takes its queue for a few days.
+        # Old computer of a transferred terminal: the cloud still takes its queue for a while.
         store.mark_transferred(response.get("send_only_until"))
+    elif response.get("send_only") is False:
+        store.clear_transferred()  # the hand-over was given up: this is the cashier again
     expected = [event["event_id"] for event in events]
     if response.get("accepted_event_ids") != expected:
         store.set_sync_result("Confirmação incompleta do servidor")
@@ -285,6 +303,7 @@ def heartbeat_once(store):
         store.set_heartbeat_result(str(exc))
         raise
     store.set_heartbeat_result()
+    store.clear_transferred()  # only the current computer of the terminal gets an answer here
     store.clear_sync_error()
     return response
 
@@ -367,6 +386,7 @@ class Worker:
         self.store = store
         self.interval = interval
         self.stop_event = threading.Event()
+        self.transfer_probe_at = None
         self.thread = self._new_thread()
 
     def _new_thread(self):
@@ -422,10 +442,15 @@ class Worker:
             # This terminal moved to another computer. All that is left to do here is
             # deliver the queue, for as long as the cloud still takes it.
             try:
-                if self.store.sync_status()["pending"]:
+                # Once the cloud closed the send-only period, repeating the upload changes nothing.
+                if self.store.sync_status()["pending"] and not self.store.send_only_closed():
                     result = sync_once(self.store)
                     if result["remaining"]:
                         self.stop_event.wait(0.1)
+            except Exception as exc:
+                errors.append(_describe(exc))
+            try:
+                self._probe_transfer()
             except Exception as exc:
                 errors.append(_describe(exc))
             return errors
@@ -483,6 +508,20 @@ class Worker:
             except Exception as exc:
                 errors.append("Atualização: " + _describe(exc))
         return errors
+
+    def _probe_transfer(self):
+        """"Desistir da recuperação" on the new computer gives the terminal back to this one:
+        a heartbeat that is answered means so (heartbeat_once clears the mark). The expected
+        refusal only refreshes the send-only date."""
+        now = time.monotonic()
+        if self.transfer_probe_at is not None and now - self.transfer_probe_at < TRANSFER_PROBE_SECONDS:
+            return
+        self.transfer_probe_at = now
+        try:
+            heartbeat_once(self.store)
+        except TerminalError as exc:
+            if getattr(exc, "remote_code", None) != "terminal_transferred" and exc.status != 503:
+                raise
 
     def run(self):
         failures = 0

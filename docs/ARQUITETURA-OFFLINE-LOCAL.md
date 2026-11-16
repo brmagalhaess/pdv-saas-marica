@@ -89,9 +89,9 @@ Base: proposta **mvp** (dois de três juízes; é a única que cumpre ao pé da 
 3. Espera a barra "Trazendo seus dados" e volta a vender.
 
 **Por baixo**
-- O código reaproveita `reissue_pairing` (`views_terminal.py:194-199`): mesmo `Terminal.id`. O `pair` grava `device_id` e token novos (`views_terminal.py:244-251`). Novidade: o token antigo vira só-envio por 7 dias, para a fila do computador velho ainda subir.
+- O código reaproveita `reissue_pairing` (`views_terminal.py:194-199`): mesmo `Terminal.id`. O `pair` grava `device_id` e token novos (`views_terminal.py:244-251`). Novidade: o token antigo vira só-envio pelo prazo da licença offline do plano mais 1 dia, nunca menos de 7, para a fila do computador velho ainda subir.
 - `GET /api/v1/terminal/restore?cursor=`, paginado e retomável. `restore_state` fica em `meta` e a venda só libera em `done`.
-- **Volta:** catálogo, operadores, clientes e saldos (bootstrap); vendas de 90 dias mais as com fiado em aberto, a partir de `SyncEvent.payload` (`cloud/core/models.py:636-645`); devoluções, recebimentos, caixas abertos com movimentos; configuração de impressão e estações (evento novo `terminal.config`).
+- **Volta:** catálogo, operadores, clientes e saldos (bootstrap); vendas de 90 dias mais as com fiado em aberto, a partir de `SyncEvent.payload` (`cloud/core/models.py:636-645`); devoluções, recebimentos, o caixa aberto mais recente com movimentos; configuração de impressão e estações (evento novo `terminal.config`).
 - **Não volta:** carrinhos suspensos e fila de impressão.
 - **O que não tinha subido:** "Tenho uma cópia de segurança" lê a réplica do segundo disco ou de uma estação e reenvia a fila; a nuvem deduplica por `event_id`.
 
@@ -140,7 +140,7 @@ Base: proposta **mvp** (dois de três juízes; é a única que cumpre ao pé da 
 - Testar: restaurar com queda de rede no meio; comparar totais com a nuvem; reenvio duplicado.
 - Lojista ganha: troca de computador sem perder dados.
 - Contrato detalhado, formato dos arquivos da réplica e limites: [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md). Onde este documento cita linhas de código antigas, valem as daquele.
-- Ajustes em relação ao desenho acima: o código de recuperação vale 30 min e tem a forma `XXXX-XXXX-XXXX`; o token antigo vira só-envio quando o computador novo pareia (não no clique do painel); a fila lida da réplica não é aplicada direto no banco local, sobe para a nuvem e volta por uma segunda passada do restore; a cópia do banco na réplica não leva o token do terminal.
+- Ajustes em relação ao desenho acima: o código de recuperação vale 30 min e tem a forma `XXXX-XXXX-XXXX`; o token antigo vira só-envio quando o computador novo pareia (não no clique do painel); a fila lida da réplica não é aplicada direto no banco local, sobe para a nuvem e volta por uma segunda passada do restore; a cópia do banco na réplica não leva o token do terminal; o prazo do só-envio acompanha a licença offline do plano (+1 dia, mínimo 7) e cada computador substituído mantém o próprio token só-envio; "Desistir da recuperação" devolve o caixa ao computador anterior.
 
 **Fase 3. Estações** (depende da quarentena em produção)
 - Mudanças: `store.py` (tabela `stations`; `station_id` em `cash_sessions`, `sales`, `sale_returns`, `credit_receipts`, `print_jobs`, `print_settings`; índice `cash_one_open` por estação, hoje global em `:134`; `_open_cash` por estação, `:937-941`); novos `terminal/lan.py`, `terminal/station.py`, `terminal/discovery.py`; réplica pela rede; promoção; nuvem: `station` em `cash.opened`, `Shop.hub_terminal`.

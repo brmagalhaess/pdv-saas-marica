@@ -239,9 +239,17 @@
     let notice = '';
     if (info.paused) notice = info.error || 'A recuperação parou. Toque em “Tentar de novo”.';
     else if (failed) notice = 'Sem resposta deste caixa. Continuamos sozinhos em instantes.';
-    else if (info.error) notice = /transferido/i.test(info.error) ? info.error
-      : 'Sem internet. Continuamos sozinhos quando a conexão voltar.';
+    else if (info.error) notice = restoreErrorText(info.error);
     return {percent, line, notice, retry: !!info.paused};
+  }
+  // Why the recovery is not moving, in the shopkeeper's words. Only a missing connection is "Sem internet":
+  // a refusal of the cloud never goes away by waiting.
+  function restoreErrorText(error) {
+    const text = String(error || '');
+    if (/transferido/i.test(text)) return 'Este caixa foi transferido para outro computador. Toque em “Desistir da recuperação”.';
+    if (/Sem conexão/i.test(text)) return 'Sem internet. Continuamos sozinhos quando a conexão voltar.';
+    const reason = text.replace(/^Servidor recusou pedido \(\d+\):\s*/, '').trim() || 'erro';
+    return `O servidor da empresa recusou este computador (${reason}). Confira no painel se o terminal não foi revogado ou chame o suporte.`;
   }
   // "1.180 vendas · R$ 9.876,54" of step 4, from the totals checked against the cloud.
   function restoreSummary(restore) {
@@ -259,6 +267,44 @@
     if (Number(result && result.foreign)) return 'Esta cópia é de outra loja. Nada foi trazido.';
     return 'A cópia não tinha nada além do que o servidor já guardava.';
   }
+  // What must stay on the screen after reading a copy that was not whole (a toast would be gone in seconds).
+  function restoreImportNotice(result) {
+    const warnings = Array.isArray(result && result.warnings) ? result.warnings.filter(Boolean).map(String) : [];
+    if (!warnings.length) return '';
+    return `Atenção: parte desta cópia de segurança não pôde ser lida. ${warnings.join(' ')} `
+      + 'Se houver outra cópia (outro pendrive ou disco), leia-a também antes de continuar. '
+      + 'Depois confira as últimas vendas com o computador antigo ou chame o suporte.';
+  }
+  // Sale panel of the computer that was replaced ("Trocar de computador").
+  function transferredBlock(license, pending, now) {
+    const info = license || {}, queue = Number(pending) || 0;
+    const until = info.send_only_until ? new Date(info.send_only_until).getTime() : NaN;
+    const open = !info.send_only_closed && Number.isFinite(until) && until > now;
+    const head = 'A loja passou a usar outro computador, e este não vende mais. ';
+    if (!queue) return {title: 'Este caixa foi transferido', recheck: false,
+      text: head + 'Tudo o que foi vendido aqui já está guardado no servidor da empresa.',
+      steps: ['O caixa que estava aberto continua no computador novo: o fechamento é feito lá, não aqui.',
+        'Este computador pode ser desligado.']};
+    if (open) return {title: 'Este caixa foi transferido', recheck: false,
+      text: head + `Ainda faltam ${queue} registro(s) para enviar. Deixe este computador ligado e com internet; `
+        + `ele consegue enviar até ${new Date(until).toLocaleDateString('pt-BR')}.`,
+      steps: ['O caixa que estava aberto continua no computador novo: o fechamento é feito lá, não aqui.',
+        'Quando o indicador mostrar que não há nada aguardando envio, este computador pode ser desligado.']};
+    return {title: 'Este caixa foi transferido', recheck: false,
+      text: head + `O prazo para este computador enviar terminou e ${queue} registro(s) ficaram só aqui.`,
+      steps: ['Não apague nem formate este computador.',
+        'No computador novo, use a cópia de segurança (pendrive ou outro disco) em “Recuperar minha loja”, ou chame o suporte.']};
+  }
+  // Chip of the status bar while the second-disk copy is not protecting the sales (null: nothing to show).
+  function mirrorNotice(mirror) {
+    const info = mirror || {};
+    if (!info.supported || !info.enabled || !['error', 'late', 'no_key'].includes(info.state)) return null;
+    const pending = Number(info.pending_events) || 0;
+    const label = info.state === 'late' ? 'Cópia atrasada' : info.state === 'no_key' ? 'Cópia aguardando internet' : 'Cópia de segurança parada';
+    const detail = [info.message || 'A cópia de segurança em outro disco não está em dia.', info.last_error || '',
+      pending ? `${pending} registro(s) só neste computador.` : '', 'As vendas continuam normalmente. Veja em Sistema.'].filter(Boolean).join(' ');
+    return {label, detail, tone: info.state === 'error' ? 'danger' : 'warn'};
+  }
   // Card "Cópia de segurança em outro disco" of the Sistema tab.
   function mirrorCard(status) {
     const info = status || {};
@@ -269,7 +315,8 @@
             tone: ok ? 'ok' : info.state === 'late' ? 'warn' : 'danger', canChoose: true, canCopy: info.state !== 'no_key', attention: !ok};
   }
 
-  return {restoreStep, restoreProgress, restoreSummary, restoreImportText, mirrorCard,
+  return {restoreStep, restoreProgress, restoreErrorText, restoreSummary, restoreImportText, restoreImportNotice,
+          transferredBlock, mirrorNotice, mirrorCard,
           SHORTCUTS, PAY_KEYS, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
           parseMoney, parsePercent, parseQty, parseScanInput, ean13Valid, scaleLabel, scaleLabelQuantity,
           scaleReading, createWeightGate, scaleTarget, discountCents, discountNeedsPin, syncIndicator,

@@ -32,7 +32,7 @@ const state = {
   done: null, doneRendered: null, lastSale: null, submitting: false, scanBusy: false,
   suspendedCount: 0, printer: null, categories: [], stockProducts: [], cartRestored: false,
   bootstrapRefreshInFlight: false, lastOperatorsRefreshAt: 0, loginLockedUntil: 0,
-  restore: {open: false, running: false, timer: null, finished: null},
+  restore: {open: false, running: false, timer: null, finished: null, reviewing: false},
   scale: {port: null, reader: null, buffer: '', awaitingId: null, gate: C.createWeightGate(2), settleTimer: null,
           barcodeMode: prefs.get('scale.barcodeMode', 'weight'), baudRate: prefs.get('scale.baudRate', '9600')},
 };
@@ -282,6 +282,10 @@ function renderStatus() {
   $('releaseChip').classList.toggle('hidden', !staged && !update.available);
   setChip('releaseChip', 'muted', staged ? `Atualização ${update.staged_version} pronta` : update.available ? `Versão ${update.available.version} disponível` : '',
     staged ? 'A nova versão já foi baixada. Com o caixa fechado, o gerente toca em Atualizar agora, na aba Sistema.' : 'Há uma atualização do terminal. Veja em Sistema.');
+  // The second-disk copy stopped or fell behind: said here, not only inside the Sistema tab.
+  const mirrorNotice = C.mirrorNotice(session.mirror);
+  $('mirrorChip').classList.toggle('hidden', !mirrorNotice);
+  if (mirrorNotice) setChip('mirrorChip', mirrorNotice.tone, mirrorNotice.label, mirrorNotice.detail);
   renderPrinterChip();
   renderScaleChip();
   $('statusBar').dataset.tone = C.statusTone({loggedIn: !!operator, sells: canSell(operator?.role), canSell: !!license.can_sell,
@@ -297,15 +301,7 @@ const leaseWarningText = license => (license.days_left >= 1 ? `Licença vence em
 // What the sale panel shows while the license (or the clock it depends on) stops the cashier.
 function licenseBlock(license = {}) {
   // The shop moved to another computer: this one only finishes sending what it had.
-  if (license.state === 'transferred') {
-    const pending = Number(state.session?.sync?.pending) || 0;
-    return {title: 'Este caixa foi transferido', recheck: false,
-      text: 'A loja passou a usar outro computador, e este não vende mais. '
-        + (pending ? `Ainda faltam ${pending} registro(s) para enviar: deixe este computador ligado e com internet até a fila zerar.`
-          : 'Tudo o que foi vendido aqui já está guardado no servidor da empresa.'),
-      steps: ['Se o caixa ainda estiver aberto, feche-o (F12) para o fechamento subir também.',
-        'Quando o indicador mostrar que não há nada aguardando envio, este computador pode ser desligado.']};
-  }
+  if (license.state === 'transferred') return C.transferredBlock(license, state.session?.sync?.pending, Date.now());
   if (license.clock) {
     const computer = dateTimeText(license.clock.computer_time * 1000).slice(0, -3), reference = dateTimeText(license.clock.reference_time * 1000).slice(0, -3);
     return {title: 'Acerte a data e a hora deste computador', recheck: true,
@@ -1971,7 +1967,15 @@ async function loadMirror() {
 async function chooseMirrorDisk() {
   const data = await api('/api/mirror/drives');
   const modal = openModal({title: 'Onde guardar a cópia de segurança?', eyebrow: 'Cópia em outro disco', text: 'Escolha um pendrive ou um segundo disco. Não use o mesmo disco deste caixa: se ele quebrar, a cópia vai junto.'});
-  const save = async directory => { renderMirror(await api('/api/mirror/config', 'POST', {directory})); toast(directory ? 'Cópia de segurança ligada. A primeira cópia já foi feita.' : 'Cópia de segurança desligada.'); modal.close(true); };
+  const save = async directory => {
+    const status = await api('/api/mirror/config', 'POST', {directory});
+    renderMirror(status);
+    if (!directory) { toast('Cópia de segurança desligada.'); modal.close(true); return; }
+    if (status.state === 'ok') { toast('Cópia de segurança ligada. A primeira cópia já foi feita.'); modal.close(true); return; }
+    // The disk was accepted but nothing is protected yet: say why and keep the window open.
+    toast(status.state === 'no_key' ? (status.message || 'Conecte este caixa à internet uma vez para liberar a cópia de segurança') + '. Nenhuma cópia foi feita ainda.'
+      : 'A primeira cópia não foi feita: ' + (status.last_error || status.message || 'confira o disco e tente de novo.'), true);
+  };
   const list = el('div', 'mini-list');
   for (const drive of data.drives || []) {
     const row = el('div', 'mini-row', `<span><strong>${esc(drive.label || drive.directory)}</strong>${drive.same_volume ? '<br><small>Mesmo disco do caixa: escolha outro</small>' : ''}</span>`);
@@ -2004,7 +2008,9 @@ async function loadBackups() {
 /* ---------- "Recuperar minha loja" (new computer) ---------- */
 function renderRestore(restore) {
   const flow = state.restore;
-  const step = flow.finished ? 'done' : restore?.active ? C.restoreStep(restore) : 'start';
+  // After a copy that was not whole the person stays on step 3 (to read another one) until "Continuar".
+  if (!restore?.active) flow.reviewing = false;
+  const step = flow.finished ? 'done' : restore?.active ? (flow.reviewing ? 'backup' : C.restoreStep(restore)) : 'start';
   showView('restoreView');
   for (const [id, name] of [['restoreStart', 'start'], ['restoreProgress', 'progress'], ['restoreBackup', 'backup'], ['restoreDone', 'done']]) $(id).classList.toggle('hidden', name !== step);
   $('restoreAbandon').classList.toggle('hidden', step !== 'progress' && step !== 'backup');
@@ -2041,12 +2047,19 @@ async function runRestore() {
     if (restore.paused) return;
     wait = restore.error ? 5000 : 150;
   } catch (error) {
-    // 409: the restore ended elsewhere (the background worker finished it). Anything else: try again soon.
-    if (error.status === 409) { flow.running = false; await loadSession(); return; }
+    // 409: the restore ended elsewhere (the background worker finished it): show the checked totals.
+    if (error.status === 409) { flow.running = false; await followRestore(); return; }
     renderRestoreProgress(state.session?.restore, true);
     wait = 5000;
   } finally { flow.running = false; }
   if (wait) flow.timer = setTimeout(() => { if (!$('restoreProgress').classList.contains('hidden') && !$('restoreView').classList.contains('hidden')) runRestore(); }, wait);
+}
+// The real state decides the step: finished elsewhere shows "Tudo pronto" before the login.
+async function followRestore() {
+  const {restore} = await api('/api/restore/status');
+  if (restore.active) renderRestore(restore);
+  else if (restore.finished_at) finishRestore(restore);
+  else await loadSession();
 }
 function finishRestore(restore) {
   state.restore.finished = restore;
@@ -2061,14 +2074,23 @@ async function loadRestoreBackups(directory = '') {
   const data = await api('/api/restore/backups' + (directory ? '?directory=' + encodeURIComponent(directory) : ''));
   if (!data.supported) { $('restoreBackupInfo').textContent = 'Esta instalação não lê cópias de segurança. Toque em “Não tenho, continuar”.'; return; }
   const found = data.candidates || [];
+  // A copy written by this very database only holds what is already here.
+  const usable = copy => copy.matches && !copy.current_device;
   $('restoreBackupInfo').textContent = found.length ? 'Escolha a cópia do computador antigo:' : 'Nenhuma cópia de segurança encontrada. Ligue o pendrive ou o disco e informe a pasta abaixo.';
-  $('restoreBackupList').innerHTML = found.map((copy, index) => `<div class="mini-row"><span><strong>${esc(copy.terminal_name || 'Caixa')}${copy.shop_name ? ' · ' + esc(copy.shop_name) : ''}</strong>${copy.matches ? '' : ' · de outro caixa'}${copy.current_device ? ' · feita neste computador' : ''}<br><small>${esc(copy.directory)}${copy.updated_at ? ' · atualizada em ' + dateTimeText(copy.updated_at) : ''}</small></span><button type="button" class="btn${copy.matches ? ' primary' : ''}" data-restore-copy="${index}"${copy.matches ? '' : ' disabled'}>Usar esta cópia</button></div>`).join('');
+  $('restoreBackupList').innerHTML = found.map((copy, index) => `<div class="mini-row"><span><strong>${esc(copy.terminal_name || 'Caixa')}${copy.shop_name ? ' · ' + esc(copy.shop_name) : ''}</strong>${copy.matches ? '' : ' · de outro caixa'}${copy.current_device ? ' · cópia nova deste banco, sem as vendas antigas' : ''}<br><small>${esc(copy.directory)}${copy.updated_at ? ' · atualizada em ' + dateTimeText(copy.updated_at) : ''}</small></span><button type="button" class="btn${usable(copy) ? ' primary' : ''}" data-restore-copy="${index}"${usable(copy) ? '' : ' disabled'}>Usar esta cópia</button></div>`).join('');
   state.restore.candidates = found;
 }
 async function importRestoreBackup(copy) {
   const result = await api('/api/restore/import-backup', 'POST', {directory: copy.directory, replica_id: copy.replica_id});
   toast(C.restoreImportText(result));
-  if (result.restore.state === 'awaiting_backup') return;  // nothing new in that copy: the person chooses again or continues
+  const notice = C.restoreImportNotice(result);
+  $('restoreImportNotice').textContent = notice;
+  $('restoreImportNotice').classList.toggle('hidden', !notice);
+  $('restoreSkipBtn').textContent = 'Continuar';  // a copy was already tried: "Não tenho" would contradict it
+  // Nothing new in that copy: the person chooses again or continues.
+  if (result.restore.state === 'awaiting_backup') return;
+  // Part of the copy was unreadable: stay here, another disk may hold what is missing.
+  state.restore.reviewing = !!notice;
   renderRestore(result.restore);
 }
 
@@ -2149,7 +2171,11 @@ on('restoreAbandonBtn', 'click', async () => {
 on('restoreRetryBtn', 'click', async () => { const {restore} = await api('/api/restore/retry', 'POST', {}); renderRestoreProgress(restore, false); await runRestore(); });
 on('restoreHasBackupBtn', 'click', () => loadRestoreBackups());
 on('restoreFolderForm', 'submit', async () => { const folder = $('restoreFolder').value.trim(); if (!folder) throw Error('Informe a pasta onde está a cópia de segurança'); await loadRestoreBackups(folder); });
-on('restoreSkipBtn', 'click', async () => { const {restore} = await api('/api/restore/skip-backup', 'POST', {}); finishRestore(restore); });
+on('restoreSkipBtn', 'click', async () => {
+  if (state.restore.reviewing) { state.restore.reviewing = false; await followRestore(); return; }
+  const {restore} = await api('/api/restore/skip-backup', 'POST', {});
+  finishRestore(restore);
+});
 on('restoreEnterBtn', 'click', async () => { state.restore.finished = null; await loadSession(); });
 $('restoreBackupList').addEventListener('click', event => {
   const copy = state.restore.candidates?.[Number(event.target.closest('[data-restore-copy]')?.dataset.restoreCopy)];

@@ -364,11 +364,12 @@ def create_app(config=None):
             except Exception as exc:
                 app.logger.error("Cópia em segundo disco não parou: %s", type(exc).__name__)
 
-    def require_restore(*states):
+    def require_restore(*states, second_pass=False):
         status = store.restore_status()
         if not status["active"]:
             raise TerminalError("Restauração não está em andamento", 409)
-        if states and status["state"] not in states:
+        again = second_pass and status["state"] == "restoring" and status["pass"] == 2
+        if states and status["state"] not in states and not again:
             raise TerminalError("A recuperação não está esperando a cópia de segurança", 409)
         return status
 
@@ -530,13 +531,17 @@ def create_app(config=None):
             raise TerminalError("Confirme a desistência da recuperação", 409)
         require_restore()
         require_manager_when_paired(data)
+        store.ensure_restore_abandonable()
+        # The cloud gives the terminal back to the computer it was taken from (best effort:
+        # offline, this computer still forgets everything and the old one keeps sending).
+        released = sync.release_terminal(store)
         result = store.restore_abandon()
         session.clear()
-        return jsonify({**result, "restore": store.restore_status()})
+        return jsonify({**result, "released": released, "restore": store.restore_status()})
 
     @app.get("/api/restore/backups")
     def restore_backups():
-        require_restore("awaiting_backup")
+        require_restore("awaiting_backup", "importing", second_pass=True)
         if sync.mirror is None:
             return jsonify({"supported": False, "candidates": []})
         directory = request.args.get("directory", "").strip() or None
@@ -546,7 +551,9 @@ def create_app(config=None):
     @app.post("/api/restore/import-backup")
     def restore_import_backup():
         data = body()
-        require_restore("awaiting_backup")
+        # Also while a first copy is going up: another disk may hold what an unreadable one lost
+        # (the queue never takes the same event twice).
+        require_restore("awaiting_backup", "importing", second_pass=True)
         mirror = require_mirror()
         directory, replica_id = data.get("directory"), data.get("replica_id")
         if not isinstance(directory, str) or not directory.strip() or len(directory) > 1000:
@@ -562,8 +569,12 @@ def create_app(config=None):
         found = mirror_call("leitura da cópia", mirror.read_pending, directory.strip(), key, store.identity(),
                             replica_id)
         events = found.get("events") if isinstance(found, dict) else None
+        warnings = found.get("warnings") if isinstance(found, dict) else None
+        warnings = [str(item)[:300] for item in warnings][:20] if isinstance(warnings, list) else []
         result = store.import_outbox_from_mirror(events if isinstance(events, list) else [])
-        return jsonify({**result, "restore": store.restore_status()})
+        if warnings:
+            store.record_audit(None, "restore.mirror_warnings", None, "; ".join(warnings)[:300])
+        return jsonify({**result, "warnings": warnings, "restore": store.restore_status()})
 
     @app.post("/api/restore/skip-backup")
     def restore_skip_backup():
@@ -593,8 +604,15 @@ def create_app(config=None):
         directory = directory.strip() if directory else None
         result = mirror_call("configuração", mirror.configure, store, directory,
                              allow_same_volume=os.environ.get("PDV_ENV", "production") in ("development", "test"))
-        store.record_audit(operator["id"], "mirror.configured", None,
-                           ("ligada: " + directory)[:300] if directory else "desligada")
+        state = result.get("state") if isinstance(result, dict) else None
+        detail = "desligada"
+        if directory and state == "ok":
+            detail = "ligada: " + directory
+        elif directory:
+            # configure() does not raise when the first copy fails: it answers with the state.
+            problem = (result.get("last_error") or result.get("message") or state or "") if isinstance(result, dict) else ""
+            detail = f"ligada, primeira cópia falhou ({problem}): {directory}"
+        store.record_audit(operator["id"], "mirror.configured", None, detail[:300])
         store.ensure_config_event()
         return jsonify(result)
 

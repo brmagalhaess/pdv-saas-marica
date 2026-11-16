@@ -278,6 +278,7 @@ export const conflictReasons = {
   payment_method_inactive: "Forma de pagamento desativada",
   promotion_changed: "Promoção alterada ou encerrada",
   cash_expected_negative: "Caixa fechado com esperado negativo",
+  cash_closed_twice: "Caixa fechado duas vezes (dois computadores)",
   void_already_reversed: "Cancelamento no caixa de venda já revertida no painel",
   void_after_return: "Cancelamento no caixa após devolução",
   fiscal_cancel_required: "Cancelar a NFC-e da venda estornada no caixa",
@@ -391,10 +392,15 @@ export const transferConfirmText = "Use quando o computador do caixa quebrou ou 
 
 // Plain-language warnings shown with the recovery code.
 export function transferWarnings(result) {
-  const warnings = [], pending = Number(result?.pending_events) || 0, days = Number(result?.send_only_days) || 7;
+  // The deadline is the cloud's (license offline of the plan plus one day, never under 7): no number is guessed here.
+  const warnings = [], pending = Number(result?.pending_events) || 0, days = Number(result?.send_only_days) || 0;
+  const window = days > 0 ? "ele ainda consegue enviar por " + days + " dias depois da troca" : "ele ainda consegue enviar por um tempo depois da troca";
   if (result?.open_cash_session) warnings.push("O caixa está aberto no computador antigo. Se ele ainda liga, feche o caixa nele antes de continuar.");
   if (pending > 0) warnings.push((pending === 1 ? "Falta 1 registro" : "Faltam " + pending + " registros") +
-    " para o computador antigo enviar. Deixe-o ligado e com internet: ele ainda consegue enviar por " + days + " dias. Se ele não liga mais, use a cópia de segurança no computador novo.");
+    " para o computador antigo enviar. Deixe-o ligado e com internet: " + window + ". Se ele não liga mais, use a cópia de segurança no computador novo.");
+  // The last heartbeat may say "fila 0" for a computer that kept selling offline afterwards.
+  else if (days > 0) warnings.push("Depois da troca, o computador antigo ainda consegue enviar o que vendeu por " + days +
+    " dias. Se ele ficou sem internet, ligue-o à rede dentro desse prazo.");
   return warnings;
 }
 
@@ -410,7 +416,8 @@ export function transferSteps(result) {
 // Company key of the second-disk copy: shown once, to the owner only.
 export function backupKeyView(status, role) {
   const id = String(status?.key_id || "").slice(0, 8);
-  if (status?.revealed_at) return { canReveal: false, text: "Chave já exibida em " + shortDay(status.revealed_at, true) + (id ? " · identificação " + id + "…" : "") };
-  if (status?.can_reveal && role === "owner") return { canReveal: true, text: "Guarde esta chave em lugar seguro. Ela abre a cópia de segurança do caixa em outro disco e só pode ser mostrada uma vez." };
+  if (status?.revealed_at) return { canReveal: false, text: "Chave já exibida em " + shortDay(status.revealed_at, true) + (id ? " · identificação " + id + "…" : "") +
+    " Se você não anotou, a recuperação da loja continua funcionando normalmente." };
+  if (status?.can_reveal && role === "owner") return { canReveal: true, text: "Você não precisa desta chave para trocar de computador: o caixa novo recebe sozinho pela internet. Ela serve só para o suporte abrir a cópia do pendrive em um caso extremo, e só pode ser mostrada uma vez." };
   return { canReveal: false, text: "Só o proprietário da empresa pode ver a chave, uma única vez." + (id ? " Identificação " + id + "…" : "") };
 }

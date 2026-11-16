@@ -85,6 +85,7 @@ Todos, exceto `rejected_event`, significam "o evento foi aceito e aplicado; conf
 | `return_on_reversed_sale` | `sale.returned` | Devolução de uma venda já cancelada ou estornada no painel. Só o reembolso é registrado; estoque, fiado e comissão não são mexidos de novo. |
 | `customer_inactive` | `credit.received` | Fiado recebido de cliente desativado. O dinheiro já entrou, então o recebimento é lançado. |
 | `cash_expected_negative` | `cash.closed` | Caixa fechado com valor esperado negativo (venda em dinheiro cancelada depois de uma sangria). O fechamento é aceito como contado. |
+| `cash_closed_twice` | `cash.closed` | O mesmo caixa foi fechado duas vezes com valores diferentes (computador antigo e novo depois de "Trocar de computador"). O detalhe traz `first` e `second` (`closed_at`, `counted_cents`, `expected_cents`); vale o fechamento de `created_at` mais recente, qualquer que seja a ordem de chegada. |
 | `rejected_event` | qualquer | **Quarentena.** O evento não pôde ser aplicado. O detalhe guarda `type`, `error`, `status` e o `payload` original. |
 
 ### O que vai para a quarentena
