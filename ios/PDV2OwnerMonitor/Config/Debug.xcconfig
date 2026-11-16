@@ -1,0 +1,4 @@
+// Build Debug: servidor local e campo "Servidor (desenvolvimento)" no login.
+// O /$()/ é obrigatório: // vira comentário em xcconfig.
+API_BASE_URL = http:/$()/127.0.0.1:8000
+ALLOW_SERVER_OVERRIDE = YES

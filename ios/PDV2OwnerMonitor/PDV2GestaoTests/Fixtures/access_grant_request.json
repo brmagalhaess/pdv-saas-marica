@@ -1,0 +1,15 @@
+{
+  "scope": "tenant",
+  "user_id": 12,
+  "tenant_id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10",
+  "shop_ids": [],
+  "permissions": [
+    "sales",
+    "cash",
+    "stock",
+    "credit",
+    "terminals"
+  ],
+  "expires_on": null,
+  "reason": "Dona da empresa pediu acesso ao app"
+}

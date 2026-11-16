@@ -1,0 +1,22 @@
+{
+  "counts": {
+    "zeroed": 3,
+    "below_minimum": 7
+  },
+  "results": [
+    {
+      "shop": {
+        "id": "a1b2c3d4-0001-4000-8000-000000000001",
+        "name": "Loja Centro"
+      },
+      "product_id": "0f1e2d3c-4b5a-4968-8776-655443322110",
+      "name": "Leite integral 1 L",
+      "sku": "7891000100103",
+      "unit": "UN",
+      "quantity_milli": 0,
+      "minimum_milli": 12000,
+      "status": "zeroed"
+    }
+  ],
+  "next_cursor": null
+}

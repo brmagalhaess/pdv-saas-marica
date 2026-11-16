@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "id": "d5b2f3c4-8e9a-4b0c-9d1e-2f3a4b5c6d7e",
+      "shop": {
+        "id": "a1b2c3d4-0001-4000-8000-000000000001",
+        "name": "Loja Centro"
+      },
+      "terminal_name": "Caixa 2",
+      "station_name": "",
+      "operator_name": "Carla",
+      "status": "closed",
+      "opened_at": "2026-11-16T08:01:00-03:00",
+      "closed_at": "2026-11-16T12:00:00-03:00",
+      "opening_cents": 20000,
+      "sales_count": 18,
+      "sales_total_cents": 154000,
+      "cash_net_cents": 43000,
+      "supplied_cents": 0,
+      "withdrawn_cents": 10000,
+      "expected_cents": 63000,
+      "counted_cents": 61500,
+      "difference_cents": -1500,
+      "incomplete": false
+    }
+  ],
+  "next_cursor": null
+}

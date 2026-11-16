@@ -1,0 +1,5 @@
+{
+  "error": "Muitas tentativas. Aguarde alguns minutos e tente de novo.",
+  "code": "rate_limited",
+  "retry_after_seconds": 600
+}

@@ -1,0 +1,5 @@
+{
+  "error": "Essa pessoa já tem acesso liberado a esta empresa.",
+  "code": "access_exists",
+  "access_id": "6e5d4c3b-2a19-4f8e-9d7c-6b5a49382716"
+}

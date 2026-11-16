@@ -1,0 +1,93 @@
+{
+  "generated_at": "2026-11-16T14:03:12-03:00",
+  "tenant": {
+    "id": "3f6e1c2a-8b4d-4e2f-9c1a-5d7b0e3a2f10",
+    "name": "Mercado Bom Preço"
+  },
+  "shop": null,
+  "shops": [
+    {
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Loja Centro"
+    },
+    {
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Loja Bairro"
+    }
+  ],
+  "period": {
+    "key": "today",
+    "label": "Hoje",
+    "date_from": "2026-11-16",
+    "date_to": "2026-11-16",
+    "from": "2026-11-16T00:00:00-03:00",
+    "to": "2026-11-17T00:00:00-03:00"
+  },
+  "permissions": [
+    "sales",
+    "cash",
+    "stock",
+    "credit",
+    "terminals"
+  ],
+  "sales": {
+    "count": 42,
+    "revenue_cents": 352000,
+    "average_ticket_cents": 8380,
+    "cancelled_count": 2,
+    "cancelled_cents": 5400,
+    "returns_cents": 1200,
+    "net_revenue_cents": 350800
+  },
+  "payments": {
+    "cash_cents": 98000,
+    "pix_cents": 150000,
+    "card_credit_cents": 60000,
+    "card_debit_cents": 30000,
+    "other_cents": 4000,
+    "received_total_cents": 342000,
+    "credit_account_cents": 8000,
+    "store_credit_cents": 2000,
+    "credit_received_cents": 5000
+  },
+  "series": {
+    "kind": "hour",
+    "points": [
+      {
+        "key": "00",
+        "label": "00h",
+        "count": 0,
+        "revenue_cents": 0
+      },
+      {
+        "key": "14",
+        "label": "14h",
+        "count": 6,
+        "revenue_cents": 51000
+      }
+    ]
+  },
+  "cash": {
+    "open_count": 2,
+    "closed_count": 3,
+    "shortage_count": 1,
+    "shortage_cents": -1500
+  },
+  "stock": {
+    "zeroed_count": 3,
+    "below_minimum_count": 7
+  },
+  "credit": {
+    "open_cents": 120000,
+    "overdue_cents": 30000,
+    "overdue_customers": 4
+  },
+  "terminals": {
+    "total": 3,
+    "online": 2,
+    "offline": 1,
+    "unpaired": 0,
+    "online_window_seconds": 300,
+    "conflicts_open": 1
+  }
+}
