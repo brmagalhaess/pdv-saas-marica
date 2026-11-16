@@ -152,9 +152,10 @@ class CloudAPITests(TestCase):
 
     def test_product_gets_local_image_default_and_accepts_custom_image(self):
         self.client.force_login(self.owner)
-        rejected_cost = self.api("POST", "/api/v1/products",
-                                 {"name": "Custo no cadastro", "price_cents": 499, "cost_cents": 300})
-        self.assertEqual(rejected_cost.status_code, 400)
+        initial_cost = self.api("POST", "/api/v1/products",
+                                {"name": "Custo no cadastro", "price_cents": 499, "cost_cents": 300})
+        self.assertEqual(initial_cost.status_code, 201, initial_cost.content)
+        self.assertEqual(initial_cost.json()["cost_cents"], 300)
         created = self.api("POST", "/api/v1/products",
                            {"name": "Leite integral", "price_cents": 499,
                             "category_id": None, "unit": "KG", "scale_code": "54321"})

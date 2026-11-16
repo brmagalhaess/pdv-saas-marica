@@ -296,9 +296,19 @@ class SaleItem(models.Model):
     promotion_name = models.CharField(max_length=80, blank=True)
     discount_cents = models.PositiveBigIntegerField()
     line_total_cents = models.PositiveBigIntegerField()
+    # Product cost when the sale was recorded, so margin reports of closed
+    # periods do not move with later purchases. Null only before the backfill.
+    unit_cost_cents = models.PositiveBigIntegerField(null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["sale", "line_number"], name="sale_item_line_unique")]
+
+    def save(self, *args, **kwargs):
+        if self.unit_cost_cents is None:
+            # Read from the database: the product instance in hand may predate a stock receipt.
+            self.unit_cost_cents = (Product.objects.filter(pk=self.product_id)
+                                    .values_list("cost_cents", flat=True).first() or 0)
+        super().save(*args, **kwargs)
 
 
 class PaymentMethod(models.Model):
