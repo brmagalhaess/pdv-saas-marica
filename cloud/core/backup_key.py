@@ -38,8 +38,10 @@ def tenant_backup_key(tenant):
                 audit(row, None, "backup_key.created", row, {"key_id": row.backup_key_id})
             tenant.backup_key_encrypted, tenant.backup_key_id = row.backup_key_encrypted, row.backup_key_id
             return {"key_id": row.backup_key_id, "key": decrypt_secret(row.backup_key_encrypted)}
-    except ValueError:
-        # Missing or changed PDV_ENCRYPTION_KEY. No secret reaches the log.
-        logger.error("Chave da cópia de segurança indisponível para a empresa %s; resposta segue sem mirror_key",
-                     tenant.pk)
+    except Exception as exc:
+        # Missing, unreadable or changed server key (PDV_ENCRYPTION_KEY or its
+        # file), or any other failure: the answer goes on without the key.
+        # Only the error type is logged; no secret reaches the log.
+        logger.error("Chave da cópia de segurança indisponível para a empresa %s (%s); resposta segue sem mirror_key",
+                     tenant.pk, type(exc).__name__)
         return None

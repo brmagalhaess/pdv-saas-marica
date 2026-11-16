@@ -256,16 +256,29 @@ def _totals(n):
             "config": {"count": n["cf"]}}
 
 
+def current_open_session_ids(terminal):
+    """Id of the cash session that is really open on the terminal: zero or one.
+
+    The terminal admits a single open cash session, so a session still open in
+    the cloud counts only when it is the newest session of the terminal. An
+    open one older than any other session was closed at the counter and its
+    closing never arrived (replaced computer, quarantined event): it is stale.
+    """
+    newest = (CashSession.objects.filter(tenant=terminal.tenant, terminal=terminal)
+              .order_by("-opened_at", "-id").values_list("id", "closed_at").first())
+    return [newest[0]] if newest and newest[1] is None else []
+
+
 def _start(terminal, history_days):
     """Snapshot limits of a new restore, under the same lock the sync intake takes."""
     with transaction.atomic():
         Terminal.objects.select_for_update().get(pk=terminal.pk)
         asof = timezone.now()
-        open_ids = list(CashSession.objects.filter(tenant=terminal.tenant, terminal=terminal, closed_at__isnull=True)
-                        .order_by("-opened_at", "-id").values_list("id", flat=True))
+        open_ids = current_open_session_ids(terminal)
         counters = dict.fromkeys(COUNTERS, 0)
-        counters["so"] = max(0, len(open_ids) - 1)
-        state = _State(str(terminal.id), ms(asof - timedelta(days=history_days)), asof, open_ids[:1],
+        counters["so"] = (CashSession.objects.filter(tenant=terminal.tenant, terminal=terminal,
+                                                     closed_at__isnull=True).count() - len(open_ids))
+        state = _State(str(terminal.id), ms(asof - timedelta(days=history_days)), asof, open_ids,
                        SECTIONS[0], [], counters, 0)
         state.total = (bool(terminal.config) + _sessions(terminal, state).count()
                        + _sales(terminal, state).count() + _receipts(terminal, state).count())

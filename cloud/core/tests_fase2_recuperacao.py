@@ -166,7 +166,7 @@ class TrocarDeComputadorTests(Fase2Base):
         self.assertEqual(body["id"], str(self.terminal.id))
         self.assertEqual(body["license_key"], self.sub.license_key)
         self.assertEqual((body["pending_events"], body["open_cash_session"], body["send_only_days"],
-                          body["history_days"], body["paired"]), (3, True, 7, 90, True))
+                          body["history_days"], body["paired"]), (3, True, 31, 90, True))
         self.assertEqual((body["transferred_at"], body["send_only_until"], body["previous_device_id"],
                           body["mirror_enabled"]), (None, None, "", None))
         row = Terminal.objects.get(pk=self.terminal.pk)
@@ -220,7 +220,7 @@ class TrocarDeComputadorTests(Fase2Base):
                          ("pc-novo", "pc-antigo", sha(self.token)))
         self.assertEqual(row.token_hash, sha(body["token"]))
         days = (row.previous_token_expires_at - timezone.now()).total_seconds() / 86400
-        self.assertTrue(6.99 < days <= 7)
+        self.assertTrue(30.99 < days <= 31)  # the plan's 30 offline days plus one to upload
         self.assertEqual(body["terminal"]["previous_device_id"], "pc-antigo")
         self.assertIsNotNone(body["terminal"]["send_only_until"])
         audit = AuditEvent.objects.get(action="terminal.transferred")
@@ -294,7 +294,26 @@ class TokenSoEnvioTests(Fase2Base):
         self.assertEqual([row["event_id"] for row in body["quarantined"]], [sale["event_id"]])
         self.assertEqual(Sale.objects.filter(tenant=self.tenant).count(), 1)
 
-    def test_send_only_expires_after_seven_days(self):
+    def test_send_only_window_covers_the_lease_the_old_computer_may_hold(self):
+        # The old computer can keep selling offline for the plan's offline days:
+        # what it sells until then must still have a way up.
+        plan = Plan.objects.get(pk=self.sub.plan_id)
+        for offline, expected in ((1, 7), (7, 8), (30, 31), (45, 46)):
+            Plan.objects.filter(pk=plan.pk).update(offline_days=offline)
+            self.assertEqual(self.transfer()["send_only_days"], expected)
+        self.swap()
+        row = Terminal.objects.get(pk=self.terminal.pk)
+        days = (row.previous_token_expires_at - row.transferred_at).total_seconds() / 86400
+        self.assertEqual(days, 46)
+        # Day 40 of a 45-day plan: the sale made offline on the old computer still goes up.
+        late = self.sale()
+        with patch("django.utils.timezone.now", return_value=row.transferred_at + timedelta(days=40)):
+            response = self.term("POST", "/api/v1/terminal/sync", {"events": [late]})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIs(response.json()["send_only"], True)
+        self.assertTrue(Sale.objects.filter(pk=late["aggregate_id"]).exists())
+
+    def test_send_only_expires_after_its_deadline(self):
         self.swap()
         Terminal.objects.filter(pk=self.terminal.pk).update(
             previous_token_expires_at=timezone.now() - timedelta(seconds=1))
@@ -472,6 +491,26 @@ class RestoreTests(Fase2Base):
         self.assertEqual([row["id"] for row in records if row["kind"] == "cash_session"], [self.session_id])
         self.assertEqual(last["totals"]["cash_sessions"], {"count": 1, "open_count": 1, "stale_open_omitted": 1})
         self.assertEqual(last["totals"]["sales"]["count"], 1)  # its sale is in the window all the same
+
+    def test_old_session_left_open_is_not_restored_as_open_after_newer_closed_ones(self):
+        # The closing of an old session never arrived; the terminal went on
+        # opening and closing others. It admits one open session, so the old
+        # one cannot really be open: the new computer must not be born with it.
+        forgotten, later = str(uuid.uuid4()), str(uuid.uuid4())
+        long_ago, yesterday = self.now - 200 * DAY_MS, self.now - DAY_MS
+        old_sale = self.sale(created_at=long_ago + 1000, session=forgotten)
+        self.sync(self.opened(forgotten, long_ago), old_sale,
+                  self.opened(later, yesterday), self.sale(created_at=yesterday + 1000, session=later),
+                  self.closed(later, yesterday + 9000))
+        self.assertTrue(CashSession.objects.filter(pk=forgotten, closed_at__isnull=True).exists())
+        self.assertIs(self.transfer()["open_cash_session"], False)
+        records, last, _ = self.restore_all(limit=10)
+        sessions = [row for row in records if row["kind"] == "cash_session"]
+        self.assertEqual([(row["id"], row["closed_at"] is None) for row in sessions], [(later, False)])
+        self.assertEqual(last["totals"]["cash_sessions"], {"count": 1, "open_count": 0, "stale_open_omitted": 1})
+        sales = [row["id"] for row in records if row["kind"] == "sale"]
+        self.assertNotIn(old_sale["aggregate_id"], sales)  # not pulled in as "sale of the open session"
+        self.assertEqual(len(sales), 1)
 
     def test_sale_without_its_original_event_is_rebuilt_with_the_same_keys(self):
         sale = self.sale()
@@ -688,3 +727,25 @@ class ChaveDaCopiaTests(Fase2Base):
             self.assertEqual((response.status_code, response.json()["code"]), (503, "backup_key_unavailable"))
         self.assertEqual(Tenant.objects.get(pk=self.tenant.pk).backup_key_encrypted, "")
         self.assertIsNone(Tenant.objects.get(pk=self.tenant.pk).backup_key_revealed_at)
+
+    def test_unreadable_server_key_file_never_breaks_pair_or_lease(self):
+        # The key file is missing (or unreadable): that raises OSError, not ValueError.
+        for existing_key in (False, True):
+            code = self.transfer()["recovery_code"]
+            missing = os.path.join(os.path.dirname(__file__), "nao-existe", "chave-do-servidor")
+            with patch.dict(os.environ, {"PDV_ENCRYPTION_KEY_FILE": missing}), \
+                    self.assertLogs("core.backup_key", level="ERROR") as logs:
+                lease = self.term("POST", "/api/v1/terminal/lease", {})
+                self.assertEqual(lease.status_code, 200, lease.content)
+                self.assertIsNone(lease.json()["mirror_key"])
+                paired = self.pair(code, device=f"pc-novo-{existing_key}")
+                self.assertEqual(paired.status_code, 200, paired.content)  # the new computer gets its token
+                self.assertIsNone(paired.json()["mirror_key"])
+                self.token = paired.json()["token"]
+                response = self.panel("POST", "/api/v1/backup-key/reveal", {"confirm": True})
+                self.assertEqual((response.status_code, response.json()["code"]), (503, "backup_key_unavailable"))
+            self.assertNotIn(missing, "\n".join(logs.output))
+            self.assertIn("FileNotFoundError", "\n".join(logs.output))
+            # With the server key back, the same company key is delivered.
+            key = self.term("POST", "/api/v1/terminal/lease", {}).json()["mirror_key"]
+            self.assertEqual(len(key["key"]), 44)

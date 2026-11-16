@@ -37,7 +37,8 @@ EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "credit.receive
                "cash.withdrawn", "cash.supplied", "terminal.config"}
 # "Trocar de computador" (fase 2). The cloud announces what it supports and the
 # terminal only uses what was announced.
-SEND_ONLY_DAYS = 7
+SEND_ONLY_DAYS = 7  # minimum; see _send_only_days
+SEND_ONLY_SLACK_DAYS = 1
 RESTORE_HISTORY_DAYS = 90
 RECOVERY_CODE_MINUTES = 30
 RESTORE_PAGE_DEFAULT = 200
@@ -297,6 +298,19 @@ def terminal_detail(request, pk):
     return JsonResponse(response)
 
 
+def _send_only_days(tenant):
+    """Days the replaced computer may keep uploading its queue.
+
+    It may still hold a signed lease valid for the plan's offline days and go
+    on selling without internet, so the send-only window covers that lease
+    (plus a slack to upload) and is never shorter than SEND_ONLY_DAYS.
+    """
+    offline = (Subscription.objects.filter(tenant=tenant)
+               .values_list("plan__offline_days", flat=True).first()) or 0
+    lease_days = min(max(offline, 1) * 86400, MAX_LEASE_SECONDS) // 86400
+    return max(SEND_ONLY_DAYS, lease_days + SEND_ONLY_SLACK_DAYS)
+
+
 @endpoint
 def terminal_transfer(request, pk):
     """"Trocar de computador": a recovery code that pairs a new computer to the
@@ -322,8 +336,8 @@ def terminal_transfer(request, pk):
     response = JsonResponse({
         **terminal_data(row), "recovery_code": code, "recovery_expires_at": row.pairing_expires_at.isoformat(),
         "license_key": license_key, "pending_events": row.heartbeat_pending_events,
-        "open_cash_session": CashSession.objects.filter(terminal=row, closed_at__isnull=True).exists(),
-        "send_only_days": SEND_ONLY_DAYS, "history_days": RESTORE_HISTORY_DAYS})
+        "open_cash_session": bool(restore_logic.current_open_session_ids(row)),
+        "send_only_days": _send_only_days(row.tenant), "history_days": RESTORE_HISTORY_DAYS})
     response["Cache-Control"] = "private, no-store"
     return response
 
@@ -370,7 +384,7 @@ def pair(request):
                 # The replaced computer keeps a send-only token so the sales
                 # still in its queue reach the cloud. A previous hand-over is overwritten.
                 row.previous_token_hash = row.token_hash
-                row.previous_token_expires_at = now + timedelta(days=SEND_ONLY_DAYS)
+                row.previous_token_expires_at = now + timedelta(days=_send_only_days(row.tenant))
                 row.previous_device_id = row.device_id
                 row.transferred_at = now
             token = secrets.token_urlsafe(48)
