@@ -64,8 +64,13 @@ final class PagedState<Item: Identifiable>: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
     @Published private(set) var loadedAt: Date?
+    /// Resumo da lista (ex.: totais). Segue a mesma regra de `generation` dos itens
+    /// e é apagado quando a chave (empresa, loja, filtro) muda.
+    @Published private(set) var summary: (any Sendable)?
     private var lastKey: AnyHashable?
     private var generation = 0
+
+    func summary<T>(as type: T.Type) -> T? { summary as? T }
 
     init(items: [Item] = []) {
         self.items = items
@@ -83,6 +88,7 @@ final class PagedState<Item: Identifiable>: ObservableObject {
             guard current == generation else { return }
             items = page.results
             nextCursor = page.nextCursor
+            summary = page.summary
             error = nil
             loadedAt = Date()
         } catch {
@@ -113,6 +119,7 @@ final class PagedState<Item: Identifiable>: ObservableObject {
             let known = Set(items.map(\.id))
             items.append(contentsOf: page.results.filter { !known.contains($0.id) })
             nextCursor = page.nextCursor
+            if let fresh = page.summary { summary = fresh }
         } catch {
             guard current == generation else { return }
             if let screen = app.handle(error) { self.error = screen }
@@ -123,6 +130,7 @@ final class PagedState<Item: Identifiable>: ObservableObject {
         generation += 1
         items = []
         nextCursor = nil
+        summary = nil
         error = nil
         loadedAt = nil
         isLoading = false

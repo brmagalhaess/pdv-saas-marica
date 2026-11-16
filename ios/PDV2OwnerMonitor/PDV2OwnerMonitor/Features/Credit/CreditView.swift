@@ -13,7 +13,8 @@ struct CreditView: View {
     @EnvironmentObject private var app: AppState
     @StateObject private var state = PagedState<CreditCustomer>()
     @State private var filter: Filter = .open
-    @State private var totals: CreditTotals?
+    /// Totais da mesma resposta da lista: zerados ao trocar empresa/loja/filtro.
+    private var totals: CreditTotals? { state.summary(as: CreditTotals.self) }
 
     var body: some View {
         TenantGate(permission: .credit) { context in
@@ -23,8 +24,7 @@ struct CreditView: View {
                                               icon: "person.2"),
                           fetch: { cursor in
                               let page = try await app.api.credit(context, status: filter.rawValue, cursor: cursor)
-                              totals = page.totals
-                              return Page(results: page.results, nextCursor: page.nextCursor)
+                              return Page(results: page.results, nextCursor: page.nextCursor, summary: page.totals)
                           },
                           header: {
                               if let totals {

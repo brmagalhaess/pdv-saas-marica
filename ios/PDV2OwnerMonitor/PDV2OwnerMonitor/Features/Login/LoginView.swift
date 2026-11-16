@@ -49,6 +49,10 @@ struct LoginView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Você já estava conectado neste aparelho.")
                 .font(.subheadline)
+            Text("Se passou muito tempo, pode ser preciso entrar de novo com e-mail e senha.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Button {
                 Task { await app.restoreSession() }
             } label: {

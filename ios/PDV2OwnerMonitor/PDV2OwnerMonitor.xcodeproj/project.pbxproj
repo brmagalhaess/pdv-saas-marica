@@ -53,6 +53,7 @@
 		0F3E568917624AC08126E95A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "APIClient.swift"; sourceTree = "<group>"; };
 		0F5400A426AAED9D60C48A51 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RootView.swift"; sourceTree = "<group>"; };
 		0FFF5207A715334C1CD8FE2C = {isa = PBXBuildFile; fileRef = 48A19966E9B4D43B36C0B47F /* AppStateTests.swift */; };
+		A1C0FFEE0000000000000001 = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* ReviewFixesTests.swift */; };
 		104488AA29DAFFDB4C481ABA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AccessGrantView.swift"; sourceTree = "<group>"; };
 		10A32882F2262AAC4341BFCF = {isa = PBXBuildFile; fileRef = 7CBE2E62ABC0407E41DD5CDB /* CashDetailView.swift */; };
 		11459632215A0F14668B5694 = {isa = PBXFileReference; lastKnownFileType = text.json; path = "sale_detail_refunded.json"; sourceTree = "<group>"; };
@@ -114,6 +115,7 @@
 			children = (
 				350E7294E9D477E53DD0B844 /* Fixtures */,
 				48A19966E9B4D43B36C0B47F /* AppStateTests.swift */,
+				A1C0FFEE0000000000000002 /* ReviewFixesTests.swift */,
 				2EB74D4101D991A77A2BBC00 /* ContractDecodingTests.swift */,
 				722A0D1A104FB9EFF04A5840 /* ErrorAndConfigTests.swift */,
 				D59AA41A2F214AD44DDF8CD1 /* FormatTests.swift */,
@@ -269,6 +271,7 @@
 		4661211ECADEEB9C1AF546BB = {isa = PBXBuildFile; fileRef = E24980BF312BF479EF608A9E /* platform_access.json */; };
 		46C91C46C8D8652D755DCA2B = {isa = PBXBuildFile; fileRef = 19AD6090C0C935E3A9879222 /* mfa_ok.json */; };
 		48A19966E9B4D43B36C0B47F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppStateTests.swift"; sourceTree = "<group>"; };
+		A1C0FFEE0000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReviewFixesTests.swift"; sourceTree = "<group>"; };
 		48C6EC11F32FB244EDB0A22D = {isa = PBXBuildFile; fileRef = E48BEECD09BD3C8C1C695B6A /* StockView.swift */; };
 		48F7C43B45EA8A3B0BDD5EAF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SaleDetailView.swift"; sourceTree = "<group>"; };
 		4A1CAAE8432E2F538496468F = {isa = PBXFileReference; lastKnownFileType = text.json; path = "dashboard_restricted.json"; sourceTree = "<group>"; };
@@ -381,6 +384,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0FFF5207A715334C1CD8FE2C /* AppStateTests.swift in Sources */,
+				A1C0FFEE0000000000000001 /* ReviewFixesTests.swift in Sources */,
 				C457A2C681F8F23FD9B227EB /* ContractDecodingTests.swift in Sources */,
 				02CA304D24C1042CBA64E6BD /* ErrorAndConfigTests.swift in Sources */,
 				407CE4B74CA46AEEAA60ADDA /* FormatTests.swift in Sources */,

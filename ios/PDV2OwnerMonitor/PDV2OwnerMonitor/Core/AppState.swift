@@ -147,19 +147,33 @@ final class AppState: ObservableObject {
             let me = try await session.restore()
             canRetryRestore = false
             enterHome(me, firstLogin: false)
-        } catch let error as APIError where error == .offline || error == .unavailable {
-            // Mantém o refresh guardado: dá para tentar de novo quando a rede voltar.
-            loginMessage = error.userMessage
-            canRetryRestore = true
-            phase = .login
         } catch let error as APIError where error.action == .accessDenied {
             await session.clearLocal()
+            canRetryRestore = false
             phase = .accessDenied
-        } catch {
+        } catch let error as APIError where Self.endsSession(error) {
+            // Sessão terminou de fato (revogado, refresh inválido…): apaga e pede login.
             await session.clearLocal()
             canRetryRestore = false
-            if case let .signOut(message) = (error as? APIError)?.action { loginMessage = message }
+            switch error.action {
+            case .signOut(let message), .backToLogin(let message): loginMessage = message
+            default: loginMessage = nil
+            }
             phase = .login
+        } catch {
+            // Erro passageiro (sem rede, 5xx, 429, 409…): mantém o refresh guardado
+            // e deixa a pessoa tentar de novo, sem apagar a sessão.
+            loginMessage = (error as? APIError)?.userMessage ?? APIErrorCatalog.genericMessage
+            canRetryRestore = true
+            phase = .login
+        }
+    }
+
+    /// Só estes erros encerram a sessão guardada na abertura.
+    private static func endsSession(_ error: APIError) -> Bool {
+        switch error.action {
+        case .signOut, .backToLogin: return true
+        default: return false
         }
     }
 

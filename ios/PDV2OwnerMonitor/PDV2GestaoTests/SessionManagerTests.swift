@@ -16,7 +16,8 @@ final class SessionManagerTests: XCTestCase {
     private func makeManager(transport: MockTransport, store: SessionStore = InMemorySessionStore(),
                              clock: TestClock = TestClock()) -> SessionManager {
         SessionManager(baseURL: testBaseURL, transport: transport, store: store, device: testDevice,
-                       userAgent: "PDV2Gestao/1.0.0 (iOS 26.1; iPhone16,2)", now: { clock.now })
+                       userAgent: "PDV2Gestao/1.0.0 (iOS 26.1; iPhone16,2)", now: { clock.now },
+                       refreshRetryDelays: [0, 0])
     }
 
     /// Servidor falso: login devolve o par "1"; cada refresh devolve o par seguinte.

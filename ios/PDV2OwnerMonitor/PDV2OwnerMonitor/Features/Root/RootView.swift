@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Decide a tela pela fase da sessão (S0–S3 e Início) e aplica a trava biométrica.
 struct RootView: View {
@@ -28,6 +29,11 @@ struct RootView: View {
         .tint(PDVTheme.blue)
         .task { await app.start() }
         .onChange(of: scenePhase) { _, newPhase in app.scenePhaseChanged(newPhase) }
+        // A camada do ZStack fica por baixo de sheets, alertas e diálogos. A trava de verdade
+        // é uma janela própria acima de tudo (ver `LockOverlay`).
+        .onChange(of: app.isLocked, initial: true) { _, locked in
+            LockOverlay.shared.update(locked: locked, app: app)
+        }
         .sheet(isPresented: $app.showBiometricOffer) {
             BiometricOfferView()
                 .presentationDetents([.medium])
@@ -44,6 +50,59 @@ struct LaunchView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PDVTheme.background)
+    }
+}
+
+/// Mostra a `LockView` numa janela própria, acima de qualquer sheet, alerta ou diálogo
+/// (eles são apresentados na janela principal e ficariam por cima de uma camada comum).
+@MainActor
+final class LockOverlay {
+    static let shared = LockOverlay()
+
+    /// Nível da janela da trava: acima dos alertas do sistema apresentados pelo app.
+    static let windowLevel = UIWindow.Level.alert + 1
+
+    private(set) var window: UIWindow?
+
+    var isShowing: Bool { window.map { !$0.isHidden } ?? false }
+
+    func update(locked: Bool, app: AppState, scene: UIWindowScene? = nil) {
+        if locked {
+            show(app: app, scene: scene)
+        } else {
+            hide()
+        }
+    }
+
+    private func show(app: AppState, scene: UIWindowScene?) {
+        if let window, !window.isHidden { return }
+        guard let scene = scene ?? Self.activeScene() else { return }
+        // Tira o foco de qualquer campo (o teclado fica acima de outras janelas).
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = Self.windowLevel
+        let host = UIHostingController(rootView: LockView().environmentObject(app).tint(PDVTheme.blue))
+        host.view.backgroundColor = .systemBackground
+        window.rootViewController = host
+        window.accessibilityViewIsModal = true
+        window.makeKeyAndVisible()
+        self.window = window
+    }
+
+    private func hide() {
+        guard let window else { return }
+        window.isHidden = true
+        window.rootViewController = nil
+        self.window = nil
+        // Devolve o foco à janela principal do app.
+        window.windowScene?.windows.first { $0.windowLevel == .normal }?.makeKey()
+    }
+
+    private static func activeScene() -> UIWindowScene? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return scenes.first { $0.activationState == .foregroundActive }
+            ?? scenes.first { $0.activationState == .foregroundInactive }
+            ?? scenes.first
     }
 }
 

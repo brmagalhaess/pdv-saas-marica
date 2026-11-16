@@ -237,10 +237,13 @@ struct LogoutRequest: Encodable {
 struct Page<Item> {
     let results: [Item]
     let nextCursor: String?
+    /// Dados da lista inteira que vêm junto da página (totais do Fiado, contagens do Estoque).
+    let summary: (any Sendable)?
 
-    init(results: [Item], nextCursor: String?) {
+    init(results: [Item], nextCursor: String?, summary: (any Sendable)? = nil) {
         self.results = results
         self.nextCursor = nextCursor
+        self.summary = summary
     }
 }
 
@@ -254,6 +257,7 @@ extension Page: Decodable where Item: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         results = try container.decode([Item].self, forKey: .results)
         nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
+        summary = nil
     }
 }
 

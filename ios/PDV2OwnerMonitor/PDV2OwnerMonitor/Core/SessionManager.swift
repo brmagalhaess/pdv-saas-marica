@@ -25,6 +25,12 @@ actor SessionManager {
     private let builder: APIRequestBuilder
     private let device: LoginRequest.Device
     private let now: @Sendable () -> Date
+    /// Esperas antes de repetir um refresh que falhou por rede/5xx (em nanossegundos).
+    private let refreshRetryDelays: [UInt64]
+
+    /// Repetições do refresh: o servidor aceita o refresh anterior por 30 s (resposta perdida);
+    /// repetir logo, dentro dessa janela, evita a revogação por `refresh_reuse`.
+    static let defaultRefreshRetryDelays: [UInt64] = [2_000_000_000, 5_000_000_000]
 
     private var accessToken: String?
     private var accessExpiry: Date?
@@ -36,8 +42,10 @@ actor SessionManager {
 
     init(baseURL: URL, transport: HTTPTransport, store: SessionStore,
          device: LoginRequest.Device, userAgent: String,
-         now: @escaping @Sendable () -> Date = { Date() }) {
+         now: @escaping @Sendable () -> Date = { Date() },
+         refreshRetryDelays: [UInt64] = SessionManager.defaultRefreshRetryDelays) {
         self.baseURL = baseURL
+        self.refreshRetryDelays = refreshRetryDelays
         self.transport = transport
         self.store = store
         self.device = device
@@ -136,11 +144,32 @@ actor SessionManager {
     private func performRefresh() async throws {
         guard let stored else { throw APIError.signedOut() }
         refreshCount += 1
-        let response: RefreshResponse = try await perform(
-            try Endpoint.send("POST", "/api/v1/app/auth/refresh",
-                              body: RefreshRequest(refreshToken: stored.refreshToken), authenticated: false),
-            token: nil)
-        try apply(response.tokens, deviceID: stored.deviceID)
+        let endpoint = try Endpoint.send("POST", "/api/v1/app/auth/refresh",
+                                         body: RefreshRequest(refreshToken: stored.refreshToken), authenticated: false)
+        var attempt = 0
+        while true {
+            do {
+                let response: RefreshResponse = try await perform(endpoint, token: nil)
+                try apply(response.tokens, deviceID: stored.deviceID)
+                return
+            } catch let error as APIError where Self.isTransient(error) && attempt < refreshRetryDelays.count {
+                // A resposta pode ter se perdido depois de o servidor girar o par:
+                // repete o MESMO refresh logo, ainda dentro da tolerância de 30 s.
+                let delay = refreshRetryDelays[attempt]
+                attempt += 1
+                if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+                try Task.checkCancellation()
+            }
+        }
+    }
+
+    /// Falha de transporte (sem rede, tempo esgotado, TLS) ou 5xx: vale repetir.
+    static func isTransient(_ error: APIError) -> Bool {
+        switch error {
+        case .offline, .unavailable: return true
+        case .server(let status, _, _, _): return status >= 500
+        case .invalidServerURL: return false
+        }
     }
 
     private func apply(_ tokens: TokenPair, deviceID: String) throws {

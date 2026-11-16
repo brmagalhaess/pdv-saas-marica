@@ -19,7 +19,8 @@ struct StockView: View {
     @EnvironmentObject private var app: AppState
     @StateObject private var state = PagedState<StockAlert>()
     @State private var filter: Filter = .zeroed
-    @State private var counts: StockCounts?
+    /// Contagens da mesma resposta da lista: zeradas ao trocar empresa/loja/filtro.
+    private var counts: StockCounts? { state.summary(as: StockCounts.self) }
 
     var body: some View {
         TenantGate(permission: .stock) { context in
@@ -31,8 +32,7 @@ struct StockView: View {
                                               icon: "shippingbox"),
                           fetch: { cursor in
                               let page = try await app.api.stockAlerts(context, status: filter.rawValue, cursor: cursor)
-                              counts = page.counts
-                              return Page(results: page.results, nextCursor: page.nextCursor)
+                              return Page(results: page.results, nextCursor: page.nextCursor, summary: page.counts)
                           },
                           header: {
                               Section {
