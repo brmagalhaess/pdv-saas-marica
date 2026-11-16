@@ -404,7 +404,8 @@ def _cleanup_downloads(updates, keep=()):
 # ------------------------------------------------------------ public status
 
 def _cash_open(store):
-    return store.cash_state() is not None
+    # Any computer of the shop: an update restarts the cashier all of them depend on.
+    return getattr(store, "any_cash_open", lambda: store.cash_state() is not None)()
 
 
 def _print_busy(store, now_ms=None):

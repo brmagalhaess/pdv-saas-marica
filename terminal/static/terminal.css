@@ -123,6 +123,29 @@ kbd{display:inline-block;min-width:22px;padding:0 6px;border:1px solid currentCo
 .app>.tabs{grid-row:2}
 .app>.workspace{grid-row:3}
 .app>.keybar{grid-row:4}
+/* Promoted computer still to be regularized with the cloud: one more fixed row under the tabs. */
+body[data-promotion="true"] .app{grid-template-rows:44px auto auto minmax(0,1fr) 56px}
+body[data-promotion="true"] .app>.promotion-card{grid-row:3}
+body[data-promotion="true"] .app>.workspace{grid-row:4}
+body[data-promotion="true"] .app>.keybar{grid-row:5}
+@media (max-width:980px){body[data-promotion="true"] .app{grid-template-rows:auto auto auto minmax(0,1fr) 56px}}
+.promotion-card{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;padding:10px 14px;border-bottom:2px solid var(--gold);background:var(--warn-soft);color:var(--ink)}
+.promotion-text{flex:1 1 420px;min-width:0;display:grid;gap:2px;font-size:14px}
+.promotion-text p{margin:0}
+.promotion-warning{font-weight:700;color:var(--warn)}
+.promotion-form{flex:1 1 420px;display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px}
+.promotion-form .field{flex:1 1 150px;min-width:0}
+body.focus-mode .promotion-form{display:none}
+/* Additional cashier: the main one stopped answering. Above everything, dialogs included. */
+.server-down{position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:16px;background:rgba(6,20,27,.78)}
+.server-down-card{width:min(520px,100%);display:grid;gap:12px;justify-items:start;padding:28px;border:1px solid var(--line);border-radius:20px;background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.server-down-card h1{font-size:26px;line-height:1.15}
+.server-down-icon{width:40px;height:40px;color:var(--warn)}
+/* "Caixas da loja" and the six-digit code read out loud to the other computer. */
+.enroll-code{padding:14px 10px;border:2px solid var(--line);border-radius:14px;background:var(--surface-2);font-family:var(--mono);font-size:54px;font-weight:800;letter-spacing:.08em;text-align:center;color:var(--ink)}
+.stations-warning{padding:10px 12px;border-radius:10px;background:var(--warn-soft);color:var(--ink);font-weight:600}
+.station-row{align-items:center;flex-wrap:wrap}
+.station-row .list-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
 .workspace{min-height:0;overflow:hidden}
 .tab-panel{height:100%}
 

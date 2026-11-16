@@ -1,6 +1,7 @@
 """SQLite state and business rules for a single offline terminal."""
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -96,12 +97,30 @@ RESTORE_COUNTERS = ("position", "total", "sales", "sales_cents", "returns", "ret
 CONFIG_DRIVERS = ("tcp", "windows_raw", "cups", "file")
 CONFIG_FORMATS = {"receipt": ("escpos58", "escpos80"), "label": ("zpl", "epl")}
 EVENT_ID = re.compile(r"[0-9a-f]{32}")
+# Phase 3: additional cashiers ("estações") of the same shop. The computer that owns this
+# SQLite file is always the station "server"; the others reach it through the LAN listener.
+SERVER_STATION_ID = "server"
+SERVER_STATION_NAME = "Caixa principal"
+STATION_NAME_MAX = 40
+STATION_ENROLL_TTL_SECONDS = 300
+STATION_ENROLL_MAX_FAILURES = 5
+STATION_ONLINE_SECONDS = 90
+SERVER_ONLY_MESSAGE = "Esta operação só pode ser feita no caixa principal da loja."
+STATION_TABLES = ("cash_sessions", "sales", "sale_returns", "credit_receipts", "print_jobs")
+STATION_LIMIT_NONE = "O plano desta loja não inclui caixas adicionais. Fale com o suporte para ampliar o plano."
+STATION_LIMIT_FULL = ("O plano desta loja inclui {n} caixa(s) adicional(is) e todos já estão em uso. Remova um "
+                      "caixa em Sistema → Caixas da loja ou amplie o plano.")
+STATION_CODE_INVALID = "Código inválido ou vencido. Peça um novo código no caixa principal."
+PROMOTION_META = ("promotion_state", "promoted_at", "promotion_previous_station", "promotion_device_id",
+                  "server_generation")
 
 
 class TerminalError(Exception):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, code=None):
         super().__init__(message)
         self.status = status
+        # Stable machine-readable reason (station_limit, server_only...), when there is one.
+        self.code = code
 
 
 def _now_ms():
@@ -227,7 +246,6 @@ class Store:
                 CREATE TABLE IF NOT EXISTS cash_sessions(
                     id TEXT PRIMARY KEY,operator_id TEXT NOT NULL,opening_cents INTEGER NOT NULL,
                     opened_at INTEGER NOT NULL,closed_at INTEGER,counted_cents INTEGER,expected_cents INTEGER);
-                CREATE UNIQUE INDEX IF NOT EXISTS cash_one_open ON cash_sessions((1)) WHERE closed_at IS NULL;
                 CREATE TABLE IF NOT EXISTS cash_movements(
                     id TEXT PRIMARY KEY,session_id TEXT NOT NULL,kind TEXT NOT NULL,
                     amount_cents INTEGER NOT NULL,reason TEXT NOT NULL,operator_id TEXT NOT NULL,
@@ -315,13 +333,16 @@ class Store:
             conn.commit()
             self._migrate_conflict_key(conn)
             self._migrate_outbox_seq(conn)
+            self._migrate_stations(conn)
         try:
             self.path.chmod(0o600)
         except OSError:
             pass
         # A previous process may have sent bytes before crashing. Never retry it silently.
+        # Only the queue of this computer: each additional cashier recovers its own (recover_print).
         with self.transaction() as conn:
-            conn.execute("UPDATE print_jobs SET status='uncertain',error='Processo interrompido durante impressão' WHERE status='sending'")
+            conn.execute("UPDATE print_jobs SET status='uncertain',error='Processo interrompido durante impressão' "
+                         "WHERE status='sending' AND station_id=?", (SERVER_STATION_ID,))
 
     @staticmethod
     def is_corruption(exc):
@@ -384,6 +405,82 @@ class Store:
         except BaseException:
             conn.rollback()
             raise
+
+    @staticmethod
+    def _migrate_stations(conn):
+        """Phase 3: one cashier per station. Idempotent; running it twice changes nothing.
+
+        station_id always arrives by ALTER TABLE (never in the CREATE TABLE text), so a new
+        database and a migrated one keep the same column order. After this migration the
+        previous executable can no longer open a cashier or sell (its positional INSERTs
+        do not know the new column); the updater's rollback does not restore the database.
+        """
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS stations(
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE,
+                created_at INTEGER NOT NULL, last_seen_at INTEGER, revoked_at INTEGER,
+                hostname TEXT NOT NULL DEFAULT '', app_version TEXT NOT NULL DEFAULT '',
+                last_address TEXT NOT NULL DEFAULT '')""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS station_enroll_codes(
+                code_hash TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+                created_by TEXT, station_name TEXT NOT NULL DEFAULT '',
+                failures INTEGER NOT NULL DEFAULT 0, used_at INTEGER)""")
+            conn.execute("INSERT OR IGNORE INTO stations(id,name,token_hash,created_at) VALUES(?,?,NULL,?)",
+                         (SERVER_STATION_ID, SERVER_STATION_NAME, _now_ms()))
+            for table in STATION_TABLES:
+                if "station_id" not in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN station_id TEXT NOT NULL DEFAULT 'server'")
+            if "station_id" not in {row["name"] for row in conn.execute("PRAGMA table_info(print_settings)")}:
+                # One printer setup per (station, kind): the primary key changes, so the table is rebuilt.
+                conn.execute("ALTER TABLE print_settings RENAME TO print_settings_old")
+                conn.execute("""CREATE TABLE print_settings(
+                    kind TEXT NOT NULL, driver TEXT NOT NULL, target TEXT NOT NULL, format TEXT NOT NULL,
+                    station_id TEXT NOT NULL DEFAULT 'server', PRIMARY KEY(station_id,kind))""")
+                conn.execute("""INSERT INTO print_settings(kind,driver,target,format,station_id)
+                                SELECT kind,driver,target,format,'server' FROM print_settings_old""")
+                conn.execute("DROP TABLE print_settings_old")
+            # The old index allowed a single open cashier in the whole file.
+            conn.execute("DROP INDEX IF EXISTS cash_one_open")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS cash_one_open_station "
+                         "ON cash_sessions(station_id) WHERE closed_at IS NULL")
+            conn.execute("CREATE INDEX IF NOT EXISTS print_jobs_station ON print_jobs(station_id,status,created_at)")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+    # ---------- phase 3: which cashier is asking (kept per thread, never a method parameter) ----------
+
+    def set_station(self, station_id):
+        """Station of the request being served by this thread; None goes back to the server."""
+        self._local.station_id = station_id if isinstance(station_id, str) and station_id else SERVER_STATION_ID
+
+    def current_station(self):
+        return getattr(self._local, "station_id", None) or SERVER_STATION_ID
+
+    @contextmanager
+    def station(self, station_id):
+        previous = self.current_station()
+        self.set_station(station_id)
+        try:
+            yield self
+        finally:
+            self.set_station(previous)
+
+    @staticmethod
+    def _station_name(conn, station_id):
+        row = conn.execute("SELECT name FROM stations WHERE id=?", (station_id,)).fetchone()
+        return row[0] if row else ""
+
+    def station_name(self, station_id=None):
+        with self.connection() as conn:
+            return self._station_name(conn, station_id or self.current_station())
+
+    def _print_setting(self, conn, kind):
+        """Printer of the current cashier for receipts or labels, if it has one."""
+        return conn.execute("SELECT * FROM print_settings WHERE kind=? AND station_id=?",
+                            (kind, self.current_station())).fetchone()
 
     @staticmethod
     def _migrate_conflict_key(conn):
@@ -477,6 +574,11 @@ class Store:
         }
 
     def _audit(self, conn, operator_id, action, subject_id=None, detail=None):
+        station = self.current_station()
+        if station != SERVER_STATION_ID:
+            # Which additional cashier did it; the main one is the default and says nothing.
+            mark = "caixa=" + (self._station_name(conn, station) or station)
+            detail = f"{detail}; {mark}" if detail else mark
         conn.execute("INSERT INTO audit VALUES (?,?,?,?,?,?)",
                      (uuid.uuid4().hex, operator_id, action, subject_id, detail, _now_ms()))
 
@@ -501,8 +603,10 @@ class Store:
         # These are downloaded/setup data, not locally created business records.
         # Clearing them also makes exports after a new pairing tenant-isolated.
         for table in ("products", "operators", "customers", "login_attempts", "audit", "print_settings",
-                      "sync_conflicts", "sync_quarantine"):
+                      "sync_conflicts", "sync_quarantine", "station_enroll_codes"):
             conn.execute(f"DELETE FROM {table}")
+        # The additional cashiers belonged to the company that is leaving this file.
+        conn.execute("DELETE FROM stations WHERE id != ?", (SERVER_STATION_ID,))
 
     @staticmethod
     def _clear_connection_meta(conn):
@@ -511,8 +615,10 @@ class Store:
                     "discount_max_bps", "issuer_profile", "business_hours", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at",
                     "last_heartbeat_at", "last_heartbeat_error", "bootstrap_summary", "catalog_skipped",
-                    "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at", *PHASE2_META):
+                    "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at", *PHASE2_META,
+                    *PROMOTION_META):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
+        conn.execute("DELETE FROM meta WHERE key LIKE 'manager_override_window|%'")
 
     def ensure_pairable(self):
         with self.connection() as conn:
@@ -528,6 +634,10 @@ class Store:
             raise TerminalError("Terminal ainda não pareado", 409)
         event = {"event_id": event_id, "type": event_type, "aggregate_id": aggregate_id,
                  "identity": identity, "data": data}
+        if "stations" in self._meta_json(self._meta(conn, "cloud_capabilities"), []):
+            # Outside `data` on purpose: the cloud hashes `data`, and an older cloud refuses the key.
+            station = self.current_station()
+            event["station"] = {"id": station, "name": self._station_name(conn, station)}
         # Callers hold BEGIN IMMEDIATE, so the next number cannot be taken twice.
         conn.execute("""INSERT INTO outbox(id,event_type,aggregate_id,payload,created_at,acked_at,seq)
                         VALUES (?,?,?,?,?,NULL,(SELECT COALESCE(MAX(seq),0)+1 FROM outbox))""",
@@ -551,7 +661,7 @@ class Store:
 
     def _receipt_data(self, conn, snapshot):
         result = self._receipt_context(conn, snapshot)
-        setting = conn.execute("SELECT format FROM print_settings WHERE kind='receipt'").fetchone()
+        setting = self._print_setting(conn, "receipt")
         width = 58 if setting and setting["format"] == "escpos58" else 80
         result["receipt"] = receipt_layout(result, width)
         return result
@@ -772,7 +882,8 @@ class Store:
                     verify_lease(envelope, key, expected=expected, now=expires - 1)
                 except LicenseError:
                     return dict(invalid, expires_at=expires)
-                cash = conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone()
+                cash = conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
+                                    (self.current_station(),)).fetchone()
                 grace_until = expires + EXPIRED_SHIFT_GRACE_SECONDS
                 shift = bool(cash) and now < grace_until
                 result = {"state": "expired", "can_sell": shift, "can_open_cash": False, "expires_at": expires,
@@ -803,10 +914,16 @@ class Store:
                       "days_left": days_left, "warning": warning,
                       "offline_seconds_max": expires - issued,
                       "plan_status": claims.get("status"), "features": claims.get("features", []),
-                      "business_hours": claims.get("business_hours", {})}
+                      "business_hours": claims.get("business_hours", {}),
+                      "max_stations": self._claim_stations(claims)}
         if now - last_seen >= LAST_SEEN_WRITE_SECONDS:
             self.touch_last_seen(now)
         return status
+
+    @staticmethod
+    def _claim_stations(claims):
+        value = claims.get("max_stations") if isinstance(claims, dict) else None
+        return value if type(value) is int and value >= 0 else 0
 
     def touch_last_seen(self, now=None):
         """Advance the anti-rollback mark; it never moves backwards here."""
@@ -1206,15 +1323,18 @@ class Store:
             # A new or changed PIN must be usable immediately, even when this
             # device had accumulated failed attempts for the same operator.
             if previous is None or previous["pin_hash"] != pin_hash:
-                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (op_id,))
+                # Also the attempts counted on each additional cashier ("<operator>|<station>").
+                conn.execute("DELETE FROM login_attempts WHERE operator_id=? OR operator_id LIKE ? ESCAPE '\\'",
+                             (op_id, _like(op_id) + "|%"))
         marks = ",".join("?" for _ in operator_ids)
         conn.execute("UPDATE operators SET active=0" + (f" WHERE id NOT IN ({marks})" if operator_ids else ""),
                      operator_ids)
         # The manager-PIN lockouts are kept under their own keys: a bootstrap
         # (every 30 seconds, or on demand) must never give back the attempts.
-        conn.execute("DELETE FROM login_attempts WHERE operator_id NOT LIKE ? ESCAPE '\\'" +
-                     (f" AND operator_id NOT IN ({marks})" if operator_ids else ""),
-                     [_like(MANAGER_OVERRIDE_KEY) + "%", *operator_ids])
+        active = set(operator_ids)
+        orphans = [(row[0],) for row in conn.execute("SELECT operator_id FROM login_attempts").fetchall()
+                   if not row[0].startswith(MANAGER_OVERRIDE_KEY) and row[0].split("|", 1)[0] not in active]
+        conn.executemany("DELETE FROM login_attempts WHERE operator_id=?", orphans)
 
     @staticmethod
     def _pending_credit_effects(conn):
@@ -1394,18 +1514,20 @@ class Store:
 
         operator_id = _str(operator_id, "Operador")
         now = int(time.time())
+        # Wrong PINs lock this operator on this cashier only.
+        attempts_key = operator_id + self._station_suffix()
         # PBKDF2 is slow on purpose: run it without holding the write lock,
         # which the sale path and the background worker also need.
         with self.connection() as conn:
             attempts = conn.execute("SELECT locked_until FROM login_attempts WHERE operator_id=?",
-                                    (operator_id,)).fetchone()
+                                    (attempts_key,)).fetchone()
             if attempts and attempts["locked_until"] > now:
                 raise TerminalError("Muitas tentativas; aguarde cinco minutos", 429)
             row = conn.execute("SELECT * FROM operators WHERE id=? AND active=1", (operator_id,)).fetchone()
         valid = bool(row and isinstance(pin, str) and verify_pin(pin, row["pin_hash"]))
         with self.transaction() as conn:
             attempts = conn.execute("SELECT failures,locked_until FROM login_attempts WHERE operator_id=?",
-                                    (operator_id,)).fetchone()
+                                    (attempts_key,)).fetchone()
             if attempts and attempts["locked_until"] > now:
                 raise TerminalError("Muitas tentativas; aguarde cinco minutos", 429)
             if valid:  # the PIN may have been rotated or the operator removed meanwhile
@@ -1415,15 +1537,20 @@ class Store:
                 failures = (attempts["failures"] if attempts else 0) + 1
                 conn.execute("""INSERT INTO login_attempts VALUES (?,?,?)
                     ON CONFLICT(operator_id) DO UPDATE SET failures=excluded.failures,locked_until=excluded.locked_until""",
-                    (operator_id, failures, now + 300 if failures >= 5 else 0))
+                    (attempts_key, failures, now + 300 if failures >= 5 else 0))
                 self._audit(conn, operator_id, "operator.login_failed")
             else:
-                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (operator_id,))
+                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (attempts_key,))
                 self._audit(conn, operator_id, "operator.login")
                 result = {"id": row["id"], "name": row["name"], "role": row["role"]}
         if not valid:
             raise TerminalError("Operador ou PIN inválido", 401)
         return result
+
+    def _station_suffix(self):
+        """Suffix of the lockout keys: nothing on the main cashier, "|<station>" on the others."""
+        station = self.current_station()
+        return "" if station == SERVER_STATION_ID else "|" + station
 
     def manager_override(self, pin, requester_id=None):
         """Check a manager PIN typed on behalf of `requester_id` (the logged operator).
@@ -1436,8 +1563,11 @@ class Store:
         if not isinstance(pin, str) or not pin:
             raise TerminalError("PIN de gerente necessário", 403)
         now = int(time.time())
-        own_key = f"{MANAGER_OVERRIDE_KEY}:{requester_id or 'maintenance'}"
-        keys = (own_key, MANAGER_OVERRIDE_KEY) if requester_id else (own_key,)
+        # Per cashier: typos on one computer never lock the others, and the ceiling is per cashier too.
+        suffix = self._station_suffix()
+        own_key = f"{MANAGER_OVERRIDE_KEY}:{requester_id or 'maintenance'}{suffix}"
+        global_key, window_key = MANAGER_OVERRIDE_KEY + suffix, "manager_override_window" + suffix
+        keys = (own_key, global_key) if requester_id else (own_key,)
         lock_query = "SELECT failures,locked_until FROM login_attempts WHERE operator_id=?"
 
         def ensure_unlocked(conn):
@@ -1467,15 +1597,15 @@ class Store:
                                   now + MANAGER_OVERRIDE_LOCK_SECONDS if failures >= MANAGER_OVERRIDE_FAILURES else 0))
             if requester_id:
                 # Store-wide ceiling, counted inside a time window so honest typos never add up.
-                window = int(self._meta(conn, "manager_override_window") or 0)
-                attempts = conn.execute(lock_query, (MANAGER_OVERRIDE_KEY,)).fetchone()
+                window = int(self._meta(conn, window_key) or 0)
+                attempts = conn.execute(lock_query, (global_key,)).fetchone()
                 total = attempts["failures"] if attempts else 0
                 if now - window >= MANAGER_OVERRIDE_GLOBAL_WINDOW_SECONDS or now < window:
                     total = 0
-                    self._set_meta(conn, "manager_override_window", str(now))
+                    self._set_meta(conn, window_key, str(now))
                 total += 1
                 locked = total >= MANAGER_OVERRIDE_GLOBAL_FAILURES
-                conn.execute(upsert, (MANAGER_OVERRIDE_KEY, 0 if locked else total,
+                conn.execute(upsert, (global_key, 0 if locked else total,
                                       now + MANAGER_OVERRIDE_LOCK_SECONDS if locked else 0))
                 if locked:
                     self._audit(conn, requester_id, "manager_override.store_locked")
@@ -1550,17 +1680,32 @@ class Store:
             return [row[0] for row in conn.execute("SELECT DISTINCT category FROM products WHERE active=1 ORDER BY category")]
 
     def cash_state(self):
+        """Open cashier of the station that is asking (each computer has its own)."""
         with self.connection() as conn:
-            row = conn.execute("SELECT * FROM cash_sessions WHERE closed_at IS NULL").fetchone()
+            row = conn.execute("SELECT * FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
+                               (self.current_station(),)).fetchone()
             if not row:
                 return None
             return dict(row)
 
     def _open_cash(self, conn):
-        row = conn.execute("SELECT * FROM cash_sessions WHERE closed_at IS NULL").fetchone()
+        row = conn.execute("SELECT * FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
+                           (self.current_station(),)).fetchone()
         if not row:
             raise TerminalError("Abra o caixa antes da operação", 409)
         return row
+
+    def any_cash_open(self):
+        """True while any computer of the shop has its cashier open."""
+        with self.connection() as conn:
+            return conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL LIMIT 1").fetchone() is not None
+
+    def open_cash_sessions(self):
+        with self.connection() as conn:
+            return [dict(row) for row in conn.execute(
+                """SELECT c.id,c.station_id,COALESCE(s.name,'') station_name,c.operator_id,c.opened_at
+                   FROM cash_sessions c LEFT JOIN stations s ON s.id=c.station_id
+                   WHERE c.closed_at IS NULL ORDER BY c.opened_at,c.id""")]
 
     @staticmethod
     def _cash_expected(conn, cash):
@@ -1642,11 +1787,14 @@ class Store:
             raise TerminalError("Fora do horário de funcionamento da empresa; o caixa não pode ser aberto agora", 403)
         opening_cents = _positive_int(opening_cents, "Valor de abertura", zero=True)
         with self.transaction() as conn:
-            if conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone():
+            station = self.current_station()
+            if conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
+                            (station,)).fetchone():
                 raise TerminalError("Já existe caixa aberto", 409)
             session_id, timestamp = _uuid(), _now_ms()
-            conn.execute("INSERT INTO cash_sessions VALUES (?,?,?, ?,NULL,NULL,NULL)",
-                         (session_id, operator_id, opening_cents, timestamp))
+            conn.execute("""INSERT INTO cash_sessions
+                (id,operator_id,opening_cents,opened_at,closed_at,counted_cents,expected_cents,station_id)
+                VALUES (?,?,?,?,NULL,NULL,NULL,?)""", (session_id, operator_id, opening_cents, timestamp, station))
             self._event(conn, "cash.opened", session_id,
                         {"opening_cents": opening_cents, "operator_id": operator_id, "created_at": timestamp})
             self._audit(conn, operator_id, "cash.opened", session_id)
@@ -1671,15 +1819,22 @@ class Store:
             self._audit(conn, operator_id, "cash." + kind, movement_id, reason)
             return {"id": movement_id, "kind": kind, "amount_cents": amount_cents}
 
-    def close_cash(self, operator_id, counted_cents, manager_pin):
+    def close_cash(self, operator_id, counted_cents, manager_pin, station_id=None):
         # Fechar o caixa é uma operação de supervisão. A validação acontece
         # antes de alterar a sessão para que um PIN inválido nunca deixe o
         # operador em um estado parcialmente fechado.
         # Allowed on a transferred terminal: the closing still goes up through the send-only token.
         self.ensure_not_restoring()
+        current = self.current_station()
+        target = station_id if isinstance(station_id, str) and station_id else current
+        # Only the main cashier closes the cashier of another computer (one that broke or was removed).
+        if target != current and current != SERVER_STATION_ID:
+            raise TerminalError(SERVER_ONLY_MESSAGE, 403, code="server_only")
+        # The PIN is checked where it was typed; the closing is recorded on the cashier it belongs to.
         supervisor_id = self.manager_override(manager_pin, operator_id)
         counted_cents = _positive_int(counted_cents, "Valor contado", zero=True)
-        summary = self._close_cash(operator_id, counted_cents, supervisor_id)
+        with self.station(target):
+            summary = self._close_cash(operator_id, counted_cents, supervisor_id)
         _mirror_call("on_cash_closed", self)
         return summary
 
@@ -1872,7 +2027,10 @@ class Store:
                         "customer_id": customer_id, "gross_cents": gross_total,
                         "promo_discount_cents": promo_total, "discount_cents": discount, "total_cents": total, "change_cents": change,
                         "items": lines, "payments": normalized_payments, "created_at": timestamp,
-                        "status": "completed"}
+                        "status": "completed",
+                        # Receipt context only: the event data is built from a fixed list below.
+                        "station_id": cash["station_id"],
+                        "station_name": self._station_name(conn, cash["station_id"])}
             if payment_names:
                 snapshot["payment_names"] = payment_names
             if requested_customer and requested_customer != [customer_name, customer_document]:
@@ -1884,11 +2042,12 @@ class Store:
                                  (line["quantity_milli"], line["product_id"]))
             conn.execute("""INSERT INTO sales
                 (id,request_id,session_id,operator_id,customer_name,customer_id,gross_cents,
-                 discount_cents,total_cents,change_cents,snapshot,status,created_at,voided_at,void_reason,customer_document)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?)""",
+                 discount_cents,total_cents,change_cents,snapshot,status,created_at,voided_at,void_reason,
+                 customer_document,station_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)""",
                          (sale_id, request_id, cash["id"], operator["id"], customer_name,
                           customer_id, gross_total, discount, total, change, _json(snapshot),
-                          "completed", timestamp, customer_document))
+                          "completed", timestamp, customer_document, cash["station_id"]))
             event_data = {key: snapshot[key] for key in ("request_id", "cash_session_id", "created_at",
                                                        "gross_cents", "promo_discount_cents", "discount_cents", "total_cents",
                                                        "change_cents", "customer_id", "customer_name",
@@ -1902,8 +2061,11 @@ class Store:
 
     def sales(self, limit=50):
         with self.connection() as conn:
-            return [dict(row) for row in conn.execute("""SELECT id,request_id,customer_name,total_cents,status,
-                created_at,void_reason FROM sales ORDER BY created_at DESC LIMIT ?""", (min(max(int(limit), 1), 100),))]
+            # Every sale of the shop, whichever cashier made it.
+            return [dict(row) for row in conn.execute("""SELECT s.id,s.request_id,s.customer_name,s.total_cents,
+                s.status,s.created_at,s.void_reason,s.station_id,COALESCE(st.name,'') station_name
+                FROM sales s LEFT JOIN stations st ON st.id=s.station_id
+                ORDER BY s.created_at DESC LIMIT ?""", (min(max(int(limit), 1), 100),))]
 
     def sale_detail(self, sale_id):
         with self.connection() as conn:
@@ -2051,8 +2213,11 @@ class Store:
                     conn.execute("UPDATE products SET stock_milli=stock_milli+? WHERE id=?",
                                  (item["quantity_milli"], item["product_id"]))
             timestamp = _now_ms()
-            conn.execute("INSERT INTO sale_returns VALUES (?,?,?,?,?,?,?,?,?)",
-                         (return_id, sale_id, session_id, operator["id"], refund, total, _json(items), reason, timestamp))
+            conn.execute("""INSERT INTO sale_returns
+                (id,sale_id,session_id,operator_id,refund_method,total_cents,items,reason,created_at,station_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                         (return_id, sale_id, session_id, operator["id"], refund, total, _json(items), reason,
+                          timestamp, self.current_station()))
             data = {"sale_id": sale_id, "items": items, "total_cents": total, "refund_method": refund,
                     "reason": reason, "operator_id": operator["id"], "supervisor_id": supervisor,
                     "created_at": timestamp}
@@ -2088,7 +2253,7 @@ class Store:
         """Layout for the on-screen preview, plus a print job when a receipt printer is set."""
         raw = self._meta(conn, "issuer_profile")
         doc = {**doc, "issuer": json.loads(raw) if raw else {"legal_name": self._meta(conn, "tenant_name") or ""}}
-        setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
+        setting = self._print_setting(conn, "receipt")
         width = 58 if setting and setting["format"] == "escpos58" else 80
         layout = voucher_layout(doc, width)
         job = self._queue_print(conn, "receipt", layout_bytes(layout), setting) if setting else None
@@ -2118,8 +2283,11 @@ class Store:
             if amount > customer["open_credit_cents"]:
                 raise TerminalError(f"Valor maior que o fiado em aberto ({_brl(customer['open_credit_cents'])})", 409)
             timestamp = _now_ms()
-            conn.execute("INSERT INTO credit_receipts VALUES (?,?,?,?,?,?,?)",
-                         (receipt_id, customer_id, cash["id"], method, amount, operator["id"], timestamp))
+            conn.execute("""INSERT INTO credit_receipts
+                (id,customer_id,session_id,method,amount_cents,operator_id,created_at,station_id)
+                VALUES (?,?,?,?,?,?,?,?)""",
+                         (receipt_id, customer_id, cash["id"], method, amount, operator["id"], timestamp,
+                          cash["station_id"]))
             conn.execute("UPDATE customers SET open_credit_cents=open_credit_cents-? WHERE id=?", (amount, customer_id))
             self._event(conn, "credit.received", receipt_id,
                         {"customer_id": customer_id, "amount_cents": amount, "method": method,
@@ -2184,6 +2352,10 @@ class Store:
                     "cash_sessions": [dict(row) for row in conn.execute("SELECT * FROM cash_sessions ORDER BY opened_at")],
                     "cash_movements": [dict(row) for row in conn.execute("SELECT * FROM cash_movements ORDER BY created_at")],
                     "sales": sales,
+                    # Never the token of an additional cashier, not even its hash.
+                    "stations": [dict(row) for row in conn.execute(
+                        """SELECT id,name,created_at,last_seen_at,revoked_at,hostname,app_version,last_address
+                           FROM stations ORDER BY created_at,id""")],
                     "audit": [dict(row) for row in conn.execute("SELECT * FROM audit ORDER BY created_at")],
                     "pending_events": [json.loads(row["payload"]) for row in conn.execute(
                         "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY seq")],
@@ -2241,8 +2413,11 @@ class Store:
             staging.unlink(missing_ok=True)
 
     def printer_settings(self):
+        """Printers of the cashier that is asking: each computer prints on its own."""
         with self.connection() as conn:
-            return [dict(row) for row in conn.execute("SELECT * FROM print_settings ORDER BY kind")]
+            return [dict(row) for row in conn.execute(
+                "SELECT kind,driver,target,format FROM print_settings WHERE station_id=? ORDER BY kind",
+                (self.current_station(),))]
 
     def save_printer(self, kind, driver, target, fmt, operator_id=None):
         if kind not in ("receipt", "label") or driver not in ("tcp", "windows_raw", "cups", "file"):
@@ -2254,9 +2429,10 @@ class Store:
             raise TerminalError("Formato de impressão inválido")
         target = _str(target, "Destino", 260)
         with self.transaction() as conn:
-            conn.execute("INSERT INTO print_settings VALUES (?,?,?,?) ON CONFLICT(kind) DO UPDATE SET "
+            conn.execute("INSERT INTO print_settings(kind,driver,target,format,station_id) VALUES (?,?,?,?,?) "
+                         "ON CONFLICT(station_id,kind) DO UPDATE SET "
                          "driver=excluded.driver,target=excluded.target,format=excluded.format",
-                         (kind, driver, target, fmt))
+                         (kind, driver, target, fmt, self.current_station()))
             self._audit(conn, operator_id, "print.settings_changed", kind, f"{driver}:{fmt}")
         try:
             self.ensure_config_event()
@@ -2380,7 +2556,7 @@ class Store:
         """
         with self.transaction() as conn:
             self._ensure_abandonable(conn)
-            self._clear_company_cache(conn)
+            self._clear_company_cache(conn)  # also the additional cashiers, their codes and printers
             for table in ("sale_returns", "credit_receipts", "sales", "cash_movements", "cash_sessions",
                           "suspended_carts", "print_jobs", "outbox"):
                 conn.execute(f"DELETE FROM {table}")
@@ -2500,16 +2676,22 @@ class Store:
         progress["cash_movements_cents"] += sum(_int(row.get("amount_cents")) for row in movements
                                                 if isinstance(row, dict))
         session_id, opened_at = str(record["id"]), int(record["opened_at"])
+        station_id = str(record.get("station_id") or SERVER_STATION_ID)[:64]
+        # A cashier of another computer comes back with its identity, but has to be linked again.
+        conn.execute("INSERT OR IGNORE INTO stations(id,name,token_hash,created_at) VALUES (?,?,NULL,?)",
+                     (station_id, str(record.get("station_name") or "Caixa")[:STATION_NAME_MAX], _now_ms()))
         values = [session_id, str(record.get("operator_id") or ""), int(record.get("opening_cents") or 0), opened_at,
-                  record.get("closed_at"), record.get("counted_cents"), record.get("expected_cents")]
-        upsert = """INSERT INTO cash_sessions VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                  record.get("closed_at"), record.get("counted_cents"), record.get("expected_cents"), station_id]
+        upsert = """INSERT INTO cash_sessions
+                    (id,operator_id,opening_cents,opened_at,closed_at,counted_cents,expected_cents,station_id)
+                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                     closed_at=excluded.closed_at,counted_cents=excluded.counted_cents,
                     expected_cents=excluded.expected_cents"""
         warnings = 0
         try:
             conn.execute(upsert, values)
         except sqlite3.IntegrityError:
-            # This terminal admits a single open cashier: keep the record, as closed.
+            # Each station admits a single open cashier: keep the record, as closed.
             values[4] = opened_at
             conn.execute(upsert, values)
             warnings = 1
@@ -2528,6 +2710,7 @@ class Store:
         progress["returns"] += len(returns)
         progress["returns_cents"] += sum(_int(row.get("total_cents")) for row in returns if isinstance(row, dict))
         sale_id = str(record["id"])
+        station_id = str(record.get("station_id") or SERVER_STATION_ID)[:64]
         voided = record.get("status") == "voided"
         snapshot = {"id": sale_id, **data, "seller_name": names["operators"].get(data.get("seller_id"), ""),
                     "status": "voided" if voided else "completed"}
@@ -2543,8 +2726,8 @@ class Store:
             conn.execute(
                 """INSERT INTO sales (id,request_id,session_id,operator_id,customer_name,customer_id,gross_cents,
                        discount_cents,total_cents,change_cents,snapshot,status,created_at,voided_at,void_reason,
-                       customer_document)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       customer_document,station_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET status=excluded.status,voided_at=excluded.voided_at,
                        void_reason=excluded.void_reason,snapshot=excluded.snapshot""",
                 (sale_id, str(data.get("request_id") or sale_id), str(data.get("cash_session_id") or ""),
@@ -2553,24 +2736,30 @@ class Store:
                  int(data.get("total_cents") or 0), int(data.get("change_cents") or 0), _json(snapshot),
                  snapshot["status"], int(data.get("created_at") or 0),
                  record.get("voided_at") if voided else None,
-                 (record.get("void_reason") or "") if voided else None, data.get("customer_document")))
+                 (record.get("void_reason") or "") if voided else None, data.get("customer_document"),
+                 station_id))
         except sqlite3.IntegrityError:
             warnings = 1  # same request_id under another sale: the local record stays
         for row in returns:
-            conn.execute("INSERT OR IGNORE INTO sale_returns VALUES (?,?,?,?,?,?,?,?,?)",
+            conn.execute("""INSERT OR IGNORE INTO sale_returns
+                            (id,sale_id,session_id,operator_id,refund_method,total_cents,items,reason,created_at,
+                             station_id) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                          (str(row["id"]), sale_id, row.get("cash_session_id") or None,
                           str(row.get("operator_id") or ""), str(row["refund_method"]), int(row["total_cents"]),
-                          _json(row.get("items") or []), str(row.get("reason") or ""), int(row["created_at"])))
+                          _json(row.get("items") or []), str(row.get("reason") or ""), int(row["created_at"]),
+                          str(row.get("station_id") or SERVER_STATION_ID)[:64]))
         return warnings
 
     @staticmethod
     def _restore_credit_receipt(conn, record, progress, _names):
         progress["credit_receipts"] += 1
         progress["credit_receipts_cents"] += _int(record.get("amount_cents"))
-        conn.execute("INSERT OR IGNORE INTO credit_receipts VALUES (?,?,?,?,?,?,?)",
+        conn.execute("""INSERT OR IGNORE INTO credit_receipts
+                        (id,customer_id,session_id,method,amount_cents,operator_id,created_at,station_id)
+                        VALUES (?,?,?,?,?,?,?,?)""",
                      (str(record["id"]), str(record["customer_id"]), str(record.get("cash_session_id") or ""),
                       str(record["method"]), int(record["amount_cents"]), str(record.get("operator_id") or ""),
-                      int(record["created_at"])))
+                      int(record["created_at"]), str(record.get("station_id") or SERVER_STATION_ID)[:64]))
         return 0
 
     def _restore_config(self, conn, record, progress, _names):
@@ -2581,8 +2770,19 @@ class Store:
             if (isinstance(row, dict) and row.get("driver") in CONFIG_DRIVERS
                     and row.get("format") in CONFIG_FORMATS.get(row.get("kind"), ())
                     and isinstance(row.get("target"), str) and 0 < len(row["target"].strip()) <= 260):
-                conn.execute("INSERT OR IGNORE INTO print_settings VALUES (?,?,?,?)",
-                             (row["kind"], row["driver"], row["target"].strip(), row["format"]))
+                conn.execute("INSERT OR IGNORE INTO print_settings(kind,driver,target,format,station_id) "
+                             "VALUES (?,?,?,?,?)",
+                             (row["kind"], row["driver"], row["target"].strip(), row["format"], SERVER_STATION_ID))
+        stations = data.get("stations") if isinstance(data.get("stations"), list) else []
+        for row in stations[:64]:
+            # Identity only: the token stayed on the old computer, so each one is linked again.
+            if (isinstance(row, dict) and isinstance(row.get("id"), str) and 0 < len(row["id"]) <= 64
+                    and row["id"] != SERVER_STATION_ID and isinstance(row.get("name"), str)):
+                now = _now_ms()
+                conn.execute("INSERT OR IGNORE INTO stations(id,name,token_hash,created_at,revoked_at) "
+                             "VALUES (?,?,NULL,?,?)",
+                             (row["id"], row["name"].strip()[:STATION_NAME_MAX] or "Caixa", now,
+                              now if row.get("revoked") is True else None))
         self._set_meta(conn, "config_synced_hash", _config_hash(data))
         return 0
 
@@ -2693,14 +2893,23 @@ class Store:
                 or "terminal-config" not in self._meta_json(self._meta(conn, "cloud_capabilities"), [])):
             return None
         data = {"version": 1, "app_version": os.environ.get("PDV_VERSION", "2.0.0")[:80],
-                "print_settings": [dict(row) for row in conn.execute("SELECT * FROM print_settings ORDER BY kind")
+                # Only the printers of the main cashier: the others belong to each computer.
+                "print_settings": [dict(row) for row in conn.execute(
+                    "SELECT kind,driver,target,format FROM print_settings WHERE station_id=? ORDER BY kind",
+                    (SERVER_STATION_ID,))
                                    if row["driver"] in CONFIG_DRIVERS
                                    and row["format"] in CONFIG_FORMATS.get(row["kind"], ())][:4]}
         if enabled is not None:
             data["mirror"] = {"enabled": bool(enabled)}
+        if "stations" in self._meta_json(self._meta(conn, "cloud_capabilities"), []):
+            stations = [{"id": row["id"], "name": row["name"], "revoked": row["revoked_at"] is not None}
+                        for row in conn.execute("SELECT id,name,revoked_at FROM stations WHERE id != ? "
+                                                "ORDER BY created_at,id LIMIT 64", (SERVER_STATION_ID,))]
+            if stations:
+                data["stations"] = stations
         digest = _config_hash(data)
         synced = self._meta(conn, "config_synced_hash")
-        if not synced and not data["print_settings"] and not enabled:
+        if not synced and not data["print_settings"] and not enabled and not data.get("stations"):
             return None  # nothing set up yet: a fresh pairing sends nothing and stays easy to correct
         return None if digest == synced else (terminal_id, data, digest)
 
@@ -2721,7 +2930,7 @@ class Store:
             return event_id
 
     def _queue_receipt(self, conn, snapshot):
-        setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
+        setting = self._print_setting(conn, "receipt")
         if not setting:
             return None
         snapshot = self._receipt_context(conn, snapshot)
@@ -2730,8 +2939,12 @@ class Store:
 
     def _queue_print(self, conn, kind, payload, setting):
         job_id, timestamp = _uuid(), _now_ms()
-        conn.execute("INSERT INTO print_jobs VALUES (?,?,?,?,?,'queued',0,NULL,?,?)",
-                     (job_id, kind, payload, setting["driver"], setting["target"], timestamp, timestamp))
+        # The job belongs to the cashier that asked: its own computer prints it.
+        conn.execute("""INSERT INTO print_jobs
+            (id,kind,payload,driver,target,status,attempts,error,created_at,updated_at,station_id)
+            VALUES (?,?,?,?,?,'queued',0,NULL,?,?,?)""",
+                     (job_id, kind, payload, setting["driver"], setting["target"], timestamp, timestamp,
+                      self.current_station()))
         return job_id
 
     def queue_label(self, product_id, quantity=1):
@@ -2740,7 +2953,7 @@ class Store:
             raise TerminalError("A quantidade de etiquetas deve ficar entre 1 e 999")
         with self.transaction() as conn:
             product = conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
-            setting = conn.execute("SELECT * FROM print_settings WHERE kind='label'").fetchone()
+            setting = self._print_setting(conn, "label")
             if not product:
                 raise TerminalError("Produto não encontrado", 404)
             if not setting or setting["format"] == "escpos50x30":
@@ -2752,7 +2965,7 @@ class Store:
     def reprint(self, sale_id, operator_id=None):
         snapshot = self.sale_detail(sale_id)
         with self.transaction() as conn:
-            setting = conn.execute("SELECT * FROM print_settings WHERE kind='receipt'").fetchone()
+            setting = self._print_setting(conn, "receipt")
             if not setting:
                 raise TerminalError("Configure impressora de recibos antes", 409)
             job_id = self._queue_print(conn, "receipt", receipt_bytes(snapshot,
@@ -2763,12 +2976,14 @@ class Store:
     def print_jobs(self):
         with self.connection() as conn:
             return [dict(row) for row in conn.execute("""SELECT id,kind,driver,target,status,attempts,error,created_at,
-                updated_at FROM print_jobs ORDER BY created_at DESC LIMIT 100""")]
+                updated_at FROM print_jobs WHERE station_id=? ORDER BY created_at DESC LIMIT 100""",
+                                                      (self.current_station(),))]
 
     def begin_print(self):
         with self.transaction() as conn:
             while True:
-                row = conn.execute("SELECT * FROM print_jobs WHERE status='queued' ORDER BY created_at,rowid LIMIT 1").fetchone()
+                row = conn.execute("SELECT * FROM print_jobs WHERE status='queued' AND station_id=? "
+                                   "ORDER BY created_at,rowid LIMIT 1", (self.current_station(),)).fetchone()
                 if not row:
                     return None
                 # Preserve old jobs for inspection, but never send the retired
@@ -2784,13 +2999,22 @@ class Store:
 
     def finish_print(self, job_id, error=None):
         with self.transaction() as conn:
-            conn.execute("UPDATE print_jobs SET status=?,error=?,updated_at=? WHERE id=?",
+            conn.execute("UPDATE print_jobs SET status=?,error=?,updated_at=? WHERE id=? AND station_id=?",
                          ("uncertain" if error else "printed", str(error)[:300] if error else None,
-                          _now_ms(), job_id))
+                          _now_ms(), job_id, self.current_station()))
+
+    def recover_print(self):
+        """The agent of this cashier restarted: what it was sending may or may not have come out."""
+        with self.transaction() as conn:
+            return conn.execute(
+                "UPDATE print_jobs SET status='uncertain',error='Processo interrompido durante impressão',"
+                "updated_at=? WHERE status='sending' AND station_id=?",
+                (_now_ms(), self.current_station())).rowcount
 
     def retry_print(self, operator_id, job_id):
         with self.transaction() as conn:
-            row = conn.execute("SELECT status,kind,payload FROM print_jobs WHERE id=?", (job_id,)).fetchone()
+            row = conn.execute("SELECT status,kind,payload FROM print_jobs WHERE id=? AND station_id=?",
+                               (job_id, self.current_station())).fetchone()
             if not row:
                 raise TerminalError("Impressão não encontrada", 404)
             if row["kind"] == "label" and row["payload"].startswith(b"\x1b@"):
@@ -2801,3 +3025,566 @@ class Store:
                          (_now_ms(), job_id))
             self._audit(conn, operator_id, "print.retry.confirmed", job_id)
             return {"id": job_id, "status": "queued", "warning": "Pode gerar impressão duplicada"}
+
+    # ---------- phase 3: additional cashiers (stations) of the shop ----------
+
+    def _station_limit(self, conn):
+        """Additional cashiers the signed license allows (the main one is never counted)."""
+        claims = self._meta_json(self._meta(conn, "lease"), {}).get("payload")
+        limit = 0
+        if (isinstance(claims, dict) and claims.get("hub") is not False
+                and "stations" in self._meta_json(self._meta(conn, "cloud_capabilities"), [])):
+            limit = self._claim_stations(claims)
+        used = conn.execute("SELECT COUNT(*) FROM stations WHERE id != ? AND revoked_at IS NULL",
+                            (SERVER_STATION_ID,)).fetchone()[0]
+        return {"limit": limit, "used": used, "available": max(0, limit - used)}
+
+    def station_limit(self):
+        with self.connection() as conn:
+            return self._station_limit(conn)
+
+    @staticmethod
+    def _station_row(row, open_ids, now):
+        server = row["id"] == SERVER_STATION_ID
+        linked = server or (row["token_hash"] is not None and row["revoked_at"] is None)
+        seen = row["last_seen_at"]
+        return {"id": row["id"], "name": row["name"], "is_server": server, "created_at": row["created_at"],
+                "last_seen_at": seen, "revoked_at": row["revoked_at"], "hostname": row["hostname"],
+                "app_version": row["app_version"], "last_address": row["last_address"], "linked": linked,
+                "online": server or bool(linked and seen and now - seen <= STATION_ONLINE_SECONDS * 1000),
+                "cash_open": row["id"] in open_ids}
+
+    def _stations(self, conn, include_revoked=True, station_id=None):
+        open_ids = {row[0] for row in conn.execute("SELECT station_id FROM cash_sessions WHERE closed_at IS NULL")}
+        query, params = "SELECT * FROM stations", []
+        if station_id is not None:
+            query, params = query + " WHERE id=?", [station_id]
+        now = _now_ms()
+        rows = [self._station_row(row, open_ids, now)
+                for row in conn.execute(query + " ORDER BY id != 'server',created_at,id", params)]
+        return [row for row in rows if include_revoked or row["revoked_at"] is None]
+
+    def stations(self, include_revoked=True):
+        """Every cashier of the shop, the main one first. The token never leaves the database."""
+        with self.connection() as conn:
+            return self._stations(conn, include_revoked)
+
+    def _config_event_quietly(self):
+        try:
+            self.ensure_config_event()
+        except (TerminalError, sqlite3.Error):
+            pass  # the worker tries again on its next pass
+
+    def create_station_code(self, operator_id, name=""):
+        """Six digits the manager reads on this screen and types on the new cashier. One at a time."""
+        status = self.lease_status()
+        if not status["can_open_cash"]:
+            raise TerminalError(status["reason"], 403)
+        name = name.strip()[:STATION_NAME_MAX] if isinstance(name, str) else ""
+        with self.transaction() as conn:
+            limit = self._station_limit(conn)
+            if limit["limit"] <= 0:
+                raise TerminalError(STATION_LIMIT_NONE, 409, code="station_limit")
+            # A cashier that lost its link (promotion, recovery) links again with its own identity
+            # and takes no new place: the code is refused only when nobody could use it. A removed
+            # cashier gave its place away, so it is not a reason to hand out a code on a full plan.
+            relinkable = conn.execute("SELECT 1 FROM stations WHERE id != ? AND token_hash IS NULL "
+                                      "AND revoked_at IS NULL LIMIT 1", (SERVER_STATION_ID,)).fetchone()
+            if limit["available"] <= 0 and not relinkable:
+                raise TerminalError(STATION_LIMIT_FULL.format(n=limit["limit"]), 409, code="station_limit")
+            code = f"{secrets.randbelow(10 ** 6):06d}"
+            now = _now_ms()
+            conn.execute("DELETE FROM station_enroll_codes")
+            conn.execute("INSERT INTO station_enroll_codes(code_hash,created_at,expires_at,created_by,station_name) "
+                         "VALUES (?,?,?,?,?)",
+                         (self._enroll_hash(code), now, now + STATION_ENROLL_TTL_SECONDS * 1000, operator_id, name))
+            self._audit(conn, operator_id, "station.code_created", None, name or None)  # never the code itself
+            return {"code": code, "expires_at": now + STATION_ENROLL_TTL_SECONDS * 1000,
+                    "expires_in": STATION_ENROLL_TTL_SECONDS}
+
+    @staticmethod
+    def _enroll_hash(code):
+        return hashlib.sha256(("pdv2-enroll:" + code).encode()).hexdigest()
+
+    def enroll_station(self, code, *, name="", hostname="", app_version="", station_id=None, address=""):
+        """Link one more computer to this shop. The answer carries the only copy of its token."""
+        digits = re.sub(r"\D", "", code) if isinstance(code, str) else ""
+        if len(digits) != 6:
+            raise TerminalError("Digite os 6 números do código.", 400)
+
+        def text(value, maximum):
+            return value.strip()[:maximum] if isinstance(value, str) else ""
+
+        name, hostname, app_version, address = text(name, STATION_NAME_MAX), text(hostname, 120), \
+            text(app_version, 40), text(address, 64)
+        error = result = None
+        # Refusals are decided inside the transaction and raised after it: a wrong code must be counted.
+        with self.transaction() as conn:
+            now = _now_ms()
+            active = conn.execute("SELECT * FROM station_enroll_codes WHERE used_at IS NULL AND expires_at>? "
+                                  "ORDER BY created_at DESC LIMIT 1", (now,)).fetchone()
+            if not active:
+                error = TerminalError(STATION_CODE_INVALID, 401, code="invalid_code")
+            elif not hmac.compare_digest(active["code_hash"], self._enroll_hash(digits)):
+                failures = active["failures"] + 1
+                if failures >= STATION_ENROLL_MAX_FAILURES:
+                    conn.execute("DELETE FROM station_enroll_codes WHERE code_hash=?", (active["code_hash"],))
+                    self._audit(conn, None, "station.enroll_locked", None, address or None)
+                else:
+                    conn.execute("UPDATE station_enroll_codes SET failures=? WHERE code_hash=?",
+                                 (failures, active["code_hash"]))
+                error = TerminalError(STATION_CODE_INVALID, 401, code="invalid_code")
+            else:
+                existing = None
+                if isinstance(station_id, str) and station_id and station_id != SERVER_STATION_ID:
+                    existing = conn.execute("SELECT * FROM stations WHERE id=?", (station_id,)).fetchone()
+                limit = self._station_limit(conn)
+                # A known cashier that was not removed already holds its place. A new computer, or a
+                # removed one coming back, needs a free place: otherwise it would push the newest
+                # legitimate cashier out of the plan in the middle of a shift.
+                takes_place = existing is None or existing["revoked_at"] is not None
+                if takes_place and limit["used"] >= limit["limit"]:
+                    # The code is not spent: it still serves once a place is freed.
+                    message = STATION_LIMIT_FULL.format(n=limit["limit"]) if limit["limit"] else STATION_LIMIT_NONE
+                    error = TerminalError(message, 409, code="station_limit")
+                else:
+                    token = secrets.token_urlsafe(32)
+                    token_hash = hashlib.sha256(token.encode()).hexdigest()
+                    if existing is not None:
+                        # Same computer coming back: it keeps its open cashier and its history.
+                        new_id = existing["id"]
+                        final_name = name or active["station_name"] or existing["name"]
+                        conn.execute("""UPDATE stations SET name=?,token_hash=?,revoked_at=NULL,last_seen_at=?,
+                                        hostname=?,app_version=?,last_address=? WHERE id=?""",
+                                     (final_name, token_hash, now, hostname, app_version, address, new_id))
+                    else:
+                        new_id = uuid.uuid4().hex
+                        final_name = name or active["station_name"]
+                        if not final_name:
+                            taken = {row[0] for row in conn.execute("SELECT name FROM stations")}
+                            number = 2
+                            while f"Caixa {number}" in taken:
+                                number += 1
+                            final_name = f"Caixa {number}"
+                        conn.execute("""INSERT INTO stations
+                            (id,name,token_hash,created_at,last_seen_at,revoked_at,hostname,app_version,last_address)
+                            VALUES (?,?,?,?,?,NULL,?,?,?)""",
+                                     (new_id, final_name, token_hash, now, now, hostname, app_version, address))
+                    conn.execute("UPDATE station_enroll_codes SET used_at=? WHERE code_hash=?",
+                                 (now, active["code_hash"]))
+                    self._audit(conn, active["created_by"], "station.enrolled", new_id, final_name)
+                    result = {"station_id": new_id, "station_name": final_name, "token": token}
+        if error is not None:
+            raise error
+        self._config_event_quietly()
+        return result
+
+    def authenticate_station(self, token):
+        """Who is behind this token. Read only: called on every request of an additional cashier."""
+        unknown = TerminalError("Este caixa não está vinculado ao caixa principal.", 401, code="station_unauthorized")
+        if not isinstance(token, str) or not 20 <= len(token) <= 128:
+            raise unknown
+        digest = hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM stations WHERE token_hash=? AND id != ?",
+                               (digest, SERVER_STATION_ID)).fetchone()
+            if not row:
+                raise unknown
+            if row["revoked_at"] is not None:
+                raise TerminalError("Este caixa foi removido do caixa principal.", 401, code="station_revoked")
+            # The oldest links keep working when the plan shrinks; the newest ones wait.
+            position = 1 + conn.execute(
+                """SELECT COUNT(*) FROM stations WHERE id != ? AND revoked_at IS NULL
+                   AND (created_at < ? OR (created_at = ? AND id < ?))""",
+                (SERVER_STATION_ID, row["created_at"], row["created_at"], row["id"])).fetchone()[0]
+            if position > self._station_limit(conn)["limit"]:
+                raise TerminalError("O plano da loja não inclui mais este caixa adicional. Fale com o responsável "
+                                    "pela loja.", 403, code="station_limit")
+            return {"id": row["id"], "name": row["name"]}
+
+    def touch_station(self, station_id, *, address="", app_version="", hostname=""):
+        with self.transaction() as conn:
+            conn.execute("""UPDATE stations SET last_seen_at=?,
+                            last_address=CASE WHEN ?='' THEN last_address ELSE ? END,
+                            app_version=CASE WHEN ?='' THEN app_version ELSE ? END,
+                            hostname=CASE WHEN ?='' THEN hostname ELSE ? END
+                            WHERE id=? AND id != ?""",
+                         (_now_ms(), *(str(value or "")[:120] for value in
+                                       (address, address, app_version, app_version, hostname, hostname)),
+                          station_id, SERVER_STATION_ID))
+
+    def rename_station(self, station_id, name, operator_id=None):
+        name = _str(name, "Nome do caixa", STATION_NAME_MAX)
+        with self.transaction() as conn:
+            if not conn.execute("UPDATE stations SET name=? WHERE id=?", (name, station_id)).rowcount:
+                raise TerminalError("Caixa não encontrado", 404)
+            self._audit(conn, operator_id, "station.renamed", station_id, name)
+            result = self._stations(conn, station_id=station_id)[0]
+        self._config_event_quietly()
+        return result
+
+    def revoke_station(self, station_id, operator_id=None):
+        """"Remover caixa": the computer stops being accepted. Its open cashier, if any, stays open
+        until a manager closes it from the main cashier."""
+        if station_id == SERVER_STATION_ID:
+            raise TerminalError("O caixa principal não pode ser removido.", 409)
+        with self.transaction() as conn:
+            row = conn.execute("SELECT name FROM stations WHERE id=?", (station_id,)).fetchone()
+            if not row:
+                raise TerminalError("Caixa não encontrado", 404)
+            # The token hash stays: the removed computer is told it was removed, not that it is unknown.
+            conn.execute("UPDATE stations SET revoked_at=COALESCE(revoked_at,?) WHERE id=?", (_now_ms(), station_id))
+            self._audit(conn, operator_id, "station.revoked", station_id, row["name"])
+            result = self._stations(conn, station_id=station_id)[0]
+        self._config_event_quietly()
+        return result
+
+    # ---------- phase 3: an additional cashier takes over as the main one ----------
+
+    @staticmethod
+    def _valid_journal_item(item):
+        event = item.get("event") if isinstance(item, dict) else None
+        return (isinstance(event, dict) and type(item.get("seq")) is int and item["seq"] > 0
+                and isinstance(event.get("event_id"), str) and EVENT_ID.fullmatch(event["event_id"])
+                and event["event_id"] == item.get("event_id")
+                and isinstance(event.get("type"), str) and bool(event["type"])
+                and isinstance(event.get("aggregate_id"), str) and isinstance(event.get("data"), dict)
+                and isinstance(event.get("identity"), dict))
+
+    def apply_journal_events(self, events):
+        """Replay what the old main cashier recorded after the last full copy (promotion).
+
+        Each event enters the queue with its own event_id and seq and has its local effect
+        applied (stock, fiado, store credit, cashier). Nothing new is created: no event, no
+        print job. Calling it again with the same list changes nothing.
+        """
+        if not isinstance(events, list):
+            raise TerminalError("Cópia de segurança inválida")
+        result = {"applied": 0, "skipped": 0, "invalid": 0, "foreign": 0, "reseq": 0, "warnings": 0, "last_seq": 0}
+        valid = []
+        for item in events:
+            if self._valid_journal_item(item):
+                valid.append(item)
+            else:
+                result["invalid"] += 1
+        valid.sort(key=lambda item: item["seq"])
+        for start in range(0, max(len(valid), 1), 500):
+            chunk = valid[start:start + 500]
+            last_chunk = start + 500 >= len(valid)
+            with self.transaction() as conn:
+                identity = {key: self._meta(conn, key) for key in ("tenant_id", "shop_id", "terminal_id")}
+                names = {"operators": {row["id"]: row["name"] for row in conn.execute("SELECT id,name FROM operators")},
+                         "payments": {row["id"]: row["name"] for row in self._payment_config(conn)
+                                      if row.get("kind") == "other"}}
+                for item in chunk:
+                    event = item["event"]
+                    if {key: event["identity"].get(key) for key in identity} != identity:
+                        result["foreign"] += 1
+                        continue
+                    if conn.execute("SELECT 1 FROM outbox WHERE id=?", (event["event_id"],)).fetchone():
+                        result["skipped"] += 1
+                        continue
+                    seq = item["seq"]
+                    if conn.execute("SELECT 1 FROM outbox WHERE seq=?", (seq,)).fetchone():
+                        seq = conn.execute("SELECT COALESCE(MAX(seq),0)+1 FROM outbox").fetchone()[0]
+                        result["reseq"] += 1
+                    created_at = item.get("created_at") if type(item.get("created_at")) is int else _now_ms()
+                    conn.execute("INSERT INTO outbox(id,event_type,aggregate_id,payload,created_at,acked_at,seq) "
+                                 "VALUES (?,?,?,?,?,NULL,?)",
+                                 (event["event_id"], event["type"], event["aggregate_id"], _json(event),
+                                  created_at, seq))
+                    # What happened at the counter is a fact: the event goes up even when its
+                    # local effect cannot be rebuilt here (that only counts as a warning).
+                    conn.execute("SAVEPOINT journal_effect")
+                    try:
+                        result["warnings"] += self._journal_effect(conn, event, names)
+                    except (KeyError, TypeError, ValueError, AttributeError, sqlite3.IntegrityError):
+                        conn.execute("ROLLBACK TO journal_effect")
+                        result["warnings"] += 1
+                    conn.execute("RELEASE journal_effect")
+                    result["applied"] += 1
+                    result["last_seq"] = max(result["last_seq"], seq)
+                if last_chunk and events:
+                    self._audit(conn, None, "promotion.journal_applied", identity["terminal_id"],
+                                "; ".join(f"{key}={result[key]}" for key in
+                                          ("applied", "skipped", "invalid", "foreign", "reseq", "warnings")))
+        return result
+
+    @staticmethod
+    def _event_station(conn, event):
+        """Station that produced an event; events of an older build belong to the main cashier."""
+        station = event.get("station")
+        if (not isinstance(station, dict) or not isinstance(station.get("id"), str)
+                or not 0 < len(station["id"]) <= 64):
+            return SERVER_STATION_ID
+        name = station.get("name") if isinstance(station.get("name"), str) else ""
+        conn.execute("INSERT OR IGNORE INTO stations(id,name,token_hash,created_at) VALUES (?,?,NULL,?)",
+                     (station["id"], name.strip()[:STATION_NAME_MAX] or "Caixa", _now_ms()))
+        return station["id"]
+
+    @staticmethod
+    def _credit_effect(conn, customer_id, payments, sign):
+        """Fiado and store credit of a sale (sign=1) or of its cancellation (sign=-1)."""
+        if not customer_id:
+            return
+        for payment in payments or []:
+            amount = int(payment["amount_cents"])
+            if payment.get("method") == "credit_account":
+                conn.execute("UPDATE customers SET open_credit_cents=MAX(open_credit_cents+?,0) WHERE id=?",
+                             (sign * amount, customer_id))
+            elif payment.get("method") == "store_credit":
+                conn.execute("UPDATE customers SET store_credit_cents=store_credit_cents-? WHERE id=?",
+                             (sign * amount, customer_id))
+
+    def _journal_effect(self, conn, event, names):
+        """Local effect of one replayed event. Returns how many warnings it produced."""
+        kind, aggregate_id, data = event["type"], event["aggregate_id"], event["data"]
+        station_id = self._event_station(conn, event)
+        if kind == "cash.opened":
+            if conn.execute("SELECT 1 FROM cash_sessions WHERE id=?", (aggregate_id,)).fetchone():
+                return 0
+            opened_at = int(data["created_at"])
+            values = [aggregate_id, str(data.get("operator_id") or ""), int(data.get("opening_cents") or 0),
+                      opened_at, None, station_id]
+            insert = """INSERT INTO cash_sessions
+                        (id,operator_id,opening_cents,opened_at,closed_at,counted_cents,expected_cents,station_id)
+                        VALUES (?,?,?,?,?,NULL,NULL,?)"""
+            try:
+                conn.execute(insert, values)
+            except sqlite3.IntegrityError:
+                # This station already has an open cashier: keep the record, as closed.
+                values[4] = opened_at
+                conn.execute(insert, values)
+                return 1
+        elif kind in ("cash.withdrawn", "cash.supplied"):
+            conn.execute("INSERT OR IGNORE INTO cash_movements VALUES (?,?,?,?,?,?,?)",
+                         (aggregate_id, str(data["cash_session_id"]), kind.split(".")[1], int(data["amount_cents"]),
+                          str(data.get("reason") or ""), str(data.get("operator_id") or ""), int(data["created_at"])))
+        elif kind == "cash.closed":
+            conn.execute("UPDATE cash_sessions SET closed_at=?,counted_cents=?,expected_cents=? WHERE id=?",
+                         (int(data["created_at"]), data.get("counted_cents"), data.get("expected_cents"),
+                          aggregate_id))
+        elif kind == "sale.completed":
+            snapshot = {"id": aggregate_id, **data, "seller_name": names["operators"].get(data.get("seller_id"), ""),
+                        "status": "completed", "station_id": station_id,
+                        "station_name": self._station_name(conn, station_id)}
+            payment_names = {payment["payment_method_id"]: names["payments"][payment["payment_method_id"]]
+                             for payment in data.get("payments") or []
+                             if isinstance(payment, dict) and payment.get("payment_method_id") in names["payments"]}
+            if payment_names:
+                snapshot["payment_names"] = payment_names
+            snapshot = self._receipt_context(conn, snapshot)
+            inserted = conn.execute(
+                """INSERT OR IGNORE INTO sales (id,request_id,session_id,operator_id,customer_name,customer_id,
+                       gross_cents,discount_cents,total_cents,change_cents,snapshot,status,created_at,voided_at,
+                       void_reason,customer_document,station_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,'completed',?,NULL,NULL,?,?)""",
+                (aggregate_id, str(data.get("request_id") or aggregate_id), str(data.get("cash_session_id") or ""),
+                 str(data.get("operator_id") or ""), data.get("customer_name"), data.get("customer_id"),
+                 int(data.get("gross_cents") or 0), int(data.get("discount_cents") or 0),
+                 int(data.get("total_cents") or 0), int(data.get("change_cents") or 0), _json(snapshot),
+                 int(data.get("created_at") or 0), data.get("customer_document"), station_id)).rowcount
+            if not inserted:
+                return 0  # the full copy already had this sale, with its effects
+            for line in data.get("items") or []:
+                if line.get("stock_controlled", True):
+                    conn.execute("UPDATE products SET stock_milli=MAX(stock_milli-?,0) WHERE id=?",
+                                 (int(line["quantity_milli"]), line["product_id"]))
+            self._credit_effect(conn, data.get("customer_id"), data.get("payments"), 1)
+        elif kind == "sale.voided":
+            row = conn.execute("SELECT snapshot,status FROM sales WHERE id=?", (aggregate_id,)).fetchone()
+            if not row or row["status"] != "completed":
+                return 0
+            snapshot = json.loads(row["snapshot"])
+            for line in snapshot.get("items") or []:
+                if line.get("stock_controlled", True):
+                    conn.execute("UPDATE products SET stock_milli=stock_milli+? WHERE id=?",
+                                 (int(line["quantity_milli"]), line["product_id"]))
+            self._credit_effect(conn, snapshot.get("customer_id"), snapshot.get("payments"), -1)
+            conn.execute("UPDATE sales SET status='voided',voided_at=?,void_reason=? WHERE id=?",
+                         (int(data.get("created_at") or 0), str(data.get("reason") or ""), aggregate_id))
+        elif kind == "sale.returned":
+            items, total = data.get("items") or [], int(data["total_cents"])
+            inserted = conn.execute(
+                """INSERT OR IGNORE INTO sale_returns
+                   (id,sale_id,session_id,operator_id,refund_method,total_cents,items,reason,created_at,station_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (aggregate_id, str(data["sale_id"]), data.get("cash_session_id") or None,
+                 str(data.get("operator_id") or ""), str(data["refund_method"]), total, _json(items),
+                 str(data.get("reason") or ""), int(data["created_at"]), station_id)).rowcount
+            if not inserted:
+                return 0
+            sale = conn.execute("SELECT snapshot FROM sales WHERE id=?", (str(data["sale_id"]),)).fetchone()
+            lines = {line["product_id"]: line for line in (json.loads(sale["snapshot"]).get("items") or [])} \
+                if sale else {}
+            for line in items:
+                if lines.get(line["product_id"], {}).get("stock_controlled", True):
+                    conn.execute("UPDATE products SET stock_milli=stock_milli+? WHERE id=?",
+                                 (int(line["quantity_milli"]), line["product_id"]))
+            customer_id = data.get("customer_id")
+            if customer_id and data["refund_method"] == "store_credit":
+                conn.execute("UPDATE customers SET store_credit_cents=store_credit_cents+? WHERE id=?",
+                             (total, customer_id))
+            elif customer_id and data["refund_method"] == "account":
+                customer = conn.execute("SELECT open_credit_cents FROM customers WHERE id=?",
+                                        (customer_id,)).fetchone()
+                open_credit = customer["open_credit_cents"] if customer else 0
+                conn.execute("UPDATE customers SET open_credit_cents=?,store_credit_cents=store_credit_cents+? "
+                             "WHERE id=?", (max(0, open_credit - total), max(0, total - open_credit), customer_id))
+        elif kind == "credit.received":
+            amount = int(data["amount_cents"])
+            inserted = conn.execute(
+                """INSERT OR IGNORE INTO credit_receipts
+                   (id,customer_id,session_id,method,amount_cents,operator_id,created_at,station_id)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (aggregate_id, str(data["customer_id"]), str(data.get("cash_session_id") or ""), str(data["method"]),
+                 amount, str(data.get("operator_id") or ""), int(data["created_at"]), station_id)).rowcount
+            if inserted:
+                conn.execute("UPDATE customers SET open_credit_cents=MAX(open_credit_cents-?,0) WHERE id=?",
+                             (amount, str(data["customer_id"])))
+        elif kind == "stock.adjusted":
+            conn.execute("UPDATE products SET stock_milli=MAX(stock_milli+?,0) WHERE id=?",
+                         (int(data["delta_milli"]), str(data["product_id"])))
+        return 0  # terminal.config and unknown types only go up
+
+    def finish_promotion(self, station_id, station_name, mirror_key, operator_id=None):
+        """This file, rebuilt from the copy on an additional cashier, becomes the main cashier.
+
+        The old main cashier turns into the station "anterior-…" (its open cashier stays there for
+        the manager to close) and the promoted station becomes "server". The other stations keep
+        identity and open cashier, but must be linked again with a new code.
+        """
+        station_id = _str(station_id, "Caixa", 64)
+        if station_id == SERVER_STATION_ID:
+            raise TerminalError("Este computador já é o caixa principal de uma loja.", 409)
+        station_name = station_name.strip()[:STATION_NAME_MAX] if isinstance(station_name, str) else ""
+        with self.transaction() as conn:
+            if self._restore_active(conn) or not self._meta(conn, "terminal_id"):
+                raise TerminalError("A cópia do caixa principal não está completa. Não é possível assumir.", 409)
+            now = _now_ms()
+            old = "anterior-" + uuid.uuid4().hex[:8]
+            for table in STATION_TABLES:
+                # In this order: the two cashiers may be open and each station admits a single one.
+                conn.execute(f"UPDATE {table} SET station_id=? WHERE station_id=?", (old, SERVER_STATION_ID))
+                conn.execute(f"UPDATE {table} SET station_id=? WHERE station_id=?", (SERVER_STATION_ID, station_id))
+            conn.execute("DELETE FROM print_settings WHERE station_id=?", (SERVER_STATION_ID,))
+            conn.execute("UPDATE print_settings SET station_id=? WHERE station_id=?", (SERVER_STATION_ID, station_id))
+            conn.execute("UPDATE print_jobs SET status='uncertain',error='Caixa principal anterior parou',updated_at=? "
+                         "WHERE station_id=? AND status IN ('queued','sending')", (now, old))
+            previous_open = conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
+                                         (old,)).fetchone() is not None
+            conn.execute("INSERT INTO stations(id,name,token_hash,created_at,revoked_at) VALUES (?,?,NULL,?,?)",
+                         (old, "Caixa principal anterior", now, now))
+            conn.execute("DELETE FROM stations WHERE id=?", (station_id,))
+            conn.execute("UPDATE stations SET token_hash=NULL WHERE id != ?", (SERVER_STATION_ID,))
+            conn.execute("DELETE FROM login_attempts")
+            conn.execute("DELETE FROM station_enroll_codes")
+            if (isinstance(mirror_key, dict) and isinstance(mirror_key.get("key_id"), str) and mirror_key["key_id"]
+                    and isinstance(mirror_key.get("key"), str) and len(mirror_key["key"]) == 44):
+                self._set_meta(conn, "mirror_key", _json({"key_id": mirror_key["key_id"], "key": mirror_key["key"]}))
+            try:
+                generation = int(self._meta(conn, "server_generation") or 1) + 1
+            except ValueError:
+                generation = 2
+            self._set_meta(conn, "promoted_at", str(now))
+            self._set_meta(conn, "promotion_state", "awaiting_cloud")
+            self._set_meta(conn, "promotion_previous_station", old)
+            self._set_meta(conn, "server_generation", str(generation))
+            # Each promotion presents a new identity to the cloud. The one of an earlier promotion
+            # came in the copy and is the device_id of the computer that has just stopped: reusing it
+            # would overwrite that computer's token instead of marking it as transferred.
+            conn.execute("DELETE FROM meta WHERE key='promotion_device_id'")
+            # The cloud token stayed on the computer that stopped (the copy never carries it).
+            for key in ("token", "last_heartbeat_at", "last_heartbeat_error", "last_sync_error"):
+                conn.execute("DELETE FROM meta WHERE key=?", (key,))
+            self._audit(conn, operator_id, "terminal.promoted", self._meta(conn, "terminal_id"),
+                        station_name or station_id)
+            return {"promoted": True, "previous_server_station": old, "previous_server_cash_open": previous_open,
+                    "generation": generation}
+
+    def promotion_status(self):
+        with self.connection() as conn:
+            state = self._meta(conn, "promotion_state")
+            state = state if state in ("awaiting_cloud", "done") else "none"
+            previous = self._meta(conn, "promotion_previous_station")
+            return {"promoted": state != "none", "state": state,
+                    "promoted_at": int(self._meta(conn, "promoted_at") or 0) or None,
+                    "previous_server_cash_open": bool(previous) and conn.execute(
+                        "SELECT 1 FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
+                        (previous,)).fetchone() is not None,
+                    "pending_events": conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0]}
+
+    def promotion_device_id(self):
+        """Identity this computer presents to the cloud when it regularizes the promotion."""
+        with self.connection() as conn:
+            value = self._meta(conn, "promotion_device_id")
+            awaiting = self._meta(conn, "promotion_state") == "awaiting_cloud"
+            current = self._meta(conn, "device_id")
+        # While the cloud is awaited, the device_id in the database is the one of the computer that
+        # stopped: this computer never presents that same identity.
+        if value and not (awaiting and value == current):
+            return value
+        with self.transaction() as conn:
+            value = self._meta(conn, "promotion_device_id")
+            if not value or (self._meta(conn, "promotion_state") == "awaiting_cloud"
+                             and value == self._meta(conn, "device_id")):
+                value = _uuid()
+                self._set_meta(conn, "promotion_device_id", value)
+            return value
+
+    def reset_promotion_device_id(self):
+        """Forget the identity presented to the cloud: the next attempt uses a new one.
+
+        Needed when the cloud bound that identity to another terminal (a code typed by mistake):
+        it would refuse the same device for the right terminal afterwards.
+        """
+        with self.transaction() as conn:
+            if self._meta(conn, "promotion_state") == "awaiting_cloud":
+                conn.execute("DELETE FROM meta WHERE key='promotion_device_id'")
+
+    def adopt_pairing(self, response, cloud_url):
+        """The cloud accepted this computer as the new home of the same terminal (after a promotion).
+
+        Unlike set_pairing, nothing is cleared and no recovery starts: the data is already here.
+        """
+        from shared.licensing import LicenseError
+
+        if not isinstance(response, dict):
+            raise TerminalError("Resposta inesperada do servidor", 502)
+        for key in ("token", "tenant_id", "shop_id", "terminal_id", "lease", "public_key"):
+            if key not in response:
+                raise TerminalError(f"Pareamento incompleto: {key}")
+        device_id = self.promotion_device_id()
+        with self.transaction() as conn:
+            if self._meta(conn, "promotion_state") != "awaiting_cloud":
+                raise TerminalError("Este caixa não está aguardando a regularização com a nuvem.", 409)
+            if any(response[key] != self._meta(conn, key) for key in ("tenant_id", "shop_id", "terminal_id")):
+                raise TerminalError("Este código é de outra loja ou de outro caixa. Gere o código no painel, em "
+                                    "Terminais → Trocar de computador, no terminal desta loja.", 409,
+                                    code="other_terminal")
+            old_key = self._meta(conn, "public_key")
+            if old_key and old_key != response["public_key"]:
+                raise TerminalError("Chave pública mudou; suporte precisa verificar o servidor", 409)
+            self._set_meta(conn, "public_key", response["public_key"])
+            # From here on the license is bound to this computer, no longer to the one that stopped.
+            self._set_meta(conn, "device_id", device_id)
+            try:
+                claims = self._accept_lease(conn, response["lease"], response["public_key"],
+                                            response.get("server_time"))
+            except (LicenseError, TypeError) as exc:
+                raise TerminalError("Licença do pareamento inválida", 403) from exc
+            self._store_lease(conn, response["lease"], claims)
+            self._set_meta(conn, "token", _str(response["token"], "Token", 400))
+            self._set_meta(conn, "cloud_url", cloud_url)
+            for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
+                value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
+                if _optional_text(value, 160):
+                    self._set_meta(conn, key, _optional_text(value, 160))
+            if _optional_text(response.get("license_hint"), 16):
+                self._set_meta(conn, "license_hint", _optional_text(response["license_hint"], 16))
+            self._pin_release_key(conn, response)
+            self._store_cloud_extras(conn, response, mirror_key=True)
+            # `recovery: true` is ignored on purpose: restore_state stays as it is (done).
+            self._set_meta(conn, "promotion_state", "done")
+            self._audit(conn, None, "terminal.promotion_regularized", response["terminal_id"])
+        return {"regularized": True}

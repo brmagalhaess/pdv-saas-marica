@@ -299,7 +299,8 @@ class DamagedDatabaseTests(OfflineCase):
         backup = self.damage()
         self.path.write_bytes((Path(backup["directory"]) / backup["name"]).read_bytes())
         app = create_app({"TESTING": True, "DATA_DIR": self.temp.name, "DB_PATH": self.path, "START_WORKER": False})
-        self.assertEqual(app.test_client().get("/health").json, {"status": "ok", "service": "terminal-local"})
+        self.assertEqual(app.test_client().get("/health").json,
+                         {"status": "ok", "service": "terminal-local", "mode": "server"})
         self.assertTrue(app.extensions["terminal_store"].cash_state())
 
     def reopen(self):
@@ -799,7 +800,7 @@ class UpdaterHookTests(OfflineCase):
         self.assertEqual(self.client.get("/api/session").json["update"]["staged_version"], "2.1.0")
         self.store.open_cash(self.cashier_id, 0)
         status = self.client.get("/api/update/status").json
-        self.assertEqual((status["can_apply"], status["blocked_reason"]), (False, "Feche o caixa para atualizar"))
+        self.assertEqual((status["can_apply"], status["blocked_reason"]), (False, "Feche o caixa em todos os computadores para atualizar"))
 
     def test_apply_needs_a_manager_and_a_closed_cashier(self):
         fake = self.use(FakeUpdater())

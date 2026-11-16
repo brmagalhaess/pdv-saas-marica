@@ -148,7 +148,8 @@ class CaixaPageTests(unittest.TestCase):
         sources = re.findall(r'(?:src|href)="([^"]+)"', self.html)
         self.assertTrue(sources)
         for source in sources:
-            self.assertTrue(source.startswith(("/static/", "/api/", "#")), source)
+            # "/station/" is the local page of an additional cashier (phase 3), also served on 127.0.0.1.
+            self.assertTrue(source.startswith(("/static/", "/api/", "/station/", "#")), source)
         for name in ("terminal.css", "terminal.js", "terminal-core.js", "theme.js"):
             response = self.client.get("/static/" + name)
             self.assertEqual(response.status_code, 200, name)
