@@ -1,7 +1,8 @@
 import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, el, errorText,
   APP_VERSION, VENDOR, editableMoney, parseMoneyInput, parseImportDecimal, scaledInteger, formPayload,
   listPath, sortByLabel, taxIdValue, validTaxId, conflictReasonText, conflictView, customerFormFields,
-  productSaveErrorText, displayVersion } from "./core.js";
+  productSaveErrorText, displayVersion, sendOnlyActive, terminalStateText, mirrorText, canTransferTerminal,
+  transferConfirmText, transferWarnings, transferSteps, backupKeyView } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -2669,6 +2670,61 @@ async function terminalCreate() {
   });
   openDialog("Novo terminal", "Cada terminal ocupa uma vaga do plano.", form);
 }
+// "Trocar de computador": recovery code that brings the shop back on a new computer.
+function transferDialog(result) {
+  const body = el("div");
+  transferWarnings(result).forEach(text => body.append(info(text, true)));
+  body.append(copyableValue("Chave da licença", result.license_key, "Identifica a sua empresa. É a mesma de sempre."));
+  const code = el("div", "pairing-code", result.recovery_code || "Código indisponível");
+  code.setAttribute("aria-label", "Código de recuperação");
+  body.append(code, copyableValue("Código de recuperação", result.recovery_code, "Uso único. Vale por 30 minutos."));
+  const steps = el("ol", "recovery-steps");
+  transferSteps(result).forEach(text => steps.append(el("li", "", text)));
+  body.append(steps, detailList([["Terminal", result.name], ["Código válido até", dateTime(result.recovery_expires_at)]]),
+    copyableValue("Endereço do servidor", localDocker() ? "http://cloud:8080" : location.origin, "Informe só se o programa pedir."),
+    info("O computador antigo só deixa de vender quando o novo usar este código. Se o código não for usado, nada muda."));
+  const actions = el("div", "form-actions");
+  actions.append(button("Concluir", renderRoute)); body.append(actions);
+  openDialog("Trocar de computador", "Anote a chave e o código antes de fechar esta janela.", body);
+}
+function terminalTransfer(row) {
+  const content = el("div");
+  content.append(info(transferConfirmText, true));
+  const message = el("p", "feedback error"); message.hidden = true; content.append(message);
+  const actions = el("div", "form-actions");
+  const accept = button("Gerar código de recuperação", async () => {
+    accept.disabled = true;
+    try { transferDialog(await api.post("/terminals/" + row.id + "/transfer", {})); }
+    catch (error) { handleError(error, message); accept.disabled = false; }
+  });
+  actions.append(button("Voltar", closeDialog, "ghost"), accept); content.append(actions);
+  openDialog("Trocar de computador", row.name, content);
+}
+function backupKeyDialog(result) {
+  const body = el("div");
+  body.append(info("Esta chave não será mostrada de novo. Anote ou imprima e guarde fora do computador do caixa.", true),
+    copyableValue("Chave da cópia de segurança", result.key, "Identificação " + String(result.key_id || "").slice(0, 8) + "…"));
+  const actions = el("div", "form-actions");
+  actions.append(button("Já guardei a chave", renderRoute)); body.append(actions);
+  openDialog("Chave da cópia de segurança", "Ela abre a cópia que o caixa grava em outro disco ou pendrive.", body);
+}
+function backupKeyBox(status) {
+  const box = surface("Chave da cópia de segurança", "Protege a cópia de segurança que o caixa grava em outro disco ou pendrive. O caixa recebe a chave sozinho pela internet.");
+  const view = backupKeyView(status, state.role);
+  box.append(el("p", "backup-key-note", view.text));
+  if (view.canReveal) {
+    const actions = el("div", "connection-actions");
+    actions.append(button("Mostrar a chave (uma única vez)", () => confirmAction("Mostrar a chave da cópia de segurança",
+      "A chave aparece uma única vez. Tenha papel e caneta à mão, ou um lugar seguro para guardar, antes de continuar.",
+      async () => {
+        const result = await api.post("/backup-key/reveal", { confirm: true });
+        // confirmAction closes its own dialog right after this; open ours afterwards.
+        setTimeout(() => backupKeyDialog(result), 0);
+      }, "Mostrar a chave"), "secondary"));
+    box.append(actions);
+  }
+  return box;
+}
 async function terminalsPage() {
   const token = ++state.renderId;
   const view = page("Terminais", "Conecte cada caixa à empresa uma única vez e libere o acesso dos operadores.", "Administração");
@@ -2678,8 +2734,9 @@ async function terminalsPage() {
   const box = surface("Dispositivos da empresa"); view.outer.append(box); box.append(loadingSurface());
   const operatorBox=surface("Operadores habilitados para entrar no caixa","Defina ou troque o PIN em Equipe. No terminal, use Atualizar operadores para baixar mudanças.");
   view.outer.append(operatorBox);operatorBox.append(loadingSurface());
+  const backupArea=el("div");view.outer.append(backupArea);
   try {
-    const [response,subscription,usersFirst]=await Promise.all([api.get("/terminals"),api.get("/subscription"),api.get("/users?limit=100")]);
+    const [response,subscription,usersFirst,backupKey]=await Promise.all([api.get("/terminals"),api.get("/subscription"),api.get("/users?limit=100"),api.get("/backup-key").catch(()=>null)]);
     if (token !== state.renderId) return;
     const users=await collectPages("/users?limit=100",usersFirst);
     if(token!==state.renderId)return;
@@ -2699,8 +2756,18 @@ async function terminalsPage() {
     box.append(pagedContent(response,"/terminals",[
       {label:"Terminal",render:row=>row.name},{label:"Loja",render:row=>shopName(row.shop_id)},
       {label:"Dispositivo",render:row=>row.device_id || "Aguardando pareamento"},{label:"Versão",render:row=>row.version},
-      {label:"Fila",render:row=>row.heartbeat_pending_events??0},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},{label:"Estado",render:row=>statusBadge(row.revoked ? "Revogado" : row.paired ? "Pareado" : "Aguardando")}
+      {label:"Fila",render:row=>row.heartbeat_pending_events??0},{label:"Último contato",render:row=>dateTime(row.last_seen_at)},
+      {label:"Cópia em 2º disco",render:row=>mirrorText(row)},
+      {label:"Estado",render:row=>{
+        const current=terminalStateText(row),badge=statusBadge(current.badge);
+        if(!current.note)return badge;
+        const wrap=el("div","terminal-state");wrap.append(badge,el("small","",current.note));return wrap;
+      }}
     ], row => row.revoked ? [] : [
+      ...(canTransferTerminal(row)?[{label:"Trocar de computador",onClick:()=>terminalTransfer(row)}]:[]),
+      ...(sendOnlyActive(row)?[{label:"Encerrar envio do computador antigo",onClick:()=>confirmAction("Encerrar envio do computador antigo",
+        "O computador antigo não poderá mais enviar as vendas que ficaram nele. Faça isso só se a fila dele já zerou ou se ele foi descartado.",
+        async()=>{ await api.patch("/terminals/"+row.id,{end_send_only:true}); toast("Envio do computador antigo encerrado."); renderRoute(); },"Encerrar envio")}]:[]),
       ...(canActivate?[{label:"Novo código",onClick:async()=>{
         try { const updated=await api.patch("/terminals/"+row.id,{reissue_pairing:true}); pairingDialog(updated); }
         catch(error){handleError(error);}
@@ -2717,6 +2784,7 @@ async function terminalsPage() {
       :empty("Nenhum operador liberado","Abra Equipe e defina um PIN para ao menos uma pessoa ativa."));
     const teamLink=el("a","button secondary small","Gerenciar equipe e PINs");teamLink.href="#users";
     const actions=el("div","connection-actions");actions.append(teamLink);operatorBox.append(actions);
+    if(backupKey)backupArea.replaceChildren(backupKeyBox(backupKey));
   } catch (error) { if (token === state.renderId) { access.replaceChildren();operatorBox.replaceChildren();box.replaceChildren(empty("Falha ao carregar",errorText(error),"!")); handleError(error); } }
 }
 

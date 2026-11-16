@@ -107,7 +107,8 @@ class LongLeaseTests(TestCase):
     def test_lease_route_shape_and_authentication(self):
         before = int(time.time())
         data = self.lease(**LONG)
-        self.assertEqual(set(data), {"lease", "public_key", "operators", "server_time", "release_public_key"})
+        self.assertEqual(set(data), {"lease", "public_key", "operators", "server_time", "release_public_key",
+                                     "capabilities", "mirror_key"})
         self.assertEqual(data["public_key"], self.public)
         self.assertEqual(data["release_public_key"], self.release_public)
         self.assertIsInstance(data["server_time"], int)

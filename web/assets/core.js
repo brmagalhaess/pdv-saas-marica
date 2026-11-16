@@ -358,3 +358,59 @@ export function displayVersion(session) {
   const text = typeof value === "string" ? value.trim().replace(/^v/i, "") : "";
   return text && text.length <= 40 ? text : APP_VERSION;
 }
+
+// "Trocar de computador" (Terminais) ------------------------------------------
+
+function shortDay(value, year = false) {
+  const parsed = new Date(value);
+  if (!value || Number.isNaN(parsed.getTime())) return "";
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", ...(year ? { year: "numeric" } : {}) }).format(parsed);
+}
+
+// The replaced computer may still send its sales queue until this date.
+export function sendOnlyActive(row, now = Date.now()) {
+  const until = row?.send_only_until ? new Date(row.send_only_until).getTime() : NaN;
+  return !row?.revoked && Number.isFinite(until) && until > now;
+}
+
+export function terminalStateText(row, now = Date.now()) {
+  if (row?.revoked) return { badge: "Revogado", note: "" };
+  if (!row?.paired) return { badge: "Aguardando", note: "" };
+  return { badge: "Pareado", note: sendOnlyActive(row, now) ? "Antigo enviando até " + shortDay(row.send_only_until) : "" };
+}
+
+export function mirrorText(row) {
+  return row?.mirror_enabled === true ? "Ligada" : row?.mirror_enabled === false ? "Desligada" : "—";
+}
+
+export function canTransferTerminal(row) {
+  return Boolean(row && row.paired && !row.revoked);
+}
+
+export const transferConfirmText = "Use quando o computador do caixa quebrou ou foi trocado. As vendas dos últimos 90 dias e o fiado em aberto voltam no computador novo. Se o antigo ainda liga, feche o caixa nele e espere a fila zerar antes.";
+
+// Plain-language warnings shown with the recovery code.
+export function transferWarnings(result) {
+  const warnings = [], pending = Number(result?.pending_events) || 0, days = Number(result?.send_only_days) || 7;
+  if (result?.open_cash_session) warnings.push("O caixa está aberto no computador antigo. Se ele ainda liga, feche o caixa nele antes de continuar.");
+  if (pending > 0) warnings.push((pending === 1 ? "Falta 1 registro" : "Faltam " + pending + " registros") +
+    " para o computador antigo enviar. Deixe-o ligado e com internet: ele ainda consegue enviar por " + days + " dias. Se ele não liga mais, use a cópia de segurança no computador novo.");
+  return warnings;
+}
+
+export function transferSteps(result) {
+  const days = Number(result?.history_days) || 90;
+  return [
+    "No computador novo, instale e abra o PDV2.",
+    "Clique em \"Recuperar minha loja\" e informe a chave da licença e o código de recuperação.",
+    "Espere a barra \"Trazendo seus dados\" terminar. As vendas dos últimos " + days + " dias e o fiado em aberto voltam sozinhos."
+  ];
+}
+
+// Company key of the second-disk copy: shown once, to the owner only.
+export function backupKeyView(status, role) {
+  const id = String(status?.key_id || "").slice(0, 8);
+  if (status?.revealed_at) return { canReveal: false, text: "Chave já exibida em " + shortDay(status.revealed_at, true) + (id ? " · identificação " + id + "…" : "") };
+  if (status?.can_reveal && role === "owner") return { canReveal: true, text: "Guarde esta chave em lugar seguro. Ela abre a cópia de segurança do caixa em outro disco e só pode ser mostrada uma vez." };
+  return { canReveal: false, text: "Só o proprietário da empresa pode ver a chave, uma única vez." + (id ? " Identificação " + id + "…" : "") };
+}

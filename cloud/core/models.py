@@ -64,6 +64,11 @@ class Tenant(models.Model):
     # Label stock used by the panel's label print (Administração > Impressoras).
     # Example: {"width_mm": 50, "height_mm": 30, "gap_mm": 2, "sensor": "gap"}
     label_settings = models.JSONField(default=dict, blank=True)
+    # Company secret that encrypts the terminals' second-disk replica. Stored
+    # encrypted with the server key; shown once in the panel (owner only).
+    backup_key_encrypted = models.TextField(blank=True, default="")
+    backup_key_id = models.CharField(max_length=16, blank=True, default="")
+    backup_key_revealed_at = models.DateTimeField(null=True, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -213,6 +218,14 @@ class Terminal(models.Model):
     last_seen_at = models.DateTimeField(null=True, blank=True)
     heartbeat_pending_events = models.PositiveIntegerField(default=0)
     heartbeat_error = models.CharField(max_length=300, blank=True)
+    # "Trocar de computador": the token of the replaced computer may only send
+    # its remaining queue (POST terminal/sync) until previous_token_expires_at.
+    previous_token_hash = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    previous_token_expires_at = models.DateTimeField(null=True, blank=True)
+    previous_device_id = models.CharField(max_length=160, blank=True, default="")
+    transferred_at = models.DateTimeField(null=True, blank=True)
+    # Data of the newest terminal.config event (printers, replica switch).
+    config = models.JSONField(default=dict, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["tenant", "device_id"], condition=~Q(device_id=""), name="terminal_tenant_device_unique")]
@@ -657,6 +670,10 @@ class SyncEvent(models.Model):
     payload = models.JSONField()
     payload_hash = models.CharField(max_length=64)
     received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Restore looks up the original sale.completed payload by sale id.
+        indexes = [models.Index(fields=["terminal", "event_type", "aggregate_id"], name="syncevent_term_type_agg")]
 
 
 class SyncConflict(models.Model):

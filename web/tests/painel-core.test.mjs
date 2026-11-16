@@ -8,7 +8,8 @@ const read = path => readFile(new URL(path, import.meta.url), "utf8");
 const core = await import("data:text/javascript;base64," + Buffer.from(await read("../assets/core.js")).toString("base64"));
 const { formPayload, quantity, validCpf, validCnpj, validTaxId, taxIdValue, conflictReasonText,
   listPath, sortByLabel, parseImportDecimal, scaledInteger, parseMoneyInput, conflictView, customerFormFields,
-  productSaveErrorText, displayVersion } = core;
+  productSaveErrorText, displayVersion, sendOnlyActive, terminalStateText, mirrorText, canTransferTerminal,
+  transferConfirmText, transferWarnings, transferSteps, backupKeyView } = core;
 
 function fakeForm(values) {
   const inputs = Object.fromEntries(Object.entries(values).map(([key, value]) =>
@@ -325,4 +326,68 @@ test("formulário de produto marca o código de barras como enviado só quando m
   const app = await readFile(new URL("../assets/app.js", import.meta.url), "utf8");
   assert.match(app, /\{ key: "barcode",[^}]*sendIfChanged: true/);
   assert.match(app, /formPayload\(form, fields, \{ editing, record \}\)/);
+});
+
+test("terminais: estado mostra o computador antigo enviando só dentro do prazo", () => {
+  const now = Date.parse("2026-11-16T12:00:00Z");
+  const row = { paired: true, revoked: false, send_only_until: "2026-11-23T12:00:00+00:00" };
+  assert.equal(sendOnlyActive(row, now), true);
+  assert.deepEqual(terminalStateText(row, now), { badge: "Pareado", note: "Antigo enviando até 23/11" });
+  // Deadline passed, never transferred, or revoked: just the usual badge.
+  assert.equal(sendOnlyActive(row, Date.parse("2026-11-23T12:00:01Z")), false);
+  assert.deepEqual(terminalStateText({ paired: true, send_only_until: null }, now), { badge: "Pareado", note: "" });
+  assert.deepEqual(terminalStateText({ ...row, revoked: true }, now), { badge: "Revogado", note: "" });
+  assert.equal(sendOnlyActive({ ...row, revoked: true }, now), false);
+  assert.deepEqual(terminalStateText({ paired: false }, now), { badge: "Aguardando", note: "" });
+  assert.equal(sendOnlyActive({ send_only_until: "ontem" }, now), false);
+  assert.equal(sendOnlyActive(null, now), false);
+});
+
+test("terminais: coluna da cópia em 2º disco e quem pode trocar de computador", () => {
+  assert.equal(mirrorText({ mirror_enabled: true }), "Ligada");
+  assert.equal(mirrorText({ mirror_enabled: false }), "Desligada");
+  assert.equal(mirrorText({ mirror_enabled: null }), "—");
+  assert.equal(mirrorText({}), "—");
+  assert.equal(canTransferTerminal({ paired: true, revoked: false }), true);
+  assert.equal(canTransferTerminal({ paired: false, revoked: false }), false);
+  assert.equal(canTransferTerminal({ paired: true, revoked: true }), false);
+  assert.equal(canTransferTerminal(null), false);
+});
+
+test("trocar de computador: avisos e passos em linguagem simples", () => {
+  assert.match(transferConfirmText, /quebrou ou foi trocado/);
+  assert.match(transferConfirmText, /últimos 90 dias e o fiado em aberto/);
+  assert.deepEqual(transferWarnings({ pending_events: 0, open_cash_session: false }), []);
+  const both = transferWarnings({ pending_events: 3, open_cash_session: true, send_only_days: 7 });
+  assert.equal(both.length, 2);
+  assert.match(both[0], /caixa está aberto no computador antigo/);
+  assert.match(both[1], /^Faltam 3 registros .* por 7 dias/);
+  assert.match(transferWarnings({ pending_events: 1 })[0], /^Falta 1 registro /);
+  const steps = transferSteps({ history_days: 90 });
+  assert.equal(steps.length, 3);
+  assert.match(steps[1], /Recuperar minha loja/);
+  assert.match(steps[2], /últimos 90 dias/);
+  assert.match(transferSteps({})[2], /últimos 90 dias/);
+});
+
+test("chave da cópia de segurança: só o proprietário vê, uma única vez", () => {
+  const fresh = { exists: true, key_id: "a1b2c3d4e5f60718", revealed_at: null, can_reveal: true };
+  assert.equal(backupKeyView(fresh, "owner").canReveal, true);
+  assert.equal(backupKeyView({ ...fresh, can_reveal: false }, "admin").canReveal, false);
+  assert.equal(backupKeyView(fresh, "admin").canReveal, false);
+  assert.match(backupKeyView(fresh, "admin").text, /Só o proprietário/);
+  const shown = backupKeyView({ ...fresh, revealed_at: "2026-11-16T12:00:00+00:00", can_reveal: false }, "owner");
+  assert.equal(shown.canReveal, false);
+  assert.equal(shown.text, "Chave já exibida em 16/11/2026 · identificação a1b2c3d4…");
+  assert.equal(backupKeyView({ exists: false, key_id: "", revealed_at: null, can_reveal: true }, "owner").canReveal, true);
+});
+
+test("painel de terminais usa a troca de computador e a chave da cópia", async () => {
+  const app = await readFile(new URL("../assets/app.js", import.meta.url), "utf8");
+  assert.match(app, /"\/terminals\/" \+ row\.id \+ "\/transfer"/);
+  assert.match(app, /label:"Trocar de computador"/);
+  assert.match(app, /end_send_only:true/);
+  assert.match(app, /label:"Cópia em 2º disco"/);
+  assert.match(app, /"\/backup-key\/reveal", \{ confirm: true \}/);
+  assert.match(app, /Mostrar a chave \(uma única vez\)/);
 });

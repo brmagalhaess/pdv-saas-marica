@@ -1,3 +1,5 @@
+from django.utils import timezone
+
 from .api_common import iso
 
 
@@ -43,12 +45,20 @@ def member(row):
 
 
 def terminal(row):
+    send_only = (row.previous_token_hash and row.previous_token_expires_at
+                 and row.previous_token_expires_at > timezone.now())
+    mirror = row.config.get("mirror") if isinstance(row.config, dict) else None
     return {"id": str(row.id), "shop_id": str(row.shop_id), "name": row.name,
             "device_id": row.device_id, "version": row.version,
             "revoked": row.revoked, "paired": bool(row.token_hash),
             "last_seen_at": iso(row.last_seen_at),
             "heartbeat_pending_events": row.heartbeat_pending_events,
-            "heartbeat_error": row.heartbeat_error}
+            "heartbeat_error": row.heartbeat_error,
+            "transferred_at": iso(row.transferred_at),
+            # While set, the replaced computer may still send its sales queue.
+            "send_only_until": iso(row.previous_token_expires_at) if send_only else None,
+            "previous_device_id": row.previous_device_id,
+            "mirror_enabled": mirror.get("enabled") if isinstance(mirror, dict) else None}
 
 
 def sync_conflict(row):
