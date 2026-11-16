@@ -378,6 +378,10 @@ body.focus-mode .tabs{display:none}
 .mini-list{display:grid;color:var(--muted);font-size:14px}
 .mini-row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);color:var(--ink)}
 .mini-row small{flex:none;color:var(--muted);font-size:13px}
+.review-title{margin:12px 0 2px;color:var(--ink);font-size:14px}
+.review-title:first-child{margin-top:0}
+.review-list .mini-row>span{min-width:0;overflow-wrap:anywhere}
+.review-list .list-empty{margin:4px 0}
 .identity{margin:0;padding:12px;border-radius:10px;background:var(--surface-2);font-size:13px;overflow:auto}
 .link-button{text-decoration:none}
 .about-card .lockup{justify-self:start}

@@ -251,11 +251,13 @@ function connectionLabel(connection) {
   if (!connection?.paired) return 'Empresa não vinculada';
   return [connection.tenant_name || 'Empresa', connection.shop_name || 'Loja', connection.terminal_name || 'Caixa'].join(' · ');
 }
+// The backend reports the events kept for review as sync.quarantined.
+const syncIndicator = (sync, now) => C.syncIndicator({...sync, quarantined_count: Number(sync?.quarantined) || 0}, now);
 function renderStatus() {
   const session = state.session;
   if (!session) return;
   const connection = session.connection || {}, license = session.license || {}, operator = session.operator, now = Date.now();
-  const indicator = state.indicator = C.syncIndicator(session.sync, now);
+  const indicator = state.indicator = syncIndicator(session.sync, now);
   if (indicator.pending > 0) state.pendingSince ||= now; else state.pendingSince = 0;
   $('identityPlace').textContent = [connection.shop_name || connection.tenant_name || 'Loja', connection.terminal_name || 'Caixa'].join(' · ');
   $('identityOperator').textContent = '· ' + (operator ? operator.name : 'Sem operador');
@@ -264,7 +266,7 @@ function renderStatus() {
   setChip('queueChip', !indicator.pending ? 'ok' : (indicator.syncProblem || indicator.state === 'offline') ? 'warn' : 'muted', indicator.queueLabel,
     indicator.pending ? `${indicator.pending} registro(s) aguardando envio ao servidor da empresa.` : 'Nada aguardando envio.');
   $('reviewChip').classList.toggle('hidden', !indicator.review);
-  setChip('reviewChip', 'warn', indicator.reviewLabel, 'Registros que o servidor separou para revisão do gestor. As vendas seguintes continuam sendo enviadas.');
+  setChip('reviewChip', 'warn', indicator.reviewLabel, 'Registros que o servidor separou para revisão do gestor. As vendas seguintes continuam sendo enviadas. Toque para ver os detalhes.');
   const leaseText = {active: 'Licença ativa', expired: 'Licença vencida', clock_rollback: 'Relógio incorreto', invalid: 'Licença inválida'}[license.state] || 'Licença pendente';
   setChip('leaseChip', license.can_sell ? 'ok' : 'danger', leaseText, license.reason || '', license.can_sell ? 'Licença' : '');
   setChip('cashChip', !operator ? 'muted' : session.cash ? 'ok' : 'danger', session.cash ? 'Caixa aberto' : 'Caixa fechado',
@@ -959,7 +961,8 @@ async function openSearch(query = '', quantity = null) {
     state.categories = data.categories || [];
     items = groupProducts(data.products || []);
     active = 0;
-    note.textContent = (data.products || []).length >= 150 ? 'Mostrando os 150 primeiros. Digite parte do nome ou do código para refinar.' : items.length ? 'Setas escolhem · Enter lança e fecha · toque lança e mantém aberto' : '';
+    const shown = (data.products || []).length, total = Number(data.total) || shown;
+    note.textContent = total > shown ? `Mostrando ${shown} de ${total} produtos. Digite parte do nome ou do código para refinar.` : items.length ? 'Setas escolhem · Enter lança e fecha · toque lança e mantém aberto' : '';
     render();
   };
   const pick = async (index, keepOpen) => {
@@ -999,7 +1002,7 @@ function variantPicker(variants) {
 /* ---------- payment on the sale screen ---------- */
 function cancelPayment() {
   state.pay = {active: false, method: null, other: null};
-  for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit']) $(id).value = '';
+  for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit', 'productSearch']) $(id).value = '';
   payError('');
 }
 function startPayment() {
@@ -1008,6 +1011,10 @@ function startPayment() {
   state.pay = {active: true, method: null, other: null};
   state.done = null;
   payError('');
+  // The reading field leaves the scene: the digits typed next choose the payment form.
+  const scan = $('productSearch');
+  scan.value = '';
+  scan.blur();
   renderSale();
   $('paymentMethods').focus();
 }
@@ -1018,23 +1025,24 @@ async function selectPayMethod(option) {
   state.done = null;
   state.pay = option === 'split' ? {active: true, method: 'split', other: null}
     : {active: true, method: option.method, other: option.method === 'other' ? {id: option.id, name: option.label} : null};
+  state.pay.pickedAt = performance.now();
   renderSale();
+  // Focus right away (same key event), so the next digits already land in the amount field.
+  if (['cash', 'split'].includes(state.pay.method)) focusPay();
   if (['credit_account', 'store_credit'].includes(state.pay.method) && !state.customer.id) await customerDialog('customer');
   renderSale();
   focusPay();
 }
-let payDigitTimer = null, payBurstUntil = 0;
-// Digits pick the payment form, but a barcode read while paying must not pick forms by accident.
-function queuePayDigit(key) {
+let payBurstUntil = 0;
+// A digit picks the payment form in the same key event, so nothing typed next is lost or leaks to
+// another field. The digits of a barcode read while paying are dropped (too fast for a person), and
+// the Enter that ends the reading undoes whatever its first digit picked (handlePayKey).
+function pickPayDigit(key) {
   const times = typing.times, now = performance.now();
   const gap = times.length >= 2 ? times[times.length - 1] - times[times.length - 2] : Infinity;
-  clearTimeout(payDigitTimer);
   if (gap < 60 || now < payBurstUntil) { payBurstUntil = now + 300; return; }
-  payDigitTimer = setTimeout(() => {
-    if (!state.pay.active) return;
-    const option = key === '0' ? 'split' : state.payOptions.find(row => row.key === key);
-    if (option) selectPayMethod(option); else beep('error');
-  }, 70);
+  const option = key === '0' ? 'split' : state.payOptions.find(row => row.key === key);
+  if (option) selectPayMethod(option); else beep('error');
 }
 function paymentName(method, configuredId, names) {
   if (method === 'other') return (names || {})[configuredId] || (state.session?.payment_methods || []).find(row => row.id === configuredId)?.name || 'Outra forma';
@@ -1811,8 +1819,10 @@ async function voidSale(id) {
   await Promise.all([loadSales(), poll()]);
 }
 async function loadStock() {
-  state.stockProducts = (await api('/api/products?q=' + encodeURIComponent($('stockSearch').value.trim()))).products;
-  const products = state.stockProducts, select = $('stockProduct'), previous = select.value;
+  const data = await api('/api/products?q=' + encodeURIComponent($('stockSearch').value.trim()));
+  state.stockProducts = data.products;
+  const products = state.stockProducts, select = $('stockProduct'), previous = select.value, total = Number(data.total) || products.length;
+  $('stockCount').textContent = total > products.length ? `Mostrando ${products.length} de ${total} produtos. Refine a busca para ver os demais.` : '';
   select.innerHTML = products.map(product => `<option value="${esc(product.id)}">${esc(product.name)} (${esc(product.unit)})</option>`).join('');
   select.value = C.keepSelection(previous, products.map(product => product.id));
   $('stockList').innerHTML = products.length ? products.map(product => `<div class="list-row"><span><strong>${esc(product.name)}</strong><small>${esc(product.sku || product.id)}${product.barcode ? ' · EAN ' + esc(product.barcode) : ''}</small></span><strong class="num">${product.stock_controlled === false ? 'Sem controle' : `${qtyText(product.stock_milli, product.unit)} ${esc(product.unit)}`}</strong></div>`).join('') : '<p class="list-empty">Nenhum produto encontrado.</p>';
@@ -1825,7 +1835,7 @@ async function loadPrinters() {
   $('printJobs').innerHTML = jobs.length ? jobs.map(job => `<div class="list-row"><span><strong>Recibo ${badge(jobStatusNames[job.status] || [job.status, ''])}</strong><small>${dateTimeText(job.created_at)} · ${esc(driverNames[job.driver] || job.driver)}${job.error ? ' · ' + esc(job.error) : ''}</small></span><span class="list-actions">${['uncertain', 'printed'].includes(job.status) ? `<button class="btn" data-retry="${esc(job.id)}">Reenviar</button>` : ''}</span></div>`).join('') : '<p class="list-empty">Fila de recibos vazia.</p>';
 }
 async function loadSystem() {
-  const result = await api('/api/sync'), sync = result.sync, license = result.license, indicator = C.syncIndicator(sync, Date.now());
+  const result = await api('/api/sync'), sync = result.sync, license = result.license, indicator = syncIndicator(sync, Date.now());
   $('currentVersion').textContent = $('aboutVersion').textContent = `Versão instalada: ${result.version || '—'}`;
   $('systemPending').textContent = sync.pending;
   $('systemReview').textContent = indicator.review;
@@ -1838,12 +1848,35 @@ async function loadSystem() {
   const link = $('releaseLink');
   link.classList.toggle('hidden', !sync.release);
   if (sync.release) link.href = sync.release.url; else link.removeAttribute('href');
-  if (!canManage(role())) { $('auditList').textContent = 'Auditoria disponível para gerentes e administradores.'; $('conflictList').textContent = 'Conflitos disponíveis para gerentes e administradores.'; return; }
+  if (!canManage(role())) { $('auditList').textContent = 'Auditoria disponível para gerentes e administradores.'; $('conflictList').textContent = 'Conflitos disponíveis para gerentes e administradores.'; $('reviewList').textContent = 'Detalhes disponíveis para gerentes e administradores.'; return; }
+  loadReview().then(data => { $('reviewList').innerHTML = reviewMarkup(data); }).catch(() => { $('reviewList').textContent = 'Não foi possível carregar os registros em revisão.'; });
   try {
     const [audit, conflicts] = await Promise.all([api('/api/audit'), api('/api/sync/conflicts')]);
     $('auditList').innerHTML = audit.events.map(event => `<div class="mini-row"><span>${esc(event.action)}${event.subject_id ? ' · ' + esc(String(event.subject_id).slice(0, 8)) : ''}</span><small>${dateTimeText(event.created_at)}</small></div>`).join('') || 'Sem eventos.';
     $('conflictList').innerHTML = (conflicts.conflicts || []).map(conflict => `<div class="mini-row"><span>${esc(conflict.reason)} · ${esc(conflict.aggregate_id)}</span><small>${esc(conflict.status)}</small></div>`).join('') || 'Sem conflitos locais.';
   } catch { $('auditList').textContent = 'Não foi possível carregar a auditoria.'; $('conflictList').textContent = 'Não foi possível carregar os conflitos.'; }
+}
+const eventTypeNames = {'sale.completed': 'Venda', 'sale.voided': 'Cancelamento de venda', 'sale.returned': 'Devolução', 'cash.opened': 'Abertura de caixa', 'cash.closed': 'Fechamento de caixa', 'cash.movement': 'Sangria ou suprimento', 'stock.adjusted': 'Ajuste de estoque', 'credit.received': 'Recebimento de fiado'};
+const skippedKindNames = {product: 'Produto', barcode: 'Código de barras', operator: 'Operador', customer: 'Cliente', promotion: 'Promoção', payment_method: 'Forma de pagamento'};
+async function loadReview() {
+  const [quarantine, skipped] = await Promise.all([api('/api/sync/quarantine'), api('/api/catalog/skipped')]);
+  return {events: quarantine.events || [], skipped: skipped.items || []};
+}
+function reviewMarkup({events, skipped}) {
+  const eventRows = events.map(event => `<div class="mini-row"><span><strong>${esc(eventTypeNames[event.event_type] || event.event_type)}</strong> · ${esc(String(event.aggregate_id).slice(0, 8))}<br><small>${esc(event.message || event.reason)}</small></span><small>${dateTimeText(event.created_at)}</small></div>`).join('');
+  const skippedRows = skipped.map(item => `<div class="mini-row"><span><strong>${esc(skippedKindNames[item.kind] || item.kind)}</strong>${item.id ? ' · ' + esc(String(item.id).slice(0, 8)) : ''}<br><small>${esc(item.error)}</small></span></div>`).join('');
+  return `<h3 class="review-title">Registros em revisão no servidor (${events.length})</h3>${eventRows || '<p class="list-empty">Nenhum registro aguardando revisão.</p>'}
+    <h3 class="review-title">Itens do catálogo ignorados por este caixa (${skipped.length})</h3>${skippedRows || '<p class="list-empty">Nenhum item ignorado na última atualização do catálogo.</p>'}`;
+}
+// Detail of the "N em revisão" chip of the status bar.
+async function reviewDialog() {
+  if (!canManage(role())) { toast($('reviewChip').title.replace(' Toque para ver os detalhes.', '') + ' Chame o gerente para ver os detalhes.'); return; }
+  const data = await loadReview();
+  const modal = openModal({title: 'Registros em revisão', eyebrow: 'Sincronização', className: 'wide', text: 'O servidor recebeu estes registros, mas não os aplicou. Nada foi perdido: o gestor confere cada um no painel da empresa. As vendas seguintes continuam sendo enviadas.'});
+  modal.body.append(el('div', 'mini-list review-list', reviewMarkup(data)));
+  modal.action('Fechar <kbd>Esc</kbd>', 'primary', () => modal.close()).focus();
+  await modal.promise;
+  focusHome();
 }
 async function loadBackups() {
   if (!canManage(role())) { $('backupInfo').textContent = 'Backup local disponível para gerentes e administradores.'; return; }
@@ -1852,9 +1885,18 @@ async function loadBackups() {
     $('backupInfo').textContent = data.copies.length ? `${data.copies.length} cópia(s) em ${data.directory}. Mais recente: ${data.copies[0].name}` : `Nenhuma cópia criada. Destino: ${data.directory}`;
   } catch { $('backupInfo').textContent = 'Não foi possível carregar os backups locais.'; }
 }
+// A paired terminal only changes company with a manager: the PIN goes in the request and is not kept.
+async function maintenancePin(title, text) {
+  const session = state.session;
+  if (!session?.paired || canManage(role()) || !(session.operators || []).some(operator => canManage(operator.role))) return '';
+  const pin = await pinDialog(title, text);
+  if (!pin) throw Error('Operação cancelada: é necessário o PIN de um gerente.');
+  return pin;
+}
 async function createNewProfile() {
   if (!(await confirmDialog('Criar perfil para outra empresa?', 'O banco atual será preservado em um backup e o próximo pareamento começará em um diretório separado.', 'Criar perfil'))) return;
-  const result = await api('/api/new-profile', 'POST', {confirm: true});
+  const pin = await maintenancePin('Autorizar novo perfil', 'Este caixa já está vinculado a uma empresa. Informe o PIN de um gerente para criar outro perfil.');
+  const result = await api('/api/new-profile', 'POST', {confirm: true, manager_pin: pin});
   state.session = null;
   clearLocalSale();
   state.lastOperatorsRefreshAt = 0;
@@ -1916,7 +1958,8 @@ $('pinPad').addEventListener('click', event => {
 on('refreshBootstrap', 'click', async () => { state.lastOperatorsRefreshAt = Date.now(); await refreshOperators(); await loadSession(); });
 on('changeConnection', 'click', async () => {
   if (!(await confirmDialog('Corrigir pareamento de teste?', 'Use esta opção apenas quando não existem vendas, caixa ou movimentações. Para outra empresa, crie um perfil separado.', 'Corrigir pareamento', {danger: true}))) return;
-  await api('/api/unpair', 'POST', {confirm: true});
+  const pin = await maintenancePin('Autorizar correção do pareamento', 'Este caixa já está vinculado a uma empresa. Informe o PIN de um gerente para remover o pareamento.');
+  await api('/api/unpair', 'POST', {confirm: true, manager_pin: pin});
   state.session = null;
   clearLocalSale();
   toast('Pareamento removido. Informe a licença e o novo código.');
@@ -1928,11 +1971,13 @@ document.querySelectorAll('.tab').forEach(button => button.addEventListener('cli
 $('operatorMenuBtn').addEventListener('click', openMenu);
 $('netChip').addEventListener('click', () => toast(state.indicator?.detail || ''));
 $('queueChip').addEventListener('click', () => toast($('queueChip').title));
-$('reviewChip').addEventListener('click', () => toast($('reviewChip').title));
+$('reviewChip').addEventListener('click', () => reviewDialog().catch(error => toast(error.message, true)));
 $('printerChip').addEventListener('click', () => { if (canManage(role())) setTab('printers'); else toast($('printerChip').title); });
 $('scaleChip').addEventListener('click', () => runAction('scale'));
 $('openSearchBtn').addEventListener('click', () => runAction('search'));
 $('productSearch').addEventListener('input', () => {
+  // Text that reaches the reading field without key events (paste, input method) is not a reading while paying.
+  if (state.pay.active) { $('productSearch').value = ''; focusPay(); return; }
   if (state.done) { state.done = null; renderSale(); }
   if ($('scanStatus').dataset.kind === 'error') scanStatus('', 'Leitor pronto');
 });
@@ -2033,12 +2078,24 @@ on('backupBtn', 'click', async () => { const copy = await api('/api/backups', 'P
 on('bootstrapBtn', 'click', async () => { await api('/api/bootstrap', 'POST', {}); toast('Catálogo e licença atualizados'); await poll(); await loadSystem(); });
 
 function handlePayKey(event, editable) {
-  const key = event.key, target = event.target;
+  const key = event.key, scan = $('productSearch');
+  let target = event.target;
+  // The reading field is out of play while paying: a key that reaches it belongs to the payment.
+  if (target === scan) {
+    scan.value = '';
+    focusPay();
+    target = document.activeElement;
+    editable = target !== scan && !!target.matches?.('input');
+    if (target === scan) scan.blur();
+  }
   if (key === 'Enter') {
     if (target.matches?.('button') && !scannerBurst()) return;
     event.preventDefault();
     if (scannerBurst()) {
-      if (target.id === 'payCash' || target.id === 'productSearch') target.value = '';
+      const pickedByReading = state.pay.method && performance.now() - (state.pay.pickedAt || 0) < 1500;
+      if (pickedByReading) { cancelPayment(); state.pay.active = true; renderSale(); $('paymentMethods').focus(); }
+      else if (target.matches?.('input')) target.value = '';
+      scan.value = '';
       payError('Leitura de código ignorada durante o pagamento. Tecle Esc para voltar à venda.');
       renderPay();
       return;
@@ -2047,7 +2104,7 @@ function handlePayKey(event, editable) {
     return;
   }
   if (editable) return;
-  if (/^[0-9]$/.test(key)) { event.preventDefault(); queuePayDigit(key); return; }
+  if (/^[0-9]$/.test(key)) { event.preventDefault(); pickPayDigit(key); return; }
   if (key.length === 1) event.preventDefault();
 }
 // Single keyboard entry point: dialogs first, then the shortcut map, then the sale screen.

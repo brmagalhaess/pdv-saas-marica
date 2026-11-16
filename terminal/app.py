@@ -5,6 +5,8 @@ import os
 import secrets
 import hashlib
 import hmac
+import sqlite3
+import time
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
@@ -47,6 +49,11 @@ def _write_active_profile(data_dir, name):
     os.replace(temporary, pointer)
 
 
+# /api/bootstrap is reachable from the login screen: keep it from being hammered.
+BOOTSTRAP_CALLS = 6
+BOOTSTRAP_WINDOW_SECONDS = 60
+
+
 def create_app(config=None):
     config = dict(config or {})
     data_dir = Path(config.get("DATA_DIR") or os.environ.get("PDV_TERMINAL_DATA") or _default_data_dir())
@@ -74,6 +81,7 @@ def create_app(config=None):
     worker = None
     app.extensions["terminal_store"] = store
     allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]"))
+    bootstrap_calls = []
 
     @app.before_request
     def local_security():
@@ -93,6 +101,12 @@ def create_app(config=None):
     @app.errorhandler(TerminalError)
     def error(exc):
         return jsonify({"error": str(exc)}), exc.status
+
+    @app.errorhandler(sqlite3.Error)
+    def database_error(exc):
+        app.logger.error("Banco local indisponível: %s: %s", type(exc).__name__, exc)
+        return jsonify({"error": "Banco de dados local ocupado ou indisponível. Aguarde alguns segundos e tente "
+                                 "novamente; se persistir, reinicie o terminal."}), 503
 
     @app.errorhandler(404)
     def not_found(_exc):
@@ -123,6 +137,31 @@ def create_app(config=None):
         if not isinstance(value, dict):
             raise TerminalError("Envie um objeto JSON")
         return value
+
+    def session_manager():
+        """Manager logged in on this browser session, if any."""
+        operator_id = session.get("operator_id")
+        if not operator_id:
+            return None
+        try:
+            operator = store.operator(operator_id)
+            marker = hmac.new(app.secret_key, store.operator_pin_hash(operator_id).encode(),
+                              hashlib.sha256).hexdigest()
+        except TerminalError:
+            return None
+        if not secrets.compare_digest(session.get("auth_marker", ""), marker):
+            return None
+        return operator if operator["role"] in MANAGER_ROLES else None
+
+    def require_manager_when_paired(data):
+        """Maintenance of a paired terminal needs a manager session or a manager PIN in the body.
+
+        Before pairing nobody can log in, so the routes stay open; the same holds
+        while no manager PIN has reached this terminal yet (wrong pairing, first load).
+        """
+        if not store.identity()["terminal_id"] or not store.has_manager() or session_manager():
+            return
+        store.manager_override(data.get("manager_pin"))
 
     @app.get("/")
     def index():
@@ -166,6 +205,7 @@ def create_app(config=None):
         data = body()
         if data.get("confirm") is not True:
             raise TerminalError("Confirme a troca de empresa", 409)
+        require_manager_when_paired(data)
         result = store.unpair()
         session.clear()
         return jsonify(result)
@@ -179,6 +219,7 @@ def create_app(config=None):
             raise TerminalError("Confirme a criação de um novo perfil", 409)
         if session.get("operator_id"):
             raise TerminalError("Saia do operador antes de criar outro perfil", 409)
+        require_manager_when_paired(data)
         current = store
         previous_pointer = data_dir / "active-profile.json"
         previous_contents = previous_pointer.read_bytes() if previous_pointer.exists() else None
@@ -229,6 +270,11 @@ def create_app(config=None):
         # A PIN may have changed in the cloud since this terminal last synced.
         # The paired device token authorizes this read-only bootstrap, so it
         # must also be possible from the login screen before local PIN auth.
+        now = time.monotonic()
+        bootstrap_calls[:] = [moment for moment in bootstrap_calls if now - moment < BOOTSTRAP_WINDOW_SECONDS]
+        if len(bootstrap_calls) >= BOOTSTRAP_CALLS:
+            raise TerminalError("Muitas atualizações seguidas; aguarde um minuto e tente novamente", 429)
+        bootstrap_calls.append(now)
         return jsonify(sync.refresh_bootstrap(store))
 
     @app.post("/api/login")
@@ -251,33 +297,20 @@ def create_app(config=None):
     @app.get("/api/products")
     @authenticated()
     def products(_operator):
-        return jsonify({"products": store.products(request.args.get("q", ""), request.args.get("category", "")),
-                        "categories": store.categories()})
+        found = store.product_search(request.args.get("q", ""), request.args.get("category", ""))
+        return jsonify({**found, "categories": store.categories()})
 
     @app.get("/api/products/scale/<scale_code>")
     @authenticated()
     def product_by_scale_code(_operator, scale_code):
         # Scale labels must resolve over the whole catalog: the product list is capped at 150 rows.
-        code = str(scale_code)[:20]
-        with store.connection() as conn:
-            row = conn.execute(
-                "SELECT * FROM products WHERE active=1 AND unit='KG' AND scale_code IN (?,?) ORDER BY name LIMIT 1",
-                (code, code.lstrip("0") or code)).fetchone()
-        if not row:
-            raise TerminalError("Nenhum produto por quilo com este código de balança", 404)
-        return jsonify({"product": dict(row)})
+        return jsonify({"product": store.product_by_scale_code(scale_code)})
 
     @app.get("/api/products/batch")
     @authenticated()
     def products_batch(_operator):
         # Current price and stock for the products of a cart (resume, reload, catalog refresh).
-        ids = [value for value in request.args.get("ids", "").split(",") if value][:100]
-        if not ids:
-            return jsonify({"products": []})
-        with store.connection() as conn:
-            rows = conn.execute("SELECT * FROM products WHERE active=1 AND id IN (" +
-                                ",".join("?" for _ in ids) + ")", ids).fetchall()
-        return jsonify({"products": [dict(row) for row in rows]})
+        return jsonify({"products": store.products_by_ids(request.args.get("ids", "").split(","))})
 
     @app.get("/api/cash")
     @authenticated()
@@ -458,6 +491,18 @@ def create_app(config=None):
         rows = store.resolve_sync_conflict(conflict_id, data.get("status"), data.get("resolution", ""))
         match = next((row for row in rows if row.get("id") == str(conflict_id)), None)
         return jsonify(match or {"id": str(conflict_id), "status": data.get("status")})
+
+    @app.get("/api/sync/quarantine")
+    @authenticated(*MANAGER_ROLES)
+    def sync_quarantine(_operator):
+        # Events the cloud received but kept for review instead of applying.
+        return jsonify({"events": store.quarantined_events(request.args.get("status") or "open")})
+
+    @app.get("/api/catalog/skipped")
+    @authenticated(*MANAGER_ROLES)
+    def catalog_skipped(_operator):
+        # Catalog rows of the last bootstrap that this terminal could not use.
+        return jsonify({"items": store.catalog_skipped()})
 
     @app.get("/api/export")
     @authenticated(*MANAGER_ROLES)

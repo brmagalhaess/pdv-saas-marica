@@ -5,6 +5,7 @@ import os
 import secrets
 import sqlite3
 import time
+import unicodedata
 import uuid
 from datetime import datetime
 from collections import defaultdict
@@ -12,7 +13,8 @@ from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-from .printers import LABEL_PRINTER_REQUIRED, label_bytes, layout_bytes, receipt_bytes, receipt_layout, voucher_layout
+from .printers import (LABEL_PRINTER_REQUIRED, PAYMENT_LABELS, label_bytes, layout_bytes, receipt_bytes,
+                       receipt_layout, voucher_layout)
 
 
 # The cloud issues a normal offline lease for 72h (past_due is 24h).
@@ -25,7 +27,9 @@ BUILTIN_NAMES = {"cash": "Dinheiro", "pix": "Pix", "card_credit": "Crédito", "c
                  "credit_account": "A prazo (fiado)", "store_credit": "Crédito na loja"}
 BUILTIN_PAYMENTS = tuple(BUILTIN_NAMES)
 REFUND_METHODS = ("cash", "store_credit", "account")
-REFUND_LABELS = {"cash": "Dinheiro", "store_credit": "Credito na loja", "account": "Abatido do fiado"}
+REFUND_LABELS = {"cash": "Dinheiro", "store_credit": "Crédito na loja", "account": "Abatido do fiado"}
+# /api/products answers at most this many rows and reports the total found.
+PRODUCT_PAGE_SIZE = 150
 
 
 def _qty_text(milli, unit):
@@ -87,6 +91,20 @@ def _optional_text(value, maximum):
     if not isinstance(value, str) or not value.strip():
         return None
     return value.strip()[:maximum]
+
+
+def _fold(value):
+    """Lowercase without accents: SQLite LIKE only folds ASCII letters."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(char for char in text if not unicodedata.combining(char)).casefold()
+
+
+def _search_text(name, sku):
+    return _fold(name) + "\x1f" + _fold(sku)
+
+
+def _like(value):
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _line_gross(price_cents, quantity_milli):
@@ -179,11 +197,11 @@ class Store:
                     id TEXT PRIMARY KEY,operator_id TEXT,action TEXT NOT NULL,
                     subject_id TEXT,detail TEXT,created_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS sync_conflicts(
-                    id TEXT PRIMARY KEY,event_id TEXT NOT NULL UNIQUE,event_type TEXT NOT NULL,
+                    id TEXT PRIMARY KEY,event_id TEXT NOT NULL,event_type TEXT NOT NULL,
                     aggregate_id TEXT NOT NULL,reason TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'open',detail TEXT NOT NULL,
                     created_at INTEGER NOT NULL,resolved_at INTEGER,
-                    resolution TEXT NOT NULL DEFAULT '');
+                    resolution TEXT NOT NULL DEFAULT '',UNIQUE(event_id,reason));
                 CREATE INDEX IF NOT EXISTS sync_conflicts_status ON sync_conflicts(status,created_at);
                 CREATE TABLE IF NOT EXISTS sync_quarantine(
                     event_id TEXT PRIMARY KEY,event_type TEXT NOT NULL,aggregate_id TEXT NOT NULL,
@@ -217,6 +235,11 @@ class Store:
                 conn.execute("ALTER TABLE products ADD COLUMN group_name TEXT")
             if "variant" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN variant TEXT")
+            if "search_text" not in columns:
+                conn.execute("ALTER TABLE products ADD COLUMN search_text TEXT NOT NULL DEFAULT ''")
+                for row in conn.execute("SELECT id,name,sku FROM products").fetchall():
+                    conn.execute("UPDATE products SET search_text=? WHERE id=?",
+                                 (_search_text(row["name"], row["sku"]), row["id"]))
             sales_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sales)")}
             if "customer_document" not in sales_columns:
                 conn.execute("ALTER TABLE sales ADD COLUMN customer_document TEXT")
@@ -224,6 +247,7 @@ class Store:
             if "resolution" not in conflict_columns:
                 conn.execute("ALTER TABLE sync_conflicts ADD COLUMN resolution TEXT NOT NULL DEFAULT ''")
             conn.commit()
+            self._migrate_conflict_key(conn)
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -231,6 +255,33 @@ class Store:
         # A previous process may have sent bytes before crashing. Never retry it silently.
         with self.transaction() as conn:
             conn.execute("UPDATE print_jobs SET status='uncertain',error='Processo interrompido durante impressão' WHERE status='sending'")
+
+    @staticmethod
+    def _migrate_conflict_key(conn):
+        """Older databases allowed one conflict per event; the cloud sends one per reason."""
+        unique = [[column["name"] for column in conn.execute(f"PRAGMA index_info('{index['name']}')")]
+                  for index in conn.execute("PRAGMA index_list(sync_conflicts)").fetchall() if index["unique"]]
+        if ["event_id"] not in unique:
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("ALTER TABLE sync_conflicts RENAME TO sync_conflicts_old")
+            conn.execute("""CREATE TABLE sync_conflicts(
+                id TEXT PRIMARY KEY,event_id TEXT NOT NULL,event_type TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',detail TEXT NOT NULL,
+                created_at INTEGER NOT NULL,resolved_at INTEGER,
+                resolution TEXT NOT NULL DEFAULT '',UNIQUE(event_id,reason))""")
+            conn.execute("""INSERT INTO sync_conflicts
+                (id,event_id,event_type,aggregate_id,reason,status,detail,created_at,resolved_at,resolution)
+                SELECT id,event_id,event_type,aggregate_id,reason,status,detail,created_at,resolved_at,resolution
+                FROM sync_conflicts_old""")
+            conn.execute("DROP TABLE sync_conflicts_old")
+            conn.execute("CREATE INDEX IF NOT EXISTS sync_conflicts_status ON sync_conflicts(status,created_at)")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
     @contextmanager
     def connection(self):
@@ -423,17 +474,22 @@ class Store:
             for conflict in conflicts:
                 if not isinstance(conflict, dict) or not conflict.get("event_id"):
                     continue
+                # One event may come back with several conflicts, one per reason.
+                event_id, reason = str(conflict["event_id"]), str(conflict.get("reason") or "unknown")
+                values = (str(conflict.get("event_type") or ""), str(conflict.get("aggregate_id") or ""),
+                          _json(conflict.get("detail") or {}))
+                if conn.execute("UPDATE sync_conflicts SET event_type=?,aggregate_id=?,detail=? "
+                                "WHERE event_id=? AND reason=?", (*values, event_id, reason)).rowcount:
+                    continue
+                conflict_id = str(conflict.get("id") or _uuid())
+                if conn.execute("SELECT 1 FROM sync_conflicts WHERE id=?", (conflict_id,)).fetchone():
+                    conflict_id = _uuid()
                 conn.execute(
                     """INSERT INTO sync_conflicts
                        (id,event_id,event_type,aggregate_id,reason,status,detail,created_at,resolved_at)
-                       VALUES (?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT(event_id) DO UPDATE SET
-                         event_type=excluded.event_type, aggregate_id=excluded.aggregate_id,
-                         reason=excluded.reason, detail=excluded.detail""",
-                    (str(conflict.get("id") or _uuid()), str(conflict["event_id"]),
-                     str(conflict.get("event_type") or ""), str(conflict.get("aggregate_id") or ""),
-                     str(conflict.get("reason") or "unknown"), str(conflict.get("status") or "open"),
-                     _json(conflict.get("detail") or {}), now, None))
+                       VALUES (?,?,?,?,?,?,?,?,NULL)""",
+                    (conflict_id, event_id, values[0], values[1], reason,
+                     str(conflict.get("status") or "open"), values[2], now))
 
     def record_quarantined(self, entries, events):
         """Keep track of events the cloud accepted for review instead of applying.
@@ -465,7 +521,7 @@ class Store:
                     """INSERT INTO sync_conflicts
                        (id,event_id,event_type,aggregate_id,reason,status,detail,created_at,resolved_at)
                        VALUES (?,?,?,?,'rejected_event','open',?,?,NULL)
-                       ON CONFLICT(event_id) DO NOTHING""",
+                       ON CONFLICT(event_id,reason) DO NOTHING""",
                     (_uuid(), row["event_id"], row["event_type"], row["aggregate_id"],
                      _json({"reason": reason, "message": message}), now))
                 self._audit(conn, None, "sync.event_quarantined", row["aggregate_id"],
@@ -507,12 +563,13 @@ class Store:
         if not isinstance(resolution, str) or len(resolution) > 1000:
             raise TerminalError("Resolução inválida")
         with self.transaction() as conn:
-            row = conn.execute("SELECT id,event_id FROM sync_conflicts WHERE id=?", (str(conflict_id),)).fetchone()
+            row = conn.execute("SELECT id,event_id,reason FROM sync_conflicts WHERE id=?",
+                               (str(conflict_id),)).fetchone()
             if not row:
                 raise TerminalError("Conflito não encontrado", 404)
             conn.execute("UPDATE sync_conflicts SET status=?,resolution=?,resolved_at=? WHERE id=?",
                          (status, resolution.strip(), _now_ms(), str(conflict_id)))
-            if status in ("resolved", "ignored"):
+            if status in ("resolved", "ignored") and row["reason"] == "rejected_event":
                 conn.execute("UPDATE sync_quarantine SET status='resolved',resolved_at=? WHERE event_id=? AND status='open'",
                              (_now_ms(), row["event_id"]))
         return self.sync_conflicts()
@@ -820,9 +877,9 @@ class Store:
     def _upsert_product(conn, row):
         conn.execute("""INSERT INTO products
             (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_controlled,stock_milli,active,updated_at,
-             group_id,group_name,variant)
+             group_id,group_name,variant,search_text)
             VALUES (:id,:sku,:barcode,:ncm,:scale_code,:name,:unit,:category,:price_cents,:cost_cents,:image_url,
-                    :stock_controlled,:stock_milli,:active,:updated_at,:group_id,:group_name,:variant)
+                    :stock_controlled,:stock_milli,:active,:updated_at,:group_id,:group_name,:variant,:search_text)
             ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
             ncm=excluded.ncm,
             scale_code=excluded.scale_code,
@@ -830,7 +887,8 @@ class Store:
             price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
             image_url=excluded.image_url,stock_controlled=excluded.stock_controlled,stock_milli=excluded.stock_milli,
             active=excluded.active,updated_at=excluded.updated_at,group_id=excluded.group_id,
-            group_name=excluded.group_name,variant=excluded.variant""", row)
+            group_name=excluded.group_name,variant=excluded.variant,search_text=excluded.search_text""",
+                     {**row, "search_text": _search_text(row["name"], row["sku"])})
 
     def _apply_operators(self, conn, operators, skipped):
         operator_ids = []
@@ -982,13 +1040,16 @@ class Store:
                 "promo_discount_cents": sum(l["promo_discount_cents"] for l in lines)}
 
     def customers(self, query=""):
-        query = f"%{str(query or '').strip()[:60]}%"
+        wanted = _fold(str(query or "").strip()[:60])
         with self.connection() as conn:
-            return [dict(row) for row in conn.execute(
+            rows = conn.execute(
                 """SELECT id,name,document,credit_limit_cents,open_credit_cents,store_credit_cents,
                    MAX(credit_limit_cents-open_credit_cents,0) available_credit_cents
-                   FROM customers WHERE active=1 AND (name LIKE ? OR document LIKE ?) ORDER BY name LIMIT 50""",
-                (query, query))]
+                   FROM customers WHERE active=1 ORDER BY name""")
+            # Filtered here because SQLite LIKE does not ignore accents.
+            found = (dict(row) for row in rows
+                     if wanted in _fold(row["name"]) or wanted in _fold(row["document"]))
+            return [row for row, _ in zip(found, range(50))]
 
     def unpair(self):
         """Undo a clean setup; a database with business history stays bound."""
@@ -1009,6 +1070,12 @@ class Store:
         with self.connection() as conn:
             return [dict(row) for row in conn.execute(
                 "SELECT id,name,role FROM operators WHERE active=1 ORDER BY name")]
+
+    def has_manager(self):
+        """Whether anyone on this terminal can authorize maintenance with a PIN."""
+        with self.connection() as conn:
+            return conn.execute("SELECT 1 FROM operators WHERE active=1 AND role IN ('owner','admin','manager') "
+                                "LIMIT 1").fetchone() is not None
 
     def operator(self, operator_id):
         with self.connection() as conn:
@@ -1107,22 +1174,52 @@ class Store:
         return {"authorized": True}
 
     def products(self, query="", category=""):
+        return self.product_search(query, category)["products"]
+
+    def product_search(self, query="", category=""):
+        """One page of the catalog plus how many products matched in total.
+
+        An exact barcode, SKU or id wins; otherwise every typed word must be
+        part of the name or SKU, ignoring accents and case.
+        """
         query = str(query)[:100].strip()
         with self.connection() as conn:
             if query:
                 exact = conn.execute("SELECT * FROM products WHERE active=1 AND (id=? OR barcode=? OR sku=?)",
                                      (query, query, query)).fetchone()
                 if exact:
-                    return [dict(exact)]
-            sql = "SELECT * FROM products WHERE active=1"
-            params = []
-            if query:
-                sql += " AND (name LIKE ? OR sku LIKE ?)"
-                params.extend((f"%{query}%", f"%{query}%"))
+                    return {"products": [dict(exact)], "total": 1, "limit": PRODUCT_PAGE_SIZE}
+            where, params = "active=1", []
+            for word in _fold(query).split():
+                where += " AND search_text LIKE ? ESCAPE '\\'"
+                params.append(f"%{_like(word)}%")
             if category:
-                sql += " AND category=?"
+                where += " AND category=?"
                 params.append(category)
-            return [dict(row) for row in conn.execute(sql + " ORDER BY name LIMIT 150", params)]
+            total = conn.execute(f"SELECT COUNT(*) FROM products WHERE {where}", params).fetchone()[0]
+            rows = conn.execute(f"SELECT * FROM products WHERE {where} ORDER BY name LIMIT ?",
+                                (*params, PRODUCT_PAGE_SIZE))
+            return {"products": [dict(row) for row in rows], "total": total, "limit": PRODUCT_PAGE_SIZE}
+
+    def product_by_scale_code(self, scale_code):
+        """Weighed product of a scale label, searched over the whole catalog."""
+        code = str(scale_code)[:20]
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM products WHERE active=1 AND unit='KG' AND scale_code IN (?,?) ORDER BY name LIMIT 1",
+                (code, code.lstrip("0") or code)).fetchone()
+        if not row:
+            raise TerminalError("Nenhum produto por quilo com este código de balança", 404)
+        return dict(row)
+
+    def products_by_ids(self, ids):
+        """Current price and stock of specific products (cart resume, catalog refresh)."""
+        ids = [str(value) for value in ids if value][:100]
+        if not ids:
+            return []
+        with self.connection() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM products WHERE active=1 AND id IN (" + ",".join("?" for _ in ids) + ")", ids)]
 
     def categories(self):
         with self.connection() as conn:
@@ -1636,12 +1733,12 @@ class Store:
             customer = (conn.execute("SELECT name,store_credit_cents,open_credit_cents FROM customers WHERE id=?",
                                      (customer_id,)).fetchone() if customer_id else None)
             if customer and refund == "store_credit":
-                rows.append(["pair", "Credito na loja disponivel", _brl(customer["store_credit_cents"])])
+                rows.append(["pair", "Crédito na loja disponível", _brl(customer["store_credit_cents"])])
             if customer and refund == "account":
                 rows.append(["pair", "Fiado em aberto", _brl(customer["open_credit_cents"])])
             rows += [["pair", "Operador", names.get(operator["id"], "")], ["pair", "Autorizado por", names.get(supervisor, "")]]
-            layout, job = self._queue_voucher(conn, {"title": "DEVOLUCAO", "created_at": timestamp, "rows": rows,
-                                                     "reference": f"Devolucao: {return_id[:16]}",
+            layout, job = self._queue_voucher(conn, {"title": "DEVOLUÇÃO", "created_at": timestamp, "rows": rows,
+                                                     "reference": f"Devolução: {return_id[:16]}",
                                                      "customer_name": customer["name"] if customer else snapshot.get("customer_name"),
                                                      "signature": refund == "cash"})
             return {"id": return_id, "sale_id": sale_id, "refund_method": refund, "total_cents": total, "items": items,
@@ -1694,7 +1791,7 @@ class Store:
                 "customer_name": customer["name"],
                 "rows": [["pair", "Fiado anterior", _brl(customer["open_credit_cents"])],
                          ["pair", "VALOR RECEBIDO", _brl(amount), True],
-                         ["pair", "Forma", BUILTIN_NAMES.get(method, method)],
+                         ["pair", "Forma", PAYMENT_LABELS.get(method, method)],
                          ["pair", "Saldo em aberto", _brl(remaining)],
                          ["pair", "Operador", operator.get("name", "")]]})
             return {"id": receipt_id, "amount_cents": amount, "open_credit_cents": remaining,

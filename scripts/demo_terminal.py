@@ -7,8 +7,10 @@ nem grava o banco real do terminal e nunca fala com a nuvem.
 
     python scripts/demo_terminal.py            # online simulado
     python scripts/demo_terminal.py --offline  # simula queda da internet
+    python scripts/demo_terminal.py --revisao  # já abre com registros "em revisão"
 """
 import argparse
+import json
 import sys
 import tempfile
 import threading
@@ -116,6 +118,19 @@ def seed(store):
     return products
 
 
+def seed_review(store):
+    """One event kept for review by the (fake) cloud and one catalog row the terminal skipped."""
+    cashier = next(operator for operator in store.operators() if operator["role"] == "cashier")
+    store.open_cash(cashier["id"], 10000)
+    events = store.pending_events()
+    store.record_quarantined([{"event_id": events[0]["event_id"], "reason": "rejected_event",
+                               "message": "Já existe um caixa aberto para este terminal no servidor"}], events)
+    store.ack_events([event["event_id"] for event in events])
+    with store.transaction() as conn:
+        skipped = [{"kind": "product", "id": str(uuid.uuid4()), "error": "Unidade de produto inválida"}]
+        store._set_meta(conn, "catalog_skipped", json.dumps(skipped, ensure_ascii=False))
+
+
 def simulate_cloud(store, offline, stop):
     """No real cloud here: acknowledge the outbox locally, or report an outage with --offline."""
     while not stop.is_set():
@@ -139,12 +154,16 @@ def main():
     parser = argparse.ArgumentParser(description="Caixa Rápido PDV2 com dados fictícios")
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--offline", action="store_true", help="simula o caixa sem internet (fila pendente)")
+    parser.add_argument("--revisao", action="store_true",
+                        help="abre o caixa com um registro em revisão e um item de catálogo ignorado")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="pdv2-demo-") as data_dir:
         app = create_app({"DATA_DIR": data_dir, "DB_PATH": Path(data_dir) / "terminal.sqlite3", "START_WORKER": False,
                           "TEMPLATES_AUTO_RELOAD": True})
         store = app.extensions["terminal_store"]
         products = seed(store)
+        if args.revisao:
+            seed_review(store)
         receipts = Path(data_dir) / "cupons"
         receipts.mkdir()
         store.save_printer("receipt", "file", str(receipts), "escpos80")
