@@ -509,5 +509,44 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertLess(post.index("exit;", refused), post.index("'--install'"))
 
 
+class StationServerTests(unittest.TestCase):
+    """The service child in station mode: no database, same /health contract, clean stop."""
+
+    def test_child_serves_the_station_bridge_and_stops_on_request(self):
+        import json
+        import subprocess
+        import urllib.request
+
+        with tempfile.TemporaryDirectory() as temp, socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+            probe.close()
+            data = Path(temp)
+            paths.write_mode(data, "station")
+            stop_file = data / "run" / "stop-test"
+            stop_file.parent.mkdir()
+            env = {**os.environ, "PDV_TERMINAL_DATA": temp, "PDV_TERMINAL_PORT": str(port),
+                   "PDV_STOP_FILE": str(stop_file), "PDV_LAN_PORT": "0", "PDV_DISCOVERY_PORT": "0"}
+            for name in ("PDV_MODE", "PDV_INSTALL_ROOT", "PDV_SUPERVISED", "PDV_TERMINAL_DB", "PDV_TERMINAL_HOST"):
+                env.pop(name, None)
+            child = subprocess.Popen([sys.executable, "-m", "terminal.service_win", "--serve"], cwd=str(ROOT),
+                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                url = f"http://127.0.0.1:{port}/health"
+                wait_for(lambda: updater.probe_health(url), timeout=30, message="station child /health")
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    self.assertEqual(json.loads(response.read()), {
+                        "status": "ok", "service": "terminal-local", "mode": "station", "server": "unlinked"})
+                self.assertTrue(updater.probe_responding(url), "the launcher sees the station as running")
+                self.assertFalse((data / "terminal.sqlite3").exists(), "a station never creates a database")
+                stop_file.touch()
+                self.assertEqual(child.wait(timeout=20), 0)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=10)
+            self.assertIn("caixa adicional", (data / "logs" / "terminal.log").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

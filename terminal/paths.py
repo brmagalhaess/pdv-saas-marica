@@ -7,11 +7,13 @@ Installed layout (Windows):
     %ProgramData%\\PDV2\\                     database, backups, logs and downloads
 """
 
+import json
 import ntpath
 import os
 import posixpath
 import re
 import sys
+import time
 from pathlib import Path
 
 APP_NAME = "PDV2"
@@ -153,3 +155,48 @@ def terminal_port(env=None):
 
 def health_url(env=None):
     return f"http://127.0.0.1:{terminal_port(env)}/health"
+
+
+# ------------------------------------------------------------------- mode
+# One executable, two roles: "server" (caixa principal, owns the database) and
+# "station" (caixa adicional, a bridge to the server). The choice is a local file.
+
+MODE_FILE = "mode.json"
+MODES = ("server", "station")
+
+
+def _default_data_dir(env):
+    return data_dir(env, installed=read_pointer(install_root(env)) is not None)
+
+
+def mode_path(data_dir):
+    return Path(data_dir) / MODE_FILE
+
+
+def read_mode(data_dir=None, env=None):
+    """PDV_MODE wins; a missing or unreadable file means "server"."""
+    env = os.environ if env is None else env
+    forced = str(env.get("PDV_MODE") or "").strip().lower()
+    if forced in MODES:
+        return forced
+    folder = _default_data_dir(env) if data_dir is None else data_dir
+    try:
+        value = json.loads(mode_path(folder).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "server"
+    mode = value.get("mode") if isinstance(value, dict) else None
+    return mode if mode in MODES else "server"
+
+
+def write_mode(data_dir, mode):
+    """Atomic replacement, like write_pointer: a crash leaves the old or the new mode."""
+    if mode not in MODES:
+        raise ValueError("Modo inválido: " + str(mode)[:40])
+    target = mode_path(data_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(MODE_FILE + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps({"v": 1, "mode": mode, "changed_at": int(time.time())}) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)

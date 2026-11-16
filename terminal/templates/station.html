@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#102630">
+  <link rel="icon" type="image/svg+xml" href="/station/static/favicon.svg">
+  <title>PDV2 por CrownTech · Caixa adicional</title>
+  <script src="/station/static/theme.js"></script>
+  <link rel="stylesheet" href="/station/static/station.css">
+</head>
+<body>
+  <main class="gate">
+    <div class="gate-card">
+      <div class="lockup"><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
+
+      <section id="viewLoading">
+        <h1>Abrindo o caixa…</h1>
+        <p class="hint">Só um instante.</p>
+      </section>
+
+      <section id="viewLink" class="hidden">
+        <span class="eyebrow">Caixa adicional</span>
+        <h1 id="linkTitle">Este é um caixa adicional</h1>
+        <p id="linkLead" class="lead hidden" role="status"></p>
+        <p id="searchStatus" role="status" aria-live="polite">Procurando o caixa principal na rede da loja…</p>
+        <form id="linkForm" class="form-stack hidden" autocomplete="off">
+          <label class="field"><span>Código de 6 números mostrado no caixa principal (Sistema → Adicionar caixa)</span>
+            <input id="linkCode" class="code" inputmode="numeric" maxlength="7" placeholder="000 000" required></label>
+          <label class="field"><span>Como este caixa vai se chamar? (ex.: Caixa 2)</span>
+            <input id="linkName" maxlength="40" placeholder="Caixa 2"></label>
+          <button id="linkBtn" class="btn primary big" type="submit">Conectar este caixa</button>
+        </form>
+        <form id="manualForm" class="form-stack hidden" autocomplete="off">
+          <label class="field"><span>Endereço do caixa principal (aparece na tela dele, ex.: 192.168.0.10)</span>
+            <input id="manualAddress" inputmode="decimal" maxlength="255" placeholder="192.168.0.10"></label>
+          <button id="manualBtn" class="btn big" type="submit">Procurar de novo</button>
+        </form>
+        <p id="linkError" class="error hidden" role="alert"></p>
+        <button id="backToServerBtn" class="link hidden" type="button">Este computador é o caixa principal? Voltar</button>
+      </section>
+
+      <section id="viewDown" class="hidden">
+        <span class="eyebrow">Caixa adicional</span>
+        <h1>O caixa principal está fora do ar</h1>
+        <p>Este caixa não vende enquanto o principal não voltar. Ele tenta de novo sozinho a cada 2 segundos.</p>
+        <p id="downServer" class="hint"></p>
+        <ul id="diagnosis" class="diagnosis" aria-label="O que pode ter acontecido"></ul>
+        <p id="downNote" class="hint" role="status" aria-live="polite"></p>
+        <div class="actions">
+          <button id="retryBtn" class="btn big" type="button">Procurar de novo</button>
+          <button id="promoteBtn" class="btn big danger" type="button" disabled>Assumir como caixa principal</button>
+        </div>
+        <p id="promoteHint" class="hint"></p>
+      </section>
+
+      <section id="viewIncompatible" class="hidden">
+        <span class="eyebrow">Caixa adicional</span>
+        <h1 id="incompatibleTitle">Atualize este caixa: instale a versão nova do PDV2.</h1>
+        <p class="hint">Depois de atualizar, este caixa volta a funcionar sozinho. Versão deste caixa: {{ version }}.</p>
+      </section>
+
+      <section id="viewPromote" class="hidden">
+        <span class="eyebrow">Assumir como caixa principal</span>
+        <div id="promoteWarn">
+          <h1>Tem certeza?</h1>
+          <p class="warning">Só faça isso se o computador principal não vai voltar agora (quebrou, queimou, foi roubado). Depois de assumir, o computador antigo NÃO pode voltar a vender.</p>
+          <p id="promoteCopy" class="hint"></p>
+          <p id="promoteUnavailable" class="error hidden" role="alert"></p>
+          <div class="actions">
+            <button id="promoteCancelBtn" class="btn big" type="button">Voltar</button>
+            <button id="promoteNextBtn" class="btn big danger" type="button">Continuar</button>
+          </div>
+        </div>
+        <form id="promotePinForm" class="form-stack hidden" autocomplete="off">
+          <h1>PIN do gerente</h1>
+          <p class="hint">Só um gerente pode fazer este computador assumir como caixa principal.</p>
+          <label class="field"><span>PIN do gerente</span>
+            <input id="promotePin" type="password" inputmode="numeric" maxlength="12" required></label>
+          <div class="actions">
+            <button id="promotePinCancelBtn" class="btn big" type="button">Voltar</button>
+            <button class="btn big primary" type="submit">Conferir PIN</button>
+          </div>
+        </form>
+        <div id="promoteConfirm" class="hidden">
+          <h1 id="promoteConfirmTitle">Assumir agora?</h1>
+          <p class="warning">Este computador passa a ser o caixa principal da loja. O computador antigo NÃO pode voltar a vender.</p>
+          <div class="actions">
+            <button id="promoteConfirmCancelBtn" class="btn big" type="button">Voltar</button>
+            <button id="promoteStartBtn" class="btn big danger" type="button">Assumir como caixa principal</button>
+          </div>
+        </div>
+        <div id="promoteProgress" class="hidden">
+          <h1>Trocando o caixa principal…</h1>
+          <p id="promoteStep" role="status" aria-live="polite">Abrindo a cópia…</p>
+          <p class="hint">Não desligue este computador.</p>
+        </div>
+        <p id="promoteError" class="error hidden" role="alert"></p>
+      </section>
+
+      <section id="viewWorking" class="hidden">
+        <h1>Preparando este computador…</h1>
+        <p id="workingHint" class="hint">Só um instante.</p>
+      </section>
+    </div>
+    <p class="brand-footer">PDV2 por CrownTech · versão {{ version }}</p>
+  </main>
+  <script src="/station/static/station.js"></script>
+</body>
+</html>

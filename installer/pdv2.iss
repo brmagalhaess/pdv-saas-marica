@@ -59,7 +59,8 @@ Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"
-; Rede local é a fase 3 (estações). A regra fica pronta, desligada por padrão.
+; Rede entre caixas (TCP 8011 e UDP 8012). Sem marcar, o serviço cria a mesma regra sozinho quando o
+; caixa principal passa a ter caixas adicionais (terminal\lan.py, ensure_firewall).
 Name: "lanserver"; Description: "Este computador será o servidor da loja (libera a rede local para outros caixas)"; Flags: unchecked
 
 [Dirs]
