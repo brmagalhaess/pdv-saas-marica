@@ -26,6 +26,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -175,6 +176,15 @@ fun LoginScreen(vm: AppViewModel, initialMessage: String?) {
             if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
             else Text("Entrar")
         }
+        OutlinedButton(onClick = vm::enterDemo, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+            Text("Ver demonstração")
+        }
+        Text(
+            "A demonstração usa dados fictícios e não precisa de conta.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
         Text(
             "O acesso ao app é liberado pelo administrador do PDV2.",
             style = MaterialTheme.typography.bodyMedium,

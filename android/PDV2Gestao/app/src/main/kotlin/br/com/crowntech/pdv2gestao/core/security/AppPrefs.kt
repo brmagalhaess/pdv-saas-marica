@@ -22,7 +22,8 @@ data class SavedPrefs(
     val devServer: String? = null,
 )
 
-class AppPrefs(private val context: Context) {
+/** `open` só para os testes contarem gravações (a demonstração não pode gravar nada). */
+open class AppPrefs(private val context: Context) {
     private val tenantId = stringPreferencesKey("tenant_id")
     private val tenantName = stringPreferencesKey("tenant_name")
     private val shopId = stringPreferencesKey("shop_id")
@@ -31,7 +32,7 @@ class AppPrefs(private val context: Context) {
     private val biometricOffered = booleanPreferencesKey("biometric_offered")
     private val devServer = stringPreferencesKey("dev_server")
 
-    suspend fun load(): SavedPrefs {
+    open suspend fun load(): SavedPrefs {
         val p = context.prefsDataStore.data.first()
         return SavedPrefs(
             tenantId = p[tenantId],
@@ -44,7 +45,7 @@ class AppPrefs(private val context: Context) {
         )
     }
 
-    suspend fun saveContext(tenant: String?, name: String?, shop: String?, periodKey: String) {
+    open suspend fun saveContext(tenant: String?, name: String?, shop: String?, periodKey: String) {
         context.prefsDataStore.edit {
             if (tenant != null) it[tenantId] = tenant else it.remove(tenantId)
             if (name != null) it[tenantName] = name else it.remove(tenantName)
@@ -53,23 +54,23 @@ class AppPrefs(private val context: Context) {
         }
     }
 
-    suspend fun setBiometric(enabled: Boolean) {
+    open suspend fun setBiometric(enabled: Boolean) {
         context.prefsDataStore.edit {
             it[biometricEnabled] = enabled
             it[biometricOffered] = true
         }
     }
 
-    suspend fun markBiometricOffered() {
+    open suspend fun markBiometricOffered() {
         context.prefsDataStore.edit { it[biometricOffered] = true }
     }
 
-    suspend fun setDevServer(url: String?) {
+    open suspend fun setDevServer(url: String?) {
         context.prefsDataStore.edit { if (url != null) it[devServer] = url else it.remove(devServer) }
     }
 
     /** Ao sair: esquece o contexto e a escolha de biometria (o próximo login pergunta de novo). */
-    suspend fun clearSession() {
+    open suspend fun clearSession() {
         context.prefsDataStore.edit {
             it.remove(tenantId); it.remove(tenantName); it.remove(shopId); it.remove(period)
             it.remove(biometricEnabled); it.remove(biometricOffered)
