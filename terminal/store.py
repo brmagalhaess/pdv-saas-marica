@@ -78,6 +78,8 @@ RESTORE_META = ("restore_state", "restore_cursor", "restore_progress", "restore_
 PHASE2_META = RESTORE_META + ("mirror_key", "cloud_capabilities", "transferred_at", "send_only_until",
                               "config_synced_hash")
 RESTORE_BLOCKED = "Este caixa ainda está trazendo os dados da loja. Aguarde terminar para vender."
+RESTORE_ABANDON_PENDING = ("Ainda há vendas da cópia de segurança esperando para subir ao servidor. "
+                           "Ligue a internet e aguarde; se não resolver, chame o suporte.")
 RESTORE_MAX_ATTEMPTS = 3
 RESTORE_MISMATCH = ("Os dados trazidos não bateram com os do servidor. Toque em \"Tentar de novo\"; "
                     "se continuar, chame o suporte.")
@@ -478,10 +480,12 @@ class Store:
         # visible to the next company's operators through this SQLite file.
         if any((self.path.parent / "backups").glob("terminal-*.sqlite3")):
             return True
-        for table in ("sales", "cash_sessions", "cash_movements", "suspended_carts",
-                      "outbox", "print_jobs"):
+        for table in ("sales", "cash_sessions", "cash_movements", "suspended_carts", "print_jobs"):
             if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
                 return True
+        # terminal.config goes out by itself right after pairing: it is setup, not counter history.
+        if conn.execute("SELECT 1 FROM outbox WHERE event_type != 'terminal.config' LIMIT 1").fetchone():
+            return True
         return conn.execute("""SELECT 1 FROM audit
             WHERE action NOT IN ('terminal.paired', 'terminal.bootstrap',
                                  'terminal.unpaired', 'terminal.catalog_skipped',
@@ -1331,7 +1335,8 @@ class Store:
     def unpair(self):
         """Undo a clean setup; a database with business history stays bound."""
         with self.transaction() as conn:
-            pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0]
+            pending = conn.execute("""SELECT COUNT(*) FROM outbox
+                WHERE acked_at IS NULL AND event_type != 'terminal.config'""").fetchone()[0]
             if pending:
                 raise TerminalError("Sincronize as vendas pendentes antes de trocar de empresa", 409)
             if conn.execute("SELECT 1 FROM cash_sessions WHERE closed_at IS NULL").fetchone():
@@ -1339,6 +1344,8 @@ class Store:
             if self._has_business_history(conn):
                 raise TerminalError("Este computador contém histórico desta empresa. Use uma nova instalação ou diretório de dados para conectar outra empresa; preserve o banco atual.", 409)
             self._clear_company_cache(conn)
+            # Setup notes of the pairing being undone must not travel with the next one.
+            conn.execute("DELETE FROM outbox WHERE event_type = 'terminal.config'")
             self._clear_connection_meta(conn)
             self._audit(conn, None, "terminal.unpaired")
         return {"paired": False}
@@ -2176,8 +2183,10 @@ class Store:
     def has_local_activity(self):
         """True once this terminal created something worth an automatic backup."""
         with self.connection() as conn:
-            return any(conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
-                       for table in ("sales", "cash_sessions", "cash_movements", "outbox"))
+            return (any(conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                        for table in ("sales", "cash_sessions", "cash_movements"))
+                    or conn.execute("SELECT 1 FROM outbox WHERE event_type != 'terminal.config' LIMIT 1"
+                                    ).fetchone() is not None)
 
     def backup_status(self):
         return {"directory": str(self.path.parent / "backups"), "last_backup_at": self.meta().get("last_backup_at"),
@@ -2337,6 +2346,32 @@ class Store:
         for key in ("restore_cursor", "restore_error", "restore_paused"):
             self._set_meta(conn, key, "")
         self._audit(conn, None, "terminal.restored", self._meta(conn, "terminal_id"), detail)
+
+    def restore_abandon(self):
+        """"Desistir da recuperação": this computer goes back to the first screen.
+
+        Only while the recovery is still running and nothing waits in the queue: the cashier
+        was blocked the whole time, so every row here came from the cloud and stays there.
+        """
+        with self.transaction() as conn:
+            if not self._restore_active(conn):
+                raise TerminalError("Restauração não está em andamento", 409)
+            if conn.execute("SELECT 1 FROM outbox WHERE acked_at IS NULL LIMIT 1").fetchone():
+                raise TerminalError(RESTORE_ABANDON_PENDING, 409)
+            self._clear_company_cache(conn)
+            for table in ("sale_returns", "credit_receipts", "sales", "cash_movements", "cash_sessions",
+                          "suspended_carts", "print_jobs", "outbox"):
+                conn.execute(f"DELETE FROM {table}")
+            self._clear_connection_meta(conn)
+            self._audit(conn, None, "terminal.unpaired", None, "Recuperação abandonada")
+        # Copies made since the pairing hold only what was just removed; left behind they
+        # would count as another company's history and refuse the next pairing.
+        for copy in (self.path.parent / "backups").glob("terminal-*.sqlite3"):
+            try:
+                copy.unlink()
+            except OSError:
+                pass
+        return {"paired": False}
 
     def restore_skip_backup(self):
         """"Não tenho, continuar": what came from the cloud is all there is."""
@@ -2603,7 +2638,10 @@ class Store:
         if enabled is not None:
             data["mirror"] = {"enabled": bool(enabled)}
         digest = _config_hash(data)
-        return None if digest == self._meta(conn, "config_synced_hash") else (terminal_id, data, digest)
+        synced = self._meta(conn, "config_synced_hash")
+        if not synced and not data["print_settings"] and not enabled:
+            return None  # nothing set up yet: a fresh pairing sends nothing and stays easy to correct
+        return None if digest == synced else (terminal_id, data, digest)
 
     def ensure_config_event(self):
         """Queue terminal.config when the printing or backup-copy setup changed since the last one sent."""

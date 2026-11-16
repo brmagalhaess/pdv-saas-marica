@@ -745,6 +745,123 @@ class ConfigEventTests(RecoveryCase):
         self.assertIsNotNone(new.ensure_config_event())  # it differs from what the cloud holds
 
 
+class WrongPairingTests(RecoveryCase):
+    """Right after pairing nothing happened at the counter: the pairing can still be corrected."""
+
+    def backups(self, store):
+        return list((store.path.parent / "backups").glob("terminal-*.sqlite3"))
+
+    def test_worker_passes_after_a_clean_pairing_keep_the_pairing_correctable(self):
+        store = self.old
+        with self.online():
+            for _ in range(2):
+                self.assertEqual(sync.Worker(store).run_once(), [])
+        self.assertEqual(self.rows("outbox"), [])  # nothing set up yet: no terminal.config goes out
+        self.assertEqual(self.backups(store), [])
+        self.assertEqual(self.cloud.events, [])    # so a new pairing of this terminal is not a "recovery"
+        self.assertEqual(store.unpair(), {"paired": False})
+        store.ensure_pairable()
+
+    def test_config_event_alone_is_not_counter_history(self):
+        store = self.old
+        with mirror_module(FakeMirror(enabled=True)):
+            self.assertIsNotNone(store.ensure_config_event())  # the copy is on: worth telling the cloud
+            self.assertFalse(store.has_local_activity())
+            with self.online():
+                self.assertEqual(sync.Worker(store).run_once(), [])
+                self.assertEqual(sync.Worker(store).run_once(), [])
+        self.assertEqual([event["type"] for event in self.cloud.events], ["terminal.config"])
+        self.assertEqual(self.backups(store), [])
+        self.assertEqual(store.unpair(), {"paired": False})
+        self.assertEqual(self.rows("outbox"), [])  # the old pairing's setup note does not follow the next one
+        store.ensure_pairable()
+
+    def test_config_event_still_waiting_does_not_hold_the_correction_but_a_sale_does(self):
+        store = self.old
+        with mirror_module(FakeMirror(enabled=True)):
+            store.ensure_config_event()
+        self.assertEqual(len(store.pending_events()), 1)
+        self.assertEqual(store.unpair(), {"paired": False})
+        self.assertEqual(self.rows("outbox"), [])
+        sold = self.paired_store("vendeu")
+        sold.open_cash(self.cashier_id, 0)
+        self.sell(sold, "venda-1")
+        sold.close_cash(self.cashier_id, 1000, "654321")
+        self.assertTrue(sold.has_local_activity())
+        self.deliver(sold)
+        with self.assertRaisesRegex(TerminalError, "histórico desta empresa"):
+            sold.unpair()
+
+
+class AbandonRestoreTests(RecoveryCase):
+    """A recovery that can no longer finish must not leave the computer without a way out."""
+
+    def half_restored(self):
+        self.old_day()
+        self.deliver(self.old)
+        new = self.new_computer()
+        with self.online():
+            sync.restore_step(new, max_pages=2)
+        self.assertEqual(new.restore_status()["state"], "restoring")
+        self.assertIsNotNone(new.cash_state())  # the open cashier of the old computer already came
+        return new
+
+    def test_terminal_moved_again_in_the_middle_can_give_up_and_pair_again(self):
+        new = self.half_restored()
+        self.cloud.transferred = TransferredTests.BODY
+        with self.online():
+            sync.Worker(new).run_once()   # notices the transfer
+            sync.Worker(new).run_once()   # from now on only the queue matters; the restore never ends
+        self.assertTrue(new.is_transferred())
+        self.assertTrue(new.restore_status()["active"])
+        self.assertEqual(list((new.path.parent / "backups").glob("terminal-*.sqlite3")), [])
+        for stuck in (new.unpair, lambda: new.close_cash(self.cashier_id, 0, "654321"), new.restore_skip_backup):
+            with self.assertRaises(TerminalError):
+                stuck()
+        self.assertEqual(new.restore_abandon(), {"paired": False})
+        for table in ("sales", "sale_returns", "credit_receipts", "cash_sessions", "cash_movements", "outbox",
+                      "products", "customers", "operators", "print_settings"):
+            self.assertEqual(self.rows(table), [], table)
+        meta = new.meta()
+        for key in ("token", "terminal_id", "restore_state", "transferred_at", "mirror_key"):
+            self.assertNotIn(key, meta)
+        self.assertEqual((new.restore_status()["active"], new.identity()["terminal_id"]), (False, None))
+        self.assertEqual([row["action"] for row in self.rows("audit")], ["terminal.unpaired"])
+        # The same computer can be connected again, as a new cashier or with a new recovery code.
+        new.ensure_pairable()
+        new.set_pairing(self.pairing_answer(new, recovery=True), "http://127.0.0.1:8000")
+        self.assertEqual(new.restore_status()["state"], "pending")
+
+    def test_giving_up_is_only_for_a_running_recovery_with_an_empty_queue(self):
+        with self.assertRaisesRegex(TerminalError, "não está em andamento"):
+            self.old.restore_abandon()   # a common terminal keeps its history
+        self.old_day()
+        events = self.old.pending_events(500)
+        self.cloud.ingest(events[:-2])
+        new = self.new_computer()
+        self.finish_first_pass()
+        new.import_outbox_from_mirror([{"seq": index, "event_id": event["event_id"], "created_at": 1, "event": event}
+                                       for index, event in enumerate(events[-2:], start=1)])
+        self.assertEqual(new.restore_status()["state"], "importing")
+        with self.assertRaisesRegex(TerminalError, "esperando para subir"):
+            new.restore_abandon()        # sales read from the backup copy are never thrown away
+        self.assertEqual(len(new.pending_events()), 2)
+        self.assertTrue(self.rows("sales"))
+        with self.online():
+            sync.restore_step(new)
+        self.assertEqual(new.restore_status()["state"], "done")
+        with self.assertRaisesRegex(TerminalError, "não está em andamento"):
+            new.restore_abandon()
+
+    def test_no_local_backup_is_made_while_the_recovery_runs(self):
+        new = self.half_restored()
+        self.assertTrue(new.has_local_activity())
+        self.cloud.fail_restore_calls = set(range(1, 50))
+        with self.online():
+            sync.Worker(new).run_once()
+        self.assertEqual(list((new.path.parent / "backups").glob("terminal-*.sqlite3")), [])
+
+
 class MirrorHookTests(RecoveryCase):
     def test_hooks_fire_after_commit_and_never_on_rollback(self):
         fake = FakeMirror()
@@ -958,6 +1075,86 @@ class RestoreRouteTests(RouteCase):
                 answer = self.post("/api/restore/start", {"license_key": "PDV2-AAAAAA-BBBBBB", "code": "K7QD-M2XP-9HTW"})
         self.assertEqual(answer.status_code, 200, answer.json)
         self.assertEqual(self.client.get("/api/session").json["default_cloud_url"], "")
+
+
+class StuckScreenTests(RouteCase):
+    def start_with(self, bootstrap_error):
+        def request(method, url, **kwargs):
+            if url.endswith("/terminal/pair"):
+                return self.pairing_answer(self.store, True)
+            if "/terminal/bootstrap" in url and bootstrap_error:
+                raise bootstrap_error
+            return self.cloud.request(method, url, **kwargs)
+        with patch.object(sync, "_request", side_effect=request):
+            return self.post("/api/restore/start", {"cloud_url": "http://127.0.0.1:8000",
+                                                    "license_key": "PDV2-AAAAAA-BBBBBB-CCCCCC-DDDDDD",
+                                                    "code": "K7QD-M2XP-9HTW"})
+
+    def test_connection_lost_right_after_pairing_still_moves_the_screen_on(self):
+        self.old_day()
+        self.deliver(self.old)
+        answer = self.start_with(TerminalError("Sem conexão com o servidor; dados locais preservados", 503))
+        self.assertEqual(answer.status_code, 200, answer.json)
+        body = answer.json
+        self.assertEqual((body["paired"], body["recovery"], body["restore"]["state"], body["bootstrap"]),
+                         (True, True, "pending", None))
+        self.assertIn("Sem conexão", body["warning"])
+        self.assertTrue(self.client.get("/api/session").json["restore"]["active"])
+        # The worker repeats the catalog by itself and the recovery goes on.
+        with self.online():
+            sync.Worker(self.store).run_once()
+        self.assertTrue(self.store.operators())
+        self.assertIn(self.store.restore_status()["state"], ("restoring", "awaiting_backup"))
+
+    def test_pairing_that_did_not_happen_is_still_an_error(self):
+        def request(method, url, **kwargs):
+            raise remote_error(400, {"error": "Código inválido ou vencido"})
+        with patch.object(sync, "_request", side_effect=request):
+            answer = self.post("/api/restore/start", {"cloud_url": "http://127.0.0.1:8000",
+                                                      "license_key": "PDV2-AAAAAA-BBBBBB-CCCCCC-DDDDDD",
+                                                      "code": "K7QD-M2XP-9HTW"})
+        self.assertEqual(answer.status_code, 502)
+        self.assertFalse(self.client.get("/api/session").json["paired"])
+
+    def test_revoked_in_the_middle_gives_up_with_the_manager_pin_and_starts_over(self):
+        self.old_day()
+        self.deliver(self.old)
+        self.assertEqual(self.post("/api/restore/abandon", {"confirm": True}).status_code, 409)  # nothing running
+        self.assertEqual(self.start_with(None).status_code, 200)
+        with self.online():
+            self.post("/api/restore/step")
+        self.assertIsNotNone(self.store.cash_state())
+        revoked = remote_error(401, {"error": "Terminal não autenticado"})
+        with patch.object(sync, "_request", side_effect=revoked):
+            self.assertIn("401", self.post("/api/restore/step").json["restore"]["error"])
+        # Every other door is closed: this is what used to leave the computer stuck.
+        self.assertEqual(self.post("/api/unpair", {"confirm": True, "manager_pin": "654321"}).status_code, 409)
+        self.assertEqual(self.post("/api/new-profile", {"confirm": True, "manager_pin": "654321"}).status_code, 409)
+        self.assertEqual(self.post("/api/restore/skip-backup").status_code, 409)
+        self.assertEqual(self.post("/api/restore/abandon").status_code, 409)                    # needs the confirmation
+        self.assertEqual(self.post("/api/restore/abandon", {"confirm": True}).status_code, 403)  # and a manager
+        self.assertTrue(self.store.restore_status()["active"])
+        answer = self.post("/api/restore/abandon", {"confirm": True, "manager_pin": "654321"})
+        self.assertEqual(answer.status_code, 200, answer.json)
+        self.assertEqual((answer.json["paired"], answer.json["restore"]["active"]), (False, False))
+        session = self.client.get("/api/session").json
+        self.assertEqual((session["paired"], session["restore"]["active"], session["cash"]), (False, False, None))
+        self.assertEqual(self.rows("sales"), [])
+        self.assertEqual(self.start_with(None).status_code, 200)  # a new code works on this same computer
+
+    def test_screen_follows_the_real_state_and_offers_the_way_out(self):
+        html = (ROOT / "terminal" / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (STATIC / "terminal.js").read_text(encoding="utf-8")
+        for element in ("restoreAbandon", "restoreAbandonBtn"):
+            self.assertIn(f'id="{element}"', html)
+            self.assertIn(f"'{element}'", script)
+        self.assertIn("Desistir da recuperação", html)
+        self.assertIn("/api/restore/abandon", script)
+        # Both pairing forms reload the session when the call fails after the pairing was saved.
+        self.assertIn("catch (error) { await loadSession().catch(() => {}); throw error; }", script)
+        self.assertIn("pairingCall('/api/pair'", script)
+        self.assertIn("pairingCall('/api/restore/start'", script)
+        self.assertIn("result.warning", script)
 
 
 class MirrorRouteTests(RouteCase):

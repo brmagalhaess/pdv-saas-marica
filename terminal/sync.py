@@ -396,7 +396,9 @@ class Worker:
             overdue = int(time.time() * 1000) - int(meta.get("last_backup_at") or 0) >= 24 * 60 * 60 * 1000
             # Nothing to protect before the first local record; a copy made right
             # after pairing would only block correcting a wrong pairing.
-            if meta.get("terminal_id") and overdue and self.store.has_local_activity():
+            # The same holds while a recovery is bringing back what the cloud already keeps.
+            if (meta.get("terminal_id") and overdue and self.store.has_local_activity()
+                    and not self.store.restore_status()["active"]):
                 self.store.backup_now()
         except Exception as exc:
             errors.append("Backup local: " + _describe(exc))

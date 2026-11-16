@@ -488,10 +488,22 @@ def create_app(config=None):
     def restore_start():
         # "Recuperar minha loja": same pairing as /api/pair, with the recovery code of the panel.
         data = body()
-        result = sync.pair(store, data.get("cloud_url") or os.environ.get("PDV_CLOUD_URL", ""),
-                           data.get("license_key"), data.get("code"))
+        result = warning = None
+        already_paired = bool(store.identity()["terminal_id"])
+        try:
+            result = sync.pair(store, data.get("cloud_url") or os.environ.get("PDV_CLOUD_URL", ""),
+                               data.get("license_key"), data.get("code"))
+        except TerminalError as exc:
+            if already_paired or not store.identity()["terminal_id"]:
+                raise
+            # The pairing is saved and the one-time code is spent; only the first load of the
+            # catalog failed, and the worker repeats it. The screen must follow, not ask again.
+            warning = str(exc)
         status = store.restore_status()
-        return jsonify({"paired": True, "recovery": status["active"], "restore": status, "bootstrap": result})
+        answer = {"paired": True, "recovery": status["active"], "restore": status, "bootstrap": result}
+        if warning:
+            answer["warning"] = warning
+        return jsonify(answer)
 
     @app.get("/api/restore/status")
     def restore_state():
@@ -508,6 +520,19 @@ def create_app(config=None):
     def restore_retry():
         body()
         return jsonify({"restore": store.restore_retry()})
+
+    @app.post("/api/restore/abandon")
+    def restore_abandon():
+        # The way out when the recovery cannot finish (terminal revoked or moved again):
+        # this computer forgets the pairing and what came down, and can start over.
+        data = body()
+        if data.get("confirm") is not True:
+            raise TerminalError("Confirme a desistência da recuperação", 409)
+        require_restore()
+        require_manager_when_paired(data)
+        result = store.restore_abandon()
+        session.clear()
+        return jsonify({**result, "restore": store.restore_status()})
 
     @app.get("/api/restore/backups")
     def restore_backups():

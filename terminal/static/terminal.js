@@ -2007,6 +2007,7 @@ function renderRestore(restore) {
   const step = flow.finished ? 'done' : restore?.active ? C.restoreStep(restore) : 'start';
   showView('restoreView');
   for (const [id, name] of [['restoreStart', 'start'], ['restoreProgress', 'progress'], ['restoreBackup', 'backup'], ['restoreDone', 'done']]) $(id).classList.toggle('hidden', name !== step);
+  $('restoreAbandon').classList.toggle('hidden', step !== 'progress' && step !== 'backup');
   if (step === 'start') {
     const fixed = !!state.session?.default_cloud_url;
     $('restoreCloudField').classList.toggle('hidden', fixed);
@@ -2111,8 +2112,13 @@ function on(id, eventName, handler) {
     try { await handler(event); } catch (error) { toast(error.message, true); } finally { busy = false; }
   });
 }
+// A failure can come after the pairing was saved (the connection dropped before the catalog came):
+// the screen then follows the real state instead of offering the spent code again.
+async function pairingCall(path, payload) {
+  try { return await api(path, 'POST', payload); } catch (error) { await loadSession().catch(() => {}); throw error; }
+}
 on('pairForm', 'submit', async () => {
-  await api('/api/pair', 'POST', {cloud_url: $('cloudUrl').value, license_key: $('licenseKey').value.trim(), code: $('pairCode').value.trim()});
+  await pairingCall('/api/pair', {cloud_url: $('cloudUrl').value, license_key: $('licenseKey').value.trim(), code: $('pairCode').value.trim()});
   $('licenseKey').value = '';
   $('pairCode').value = '';
   toast('Terminal vinculado à empresa. Entre com o PIN do operador.');
@@ -2121,11 +2127,23 @@ on('pairForm', 'submit', async () => {
 on('restoreOpenBtn', 'click', async () => { state.restore.open = true; renderRestore(state.session?.restore); $('restoreLicenseKey').focus(); });
 on('restoreBackBtn', 'click', async () => { state.restore.open = false; showView('pairView'); });
 on('restoreForm', 'submit', async () => {
-  const result = await api('/api/restore/start', 'POST', {cloud_url: state.session?.default_cloud_url || $('restoreCloudUrl').value, license_key: $('restoreLicenseKey').value.trim(), code: $('restoreCode').value.trim()});
+  const result = await pairingCall('/api/restore/start', {cloud_url: state.session?.default_cloud_url || $('restoreCloudUrl').value, license_key: $('restoreLicenseKey').value.trim(), code: $('restoreCode').value.trim()});
   $('restoreLicenseKey').value = '';
   $('restoreCode').value = '';
   state.restore.open = false;
-  if (!result.recovery) toast('Este caixa ainda não tinha vendas guardadas. Entre com o PIN do operador.');
+  if (result.warning) toast('Loja conectada, mas a internet falhou em seguida. Continuamos sozinhos quando a conexão voltar.', true);
+  else if (!result.recovery) toast('Este caixa ainda não tinha vendas guardadas. Entre com o PIN do operador.');
+  await loadSession();
+});
+on('restoreAbandonBtn', 'click', async () => {
+  if (!(await confirmDialog('Desistir da recuperação?', 'Use quando a recuperação não consegue terminar neste computador. O que já voltou é apagado só daqui: tudo continua guardado no servidor da empresa. Depois, este computador volta para a primeira tela.', 'Desistir da recuperação', {danger: true}))) return;
+  const pin = await maintenancePin('Autorizar a desistência', 'Informe o PIN de um gerente para desfazer a recuperação neste computador.');
+  await api('/api/restore/abandon', 'POST', {confirm: true, manager_pin: pin});
+  clearTimeout(state.restore.timer);
+  state.restore.open = false;
+  state.restore.finished = null;
+  state.session = null;
+  toast('Recuperação desfeita. Este computador voltou para a primeira tela.');
   await loadSession();
 });
 on('restoreRetryBtn', 'click', async () => { const {restore} = await api('/api/restore/retry', 'POST', {}); renderRestoreProgress(restore, false); await runRestore(); });
