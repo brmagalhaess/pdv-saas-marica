@@ -1,0 +1,88 @@
+name: PDV2 Windows installer
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'terminal/**'
+      - 'shared/**'
+      - 'installer/**'
+      - 'scripts/package_terminal.py'
+      - 'VERSION'
+      - '.github/workflows/windows-installer.yml'
+  pull_request:
+    paths:
+      - 'installer/**'
+      - 'terminal/updater.py'
+      - 'terminal/launcher.py'
+      - 'terminal/service_win.py'
+      - 'terminal/paths.py'
+      - '.github/workflows/windows-installer.yml'
+permissions:
+  contents: read
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            terminal/requirements.txt
+            installer/requirements-build.txt
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r terminal/requirements.txt -r installer/requirements-build.txt
+      - name: Installer, updater and service tests
+        run: python -m unittest -v terminal.tests.test_updater terminal.tests.test_launcher terminal.tests.test_service_win
+        env:
+          PDV_ENV: test
+      # The rest of the terminal suite was written on Linux/macOS. It runs here to
+      # show what still depends on those systems, without hiding the build result.
+      - name: Full terminal test suite (informative on Windows)
+        continue-on-error: true
+        run: python -m unittest discover -s terminal/tests
+        env:
+          PDV_ENV: test
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+      - name: Build installer and update bundle
+        shell: pwsh
+        env:
+          # Optional code signing. Without these secrets the build is unsigned.
+          SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          PDV_SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGN_PASSWORD }}
+        run: |
+          if ($env:SIGN_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP "pdv2-sign.pfx"
+            [System.IO.File]::WriteAllBytes($pfx, [System.Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+            $env:PDV_SIGN_PFX = $pfx
+          } else {
+            Write-Host "::warning title=Instalador sem assinatura::Segredos WINDOWS_SIGN_PFX_BASE64 e WINDOWS_SIGN_PASSWORD ausentes; o instalador foi gerado SEM assinatura de código."
+          }
+          try {
+            ./installer/build.ps1
+          } finally {
+            if ($env:PDV_SIGN_PFX) { Remove-Item $env:PDV_SIGN_PFX -Force -ErrorAction SilentlyContinue }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdv2-windows-installer
+          path: |
+            dist/windows/PDV2-Instalar-*.exe
+            dist/windows/PDV2-Instalar-*.metadata.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdv2-windows-bundle
+          path: |
+            dist/windows/PDV2-Terminal-*-win64-bundle.zip
+            dist/windows/PDV2-Terminal-*-win64-bundle.metadata.json
+          if-no-files-found: error

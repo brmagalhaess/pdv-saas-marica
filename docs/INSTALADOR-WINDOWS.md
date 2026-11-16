@@ -1,0 +1,188 @@
+# Instalador do PDV2 para Windows
+
+> **Leia antes de entregar a um cliente.** Tudo aqui foi escrito e testado em macOS. A lógica de atualização, troca de versão, volta automática, supervisão do processo e migração de dados tem testes automáticos que rodam em macOS e Linux, e o empacotamento PyInstaller foi executado em macOS. **Nada foi executado em Windows:** o serviço `PDV2Service`, o roteiro do Inno Setup, o `build.ps1`, o atalho, as permissões de pasta e a regra de firewall só passam a valer depois da [lista de testes manuais](#7-lista-de-testes-manuais-em-windows-real).
+
+## 1. O que o lojista vê
+
+1. Baixa `PDV2-Instalar-<versão>.exe`, clica em Avançar até o fim.
+2. Aparece o ícone **PDV2** na área de trabalho e no menu Iniciar.
+3. Abre o ícone: o caixa aparece em uma janela própria, sem barra de endereço.
+4. O caixa já está no ar quando o computador liga, mesmo antes de alguém entrar no Windows.
+5. Quando sai uma versão nova, o PDV2 baixa sozinho e instala com o caixa fechado.
+
+## 2. O que o instalador faz na máquina
+
+| Onde | O quê |
+|---|---|
+| `C:\Program Files\PDV2\app-<versão>\` | O programa. Uma pasta por versão. |
+| `C:\Program Files\PDV2\bin\` | Cópia estável do programa: é daqui que rodam o serviço e os atalhos. Só o instalador completo troca esta pasta. |
+| `C:\Program Files\PDV2\current.txt` | A versão em uso (por exemplo `2.0.1`). |
+| `C:\ProgramData\PDV2\` | Dados: `terminal.sqlite3`, `backups\`, `logs\`, `updates\`. Só o serviço (SYSTEM) e administradores leem. **O desinstalador não apaga esta pasta.** |
+| `%LOCALAPPDATA%\PDV2\browser-profile\` | Perfil do navegador usado só pelo PDV2 (um por usuário do Windows). |
+| Serviço `PDV2Service` | Início automático, reinício em falha (5 s, 5 s, depois a cada 30 s). Roda como sistema. |
+| Atalhos | Área de trabalho (opcional) e menu Iniciar, apontando para `bin\PDV2.exe`. |
+| Firewall | Nada por padrão. A opção "Este computador será o servidor da loja" (desmarcada) cria a regra `PDV2 - Servidor da loja` para TCP 8011 e UDP 8012, só para a rede local. A rede local entre caixas é a fase 3; hoje nada escuta nessas portas. |
+
+Passo a passo do instalador (`installer/pdv2.iss`):
+
+1. Para o serviço (`net stop`), fecha o atalho e remove pastas `app-*` de versões anteriores.
+2. Apaga `updates\` (um download pela metade não vale para a instalação nova).
+3. Copia o programa para `app-<versão>\` e para `bin\`.
+4. Restringe `C:\ProgramData\PDV2` ao sistema e aos administradores.
+5. **Migra uma instalação antiga:** se ainda não existe banco em `C:\ProgramData\PDV2`, procura `terminal.sqlite3` em `%LOCALAPPDATA%\PDV2\data` e `%LOCALAPPDATA%\PDV2` de todos os usuários e copia o primeiro que achar (banco por cópia consistente do SQLite, `session.key`, perfis e backups). O original fica onde estava. Também remove o atalho de inicialização do instalador antigo.
+6. Grava `current.txt`, registra o serviço e o inicia.
+7. Oferece "Abrir o PDV2 agora".
+
+Instalação silenciosa: `PDV2-Instalar-<versão>.exe /VERYSILENT /NORESTART`.
+
+### Os três programas
+
+- **`PDV2.exe` (atalho).** Uma instância por usuário. Confere `http://127.0.0.1:8010/health`; se não responde, pede o início do serviço e espera até 40 s. Abre o caixa no Edge em modo aplicativo (`--app=`) com perfil dedicado; sem Edge usa o Chrome; sem os dois, o navegador padrão. Se nada funcionar, mostra uma mensagem em português com o que fazer. O atalho de `bin\` repassa para o `PDV2.exe` da versão em uso.
+- **`PDV2Service.exe` (serviço).** Hospedeiro estável: lê `current.txt`, inicia `app-<versão>\PDV2Server.exe`, reinicia se ele cair ou parar de responder por 3 minutos, e confirma a saúde depois de uma troca de versão. Registro em `C:\ProgramData\PDV2\logs\service.log` (rotativo, 5 arquivos de 1 MB).
+- **`PDV2Server.exe` (caixa local).** O mesmo terminal de sempre (Flask + Waitress em `127.0.0.1:8010`), com os dados em `C:\ProgramData\PDV2`. Registro em `logs\terminal.log`. Para de forma limpa quando o serviço pede.
+
+`PDV_TERMINAL_DATA` continua tendo precedência sobre a pasta padrão de dados.
+
+## 3. Como gerar
+
+Requisitos: Windows 10 ou 11 de 64 bits, Python 3.12 no PATH, Inno Setup 6.3 ou mais novo.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build.ps1
+```
+
+O roteiro instala as dependências, gera o ícone, roda o PyInstaller, faz um teste de fumaça do servidor empacotado (sobe, responde `/health`, para), gera o bundle e compila o instalador. Saída em `dist\windows`:
+
+| Arquivo | Uso |
+|---|---|
+| `PDV2-Instalar-<versão>.exe` | Instalador completo, para máquinas novas. |
+| `PDV2-Instalar-<versão>.metadata.json` | Metadados com `kind: installer`. |
+| `PDV2-Terminal-<versão>-win64-bundle.zip` | Atualização automática: contém só `app-<versão>\`. |
+| `PDV2-Terminal-<versão>-win64-bundle.metadata.json` | Metadados com `kind: bundle` (versão, SHA-256, tamanho). |
+
+Opções: `-Version 2.0.1` (padrão: arquivo `VERSION`), `-SkipInstaller` (só o bundle), `-SkipSmoke`.
+
+**Sem Windows:** o workflow `PDV2 Windows installer` (`.github/workflows/windows-installer.yml`) faz o mesmo em `windows-latest` e publica os dois artefatos. Ele roda os testes do instalador, do atualizador e do serviço como obrigatórios e o restante da suíte do terminal como informativo, porque essa suíte nunca tinha rodado em Windows.
+
+Fora do Windows, `python scripts/package_terminal.py` continua gerando o ZIP de código-fonte e passa a gerar também `PDV2-Terminal-<versão>-bundle.zip`, um bundle de código-fonte no formato novo. Ele serve para instalações de desenvolvimento e para os testes; **um terminal instalado pelo instalador recusa esse bundle** (o marcador `bundle.json` diz `source` e a instalação exige `frozen-win64`).
+
+## 4. Como assinar
+
+Sem assinatura o Windows mostra "aplicativo desconhecido" (SmartScreen) e antivírus tendem a desconfiar de executáveis PyInstaller. Compre um certificado de assinatura de código antes de entregar a clientes.
+
+- **Local:** defina `PDV_SIGN_PFX` (caminho do `.pfx`) e `PDV_SIGN_PASSWORD`, ou passe `-CertificatePath` e `-CertificatePassword` ao `build.ps1`. Precisa do `signtool.exe` (Windows SDK). São assinados os três executáveis e o instalador, com carimbo de tempo.
+- **CI:** cadastre os segredos `WINDOWS_SIGN_PFX_BASE64` (o `.pfx` em Base64) e `WINDOWS_SIGN_PASSWORD`. Sem eles o workflow gera tudo sem assinar e deixa um aviso visível na execução.
+
+O bundle de atualização é gerado depois da assinatura dos executáveis, então o SHA-256 publicado já é o do conteúdo assinado. Certificados em token físico ou em nuvem (exigência atual das autoridades certificadoras) pedem ajuste no passo de assinatura; isso não foi testado.
+
+## 5. Como publicar uma versão
+
+1. Suba o número em `VERSION` e gere (seção 3).
+2. Hospede o `...-win64-bundle.zip` em um endereço **HTTPS** estável. O terminal recusa HTTP.
+3. No painel de versões, cadastre a versão do componente `terminal`, canal `stable`, com a URL, o `sha256` e o `size_bytes` do `.metadata.json`, e `kind: bundle`. A nuvem assina o manifesto com a chave de versões.
+4. Para uma versão que mexe em `bin\` (serviço ou atalho) ou que exige reinstalar, publique o instalador com `kind: installer`; o terminal avisa que precisa do instalador completo e não tenta aplicar sozinho. Use `min_version` em um bundle para exigir uma versão mínima já instalada.
+5. Confira antes: `python scripts/verify_update.py pacote.zip manifesto.json chave-de-versoes.pem` valida assinatura, tamanho, SHA-256 e a estrutura do bundle.
+
+Um manifesto sem `kind` é tratado como pacote manual: aparece para o operador, mas não é baixado nem aplicado.
+
+## 6. Como a atualização automática funciona
+
+Código em `terminal/updater.py`; estado em `C:\ProgramData\PDV2\updates\state.json`.
+
+1. **Descoberta.** O terminal já consulta a nuvem e guarda o manifesto verificado (assinatura conferida com a chave fixada). O atualizador só olha para um manifesto de versão maior que a atual, com `kind: bundle`.
+2. **Download.** Em segundo plano, para `updates\<versão>\package.zip`. Só HTTPS. Se a conexão cair, o pedaço baixado fica guardado e o download continua de onde parou. No fim confere **tamanho e SHA-256**; se não bater, apaga e tenta de novo mais tarde (5 min, dobrando até 6 h). A estrutura do zip também é conferida. Estado: `staged` (pronto para instalar).
+3. **Aplicação.** Só acontece com **nenhum caixa aberto** e a fila de impressão ociosa. Pode ser pedida pela tela (`request_apply`) ou acontecer sozinha na janela de madrugada (2h às 5h; ajuste com `PDV_UPDATE_AUTO_APPLY=22-4`, desligue com `PDV_UPDATE_AUTO_APPLY=off`). Passos: confere o SHA-256 de novo, faz **backup verificado do banco**, extrai para `app-<versão>\` (recusando caminho absoluto, `..`, links simbólicos e qualquer arquivo fora de `app-<versão>\`), troca `current.txt` de forma atômica e pede o reinício ao serviço.
+4. **Confirmação.** O serviço inicia a versão nova e espera `/health` por até 60 s. Respondeu: confirma, apaga o download e mantém só a versão atual e a anterior. Não respondeu (ou o processo morreu): **volta `current.txt` para a versão anterior**, inicia a anterior e marca `failed`. A versão que falhou não é baixada de novo; uma versão mais nova é aceita normalmente. Se a energia cair no meio da confirmação, ela se repete no próximo início.
+
+Uma instalação rodando do código-fonte (sem `current.txt`) nunca baixa nem aplica: `status` devolve `can_apply: false` com o motivo "instalação de desenvolvimento".
+
+### Como voltar atrás
+
+- **Automático:** descrito acima; não exige ninguém.
+- **Manual, para a versão anterior** (ela continua em `Program Files\PDV2\app-<anterior>\`): em um Prompt de Comando como administrador,
+  ```
+  net stop PDV2Service
+  "C:\Program Files\PDV2\bin\PDV2Service.exe" --rollback
+  net start PDV2Service
+  ```
+  Equivale a parar o serviço, escrever a versão anterior em `current.txt` e iniciar o serviço.
+- **Banco de dados:** a volta de versão **não** restaura o banco. O backup feito antes da atualização fica em `C:\ProgramData\PDV2\backups\` e o nome dele está em `updates\state.json` (`backup`). Só restaure com orientação do suporte: vendas feitas depois do backup não estão nele.
+- **Para qualquer versão:** instale o `PDV2-Instalar-<versão>.exe` desejado por cima. Os dados são mantidos.
+
+## 7. Lista de testes manuais em Windows real
+
+**Nenhum item abaixo foi executado nesta entrega.** Marque cada um em máquina real (ou máquina virtual limpa) antes de entregar a um cliente. Anote a versão do Windows e o resultado.
+
+### 7.1 Instalação limpa
+
+- [ ] Windows 10 22H2 limpo: instalar com conta de administrador. Ícone aparece, caixa abre em janela própria.
+- [ ] Windows 11 limpo: o mesmo.
+- [ ] Instalar a partir de uma **conta padrão** (sem privilégio): o Windows pede a senha de administrador; depois de instalar, o atalho aparece para a conta padrão e abre o caixa.
+- [ ] Com o arquivo sem assinatura, registrar o que o SmartScreen mostra; com assinatura, confirmar o nome do editor.
+- [ ] `services.msc`: `PDV2 - Caixa local` em execução, início Automático, aba Recuperação com reinício.
+- [ ] `C:\Program Files\PDV2` contém `bin\`, `app-<versão>\` e `current.txt` com a versão certa.
+- [ ] `C:\ProgramData\PDV2` contém `terminal.sqlite3` e `logs\`; uma conta padrão **não** consegue abrir a pasta.
+- [ ] Parear o terminal, abrir caixa, vender, fechar caixa.
+- [ ] Instalação silenciosa (`/VERYSILENT`) termina com o serviço no ar.
+
+### 7.2 Usuário sem privilégio no dia a dia
+
+- [ ] Com conta padrão: abrir pelo ícone, vender, imprimir.
+- [ ] Parar o serviço como administrador e abrir o ícone com a conta padrão: o atalho consegue iniciar o serviço (permissão concedida por `sc sdset`) ou mostra a mensagem em português.
+- [ ] Clicar duas vezes seguidas no ícone: abre uma janela só; com a janela aberta, um novo clique a traz para a frente.
+- [ ] Dois usuários do Windows na mesma máquina (troca rápida de usuário): os dois abrem o mesmo caixa.
+
+### 7.3 Reinício e quedas
+
+- [ ] Reiniciar o Windows: sem entrar em nenhuma conta, `http://127.0.0.1:8010/health` responde (testar logo após entrar).
+- [ ] Encerrar `PDV2Server.exe` pelo Gerenciador de Tarefas: volta sozinho em segundos.
+- [ ] Encerrar `PDV2Service.exe`: o Windows reinicia o serviço e não sobra `PDV2Server.exe` órfão segurando a porta 8010.
+- [ ] Desligar da tomada com caixa aberto: ao religar, o caixa aberto e as vendas estão lá.
+- [ ] Reinício forçado por Windows Update com caixa aberto.
+- [ ] Porta 8010 ocupada por outro programa: a mensagem do atalho aparece e `logs\service.log` explica.
+
+### 7.4 Impressora e periféricos
+
+- [ ] Impressora térmica USB instalada para todos os usuários: cupom imprime com o serviço rodando como sistema.
+- [ ] Impressora de rede: imprime.
+- [ ] **Impressora instalada só para um usuário** (mapeada por usuário): limitação conhecida, o serviço roda como sistema e pode não enxergá-la. Registrar o comportamento; a solução definitiva (agente de impressão na sessão do usuário) está planejada em `docs/ARQUITETURA-OFFLINE-LOCAL.md`.
+- [ ] Gaveta, leitor de código de barras e balança (Web Serial no Edge em modo aplicativo).
+- [ ] Hora do cupom correta (fuso `America/Sao_Paulo` vem do pacote `tzdata` embutido).
+
+### 7.5 Antivírus
+
+- [ ] Microsoft Defender com proteção em tempo real: instalar, abrir, vender, atualizar. Nenhum arquivo em quarentena.
+- [ ] Um antivírus comum no varejo (por exemplo Avast ou Kaspersky): o mesmo.
+- [ ] Conferir se o antivírus bloqueia a extração de `app-<versão>\` durante a atualização ou o início do serviço.
+
+### 7.6 Atualização automática e volta
+
+Use um servidor HTTPS de teste e duas versões geradas pelo `build.ps1` (por exemplo 2.0.0 e 2.0.1).
+
+- [ ] Publicar 2.0.1 como `bundle`: o terminal baixa sozinho e mostra a versão pronta.
+- [ ] Com **caixa aberto**, pedir a instalação: recusa com o motivo "há um caixa aberto".
+- [ ] Com caixa fechado, instalar: o caixa reinicia em menos de um minuto, `current.txt` mostra 2.0.1, existe um backup novo em `backups\`, a pasta `app-2.0.0` continua lá.
+- [ ] Derrubar a internet no meio do download e religar: continua de onde parou.
+- [ ] Publicar um bundle com SHA-256 errado no manifesto: recusado, nada muda.
+- [ ] Publicar um bundle de propósito quebrado (por exemplo, apagando `_internal\base_library.zip` antes de zipar): depois de até 60 s o PDV2 **volta sozinho para a versão anterior** e o caixa abre normalmente; `updates\state.json` mostra `failed`.
+- [ ] Depois da volta, publicar uma versão corrigida com número maior: instala.
+- [ ] Volta manual com `PDV2Service.exe --rollback`.
+- [ ] Atualização na janela da madrugada com o computador ligado e o caixa fechado.
+- [ ] Depois de duas atualizações, só restam a versão atual e a anterior em `Program Files\PDV2`.
+
+### 7.7 Instalar por cima, migrar e desinstalar
+
+- [ ] Instalar uma versão mais nova por cima com o instalador completo: dados preservados, serviço de volta, pastas de versões antigas removidas.
+- [ ] Máquina com a instalação antiga (`terminal\install-windows.ps1`, dados em `%LOCALAPPDATA%\PDV2\data`): fechar o PDV2 antigo, instalar. As vendas e o pareamento aparecem no novo; o atalho antigo de inicialização sumiu; `C:\ProgramData\PDV2\migrated-from.txt` aponta a origem.
+- [ ] O mesmo, com a instalação antiga feita por **outro usuário** do Windows que não o administrador que instala.
+- [ ] Desinstalar pelo Painel de Controle: serviço removido, `Program Files\PDV2` apagado, atalhos removidos, regra de firewall removida (se existia) e **`C:\ProgramData\PDV2` intacto**. Reinstalar e confirmar que os dados voltam.
+- [ ] Marcar "servidor da loja" na instalação: a regra `PDV2 - Servidor da loja` aparece no firewall, restrita à sub-rede local.
+
+## 8. Limites conhecidos
+
+- **Impressora por usuário:** ver 7.4.
+- **Pasta `bin\` só muda com o instalador completo.** Correções no serviço ou no atalho estável não chegam por bundle; publique com `kind: installer`.
+- **O bundle não é diferencial:** cada atualização baixa o programa inteiro (dezenas de MB).
+- **A volta de versão não desfaz mudanças de esquema do banco.** As migrações do terminal são aditivas; se uma versão futura fizer uma mudança incompatível, publique-a como `installer` e planeje a volta com restauração de backup.
+- **Um instalador mais antigo por cima de um mais novo** é aceito pelo Inno Setup; o banco pode ter sido migrado pela versão nova.
+- **Token da nuvem cifrado com DPAPI** e a escuta de rede local (porta 8011) não fazem parte desta fase.
