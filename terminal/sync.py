@@ -21,6 +21,23 @@ try:  # the second-disk copy is optional too; nothing here depends on it
 except ImportError:
     mirror = None
 
+# Phase 3 hooks, all optional: the network between cashiers, the copy over it and the process
+# supervisor belong to other modules. Nothing here starts them; the cashier works without them.
+try:
+    from . import lan
+except ImportError:
+    lan = None
+
+try:
+    from . import replica_net
+except ImportError:
+    replica_net = None
+
+try:
+    from . import runtime
+except ImportError:
+    runtime = None
+
 
 VERSION = os.environ.get("PDV_VERSION", "2.0.0")
 # Tells the cloud this build accepts leases longer than the old 72 hours.
@@ -119,6 +136,46 @@ def release_terminal(store):
     except TerminalError:
         return False  # offline, or a cloud without the route: the local way out still works
     return response.get("released") is True
+
+
+def regularize_promotion(store, cloud_url, license_key, code):
+    """After an additional cashier took over: the cloud hands the same terminal to this computer.
+
+    Same call as a recovery pairing ("Trocar de computador" in the panel), but the data is
+    already here, so nothing is cleared and no restore starts.
+    """
+    cloud_url = validate_cloud_url(cloud_url)
+    if not isinstance(license_key, str) or not 8 <= len(license_key.strip()) <= 160:
+        raise TerminalError("Chave da licença inválida")
+    if not isinstance(code, str) or not 4 <= len(code.strip()) <= 100:
+        raise TerminalError("Código de pareamento inválido")
+    # Refuse before spending the cloud's one-time code.
+    if store.promotion_status()["state"] != "awaiting_cloud":
+        raise TerminalError("Este caixa não está aguardando a regularização com a nuvem.", 409)
+    response = _request("POST", cloud_url + "/api/v1/terminal/pair", headers=dict(CAPABILITY_HEADERS),
+                        json={"license_key": license_key.strip(), "code": code.strip(),
+                              "device_id": store.promotion_device_id(),
+                              "version": VERSION})
+    try:
+        store.adopt_pairing(response, cloud_url)
+    except TerminalError as exc:
+        token = response.get("token")
+        if getattr(exc, "code", None) == "other_terminal" and isinstance(token, str) and token:
+            # The code belonged to another terminal and the cloud has just moved that one here:
+            # give it back to its computer (best effort) before telling the person.
+            try:
+                _request("POST", cloud_url + "/api/v1/terminal/release",
+                         headers={"Authorization": "Bearer " + token, **CAPABILITY_HEADERS}, json={})
+            except TerminalError:
+                pass
+        raise
+    result = {"regularized": True, "bootstrap": None}
+    try:
+        result["bootstrap"] = refresh_bootstrap(store)
+    except TerminalError as exc:
+        # The pairing is saved and the code is spent: the worker repeats the first load.
+        result["warning"] = str(exc)
+    return result
 
 
 def refresh_bootstrap(store):

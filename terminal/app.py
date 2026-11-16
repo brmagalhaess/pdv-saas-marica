@@ -15,9 +15,9 @@ from urllib.parse import urlparse
 
 from flask import Flask, jsonify, render_template, request, session
 
-from . import sync
+from . import paths, sync
 from .printers import cups_queues
-from .store import MANAGER_ROLES, SELL_ROLES, Store, TerminalError
+from .store import MANAGER_ROLES, SELL_ROLES, SERVER_ONLY_MESSAGE, SERVER_STATION_ID, Store, TerminalError
 
 
 MIGRATION_MARKER = "migrated-from.json"
@@ -148,6 +148,16 @@ def _write_active_profile(data_dir, name):
 BOOTSTRAP_CALLS = 6
 BOOTSTRAP_WINDOW_SECONDS = 60
 MIRROR_UNAVAILABLE = "Cópia em segundo disco indisponível nesta instalação"
+LAN_UNAVAILABLE = "Rede entre caixas indisponível nesta instalação"
+# Routes an additional cashier (station) may never reach: they belong to the computer that owns
+# the database. Same list, by path, in terminal/lan.py.
+SERVER_ONLY_ENDPOINTS = frozenset((
+    "pair", "unpair", "new_profile", "bootstrap", "restore_start", "restore_state", "restore_advance",
+    "restore_retry", "restore_abandon", "restore_backups", "restore_import_backup", "restore_skip_backup",
+    "export", "backups", "create_backup", "mirror_drives", "mirror_config", "mirror_snapshot", "update_apply",
+    "stations_list", "stations_code", "station_rename", "station_revoke", "station_cash_close",
+    "mode_station", "promotion_regularize"))
+STATION_DAMAGED = "O caixa principal está com o banco de dados danificado. Chame o suporte."
 
 
 def create_app(config=None):
@@ -190,18 +200,39 @@ def create_app(config=None):
     worker = None
     app.extensions["terminal_store"] = store
     app.extensions["terminal_damage"] = damage
+    app.extensions["terminal_data_dir"] = data_dir
     bootstrap_calls = []
     if store is None:
         app.logger.error("Banco local danificado (%s): %s", db_path, damage)
 
+    def request_station():
+        """Additional cashier behind this request, or None for the browser of this computer.
+
+        Only terminal/lan.py can put this key in the WSGI environ, after checking the station's
+        token: an HTTP client can only create environ keys that start with HTTP_.
+        """
+        station = request.environ.get("pdv2.station")
+        if (isinstance(station, dict) and isinstance(station.get("id"), str) and station["id"]
+                and station["id"] != SERVER_STATION_ID):
+            return station
+        return None
+
     @app.before_request
     def local_security():
+        station = request_station()
+        if store is not None:
+            store.set_station(station["id"] if station else None)
         host = request.host.rsplit(":", 1)[0]
         if host not in allowed_hosts:
             raise TerminalError("Host não permitido", 403)
+        if station and request.endpoint in SERVER_ONLY_ENDPOINTS:
+            raise TerminalError(SERVER_ONLY_MESSAGE, 403, code="server_only")
         if store is None:
             if request.endpoint in ("index", "favicon", "health", "static"):
                 return None
+            if station:
+                # Another computer asking: no file path of this one leaves here.
+                return jsonify({"error": STATION_DAMAGED, "damaged": True}), 503
             if request.endpoint == "session_state":
                 if not session.get("csrf"):
                     session["csrf"] = secrets.token_urlsafe(32)
@@ -221,9 +252,18 @@ def create_app(config=None):
                     request.headers.get("X-CSRF-Token", ""), session["csrf"]):
                 raise TerminalError("Sessão/CSRF inválido; recarregue a página", 403)
 
+    @app.teardown_request
+    def forget_station(_exc):
+        # The worker threads of the server are reused: the next request starts as the main cashier.
+        if store is not None:
+            store.set_station(None)
+
     @app.errorhandler(TerminalError)
     def error(exc):
-        return jsonify({"error": str(exc)}), exc.status
+        answer = {"error": str(exc)}
+        if getattr(exc, "code", None):
+            answer["code"] = exc.code
+        return jsonify(answer), exc.status
 
     @app.errorhandler(sqlite3.Error)
     def database_error(exc):
@@ -242,11 +282,20 @@ def create_app(config=None):
     def not_found(_exc):
         return jsonify({"error": "Rota não encontrada"}), 404
 
+    def session_operator_id():
+        """Operator of this browser session, as long as it logged in on this same cashier.
+
+        A session cookie copied from one computer of the shop is worth nothing on another.
+        """
+        if session.get("station_id", SERVER_STATION_ID) != store.current_station():
+            return None
+        return session.get("operator_id")
+
     def authenticated(*roles):
         def decorate(func):
             @wraps(func)
             def wrapper(*args, **kwargs):
-                operator_id = session.get("operator_id")
+                operator_id = session_operator_id()
                 if not operator_id:
                     raise TerminalError("Faça login com PIN", 401)
                 operator = store.operator(operator_id)
@@ -270,7 +319,7 @@ def create_app(config=None):
 
     def session_manager():
         """Manager logged in on this browser session, if any."""
-        operator_id = session.get("operator_id")
+        operator_id = session_operator_id()
         if not operator_id:
             return None
         try:
@@ -317,9 +366,46 @@ def create_app(config=None):
             app.logger.error("Atualizador falhou ao informar o estado: %s: %s", type(exc).__name__, exc)
             return dict(base, state="failed", error="Não foi possível consultar o atualizador",
                         blocked_reason="Não foi possível consultar o atualizador")
-        if status["can_apply"] and store.cash_state():
-            status.update(can_apply=False, blocked_reason="Feche o caixa para atualizar")
+        if status["can_apply"] and store.any_cash_open():
+            status.update(can_apply=False, blocked_reason="Feche o caixa em todos os computadores para atualizar")
         return status
+
+    def lan_status():
+        """What lan.status says, or a plain "not here" when this build has no network between cashiers."""
+        missing = {"supported": False, "running": False, "message": LAN_UNAVAILABLE}
+        if sync.lan is None:
+            return missing
+        try:
+            return sync.lan.status(app)
+        except Exception as exc:
+            app.logger.error("Rede entre caixas falhou ao informar o estado: %s", type(exc).__name__)
+            return dict(missing, supported=True, message="Não foi possível consultar a rede entre caixas")
+
+    def lan_poke():
+        if sync.lan is None:
+            return
+        try:
+            sync.lan.poke(app)
+        except Exception as exc:  # the listener re-evaluates by itself every 30 seconds
+            app.logger.error("Rede entre caixas não foi avisada: %s", type(exc).__name__)
+
+    def replica_status():
+        if sync.replica_net is None:
+            return {"supported": False}
+        try:
+            return sync.replica_net.status(store)
+        except Exception as exc:
+            app.logger.error("Cópia pela rede falhou ao informar o estado: %s", type(exc).__name__)
+            return {"supported": True, "state": "off", "message": "Não foi possível consultar a cópia pela rede",
+                    "stations": {}}
+
+    def station_info():
+        station = request_station()
+        if station:
+            name = station.get("name") if isinstance(station.get("name"), str) else ""
+            return {"id": station["id"], "name": name or store.station_name(station["id"]) or "Caixa",
+                    "is_server": False}
+        return {"id": SERVER_STATION_ID, "name": store.station_name(SERVER_STATION_ID), "is_server": True}
 
     def mirror_status():
         """What mirror.status says, or a plain "not here" when this build has no second-disk copy."""
@@ -386,16 +472,17 @@ def create_app(config=None):
         if store is None:
             # Not 2xx: the updater must not take "started damaged" for "started fine".
             return jsonify({"status": "degraded", "service": "terminal-local", "database": "damaged"}), 503
-        return jsonify({"status": "ok", "service": "terminal-local"})
+        return jsonify({"status": "ok", "service": "terminal-local", "mode": "server"})
 
     @app.get("/api/session")
     def session_state():
         if not session.get("csrf"):
             session["csrf"] = secrets.token_urlsafe(32)
         operator = None
-        if session.get("operator_id"):
+        logged_here = session_operator_id()
+        if logged_here:
             try:
-                operator = store.operator(session["operator_id"])
+                operator = store.operator(logged_here)
                 marker = hmac.new(app.secret_key, store.operator_pin_hash(operator["id"]).encode(),
                                   hashlib.sha256).hexdigest()
                 if not secrets.compare_digest(session.get("auth_marker", ""), marker):
@@ -414,6 +501,9 @@ def create_app(config=None):
                         "update": update_status(),
                         "restore": store.restore_status(),
                         "mirror": mirror_status() if sync.mirror is not None else None,
+                        "station": station_info(),
+                        "promotion": store.promotion_status(),
+                        "stations_limit": store.station_limit(),
                         "default_cloud_url": os.environ.get("PDV_CLOUD_URL", ""),
                         "payment_methods": store.payment_methods()})
 
@@ -448,7 +538,7 @@ def create_app(config=None):
         try:
             if current.pending_events():
                 raise TerminalError("Sincronize os eventos pendentes antes de criar outro perfil", 409)
-            if current.cash_state():
+            if current.any_cash_open():
                 raise TerminalError("Feche o caixa antes de criar outro perfil", 409)
             backup = current.backup_now() if current.path.exists() else None
             profile_name = "perfil-" + secrets.token_hex(6)
@@ -672,6 +762,7 @@ def create_app(config=None):
         session.clear()
         session["csrf"] = secrets.token_urlsafe(32)
         session["operator_id"] = operator["id"]
+        session["station_id"] = store.current_station()
         session["auth_marker"] = hmac.new(app.secret_key, store.operator_pin_hash(operator["id"]).encode(),
                                            hashlib.sha256).hexdigest()
         return jsonify({"operator": operator, "csrf": session["csrf"]})
@@ -851,6 +942,9 @@ def create_app(config=None):
     @app.post("/api/print/flush")
     @authenticated(*SELL_ROLES)
     def flush_print(_operator):
+        if store.current_station() != SERVER_STATION_ID:
+            # The additional cashier prints on its own computer: its agent fetches the queue.
+            return jsonify({"status": "delegated"})
         return jsonify(sync.print_once(store) or {"status": "empty"})
 
     @app.get("/api/sync")
@@ -909,6 +1003,86 @@ def create_app(config=None):
     @authenticated(*MANAGER_ROLES)
     def create_backup(_operator):
         return jsonify(store.backup_now())
+
+    # ---------- phase 3: additional cashiers of the shop (all of it only on the main cashier) ----------
+
+    @app.get("/api/stations")
+    @authenticated(*MANAGER_ROLES)
+    def stations_list(_operator):
+        return jsonify({"supported": sync.lan is not None, "limit": store.station_limit(), "lan": lan_status(),
+                        "replica": replica_status(), "stations": store.stations()})
+
+    @app.post("/api/stations/code")
+    @authenticated(*MANAGER_ROLES)
+    def stations_code(operator):
+        data = body()
+        if sync.lan is None:
+            raise TerminalError(LAN_UNAVAILABLE, 409)
+        result = store.create_station_code(operator["id"], data.get("name") or "")
+        lan_poke()  # the listener may have to start now: this can be the first additional cashier
+        network = lan_status()
+        result["server"] = {"addresses": network.get("addresses") or [], "port": network.get("port"),
+                            "hostname": network.get("hostname") or ""}
+        response = jsonify(result)
+        response.headers["Cache-Control"] = "no-store"
+        return response, 201
+
+    @app.post("/api/stations/<station_id>/rename")
+    @authenticated(*MANAGER_ROLES)
+    def station_rename(operator, station_id):
+        return jsonify(store.rename_station(station_id, body().get("name"), operator["id"]))
+
+    @app.post("/api/stations/<station_id>/revoke")
+    @authenticated(*MANAGER_ROLES)
+    def station_revoke(operator, station_id):
+        if body().get("confirm") is not True:
+            raise TerminalError("Confirme a remoção do caixa", 409)
+        result = store.revoke_station(station_id, operator["id"])
+        lan_poke()
+        return jsonify(result)
+
+    @app.post("/api/stations/<station_id>/cash/close")
+    @authenticated(*MANAGER_ROLES)
+    def station_cash_close(operator, station_id):
+        # The computer broke, was removed or was replaced: the manager counts its drawer here.
+        data = body()
+        return jsonify(store.close_cash(operator["id"], data.get("counted_cents"), data.get("manager_pin"),
+                                        station_id=station_id))
+
+    @app.post("/api/mode/station")
+    def mode_station():
+        """"Este é um caixa adicional": only a computer that never served a shop changes role."""
+        if body().get("confirm") is not True:
+            raise TerminalError("Confirme que este computador é um caixa adicional", 409)
+        try:
+            store.ensure_pairable()
+        except TerminalError as exc:
+            raise TerminalError("Este computador já é o caixa principal de uma loja.", 409) from exc
+        write_mode = getattr(paths, "write_mode", None)
+        if write_mode is None:
+            raise TerminalError(LAN_UNAVAILABLE, 409)
+        write_mode(data_dir, "station")
+        restart = False
+        if sync.runtime is not None:
+            try:
+                restart = bool(sync.runtime.request_restart("modo-estacao"))
+            except Exception as exc:
+                app.logger.error("Reinício não pôde ser pedido: %s", type(exc).__name__)
+        return jsonify({"mode": "station", "restart": restart})
+
+    @app.post("/api/promotion/regularize")
+    def promotion_regularize():
+        """After a promotion: bind this computer to the same terminal in the cloud."""
+        data = body()
+        if not session_manager():
+            store.manager_override(data.get("manager_pin"))
+        throttle_cloud_calls()
+        cloud_url = data.get("cloud_url") or store.meta().get("cloud_url") or os.environ.get("PDV_CLOUD_URL", "")
+        result = sync.regularize_promotion(store, cloud_url, data.get("license_key"), data.get("code"))
+        answer = {"regularized": True, "promotion": store.promotion_status(), "bootstrap": result.get("bootstrap")}
+        if result.get("warning"):
+            answer["warning"] = result["warning"]
+        return jsonify(answer)
 
     if config.get("START_WORKER", False) and store is not None:
         worker = sync.Worker(store)

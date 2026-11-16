@@ -49,6 +49,8 @@
           <button class="btn primary big" type="submit">Conectar este terminal</button>
         </form>
         <button id="restoreOpenBtn" class="btn big" type="button">Recuperar minha loja (troquei de computador)</button>
+        <button id="stationModeBtn" class="btn big" type="button">Este é um caixa adicional (a loja já tem um caixa principal)</button>
+        <p id="stationModeStatus" class="hint hidden" role="status" aria-live="polite"></p>
         <p class="hint">A licença identifica a assinatura; o código de pareamento autoriza este dispositivo por uma única vez. Depois, cada operador entra com o próprio PIN.</p>
         <p class="hint">Identificação deste dispositivo: <code id="deviceId"></code></p>
         <details class="maintenance">
@@ -169,6 +171,16 @@
     </div>
   </section>
 
+  <div id="serverDownView" class="server-down hidden" role="alertdialog" aria-modal="true" aria-labelledby="serverDownTitle" aria-describedby="serverDownText">
+    <div class="server-down-card">
+      <svg class="ico server-down-icon" aria-hidden="true"><use href="#i-alert"/></svg>
+      <h1 id="serverDownTitle">O caixa principal está fora do ar</h1>
+      <p id="serverDownText">Este caixa volta sozinho quando a conexão voltar. O que você já lançou continua na tela.</p>
+      <p id="serverDownStatus" class="hint" role="status" aria-live="polite">Tentando de novo a cada 2 segundos…</p>
+      <a id="serverDownLink" class="btn link-button" href="/station/">Ver o que aconteceu</a>
+    </div>
+  </div>
+
   <div id="appView" class="app hidden">
     <header id="statusBar" class="statusbar" data-tone="ok">
       <div class="lockup" title="PDV2 por CrownTech"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
@@ -196,6 +208,19 @@
       <button class="tab admin-only" data-tab="printers">Impressoras</button>
       <button class="tab admin-only" data-tab="system">Sistema</button>
     </nav>
+
+    <section id="promotionCard" class="promotion-card hidden" aria-live="polite">
+      <div class="promotion-text">
+        <strong>Este computador assumiu como caixa principal.</strong>
+        <p id="promotionText"></p>
+        <p id="promotionWarning" class="promotion-warning hidden"></p>
+      </div>
+      <form id="promotionForm" class="promotion-form">
+        <label class="field"><span>Chave da licença</span><input id="promotionLicenseKey" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PDV2-…" required></label>
+        <label class="field"><span>Código do painel (Trocar de computador)</span><input id="promotionCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" required></label>
+        <button class="btn primary" type="submit">Regularizar agora</button>
+      </form>
+    </section>
 
     <main class="workspace">
       <section id="checkoutTab" class="tab-panel sale-panel">
@@ -279,6 +304,7 @@
         <div class="page-head"><div><span class="eyebrow">Periféricos</span><h1>Impressoras</h1></div></div>
         <div class="card">
           <h2>Impressora de recibos</h2>
+          <p id="stationPrinterHint" class="hint hidden"><strong>Impressora deste caixa.</strong> Ela fica ligada neste computador; cada caixa da loja tem a sua.</p>
           <p class="hint">Configure aqui somente a impressora térmica do caixa. A impressão de etiquetas fica no painel da empresa, em Produtos → Imprimir etiquetas.</p>
           <form id="printerForm" class="printer-form">
             <input id="printerKind" type="hidden" value="receipt">
@@ -304,7 +330,15 @@
           <div class="metric card"><small>Licença offline</small><strong id="systemLease">—</strong></div>
         </div>
         <div class="card"><h2>Sincronização</h2><p id="systemError" class="hint"></p><div class="inline-controls"><button id="syncNowBtn" class="btn primary">Sincronizar agora</button><button id="bootstrapBtn" class="btn">Atualizar catálogo e licença</button><a href="/api/export" id="exportLink" class="btn link-button">Exportar dados locais</a></div></div>
-        <div class="card"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="btn">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div>
+        <div id="stationsCard" class="card">
+          <h2>Caixas da loja</h2>
+          <p id="stationsInfo" class="hint">Consultando os caixas da loja…</p>
+          <p id="stationsWarning" class="hint stations-warning hidden" role="status"></p>
+          <div id="stationsList" class="mini-list"></div>
+          <div class="inline-controls"><button id="stationAddBtn" class="btn primary" type="button">Adicionar caixa</button></div>
+          <p class="hint">Um caixa adicional é outro computador da loja que vende junto com este. Ele precisa estar na mesma rede e depende deste computador ligado.</p>
+        </div>
+        <div id="backupCard" class="card"><h2>Backup local</h2><p id="backupInfo" class="hint">Consulte as cópias locais.</p><button id="backupBtn" class="btn">Criar backup agora</button><p class="hint">O backup fica neste computador. Copie-o com segurança para outro dispositivo.</p></div>
         <div id="mirrorCard" class="card"><h2>Cópia de segurança em outro disco</h2><p id="mirrorInfo" class="hint">Consultando a cópia de segurança…</p><p id="mirrorDetail" class="hint"></p><div class="inline-controls"><button id="mirrorChooseBtn" class="btn" type="button">Escolher disco</button><button id="mirrorSnapshotBtn" class="btn" type="button">Copiar agora</button></div><p class="hint">Um pendrive ou segundo disco guarda uma cópia protegida de tudo o que este caixa registra. Se este computador quebrar, as vendas que ainda não tinham ido para a internet voltam por ela.</p></div>
         <div id="leaseCard" class="card"><h2>Licença offline</h2><p id="leaseInfo" class="hint">Consultando a licença…</p><button id="leaseRenewBtn" class="btn" type="button">Renovar licença agora</button><p class="hint">A licença é renovada sozinha sempre que o caixa fala com o servidor. Sem internet, este caixa continua vendendo até a data acima.</p></div>
         <div id="updateCard" class="card"><h2>Atualização</h2><p id="currentVersion" class="hint">Versão instalada: —</p><p id="updateAvailable" class="hint">Versão disponível: —</p><p id="updateState" class="hint">Estado: —</p><button id="updateApplyBtn" class="btn primary" type="button" disabled>Atualizar agora</button><p id="updateBlocked" class="hint" role="status"></p><a id="releaseLink" class="btn link-button hidden" target="_blank" rel="noopener noreferrer">Abrir pacote para atualização manual</a><p class="hint">A nova versão é baixada e conferida sozinha. A instalação só acontece com o caixa fechado, depois de um backup; se algo der errado, a versão anterior volta.</p></div>

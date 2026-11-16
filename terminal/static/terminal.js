@@ -80,9 +80,40 @@ async function api(path, method = 'GET', data) {
   if (!response.ok) {
     const error = Error(body.error || `Erro ${response.status}`);
     error.status = response.status;
+    error.code = body.code || '';
+    // An additional cashier depends on the main one. Nothing typed is thrown away here: the sale
+    // keeps its request_id and the cart keeps its draft, so repeating it never sells twice.
+    if (C.SERVER_DOWN_CODES.includes(error.code)) showServerDown();
+    else if (C.STATION_GONE_CODES.includes(error.code)) window.location.replace('/station/');
     throw error;
   }
   return body;
+}
+
+/* ---------- additional cashier: the main one stopped answering ---------- */
+const serverDown = {timer: null, busy: false};
+function showServerDown() {
+  $('serverDownView').classList.remove('hidden');
+  if (serverDown.timer) return;
+  serverDown.timer = setInterval(probeServer, 2000);
+}
+async function probeServer() {
+  if (serverDown.busy) return;
+  serverDown.busy = true;
+  try {
+    const response = await fetch('/api/session', {credentials: 'same-origin'});
+    let body = {};
+    try { body = await response.json(); } catch { /* empty body */ }
+    if (C.STATION_GONE_CODES.includes(body.code)) { window.location.replace('/station/'); return; }
+    if (!response.ok) return;
+    clearInterval(serverDown.timer);
+    serverDown.timer = null;
+    $('serverDownView').classList.add('hidden');
+    // Back: the same screen goes on. A lost login only asks for the PIN again; the cart stays.
+    if (body.operator && state.session?.operator) { applySession(body); renderPanels(); renderKeybar(); }
+    else await loadSession();
+    toast('O caixa principal voltou. Pode continuar.');
+  } catch { /* still down: the next tick tries again */ } finally { serverDown.busy = false; }
 }
 
 /* ---------- barcode reader bursts ---------- */
@@ -257,10 +288,15 @@ const syncIndicator = (sync, now) => C.syncIndicator({...sync, quarantined_count
 function renderStatus() {
   const session = state.session;
   if (!session) return;
-  const connection = session.connection || {}, license = session.license || {}, operator = session.operator, now = Date.now();
+  // A promoted computer serves the shop before it has a cloud token again: it is still "connected" to the company.
+  const connection = {...(session.connection || {}), paired: !!(session.connection?.paired || session.paired)};
+  const license = session.license || {}, operator = session.operator, now = Date.now();
   const indicator = state.indicator = syncIndicator(session.sync, now);
   if (indicator.pending > 0) state.pendingSince ||= now; else state.pendingSince = 0;
-  $('identityPlace').textContent = [connection.shop_name || connection.tenant_name || 'Loja', connection.terminal_name || 'Caixa'].join(' · ');
+  const notice = C.stationNotice(session);
+  $('identityPlace').textContent = notice.place;
+  renderPromotion(session.promotion);
+  applyStationUi();
   $('identityOperator').textContent = '· ' + (operator ? operator.name : 'Sem operador');
   $('identityText').title = [connection.tenant_name, connection.shop_name, connection.terminal_name, operator ? `${operator.name} (${roleNames[operator.role] || operator.role})` : ''].filter(Boolean).join(' · ');
   setChip('netChip', indicator.state === 'online' ? 'ok' : indicator.state === 'offline' ? 'warn' : 'muted', indicator.label, indicator.detail);
@@ -454,6 +490,24 @@ function applyRoleUi() {
   $('backupBtn').classList.toggle('hidden', !manager);
   $('mirrorChooseBtn').classList.toggle('hidden', !manager);
   $('mirrorSnapshotBtn').classList.toggle('hidden', !manager);
+  applyStationUi();
+}
+// An additional cashier never sees what only the main computer can do.
+function applyStationUi() {
+  const notice = C.stationNotice(state.session);
+  document.body.dataset.station = String(notice.isStation);
+  for (const id of notice.hidden) $(id).classList.add('hidden');
+  $('stationPrinterHint').classList.toggle('hidden', !notice.isStation);
+  if (!notice.isStation) for (const id of ['backupCard', 'stationsCard', 'changeConnection', 'newProfileLoginBtn']) $(id).classList.remove('hidden');
+}
+function renderPromotion(promotion) {
+  const view = C.promotionCard(promotion);
+  $('promotionCard').classList.toggle('hidden', !view);
+  document.body.dataset.promotion = String(!!view);
+  if (!view) return;
+  $('promotionText').textContent = view.text;
+  $('promotionWarning').textContent = view.warning;
+  $('promotionWarning').classList.toggle('hidden', !view.warning);
 }
 function allowedTab(tab) {
   const current = role();
@@ -468,7 +522,7 @@ function setTab(tab) {
   document.querySelectorAll('.tab').forEach(button => button.classList.toggle('active', button.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.add('hidden'));
   $(tab + 'Tab').classList.remove('hidden');
-  const loader = {sales: loadSales, stock: loadStock, printers: loadPrinters, system: async () => { await loadSystem(); await loadBackups(); await loadMirror(); }}[tab];
+  const loader = {sales: loadSales, stock: loadStock, printers: loadPrinters, system: async () => { await loadSystem(); await loadBackups(); await loadMirror(); await loadStations(); }}[tab];
   if (loader) loader().catch(error => toast(error.message, true));
   renderKeybar();
   if (tab === 'checkout') focusHome();
@@ -1921,7 +1975,7 @@ function renderUpdate(update = {}) {
   const reason = !update.supported ? update.blocked_reason : !version ? '' : cashOpen ? 'Feche o caixa para atualizar.' : !manager ? 'Somente gerentes podem atualizar.'
     : update.can_apply ? '' : (update.blocked_reason || 'A nova versão ainda está sendo preparada.');
   const button = $('updateApplyBtn');
-  button.classList.toggle('hidden', !update.supported);
+  button.classList.toggle('hidden', !update.supported || C.stationNotice(state.session).isStation);
   button.disabled = !(update.can_apply && !cashOpen && manager);
   $('updateBlocked').textContent = reason || '';
   const link = $('releaseLink'), manual = !update.supported && update.available?.url;
@@ -1958,8 +2012,9 @@ function renderMirror(status) {
   $('mirrorDetail').textContent = !status?.supported ? '' : [status.last_snapshot_at ? 'Última cópia completa: ' + dateTimeText(status.last_snapshot_at) : '', status.pending_events ? `${status.pending_events} registro(s) ainda só neste computador` : '', status.last_error || ''].filter(Boolean).join(' · ');
   $('mirrorChooseBtn').disabled = !view.canChoose;
   $('mirrorSnapshotBtn').disabled = !view.canCopy;
-  $('mirrorChooseBtn').classList.toggle('hidden', !manager);
-  $('mirrorSnapshotBtn').classList.toggle('hidden', !manager);
+  const hideMirrorActions = !manager || C.stationNotice(state.session).isStation;
+  $('mirrorChooseBtn').classList.toggle('hidden', hideMirrorActions);
+  $('mirrorSnapshotBtn').classList.toggle('hidden', hideMirrorActions);
 }
 async function loadMirror() {
   try { renderMirror(await api('/api/mirror/status')); } catch { $('mirrorInfo').textContent = 'Não foi possível consultar a cópia de segurança.'; }
@@ -1998,7 +2053,97 @@ async function chooseMirrorDisk() {
   modal.action('Usar a pasta informada', 'primary', async () => { const folder = input.value.trim(); if (!folder) { input.focus(); throw Error('Informe a pasta ou escolha um disco da lista'); } await save(folder); });
   await modal.promise;
 }
+/* ---------- "Caixas da loja" (additional cashiers; only on the main computer) ---------- */
+async function loadStations() {
+  if (C.stationNotice(state.session).isStation) return;
+  if (!canManage(role())) { $('stationsInfo').textContent = 'Caixas da loja: disponível para gerentes e administradores.'; $('stationsList').innerHTML = ''; $('stationAddBtn').classList.add('hidden'); return; }
+  let view;
+  try { view = C.stationsCard(await api('/api/stations')); } catch { $('stationsInfo').textContent = 'Não foi possível consultar os caixas da loja.'; return; }
+  $('stationsInfo').textContent = view.summary;
+  $('stationsWarning').textContent = view.warning;
+  $('stationsWarning').classList.toggle('hidden', !view.warning);
+  $('stationsCard').classList.toggle('attention', !!view.warning);
+  $('stationAddBtn').classList.remove('hidden');
+  $('stationAddBtn').disabled = !view.canAdd;
+  $('stationAddBtn').title = view.addBlocked;
+  $('stationsList').innerHTML = view.rows.map(row => `<div class="mini-row station-row"><span><strong>${esc(row.name)}</strong><br><small>${esc([row.status, row.cash, row.copy].filter(Boolean).join(' · '))}</small></span><span class="list-actions">${row.canRename ? `<button class="btn" type="button" data-station-rename="${esc(row.id)}" data-station-name="${esc(row.name)}">Renomear</button>` : ''}${row.canCloseCash ? `<button class="btn" type="button" data-station-close="${esc(row.id)}" data-station-name="${esc(row.name)}">Fechar o caixa deste computador</button>` : ''}${row.canRevoke ? `<button class="btn danger" type="button" data-station-revoke="${esc(row.id)}" data-station-name="${esc(row.name)}">Remover caixa</button>` : ''}</span></div>`).join('');
+}
+async function addStation() {
+  const name = await textDialog('Adicionar caixa', 'Como o novo caixa vai se chamar? Deixe em branco para usar o próximo número (Caixa 2, Caixa 3…).', {eyebrow: 'Caixas da loja', fieldLabel: 'Nome do caixa', placeholder: 'Ex.: Caixa 2', acceptLabel: 'Gerar código', minLength: 0, maxLength: 40});
+  if (name === null) return;
+  const data = await api('/api/stations/code', 'POST', {name: String(name || '').trim()});
+  const modal = openModal({title: 'Código para o novo caixa', eyebrow: 'Adicionar caixa', text: "No outro computador, abra o PDV2, escolha 'Este é um caixa adicional' e digite este código."});
+  const code = el('div', 'enroll-code'), left = el('p', 'hint'), address = el('p', 'hint');
+  code.textContent = C.enrollCodeText(data.code);
+  code.setAttribute('aria-label', 'Código ' + C.enrollCodeText(data.code).split('').join(' '));
+  const addresses = data.server?.addresses || [];
+  address.textContent = addresses.length ? `Se ele não encontrar sozinho, digite lá o endereço: ${addresses.join(' ou ')}` : 'Os dois computadores precisam estar ligados na mesma rede da loja.';
+  const tick = () => {
+    const seconds = Math.max(0, Math.round((Number(data.expires_at) - Date.now()) / 1000));
+    left.textContent = seconds > 0 ? `Vale por 5 minutos · faltam ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : 'Este código venceu. Feche esta janela e gere outro.';
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+  modal.body.append(code, left, address);
+  modal.action('Pronto', 'primary', () => modal.close(true));
+  await modal.promise;
+  clearInterval(timer);
+  await loadStations();
+}
+async function renameStation(id, current) {
+  const name = await textDialog('Renomear caixa', 'O nome aparece na barra do caixa e nos relatórios.', {eyebrow: 'Caixas da loja', fieldLabel: 'Nome do caixa', value: current, maxLength: 40, acceptLabel: 'Salvar'});
+  if (!name) return;
+  await api(`/api/stations/${encodeURIComponent(id)}/rename`, 'POST', {name: String(name).trim()});
+  toast('Nome do caixa alterado.');
+  await loadStations();
+  await poll();
+}
+async function revokeStation(id, name) {
+  if (!(await confirmDialog(`Remover ${name}?`, 'Esse computador deixa de vender na hora. Se o caixa dele estiver aberto, feche aqui depois de contar o dinheiro. Para voltar a usar, será preciso um novo código.', 'Remover caixa', {danger: true}))) return;
+  const station = await api(`/api/stations/${encodeURIComponent(id)}/revoke`, 'POST', {confirm: true});
+  toast(station.cash_open ? `${name} removido. O caixa dele ficou aberto: conte o dinheiro e feche aqui.` : `${name} removido.`, !!station.cash_open);
+  await loadStations();
+}
+async function closeStationCash(id, name) {
+  const counted = await textDialog(`Fechar o caixa de ${name}`, 'Conte o dinheiro da gaveta daquele computador e informe o valor.', {eyebrow: 'Caixas da loja', fieldLabel: 'Dinheiro contado', placeholder: '0,00', inputMode: 'decimal', acceptLabel: 'Continuar'});
+  if (counted === null || counted === undefined) return;
+  const cents = parseMoney(String(counted || '0'));
+  const pin = await pinDialog('Autorizar o fechamento', `Informe o PIN de um gerente para fechar o caixa de ${name} com ${money(cents)} contados.`);
+  if (!pin) return;
+  const summary = await api(`/api/stations/${encodeURIComponent(id)}/cash/close`, 'POST', {counted_cents: cents, manager_pin: pin});
+  const difference = Number(summary.difference_cents) || 0;
+  toast(`Caixa de ${name} fechado. ${difference === 0 ? 'Sem diferença.' : (difference > 0 ? 'Sobra de ' : 'Falta de ') + money(Math.abs(difference)) + '.'}`, difference !== 0);
+  await loadStations();
+  await poll();
+}
+// "Este é um caixa adicional": this computer stops being a (still empty) main cashier.
+async function becomeStation() {
+  if (!(await confirmDialog('Este computador é um caixa adicional?', 'Use quando a loja já tem um caixa principal funcionando em outro computador. Este aqui vai se ligar a ele pela rede da loja e não guarda as vendas sozinho.', 'Sim, é um caixa adicional'))) return;
+  const status = $('stationModeStatus');
+  status.classList.remove('hidden');
+  status.textContent = 'Preparando este computador…';
+  let result;
+  try { result = await api('/api/mode/station', 'POST', {confirm: true}); } catch (error) { status.classList.add('hidden'); throw error; }
+  if (!result.restart) { status.textContent = 'Feche e abra o PDV2 de novo.'; }
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const health = await (await fetch('/health', {cache: 'no-store'})).json();
+      if (health.mode === 'station') { window.location.replace('/station/'); return; }
+    } catch { /* restarting */ }
+  }
+}
+async function regularizePromotion() {
+  const pin = canManage(role()) ? '' : await pinDialog('Autorizar a regularização', 'Informe o PIN de um gerente para ligar este computador à nuvem como o caixa principal.');
+  if (!canManage(role()) && !pin) return;
+  const result = await api('/api/promotion/regularize', 'POST', {license_key: $('promotionLicenseKey').value.trim(), code: $('promotionCode').value.trim(), manager_pin: pin});
+  $('promotionLicenseKey').value = '';
+  $('promotionCode').value = '';
+  toast(result.warning ? 'Regularizado, mas a internet falhou em seguida. O envio continua sozinho quando a conexão voltar.' : 'Pronto: este computador voltou a enviar as vendas para a nuvem.', !!result.warning);
+  await poll();
+}
 async function loadBackups() {
+  if (C.stationNotice(state.session).isStation) return;
   if (!canManage(role())) { $('backupInfo').textContent = 'Backup local disponível para gerentes e administradores.'; return; }
   try {
     const data = await api('/api/backups');
@@ -2148,6 +2293,18 @@ on('pairForm', 'submit', async () => {
 });
 on('restoreOpenBtn', 'click', async () => { state.restore.open = true; renderRestore(state.session?.restore); $('restoreLicenseKey').focus(); });
 on('restoreBackBtn', 'click', async () => { state.restore.open = false; showView('pairView'); });
+on('stationModeBtn', 'click', becomeStation);
+on('stationAddBtn', 'click', addStation);
+on('promotionForm', 'submit', regularizePromotion);
+$('stationsList').addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const name = button.dataset.stationName || 'Caixa';
+  const run = button.dataset.stationRename ? renameStation(button.dataset.stationRename, name)
+    : button.dataset.stationRevoke ? revokeStation(button.dataset.stationRevoke, name)
+    : button.dataset.stationClose ? closeStationCash(button.dataset.stationClose, name) : null;
+  if (run) run.catch(error => toast(error.message, true));
+});
 on('restoreForm', 'submit', async () => {
   const result = await pairingCall('/api/restore/start', {cloud_url: state.session?.default_cloud_url || $('restoreCloudUrl').value, license_key: $('restoreLicenseKey').value.trim(), code: $('restoreCode').value.trim()});
   $('restoreLicenseKey').value = '';
@@ -2309,7 +2466,7 @@ on('printerForm', 'submit', async () => {
 });
 on('flushPrintBtn', 'click', async () => {
   const result = await api('/api/print/flush', 'POST', {});
-  toast(result.status === 'uncertain' ? 'Resultado de impressão incerto; verifique o equipamento' : 'Fila processada', result.status === 'uncertain');
+  toast(result.status === 'uncertain' ? 'Resultado de impressão incerto; verifique o equipamento' : result.status === 'delegated' ? 'A fila é impressa por este computador em instantes' : 'Fila processada', result.status === 'uncertain');
   await loadPrinters();
 });
 $('printJobs').addEventListener('click', event => {

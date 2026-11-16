@@ -315,8 +315,66 @@
             tone: ok ? 'ok' : info.state === 'late' ? 'warn' : 'danger', canChoose: true, canCopy: info.state !== 'no_key', attention: !ok};
   }
 
+  /* ---------- phase 3: additional cashiers of the shop ---------- */
+  const SERVER_DOWN_CODES = ['server_unreachable', 'server_timeout'];
+  const STATION_GONE_CODES = ['station_revoked', 'station_unauthorized'];
+  // What this computer is to the shop, and what the screen hides on an additional cashier.
+  function stationNotice(session) {
+    const info = session || {}, station = info.station || {}, connection = info.connection || {}, limit = info.stations_limit || {};
+    const isStation = station.is_server === false;
+    const shop = connection.shop_name || connection.tenant_name || 'Loja';
+    // A shop with a single computer keeps seeing the name it gave the terminal in the panel.
+    const several = isStation || Number(limit.limit) > 0 || Number(limit.used) > 0;
+    const name = several ? (station.name || (isStation ? 'Caixa adicional' : 'Caixa principal')) : (connection.terminal_name || 'Caixa');
+    return {isStation, name, place: `${shop} · ${name}`,
+            hidden: isStation ? ['backupCard', 'mirrorChooseBtn', 'mirrorSnapshotBtn', 'updateApplyBtn', 'stationsCard', 'exportLink', 'changeConnection', 'newProfileLoginBtn'] : [],
+            printerHint: isStation ? 'Impressora deste caixa' : ''};
+  }
+  const clockText = value => { const date = new Date(Number(value)); return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`; };
+  // Card "Caixas da loja" of the Sistema tab, from GET /api/stations.
+  function stationsCard(data) {
+    const info = data || {}, limit = info.limit || {}, lan = info.lan || {}, replica = info.replica || {};
+    const total = Number(limit.limit) || 0, used = Number(limit.used) || 0;
+    const summary = total > 0 ? `Seu plano inclui ${total} caixa(s) adicional(is); ${used} em uso.`
+      : 'Seu plano não inclui caixas adicionais. Fale com o suporte para ampliar o plano.';
+    const behind = replica.stations || {};
+    const rows = (info.stations || []).map(station => {
+      const removed = !!station.revoked_at, copy = behind[station.id];
+      const status = station.is_server ? 'Este computador' : removed ? 'Removido' : !station.linked ? 'Precisa ser conectado de novo'
+        : station.online ? 'Conectado agora' : station.last_seen_at ? `Visto por último às ${clockText(station.last_seen_at)}` : 'Ainda não conectou';
+      return {id: station.id, name: station.name || 'Caixa', isServer: !!station.is_server, removed, status,
+              cash: station.cash_open ? 'Caixa aberto' : 'Caixa fechado',
+              copy: station.is_server || removed || !copy ? '' : Number(copy.behind) > 0 ? 'Cópia de segurança atrasada' : 'Cópia de segurança em dia',
+              canRename: !removed, canRevoke: !station.is_server && !removed, canCloseCash: !station.is_server && !!station.cash_open};
+    }).filter(row => !row.removed || row.canCloseCash);
+    const relinkable = (info.stations || []).some(station => !station.is_server && (!station.linked || station.revoked_at));
+    const blocked = !info.supported || lan.supported === false ? 'Rede entre caixas indisponível nesta instalação.'
+      : total <= 0 ? 'O plano desta loja não inclui caixas adicionais.'
+      : used >= total && !relinkable ? 'Todos os caixas adicionais do plano já estão em uso. Remova um caixa ou amplie o plano.' : '';
+    const warning = lan.network_profile === 'public'
+      ? 'A rede deste computador está marcada como Pública no Windows. Mude para Particular para os outros caixas enxergarem este.'
+      : lan.error ? `A rede entre os caixas não está funcionando: ${lan.error}` : '';
+    return {summary, rows, canAdd: !blocked, addBlocked: blocked, warning};
+  }
+  // "483920" is read out loud as "483 920".
+  function enrollCodeText(code) {
+    const digits = String(code ?? '').replace(/\D/g, '');
+    return digits.length === 6 ? `${digits.slice(0, 3)} ${digits.slice(3)}` : digits;
+  }
+  // Fixed card shown while the promoted computer has not been regularized with the cloud.
+  function promotionCard(promotion) {
+    const info = promotion || {};
+    if (info.state !== 'awaiting_cloud') return null;
+    const pending = Number(info.pending_events) || 0;
+    return {text: 'As vendas continuam normais. Para voltar a enviar para a nuvem, abra o painel em Terminais → Trocar de computador e digite aqui a chave da licença e o código.'
+      + (pending ? ` ${pending} registro(s) aguardam o envio.` : ''),
+            warning: info.previous_server_cash_open ? 'O caixa do computador anterior ficou aberto. Conte o dinheiro e feche em Sistema → Caixas da loja.' : '',
+            pending};
+  }
+
   return {restoreStep, restoreProgress, restoreErrorText, restoreSummary, restoreImportText, restoreImportNotice,
           transferredBlock, mirrorNotice, mirrorCard,
+          stationNotice, stationsCard, enrollCodeText, promotionCard, SERVER_DOWN_CODES, STATION_GONE_CODES,
           SHORTCUTS, PAY_KEYS, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
           parseMoney, parsePercent, parseQty, parseScanInput, ean13Valid, scaleLabel, scaleLabelQuantity,
           scaleReading, createWeightGate, scaleTarget, discountCents, discountNeedsPin, syncIndicator,

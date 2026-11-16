@@ -64,6 +64,60 @@ Depois dos dados da nuvem, a tela pergunta **Você tem uma cópia de segurança?
 
 O computador antigo, se ainda ligar, mostra "Este caixa foi transferido": não vende mais e segue enviando o que faltava até a data informada pela nuvem, mostrada na tela. O caixa que estava aberto é fechado no computador novo. Vencido o prazo com registros na fila, a tela avisa que eles ficaram só ali e orienta a usar a cópia de segurança ou chamar o suporte.
 
+## Mais de um caixa na loja (estações)
+
+Uma loja pode ter um **caixa principal** (o computador que guarda o banco e fala com a nuvem) e **caixas adicionais** (outros computadores da mesma rede que vendem através dele). No código: `server` e `station`. Esta seção descreve o que o núcleo do terminal (`terminal/store.py`, `terminal/app.py`, `terminal/sync.py` e a tela) faz; a rede entre os caixas (`terminal/lan.py`, `terminal/station.py`), a cópia pela rede e a promoção assistida estão em [ESTACOES.md](ESTACOES.md).
+
+**Regras que não mudam**
+
+- Um só escritor: só o processo do caixa principal abre o SQLite. O caixa adicional nunca cria `Store` nem `terminal.sqlite3`.
+- O navegador de cada computador continua falando só com `127.0.0.1`. As requisições do caixa adicional entram no mesmo app Flask do principal com `environ["pdv2.station"] = {"id", "name"}`, chave que só a escuta da rede consegue criar (um cliente HTTP só cria chaves `HTTP_*`).
+- Com o caixa principal fora do ar, o caixa adicional **para de vender**, mostra "O caixa principal está fora do ar" e tenta de novo a cada 2 segundos. O que estava na tela fica: a venda em andamento repete com o mesmo `request_id` e o carrinho continua no rascunho.
+- A quantidade de caixas adicionais vem da licença assinada (claim `max_stations`) e só vale com a nuvem que anuncia a capacidade `stations`. Sem os dois o limite é 0. O limite não conta o caixa principal.
+
+**Modelo local**
+
+- Tabelas novas `stations` (uma linha fixa `server`, "Caixa principal") e `station_enroll_codes`. `cash_sessions`, `sales`, `sale_returns`, `credit_receipts` e `print_jobs` ganharam `station_id` (padrão `server`); `print_settings` passou a ter uma configuração por caixa (`PRIMARY KEY(station_id, kind)`); o índice "um só caixa aberto" passou a ser por estação (`cash_one_open_station`). A migração (`Store._migrate_stations`) roda na partida e é idempotente: o banco existente inteiro vira do caixa `server`.
+- Quem está pedindo fica no contexto da thread (`Store.set_station`, `current_station`, `with store.station(id)`), nunca em parâmetro de método. O Worker e a cópia em segundo disco rodam sempre como `server`.
+- Cada caixa abre, movimenta e fecha o **seu** caixa; a venda baixa o mesmo estoque e respeita o mesmo fiado, dentro de uma transação por vez. Carrinhos em espera continuam compartilhados. A lista de vendas mostra a loja inteira, com o nome do caixa.
+- Idempotência não mudou: repetir `request_id`, `return_id` ou `receipt_id` devolve o mesmo resultado, venha de qual caixa vier.
+- PIN errado trava só aquele operador naquele caixa (chave `<operador>|<estação>`); a autorização de gerente e o teto de 30 erros em 15 minutos também são por caixa. PIN trocado no painel destrava em todos.
+- Impressão: o recibo da venda feita no caixa adicional entra na fila dele e sai na impressora dele; o Worker do principal só imprime a fila `server`. `POST /api/print/flush` vindo de um caixa adicional responde `{"status": "delegated"}`.
+- Evento da fila: com a capacidade `stations` o envelope ganha `"station": {"id", "name"}` fora de `data` (o `event_id` e o conteúdo conferido pela nuvem não mudam). `terminal.config` leva só as impressoras do principal e a lista `stations` (sem token).
+- Segredos (token do caixa adicional, código de 6 dígitos, chave da cópia) nunca vão para auditoria, exportação, `terminal.config` ou mensagem de erro. Do token só o SHA-256 fica no banco.
+
+**Vínculo de um caixa adicional**
+
+No principal, o gerente abre **Sistema → Caixas da loja → Adicionar caixa**. A tela mostra um código de 6 números ("483 920") que vale 5 minutos e uma vez; cinco erros invalidam o código. No outro computador, na primeira tela, **Este é um caixa adicional (a loja já tem um caixa principal)**. Um computador que já foi vinculado volta com a mesma identidade (mantém o caixa aberto e o histórico) e não ocupa outro lugar do plano; por isso o código também é liberado, com o plano cheio, quando existe um caixa conhecido sem vínculo válido (depois de uma promoção ou de uma recuperação). "Remover caixa" faz o computador deixar de ser aceito na hora; o caixa dele, se estava aberto, fica aberto até o gerente contar o dinheiro e usar **Fechar o caixa deste computador**.
+
+**Rotas locais novas (só no caixa principal)**
+
+| Rota | Quem | Resposta |
+|---|---|---|
+| `GET /api/stations` | gerente | `{"supported", "limit": {"limit","used","available"}, "lan", "replica", "stations": [...]}` |
+| `POST /api/stations/code` `{"name"?}` | gerente | 201 `{"code","expires_at","expires_in":300,"server":{"addresses","port","hostname"}}`; 409 `station_limit` |
+| `POST /api/stations/<id>/rename` `{"name"}` | gerente | o caixa; 404 "Caixa não encontrado" |
+| `POST /api/stations/<id>/revoke` `{"confirm": true}` | gerente | o caixa, com `cash_open` |
+| `POST /api/stations/<id>/cash/close` `{"counted_cents","manager_pin"}` | gerente | resumo do fechamento |
+| `POST /api/mode/station` `{"confirm": true}` | sem login, só em computador sem loja | `{"mode":"station","restart": bool}` |
+| `POST /api/promotion/regularize` `{"license_key","code","cloud_url"?,"manager_pin"?}` | gerente logado ou PIN | `{"regularized": true, "promotion", "bootstrap", "warning"?}` |
+
+`/api/session` ganhou `station` (`id`, `name`, `is_server`), `promotion` e `stations_limit`; `/health` ganhou `"mode": "server"`. Erros com motivo estável trazem `code` (`server_only`, `station_limit`, `invalid_code`, `other_terminal`...).
+
+Um caixa adicional recebe 403 `{"error": "Esta operação só pode ser feita no caixa principal da loja.", "code": "server_only"}` em pareamento, recuperação, exportação, backup local, escolha de disco, aplicação de atualização, `/api/stations`, `/api/promotion/` e `/api/mode/station` (lista `SERVER_ONLY_ENDPOINTS` em `terminal/app.py`). A sessão do operador vale só no caixa em que ele entrou: o cookie copiado de um computador não vale em outro. Host, Origin e CSRF continuam exigidos como antes.
+
+A atualização automática e "Criar novo perfil" só acontecem com o caixa fechado **em todos os computadores** ("Feche o caixa em todos os computadores para atualizar").
+
+**Quando um caixa adicional assume como principal**
+
+O assistente da promoção reconstrói o banco no caixa adicional a partir da cópia e chama `Store.apply_journal_events` (reaplica o que aconteceu depois da última cópia completa, com o mesmo `event_id` e `seq`, sem criar evento nem impressão) e `Store.finish_promotion` (o caixa promovido vira `server`; o principal anterior vira a estação "Caixa principal anterior", com o caixa dele ainda aberto para o gerente fechar; os outros caixas precisam ser conectados de novo). O computador continua vendendo com a licença que veio na cópia e mostra o cartão fixo "Este computador assumiu como caixa principal". Com internet, o gerente digita a chave da licença e o código de **Terminais → Trocar de computador**: `sync.regularize_promotion` pareia de novo com o mesmo terminal (`Store.adopt_pairing`) sem apagar nem baixar nada. Código de outro terminal é recusado (`other_terminal`) e devolvido à nuvem.
+
+**Limites conhecidos**
+
+- Depois da migração da fase 3, o executável da versão anterior não consegue abrir caixa nem vender neste banco. A volta automática de versão do atualizador não restaura o banco: voltar exige o backup feito antes da atualização.
+- O estoque e o fiado podem contar em dobro por instantes entre a primeira carga depois da promoção e o envio completo da fila; corrigem-se sozinhos.
+- Tablet ou celular como caixa adicional está fora desta fase.
+
 ## Caixa Rápido: a tela de venda
 
 A frente de caixa foi refeita em novembro/2026 para ser operada só pelo teclado e pelo leitor. O código está em `terminal/static/terminal.js` (tela) e `terminal/static/terminal-core.js` (regras puras, onde fica o mapa de teclas `SHORTCUTS`).

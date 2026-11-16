@@ -688,7 +688,7 @@ class TerminalTests(unittest.TestCase):
             self.store.save_printer("label", "cups", "EPSON_TM_T20", "escpos50x30")
         with self.store.transaction() as conn:
             # Simulate an installation that saved this setting before the fix.
-            conn.execute("INSERT INTO print_settings VALUES (?,?,?,?)",
+            conn.execute("INSERT INTO print_settings(kind,driver,target,format) VALUES (?,?,?,?)",
                          ("label", "cups", "EPSON_TM_T20", "escpos50x30"))
             setting = {"driver": "file", "target": str(Path(self.temp.name) / "print")}
             blocked = self.store._queue_print(conn, "label", b"\x1b@old-label\x1dV\x00", setting)
