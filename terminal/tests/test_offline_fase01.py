@@ -278,7 +278,9 @@ class DamagedDatabaseTests(OfflineCase):
         self.assertNotIn("terminal_worker", app.extensions)
         client = app.test_client()
         self.assertEqual(client.get("/").status_code, 200)
-        self.assertEqual(client.get("/health").json["database"], "damaged")
+        health = client.get("/health")
+        self.assertEqual(health.status_code, 503)
+        self.assertEqual(health.json["database"], "damaged")
         state = client.get("/api/session").json
         self.assertEqual(state["damaged"]["database"], str(self.path))
         self.assertEqual([copy["name"] for copy in state["damaged"]["backups"]], [backup["name"]])
@@ -299,6 +301,53 @@ class DamagedDatabaseTests(OfflineCase):
         app = create_app({"TESTING": True, "DATA_DIR": self.temp.name, "DB_PATH": self.path, "START_WORKER": False})
         self.assertEqual(app.test_client().get("/health").json, {"status": "ok", "service": "terminal-local"})
         self.assertTrue(app.extensions["terminal_store"].cash_state())
+
+    def reopen(self):
+        return create_app({"TESTING": True, "DATA_DIR": self.temp.name, "DB_PATH": self.path, "START_WORKER": False})
+
+    def test_failed_migration_on_healthy_database_is_not_damage(self):
+        self.store.open_cash(self.cashier_id, 0)
+        self.store.backup_now()
+        before = self.path.read_bytes()
+        for message in ("duplicate column name: seq", "no such column: seq", "disk I/O error",
+                        "unable to open database file", "database is locked"):
+            with self.subTest(message=message), patch.object(
+                    Store, "_migrate_outbox_seq", side_effect=sqlite3.OperationalError(message)):
+                # The process must die so the updater rolls back; no restore screen.
+                with self.assertRaisesRegex(sqlite3.OperationalError, message):
+                    self.reopen()
+        self.assertIsNone(Store.quick_check(self.path))
+        self.assertTrue(self.path.read_bytes().startswith(before[:16]))
+        app = self.reopen()
+        client = app.test_client()
+        self.assertEqual(client.get("/health").status_code, 200)
+        self.assertNotIn("damaged", client.get("/api/session").json)
+
+    def test_corruption_found_while_opening_still_enters_damaged_mode(self):
+        self.store.backup_now()
+        with patch.object(Store, "_migrate_outbox_seq",
+                          side_effect=sqlite3.DatabaseError("database disk image is malformed")), \
+                self.assertLogs("terminal.app", level="ERROR"):
+            app = self.reopen()
+        client = app.test_client()
+        self.assertEqual(client.get("/health").status_code, 503)
+        self.assertIn("malformed", client.get("/api/session").json["damaged"]["problem"])
+
+    def test_quick_check_does_not_call_an_unreadable_database_damaged(self):
+        for message in ("unable to open database file", "database is locked", "disk I/O error"):
+            with self.subTest(message=message), patch.object(
+                    terminal_store.sqlite3, "connect", side_effect=sqlite3.OperationalError(message)):
+                with self.assertRaises(sqlite3.OperationalError):
+                    Store.quick_check(self.path)
+                with self.assertRaises(sqlite3.OperationalError):
+                    self.reopen()
+
+    def test_is_corruption_only_for_damaged_files(self):
+        self.assertTrue(Store.is_corruption(sqlite3.DatabaseError("file is not a database")))
+        self.assertTrue(Store.is_corruption(sqlite3.DatabaseError("database disk image is malformed")))
+        self.assertFalse(Store.is_corruption(sqlite3.OperationalError("duplicate column name: seq")))
+        self.assertFalse(Store.is_corruption(sqlite3.IntegrityError("malformed")))
+        self.assertFalse(Store.is_corruption(ValueError("malformed")))
 
     def test_screen_teaches_how_to_restore(self):
         html = self.client.get("/").get_data(as_text=True)

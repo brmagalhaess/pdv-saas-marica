@@ -27,6 +27,7 @@ LEASE_WARNING_MIN_AGE_SECONDS = 6 * 60 * 60
 EXPIRED_SHIFT_GRACE_SECONDS = 24 * 60 * 60
 # last_seen is persisted at most this often (it used to be written on every read).
 LAST_SEEN_WRITE_SECONDS = 60
+CORRUPTION_HINTS = ("malformed", "not a database")
 SELL_ROLES = {"owner", "admin", "manager", "cashier"}
 MANAGER_ROLES = {"owner", "admin", "manager"}
 CREDIT_METHODS = ("credit_account", "store_credit")
@@ -271,6 +272,14 @@ class Store:
             conn.execute("UPDATE print_jobs SET status='uncertain',error='Processo interrompido durante impressão' WHERE status='sending'")
 
     @staticmethod
+    def is_corruption(exc):
+        """True only for errors SQLite raises when the file itself is damaged."""
+        if not isinstance(exc, sqlite3.DatabaseError) or isinstance(
+                exc, (sqlite3.IntegrityError, sqlite3.ProgrammingError, sqlite3.InterfaceError)):
+            return False
+        return any(hint in str(exc).lower() for hint in CORRUPTION_HINTS)
+
+    @staticmethod
     def quick_check(path):
         """None when the SQLite file is healthy (or absent); otherwise what is wrong with it."""
         path = Path(path)
@@ -280,6 +289,9 @@ class Store:
             with closing(sqlite3.connect(path, timeout=10)) as conn:
                 rows = [str(row[0]) for row in conn.execute("PRAGMA quick_check(5)")]
         except sqlite3.DatabaseError as exc:
+            # Locked, unreadable or I/O trouble is not damage: let the start fail instead.
+            if not Store.is_corruption(exc):
+                raise
             return str(exc) or type(exc).__name__
         return None if rows == ["ok"] else "; ".join(rows)[:300] or "quick_check sem resposta"
 

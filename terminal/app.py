@@ -181,7 +181,9 @@ def create_app(config=None):
         try:
             store = Store(db_path)
         except sqlite3.DatabaseError as exc:
-            if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower():
+            # Only real corruption sends the shop to its backups. A failed migration, a lock
+            # or a permission error must stop the process so the updater can roll back.
+            if not Store.is_corruption(exc):
                 raise
             damage = str(exc) or type(exc).__name__
     worker = None
@@ -329,7 +331,8 @@ def create_app(config=None):
     @app.get("/health")
     def health():
         if store is None:
-            return jsonify({"status": "degraded", "service": "terminal-local", "database": "damaged"})
+            # Not 2xx: the updater must not take "started damaged" for "started fine".
+            return jsonify({"status": "degraded", "service": "terminal-local", "database": "damaged"}), 503
         return jsonify({"status": "ok", "service": "terminal-local"})
 
     @app.get("/api/session")
