@@ -1,6 +1,6 @@
 # PDV2 — Roadmap de completude funcional
 
-18/10/2026. Complementa o [RELATORIO-AUDITORIA-COMPLETA.md](../RELATORIO-AUDITORIA-COMPLETA.md) e o [STATUS-V2.md](STATUS-V2.md).
+18/10/2026, com a tabela de andamento atualizada em 16/11/2026. Complementa a [auditoria de novembro/2026](AUDITORIA-2026-11.md), o [RELATORIO-AUDITORIA-COMPLETA.md](../RELATORIO-AUDITORIA-COMPLETA.md) e o [STATUS-V2.md](STATUS-V2.md).
 
 A auditoria anterior cobre bem os bloqueios de **produção**: NFC-e, TEF, Pix dinâmico, deploy, hardware e MFA. Este documento cobre o que falta para o PDV2 ser **completo como produto de gestão** para o lojista. Ele parte de três coisas: uma comparação com um PDV de referência já pronto (PHP/MySQL, de curso), uma leitura do código atual e a experiência de mercado com PDVs de varejo.
 
@@ -24,7 +24,10 @@ Os itens P0 fiscais e de pagamento continuam no plano de 90 dias da auditoria e 
 | 4.5 Transferência entre lojas | ✅ entregue (em trânsito, recebimento com divergência, cancelamento) |
 | Fiado no caixa, comprovantes e devolução pelo painel | ✅ entregue (recebimento entra na gaveta e quita as parcelas mais antigas; comprovantes ESC/POS de devolução e recebimento; devolução no painel com reembolso fora do PDV; devolução offline excedente vira conflito) |
 | Promoções (Onda 6) | ✅ entregue (preço por período, leve X pague Y, atacado; motor único no terminal, offline; limite de desconto manual sobre o preço promocional; relatório) |
-| Próximos | fidelidade/cashback, importador de planilha para migração, lote e validade (4.7), DRE e gráficos no painel (Onda 3) |
+| Auditoria nov/2026 · Onda 0 "Estancar" | ✅ entregue em 16/11/2026: fila do caixa que não trava (aceitação por evento e quarentena), backup que acusa falha, caixa no Windows, `/control/` atrás da MFA, limite de fiado fora do alcance do caixa, logs de produção (fecha o achado A12) e testes de regressão do sync |
+| Auditoria nov/2026 · Onda 1 "Cara nova do caixa" | ✅ entregue em 16/11/2026: Caixa Rápido com régua de teclas F, total e troco grandes, sangria e suprimento na tela, temas, marca CrownTech e cupom no leiaute novo |
+| Próximos, na ordem da auditoria | 1. **Produção no Dokploy** (`pdv.crowntech.com.br`, e-mail, troca e recuperação de senha, alertas) · 2. **Cobrança** (Asaas completo, Stripe com cartão, régua de cobrança) · 3. **Painel e admin** (navegação em 6 áreas, dashboard com gráficos, Console CrownTech, perfis de permissão e planos) · 4. **App** de gestão (iOS e Android) · 5. **Fiscal** (NFC-e pela Focus NFe de ponta a ponta, contingência) · 6. **Offline local** (servidor da loja, estações e instalador, conforme [ARQUITETURA-OFFLINE-LOCAL.md](ARQUITETURA-OFFLINE-LOCAL.md)) |
+| Próximos de produto (este roadmap) | fidelidade/cashback, importador de planilha para migração, lote e validade (4.7), DRE e gráficos no painel (Onda 3) |
 
 ---
 

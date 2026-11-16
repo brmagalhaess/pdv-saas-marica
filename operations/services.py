@@ -1,5 +1,6 @@
 import calendar
 import hashlib
+import logging
 from datetime import date,datetime,timedelta
 from decimal import Decimal
 from django.db import transaction
@@ -11,6 +12,8 @@ from integrations.base import ProviderError
 from integrations.billing import Asaas
 from integrations.fiscal import FocusNFe
 from .models import IntegrationAccount,ProviderJob,BillingBinding,FiscalPayload
+
+logger=logging.getLogger(__name__)
 
 class JobConflict(ValueError):pass
 class StillPending(Exception):pass
@@ -230,6 +233,9 @@ def run_one():
         ProviderJob.objects.filter(pk=job.pk).update(status='queued' if retry else 'needs_review',
             available_at=timezone.now()+timedelta(seconds=min(900,15*2**min(job.attempts,6))),locked_at=None,last_error=str(exc)[:500])
     except Exception as exc:
+        # The worker wraps handlers and already logs the traceback (logs_failures); never print it twice.
+        logger.error('Job %s (%s) of tenant %s failed on attempt %s',job.pk,job.kind,job.tenant_id or '-',job.attempts,
+                     exc_info=getattr(HANDLERS.get(job.kind),'logs_failures',None) is not True)
         # Avoid recording credentials or third-party response bodies in user-visible errors.
         message=str(exc) if isinstance(exc,ValueError) else 'Falha interna ao executar tarefa; consulte o suporte'
         ProviderJob.objects.filter(pk=job.pk).update(status='needs_review',locked_at=None,last_error=message[:500])

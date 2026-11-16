@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.db import connection
-from django.http import FileResponse, JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 
 
@@ -33,3 +33,24 @@ def public_asset(request, name):
     if name == "sw":
         response["Service-Worker-Allowed"] = "/"
     return response
+
+
+PRIVATE_PATHS = ("/app/", "/platform/", "/login/", "/api/", "/control/")
+
+
+def _public_origin():
+    return getattr(settings, "PDV_PUBLIC_URL", "https://pdv.crowntech.com.br").rstrip("/")
+
+
+def robots(request):
+    lines = ["User-agent: *", "Allow: /", *(f"Disallow: {path}" for path in PRIVATE_PATHS),
+             "", f"Sitemap: {_public_origin()}/sitemap.xml", ""]
+    return HttpResponse("\n".join(lines), content_type="text/plain; charset=utf-8")
+
+
+def sitemap(request):
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f"  <url><loc>{_public_origin()}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n"
+            "</urlset>\n")
+    return HttpResponse(body, content_type="application/xml; charset=utf-8")

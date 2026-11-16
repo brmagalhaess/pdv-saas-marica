@@ -1,4 +1,6 @@
-# Terminal PDV2 local — prévia funcional
+# Terminal PDV2 local (Caixa Rápido) — prévia funcional
+
+Atualizado em 16/11/2026.
 
 `terminal/` é uma aplicação Flask/Waitress independente do navegador do painel SaaS. O navegador acessa **o serviço local** em `http://127.0.0.1:8010`; SQLite é o armazenamento do caixa e `WAL`+`synchronous=FULL` protegem transações confirmadas. Cada computador de caixa pode usar essa mesma porta: a licença, o código de pareamento, o `device_id` e o banco local identificam o equipamento. Somente duas instâncias no mesmo computador precisam de portas diferentes. O código anterior em `local_pdv/` permanece como protótipo legado e não é usado por este serviço.
 
@@ -35,9 +37,69 @@ Um banco local não pode ser reaproveitado por outra empresa depois que existem 
 - Pagamento dividido entre dinheiro, Pix e cartão, com troco apenas sobre dinheiro. Pix/cartão são **declarações manuais**, sem TEF, captura, confirmação ou estorno automático.
 - Abertura/fechamento de caixa, sangria e suprimento, suspensão/retomada de carrinho, histórico local, reimpressão e cancelamento comercial com motivo e autorização de gerente. Ajustes de estoque exigem papel autorizado. Todos geram auditoria local relevante.
 - Venda, baixa de estoque, snapshot financeiro e evento de outbox são atômicos no SQLite. Reenvio da mesma requisição retorna a venda original; dados diferentes com a mesma chave são rejeitados.
-- O worker envia lotes pendentes para `/api/v1/terminal/sync` com backoff. Só marca eventos locais após ACK integral e ordenado; perda de resposta faz reenvio idempotente. `sale.completed` não gera ajuste de estoque separado. Histórico, exportação e fechamento de caixa continuam disponíveis depois que a lease expira; novas vendas ficam bloqueadas. A política atual do cloud permite **até 72 horas** de uso offline em uma licença normal, podendo reduzir o prazo para assinatura atrasada; não há prazo adicional após `expires_at`. Relógio que retrocede mais de cinco minutos bloqueia novas vendas. O valor de 72 horas deve permanecer alinhado entre backend, terminal, planos e documentação.
+- O worker envia lotes pendentes para `/api/v1/terminal/sync` com backoff. Só marca eventos locais após ACK integral e ordenado; perda de resposta faz reenvio idempotente. A nuvem confirma todos os eventos recebidos: os que ela não conseguiu aplicar voltam em `quarantined`, são guardados no SQLite (`sync_quarantine`) e saem da fila, para que um evento ruim nunca trave os seguintes; as divergências voltam em `conflicts` e ficam visíveis para o gerente. Contrato em [SYNC-VENDAS.md](SYNC-VENDAS.md). `sale.completed` não gera ajuste de estoque separado. Histórico, exportação e fechamento de caixa continuam disponíveis depois que a lease expira; novas vendas ficam bloqueadas. A política atual do cloud permite **até 72 horas** de uso offline em uma licença normal, podendo reduzir o prazo para assinatura atrasada; não há prazo adicional após `expires_at`. Relógio que retrocede mais de cinco minutos bloqueia novas vendas. O valor de 72 horas deve permanecer alinhado entre backend, terminal, planos e documentação.
 - Após cada carga bem-sucedida, o terminal consulta a versão estável publicada. O manifesto de release é verificado com a **chave Ed25519 fixada no pareamento** e aparece na tela Sistema. O terminal não baixa nem executa o pacote automaticamente; a instalação e checagem do SHA-256 são etapas manuais do suporte.
 - O serviço faz uma cópia SQLite consistente após o pareamento e, depois, no máximo uma vez a cada 24 horas; um gerente pode acionar **Criar backup agora**. Até sete cópias rotativas ficam em `data/backups`, com permissões locais restritas. A API mostra nomes e estado, sem servir o arquivo bruto pela web. O arquivo contém token, hashes de PIN e vendas: guarde cópia externa protegida. A restauração ainda é manual, com o serviço parado, e deve ser testada no piloto.
+
+## Caixa Rápido: a tela de venda
+
+A frente de caixa foi refeita em novembro/2026 para ser operada só pelo teclado e pelo leitor. O código está em `terminal/static/terminal.js` (tela) e `terminal/static/terminal-core.js` (regras puras, onde fica o mapa de teclas `SHORTCUTS`).
+
+### Régua de teclas
+
+A régua fica sempre visível no rodapé e cada tecla também pode ser tocada ou clicada. Tecla sem uso no momento aparece apagada, com o motivo na dica.
+
+| Tecla | Ação |
+|---|---|
+| F1 | Ajuda e lista de atalhos |
+| F2 | Buscar produto no catálogo |
+| F3 | Alterar quantidade ou peso do item |
+| F4 | Cliente e CPF na nota |
+| F5 | Desconto na venda |
+| F6 | Vendas em espera: guardar ou retomar (mostra quantas há) |
+| F7 | Sangria ou suprimento (exige caixa aberto) |
+| F8 | Cancelar o item selecionado |
+| F9 | Reimprimir comprovante |
+| F10 | Pagar a venda |
+| F11 | Modo foco (tela cheia) |
+| F12 | Abrir caixa, ou fechar o caixa aberto |
+| Esc | Voltar um passo |
+| Ctrl+K | Paleta de comandos: busca qualquer ação pelo nome |
+
+Leitura e lista de itens:
+
+| Tecla | Ação |
+|---|---|
+| Enter | Lança o código digitado ou lido |
+| `3*código` | Lança 3 unidades do código |
+| ↑ ↓ | Seleciona o item da lista |
+| Delete | Cancela o item selecionado |
+| qualquer letra ou número | Vai direto para o campo de leitura |
+
+As teclas com cadeado (desconto, cancelar item, cancelar a venda, fechar caixa) podem pedir PIN de gerente. As ações sem tecla própria ficam na paleta (Ctrl+K), na ajuda (F1) e no menu do operador: receber fiado, devolução ou troca, cancelar a venda atual, balança e etiquetas, atualizar catálogo, trocar operador e sair.
+
+### Modos
+
+- **Venda** (padrão): o leitor está sempre pronto; a régua mostra F1 a F12.
+- **Pagamento** (depois do F10): a régua troca para as formas de pagamento. `1` Dinheiro, `2` Pix, `3` Débito, `4` Crédito, `5` A prazo (fiado), `6` Crédito na loja, `7` a `9` formas próprias da empresa, `0` dividir o pagamento, Enter confirma, Esc volta um passo. Só aparecem as formas ativas no painel. Nesse modo continuam valendo F1, F4, F5, F11, Esc e Ctrl+K; as outras teclas F pedem para voltar à venda antes. Uma leitura do leitor de código durante o pagamento é ignorada, para não confirmar a venda por engano.
+- **Foco** (F11): tela cheia, sem as abas, só a venda. A escolha fica salva no navegador daquele caixa.
+- **Conexão**: o indicador mostra se o caixa está online ou offline e se há registros na fila ou para revisão. Sem internet a venda continua igual.
+
+### Temas e preferências
+
+No menu do operador (ou pela paleta): tema **Claro**, **Escuro** ou **Alto contraste**. O tema fica salvo no navegador do caixa e é aplicado antes de a tela aparecer (`terminal/static/theme.js`). No mesmo menu: som de leitura ligado ou desligado e abrir o comprovante depois de cada venda.
+
+### Caixa de demonstração
+
+Para ver a tela sem parear nem tocar em dados reais:
+
+```sh
+./.venv/bin/python scripts/demo_terminal.py              # http://127.0.0.1:8099, online simulado
+./.venv/bin/python scripts/demo_terminal.py --offline    # simula a queda da internet (fila pendente)
+./.venv/bin/python scripts/demo_terminal.py --port 8098  # outra porta
+```
+
+O script cria um diretório temporário, já pareado com uma empresa fictícia, com catálogo de mercado, um operador de caixa e um gerente, uma promoção "leve 3 pague 2" e uma impressora de recibos que grava em arquivo. Ao subir, ele imprime os PINs de demonstração, um código de barras de teste e uma etiqueta de balança. Nunca lê nem grava o banco real do terminal, nunca fala com a nuvem, e apaga os dados ao encerrar (Ctrl+C).
 
 ## Impressão
 
