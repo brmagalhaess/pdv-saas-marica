@@ -68,6 +68,9 @@ services:
     restart: "no"
   db:
     image: postgres:17-alpine
+    # O Dokploy reescreve as redes dos serviços e descarta o apelido abaixo;
+    # o nome fixo do container continua resolvendo em qualquer rede do banco.
+    container_name: pdv2-db
     environment:
       POSTGRES_DB: pdv2
       POSTGRES_USER: pdv2
