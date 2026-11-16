@@ -401,7 +401,7 @@ class CloudAPITests(TestCase):
         with self.assertRaises(APIError):
             subscription_window(self.tenant)
 
-    def test_invalid_terminal_batch_rolls_back_and_replay_is_idempotent(self):
+    def test_invalid_terminal_event_is_quarantined_and_replay_is_idempotent(self):
         token = "terminal-token-" + uuid.uuid4().hex
         terminal = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Caixa",
             device_id="test-device", token_hash=hashlib.sha256(token.encode()).hexdigest())
@@ -415,14 +415,18 @@ class CloudAPITests(TestCase):
                    "identity": identity, "data": {"counted_cents": 100, "expected_cents": 50,
                                                  "difference_cents": 0, "created_at": now_ms}}
         headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
-        self.assertEqual(self.api("POST", "/api/v1/terminal/sync", {"events": [opened, invalid]},
-                                  tenant=False, **headers).status_code, 400)
-        self.assertEqual(SyncEvent.objects.count(), 0)
+        # One invalid event no longer rejects the batch: it is quarantined and the queue moves on.
+        response = self.api("POST", "/api/v1/terminal/sync", {"events": [opened, invalid]}, tenant=False, **headers)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["accepted_event_ids"], [opened["event_id"], invalid["event_id"]])
+        self.assertEqual([row["event_id"] for row in response.json()["quarantined"]], [invalid["event_id"]])
+        self.assertEqual(SyncEvent.objects.count(), 2)
+        self.assertEqual(SyncConflict.objects.get(event_id=invalid["event_id"]).reason, "rejected_event")
         self.assertEqual(self.api("POST", "/api/v1/terminal/sync", {"events": [opened]},
                                   tenant=False, **headers).status_code, 200)
         self.assertEqual(self.api("POST", "/api/v1/terminal/sync", {"events": [opened]},
                                   tenant=False, **headers).status_code, 200)
-        self.assertEqual(SyncEvent.objects.count(), 1)
+        self.assertEqual(SyncEvent.objects.count(), 2)
 
     def test_offline_negative_stock_creates_resolvable_conflict(self):
         token = "terminal-token-" + uuid.uuid4().hex
@@ -521,7 +525,8 @@ class CloudAPITests(TestCase):
 
         intruder = sale_event(operator_id=str(self.member.id), seller_id=str(foreign.id))
         response = self.api("POST", "/api/v1/terminal/sync", {"events": [intruder]}, tenant=False, **headers)
-        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual([row["event_id"] for row in response.json()["quarantined"]], [intruder["event_id"]])
         self.assertFalse(Sale.objects.filter(pk=intruder["aggregate_id"]).exists())
 
         self.client.force_login(self.owner)
@@ -752,7 +757,9 @@ class CloudAPITests(TestCase):
         entry = FinanceEntry.objects.get(sale_id=fiado["aggregate_id"])
         self.assertEqual((entry.kind, entry.status, entry.amount_cents, entry.customer_id), ("receivable", "open", 1998, customer.id))
         self.assertEqual((entry.due_date - timezone.localdate()).days, 30)
-        sync(sale([("credit_account", 999)], qty=1, customer_id=None), status=400)
+        anonymous = sale([("credit_account", 999)], qty=1, customer_id=None)
+        self.assertEqual([row["event_id"] for row in sync(anonymous).json()["quarantined"]], [anonymous["event_id"]])
+        self.assertFalse(Sale.objects.filter(pk=anonymous["aggregate_id"]).exists())
 
         # Partial return abates the open fiado; a later return after payment becomes store credit.
         sync(returned(fiado, 1, "account"))
@@ -856,8 +863,13 @@ class CloudAPITests(TestCase):
         sync = lambda e: self.api("POST", "/api/v1/terminal/sync", {"events": [e]}, tenant=False, **headers)
         self.assertEqual(sync(ok).status_code, 200, sync(ok).content)
         self.assertEqual(sync(card).status_code, 200)
-        self.assertEqual(sync(sale([{"method": "other", "payment_method_id": str(foreign.id), "amount_cents": 1000}])).status_code, 404)
-        self.assertEqual(sync(sale([{"method": "pix", "payment_method_id": voucher["id"], "amount_cents": 1000}])).status_code, 400)
+        for payments in ([{"method": "other", "payment_method_id": str(foreign.id), "amount_cents": 1000}],
+                         [{"method": "pix", "payment_method_id": voucher["id"], "amount_cents": 1000}]):
+            refused = sale(payments)
+            response = sync(refused)  # integrity error: quarantined, the queue is not blocked
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertEqual([row["event_id"] for row in response.json()["quarantined"]], [refused["event_id"]])
+            self.assertFalse(Sale.objects.filter(pk=refused["aggregate_id"]).exists())
         detail = self.api("GET", f"/api/v1/sales/{ok['aggregate_id']}").json()
         self.assertEqual(detail["payments"][0]["name"], "Vale-refeição")
         Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
@@ -1136,12 +1148,16 @@ class CloudAPITests(TestCase):
         sync = lambda e: self.api("POST", "/api/v1/terminal/sync", {"events": [e]}, tenant=False, HTTP_AUTHORIZATION=f"Bearer {token}")
         ok = sale(999, 199)  # promo of 33% is fine; the 10% limit is checked on the 19.98 promotional price
         self.assertEqual(sync(ok).status_code, 200, sync(ok).content)
-        self.assertEqual(sync(sale(999, 201)).status_code, 403)  # manual discount above 10% of the promo price
+        # Manual discount above 10% of the promo price: the sale already happened, so it is kept and flagged.
+        over = sync(sale(999, 201))
+        self.assertEqual(over.status_code, 200, over.content)
+        self.assertIn("discount_over_limit", [c["reason"] for c in over.json()["conflicts"]])
+        self.assertEqual(over.json()["quarantined"], [])
         line = SaleItem.objects.get(sale_id=ok["aggregate_id"])
         self.assertEqual((line.promo_discount_cents, line.promotion_id, line.line_total_cents), (999, promo.id, 1799))
         Subscription.objects.filter(tenant=self.tenant).update(plan=self.management)
         report = self.api("GET", "/api/v1/reports/promotions").json()
-        self.assertEqual([(r["promotion"], r["uses"], r["discount"]) for r in report["rows"]], [("Arroz 3x2", 1, 999)])
+        self.assertEqual([(r["promotion"], r["uses"], r["discount"]) for r in report["rows"]], [("Arroz 3x2", 2, 1998)])
 
     def test_terminal_heartbeat_updates_presence_without_sales(self):
         token = "terminal-token-" + uuid.uuid4().hex

@@ -9,6 +9,7 @@ from collections import defaultdict
 from datetime import datetime, timezone as utc_timezone
 
 from .models import CashMovement, CashSession, CreditReceipt, Membership, Sale, SalePayment, SaleReturn
+from .sale_logic import open_conflict
 
 CASH_EVENTS = ("cash.opened", "cash.closed", "cash.withdrawn", "cash.supplied")
 
@@ -34,7 +35,7 @@ def _session(terminal, session_id, when):
     return session
 
 
-def apply_cash_event(terminal, event):
+def apply_cash_event(terminal, event, conflicts=None):
     data, kind = event["data"], event["type"]
     tenant, when = terminal.tenant, _when(data["created_at"])
     if kind == "cash.opened":
@@ -54,6 +55,14 @@ def apply_cash_event(terminal, event):
         session.supervisor = _member(tenant, data.get("supervisor_id"))
         session.save(update_fields=["closed_at", "counted_cents", "expected_cents",
                                     "difference_cents", "closed_by", "supervisor"])
+        if data["expected_cents"] < 0 and conflicts is not None:
+            # Accepted as counted; the usual cause is a cash sale cancelled after a withdrawal.
+            conflicts.append(open_conflict(
+                terminal, event, "cash_expected_negative",
+                "Caixa fechado com valor esperado negativo (venda em dinheiro cancelada depois de uma sangria). "
+                "Confira o dinheiro da gaveta.",
+                cash_session_id=str(session.id), expected_cents=data["expected_cents"],
+                counted_cents=data["counted_cents"], difference_cents=data["difference_cents"]))
     else:
         session = _session(terminal, data["cash_session_id"], when)
         CashMovement.objects.get_or_create(

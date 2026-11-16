@@ -1,26 +1,30 @@
-"""Device pairing, signed offline grants, bootstrap and atomic outbox intake."""
+"""Device pairing, signed offline grants, bootstrap and per-event outbox intake."""
 import hashlib
+import json
+import logging
 import re
 import secrets
 import time
 from datetime import timedelta
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, InterfaceError, OperationalError, transaction
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from shared.licensing import LicenseError, load_private_key, load_public_key, payload_digest, sign_lease
-from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, product_quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
-from .models import Customer, Membership, Product, Sale, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
+from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
+from .models import Customer, Membership, Product, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .cash_logic import CASH_EVENTS, apply_cash_event
 from .credit_logic import apply_credit_receipt, apply_return, balances as credit_balances
 from .payment_methods import ensure as ensure_payment_methods, method_data
 from .views_promotions import for_terminal as promotions_for_terminal
 from .stock_balance import balances as stock_balances
-from .sale_logic import event_time, persist_sale, reverse_sale
+from .sale_logic import event_time, open_conflict, persist_sale, void_from_terminal
 from .serializers import plan as plan_data, sync_conflict as sync_conflict_data, terminal as terminal_data
 from .stock_balance import balance
+
+logger = logging.getLogger(__name__)
 
 DEVICE_ROLES = {"owner", "admin"}
 EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "credit.received", "stock.adjusted", "cash.opened", "cash.closed",
@@ -348,30 +352,30 @@ def _negative_stock_conflict(terminal, event, sale):
                             "central_balance_milli": available})
     if not details:
         return None
-    conflict, _ = SyncConflict.objects.get_or_create(
-        event_id=event["event_id"],
-        defaults={"tenant": terminal.tenant, "shop": terminal.shop, "terminal": terminal,
-                  "event_type": event["type"], "aggregate_id": event["aggregate_id"],
-                  "reason": "negative_stock", "detail":{"items": details}})
-    return conflict
+    return open_conflict(terminal, event, "negative_stock",
+                         "Venda no caixa deixou o saldo central negativo. Confira a contagem física.",
+                         items=details, sale_id=str(sale.id))
 
 
-def _validate_event(event, terminal):
-    if not isinstance(event, dict):
-        raise APIError("Evento inválido")
+def _event_identity(event, terminal):
+    """The only per-event checks that still refuse the whole request: an event
+    that cannot be named back to the terminal, or that claims another identity."""
+    if not isinstance(event, dict) or not isinstance(event.get("event_id"), str) or not 1 <= len(event["event_id"]) <= 64:
+        raise APIError("Evento sem identificador válido")
+    if event.get("identity") != {"tenant_id": str(terminal.tenant_id), "shop_id": str(terminal.shop_id),
+                                 "terminal_id": str(terminal.id)}:
+        raise APIError("Identidade do evento não corresponde ao terminal", 403)
+
+
+def _validate_event(event):
+    """Shape of one event. Any error here quarantines the event alone."""
     fields(event, ("event_id", "type", "aggregate_id", "identity", "data"),
            ("event_id", "type", "aggregate_id", "identity", "data"))
-    event_id = event["event_id"]
-    if not isinstance(event_id, str) or not re.fullmatch(r"[0-9a-f]{32}", event_id):
+    if not re.fullmatch(r"[0-9a-f]{32}", event["event_id"]):
         raise APIError("ID do evento inválido")
     if not isinstance(event["type"], str) or event["type"] not in EVENT_TYPES:
         raise APIError("Tipo de evento inválido")
     aggregate_id = text(event["aggregate_id"], "Agregado", 160)
-    identity = event["identity"]
-    if not isinstance(identity, dict) or identity != {
-        "tenant_id": str(terminal.tenant_id), "shop_id": str(terminal.shop_id),
-        "terminal_id": str(terminal.id)}:
-        raise APIError("Identidade do evento não corresponde ao terminal", 403)
     if not isinstance(event["data"], dict):
         raise APIError("Dados do evento inválidos")
     if event["type"] == "credit.received":
@@ -403,14 +407,17 @@ def _validate_event(event, terminal):
         data = event["data"]
         fields(data, ("product_id", "delta_milli", "reason", "created_at"),
                ("product_id", "delta_milli", "reason", "created_at"))
-        product = scoped(Product, terminal.tenant, data["product_id"])
-        product_quantity(product, data["delta_milli"], allow_negative=True)
+        # The product is looked up when the adjustment is applied: its unit or
+        # stock control may have changed since the count at the counter.
+        uuid_value(data["product_id"], "Produto")
+        quantity(data["delta_milli"], allow_negative=True)
         text(data["reason"], "Motivo", 240)
         event_time(data["created_at"])
     elif event["type"] == "cash.opened":
         data = event["data"]
         fields(data, ("opening_cents", "operator_id", "created_at"),
                ("opening_cents", "operator_id", "created_at"))
+        uuid_value(aggregate_id, "Sessão de caixa")
         money(data["opening_cents"], "Abertura")
         uuid_value(data["operator_id"], "Operador")
         event_time(data["created_at"])
@@ -419,11 +426,15 @@ def _validate_event(event, terminal):
         fields(data, ("counted_cents", "expected_cents", "difference_cents", "created_at",
                       "operator_id", "supervisor_id"),
                ("counted_cents", "expected_cents", "difference_cents", "created_at"))
+        uuid_value(aggregate_id, "Sessão de caixa")
         for key, label in (("operator_id", "Operador"), ("supervisor_id", "Supervisor")):
             if data.get(key):
                 uuid_value(data[key], label)
         counted = money(data["counted_cents"], "Valor contado")
-        expected = money(data["expected_cents"], "Valor esperado")
+        # Signed: a cash sale cancelled after a withdrawal leaves the drawer owing.
+        expected = data["expected_cents"]
+        if type(expected) is not int or abs(expected) > 10**12:
+            raise APIError("Valor esperado inválido")
         if type(data["difference_cents"]) is not int or data["difference_cents"] != counted - expected:
             raise APIError("Diferença de caixa inválida")
         event_time(data["created_at"])
@@ -431,6 +442,7 @@ def _validate_event(event, terminal):
         data = event["data"]
         fields(data, ("cash_session_id", "amount_cents", "reason", "operator_id", "created_at"),
                ("cash_session_id", "amount_cents", "reason", "operator_id", "created_at"))
+        uuid_value(aggregate_id, "Movimento de caixa")
         uuid_value(data["cash_session_id"], "Sessão de caixa")
         money(data["amount_cents"], "Movimento de caixa", allow_zero=False)
         text(data["reason"], "Motivo", 240)
@@ -438,18 +450,28 @@ def _validate_event(event, terminal):
         event_time(data["created_at"])
 
 
-def _persist_adjustment(terminal, event):
+def _persist_adjustment(terminal, event, conflicts):
+    """The count at the counter already happened: a product whose registration
+    changed since is flagged for the administrator instead of refused."""
     data = event["data"]
-    product = scoped(Product, terminal.tenant, data["product_id"])
-    if not product.stock_controlled:
-        raise APIError("Produto de produção própria não usa controle de estoque")
+    product_id = uuid_value(data["product_id"], "Produto")
     key = f"adjustment:{terminal.id}:{event['aggregate_id']}"
     previous = StockMovement.objects.filter(tenant=terminal.tenant, source="terminal_adjustment",
                                             idempotency_key=key).first()
     if previous:
-        if (previous.product_id != product.id or previous.delta_milli != data["delta_milli"] or
+        if (previous.product_id != product_id or previous.delta_milli != data["delta_milli"] or
             previous.reason != data["reason"].strip()):
             raise APIError("Ajuste já recebido com conteúdo diferente", 409)
+        return
+    product = Product.objects.filter(tenant=terminal.tenant, pk=product_id).first()
+    if product is None:
+        raise APIError("Produto do ajuste de estoque não encontrado", 404)
+    line = {"product_id": str(product.id), "product_name": product.name, "delta_milli": data["delta_milli"]}
+    if not product.stock_controlled:
+        conflicts.append(open_conflict(
+            terminal, event, "stock_control_changed",
+            "Ajuste de estoque feito no caixa para produto que não controla mais estoque. O ajuste não foi aplicado.",
+            items=[line], applied=False))
         return
     row = StockMovement.objects.create(tenant=terminal.tenant, shop=terminal.shop,
                                        product=product, delta_milli=data["delta_milli"],
@@ -458,11 +480,87 @@ def _persist_adjustment(terminal, event):
                                        idempotency_key=key)
     audit(terminal.tenant, None, "stock.terminal_adjusted", row,
           {"terminal_id": str(terminal.id)})
+    if product.unit == "UN" and data["delta_milli"] % 1000:
+        conflicts.append(open_conflict(
+            terminal, event, "unit_changed",
+            "Ajuste de estoque fracionado para produto que hoje é vendido por unidade. Confira o estoque.",
+            items=[{**line, "current_unit": product.unit}]))
+    if not product.active:
+        conflicts.append(open_conflict(
+            terminal, event, "product_inactive",
+            "Ajuste de estoque feito no caixa para produto desativado no cadastro.", items=[line]))
+
+
+def _event_hash(event):
+    try:
+        return digest(event)
+    except ValueError:  # NaN/Infinity: not canonical JSON, still needs a stable identity
+        return hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest()
+
+
+def _intake(terminal, event, conflicts):
+    """Apply one event. Runs inside its own savepoint; any error quarantines the event."""
+    event_hash = _event_hash(event)
+    previous = SyncEvent.objects.filter(event_id=event["event_id"]).first()
+    if previous:
+        if (previous.tenant_id != terminal.tenant_id or previous.terminal_id != terminal.id or
+                previous.payload_hash != event_hash):
+            raise APIError("Evento já recebido com conteúdo diferente", 409)
+        # Already received: acknowledged again without judging it a second time.
+        conflicts.extend(SyncConflict.objects.filter(terminal=terminal, event_id=event["event_id"])
+                         .order_by("created_at", "id"))
+        return
+    _validate_event(event)
+    SyncEvent.objects.create(event_id=event["event_id"], tenant=terminal.tenant,
+                             shop=terminal.shop, terminal=terminal,
+                             event_type=event["type"], aggregate_id=event["aggregate_id"],
+                             payload=event, payload_hash=event_hash)
+    if event["type"] == "sale.completed":
+        sale = persist_sale(terminal, event, conflicts)
+        conflict = _negative_stock_conflict(terminal, event, sale)
+        if conflict:
+            conflicts.append(conflict)
+    elif event["type"] == "sale.voided":
+        void_from_terminal(terminal, event, conflicts)
+    elif event["type"] == "stock.adjusted":
+        _persist_adjustment(terminal, event, conflicts)
+    elif event["type"] in CASH_EVENTS:
+        apply_cash_event(terminal, event, conflicts)
+    elif event["type"] == "sale.returned":
+        apply_return(terminal, event, conflicts)
+    elif event["type"] == "credit.received":
+        apply_credit_receipt(terminal, event, conflicts)
+
+
+def _quarantine(terminal, event, error, status):
+    """Keep an event that could not be applied (raw SyncEvent plus a conflict
+    for the administrator) so the terminal can drop it and move on."""
+    try:
+        json.dumps(event, allow_nan=False)
+        stored = event
+    except ValueError:
+        stored = {"unserializable": json.dumps(event, sort_keys=True)}
+    if not SyncEvent.objects.filter(event_id=event["event_id"]).exists():
+        SyncEvent.objects.create(event_id=event["event_id"], tenant=terminal.tenant, shop=terminal.shop,
+                                 terminal=terminal, event_type=str(event.get("type"))[:40],
+                                 aggregate_id=str(event.get("aggregate_id"))[:160],
+                                 payload=stored, payload_hash=_event_hash(event))
+    return open_conflict(terminal, event, "rejected_event", f"Evento do caixa recusado pela nuvem: {error}",
+                         type=str(event.get("type"))[:40], error=error, status=status, payload=stored)
+
+
+def _conflict_response(conflict):
+    data = sync_conflict_data(conflict)
+    # The terminal already holds the payload it sent.
+    data["detail"] = {key: value for key, value in conflict.detail.items() if key != "payload"}
+    return data
 
 
 @csrf_exempt
 @endpoint
 def sync(request):
+    """Outbox intake. What happened at the counter is a fact: every event is
+    acknowledged, either applied (divergences become conflicts) or quarantined."""
     method(request, "POST")
     terminal = _bearer_terminal(request)
     data = payload(request)
@@ -471,47 +569,30 @@ def sync(request):
     if not isinstance(events, list) or not 1 <= len(events) <= 50:
         raise APIError("Envie de 1 a 50 eventos")
     for event in events:
-        _validate_event(event, terminal)
-    accepted = []
-    conflicts = []
+        _event_identity(event, terminal)
+    accepted, conflicts, quarantined = [], [], []
     with transaction.atomic():
         Terminal.objects.select_for_update().get(pk=terminal.pk)
         for event in events:
-            event_hash = digest(event)
-            previous = SyncEvent.objects.filter(event_id=event["event_id"]).first()
-            if previous:
-                if previous.tenant_id != terminal.tenant_id or previous.terminal_id != terminal.id or previous.payload_hash != event_hash:
-                    raise APIError("Evento já recebido com conteúdo diferente", 409)
-            else:
-                SyncEvent.objects.create(event_id=event["event_id"], tenant=terminal.tenant,
-                                         shop=terminal.shop, terminal=terminal,
-                                         event_type=event["type"], aggregate_id=event["aggregate_id"],
-                                         payload=event, payload_hash=event_hash)
-            if event["type"] == "sale.completed":
-                sale = persist_sale(terminal, event)
-                conflict = _negative_stock_conflict(terminal, event, sale)
-                if conflict:
-                    conflicts.append(sync_conflict_data(conflict))
-            elif event["type"] == "sale.voided":
-                row = Sale.objects.select_for_update().filter(
-                    tenant=terminal.tenant, shop=terminal.shop,
-                    terminal=terminal, pk=uuid_value(event["aggregate_id"])).first()
-                if row is None:
-                    raise APIError("Venda original do estorno não encontrada", 404)
-                reverse_sale(row, event["data"]["reason"], "cancelled", terminal=terminal,
-                             when=event_time(event["data"]["created_at"]))
-            elif event["type"] == "stock.adjusted":
-                _persist_adjustment(terminal, event)
-            elif event["type"] in CASH_EVENTS:
-                apply_cash_event(terminal, event)
-            elif event["type"] == "sale.returned":
-                _, conflict = apply_return(terminal, event)
-                if conflict:
-                    conflicts.append(sync_conflict_data(conflict))
-            elif event["type"] == "credit.received":
-                apply_credit_receipt(terminal, event)
+            found = []
+            try:
+                with transaction.atomic():
+                    _intake(terminal, event, found)
+            except APIError as exc:
+                found = [_quarantine(terminal, event, exc.message, exc.status)]
+            except (OperationalError, InterfaceError):
+                raise  # database unavailable: the terminal retries the whole batch
+            except Exception:
+                logger.exception("Evento %s do terminal %s falhou e foi para a quarentena",
+                                 event["event_id"], terminal.id)
+                found = [_quarantine(terminal, event, "Erro interno ao processar o evento", 500)]
             accepted.append(event["event_id"])
-    return JsonResponse({"accepted_event_ids": accepted, "conflicts": conflicts})
+            for conflict in found:
+                conflicts.append(_conflict_response(conflict))
+                if conflict.reason == "rejected_event":
+                    quarantined.append({"event_id": event["event_id"], "reason": conflict.reason,
+                                        "message": conflict.detail.get("error", "")})
+    return JsonResponse({"accepted_event_ids": accepted, "conflicts": conflicts, "quarantined": quarantined})
 
 
 @endpoint
