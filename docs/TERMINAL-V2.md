@@ -41,6 +41,26 @@ Um banco local não pode ser reaproveitado por outra empresa depois que existem 
 - Após cada carga bem-sucedida, o terminal consulta a versão estável publicada. O manifesto de release é verificado com a **chave Ed25519 fixada no pareamento** e aparece na tela Sistema. O terminal não baixa nem executa o pacote automaticamente; a instalação e checagem do SHA-256 são etapas manuais do suporte.
 - O serviço faz uma cópia SQLite consistente após o pareamento e, depois, no máximo uma vez a cada 24 horas; um gerente pode acionar **Criar backup agora**. Até sete cópias rotativas ficam em `data/backups`, com permissões locais restritas. A API mostra nomes e estado, sem servir o arquivo bruto pela web. O arquivo contém token, hashes de PIN e vendas: guarde cópia externa protegida. A restauração ainda é manual, com o serviço parado, e deve ser testada no piloto.
 
+## Cópia de segurança em outro disco (réplica)
+
+Além do backup diário em `data/backups` (que fica no mesmo disco do caixa), o terminal mantém uma **réplica cifrada em um segundo disco**: pendrive, HD externo ou pasta de rede. É o que salva as vendas que ainda não subiram para a nuvem quando o computador do caixa quebra. Detalhes de formato em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md).
+
+- **Ligar:** gerente, aba **Sistema → Cópia de segurança em outro disco → Escolher disco**. A primeira cópia é feita na hora. O terminal recusa pasta no mesmo disco do banco ("Escolha outro disco ou um pendrive: esta pasta fica no mesmo disco do caixa."); só `PDV_ENV=development` ou `test` liberam.
+- **O que vai para o disco:** uma cópia verificada do banco (SQLite `backup` + `integrity_check`, relida e conferida por SHA-256 depois de gravada) e um diário com cada evento da fila. Tudo cifrado com a chave da cópia de segurança da empresa, que o terminal recebe da nuvem no pareamento e na renovação da licença. A cópia não leva o token do terminal.
+- **Quando:** diário a cada evento e no máximo 5 s depois; cópia do banco a cada 15 min com movimento, a cada 24 h sem, em todo fechamento de caixa e em **Copiar agora**. Ficam as 3 últimas cópias.
+- **Estados na tela:** "Cópia de segurança em dia", "Cópia de segurança atrasada", aviso de disco não encontrado ou cheio, e "Conecte este caixa à internet uma vez para liberar a cópia de segurança" quando o terminal ainda não recebeu a chave.
+- **Disco ausente, cheio ou removido nunca derruba a venda.** A gravação acontece em uma thread separada; a falha vira estado na tela e a cópia se põe em dia quando o disco volta.
+- **Onde fica a configuração:** `mirror.json`, ao lado do banco. Não contém a chave.
+- **Rotas locais:** `GET /api/mirror/status` (qualquer operador), `GET /api/mirror/drives`, `POST /api/mirror/config {"directory": "E:\\" | null}` e `POST /api/mirror/snapshot` (gerente). Instalação sem o módulo responde `{"supported": false, …}`.
+
+### Recuperar minha loja (troca de computador)
+
+Na tela de pareamento, **Recuperar minha loja (troquei de computador)** pede a chave da licença e o código de recuperação gerado no painel em **Terminais → Trocar de computador**. O terminal pareia com o mesmo `Terminal.id`, baixa os dados por `GET /api/v1/terminal/restore` em páginas retomáveis e só libera a venda quando os totais conferem com os da nuvem. Sem internet no meio, continua sozinho quando a conexão volta.
+
+Depois dos dados da nuvem, a tela pergunta **Você tem uma cópia de segurança?** Com o pendrive do computador antigo, o terminal lê a réplica, reenvia a fila que não tinha subido (preservando o `event_id` de cada evento, então a nuvem não duplica) e traz o resultado em uma segunda passada. Carrinhos suspensos e fila de impressão não voltam.
+
+O computador antigo, se ainda ligar, mostra "Este caixa foi transferido": não vende mais, deixa fechar o caixa e segue enviando por até 7 dias o que faltava.
+
 ## Caixa Rápido: a tela de venda
 
 A frente de caixa foi refeita em novembro/2026 para ser operada só pelo teclado e pelo leitor. O código está em `terminal/static/terminal.js` (tela) e `terminal/static/terminal-core.js` (regras puras, onde fica o mapa de teclas `SHORTCUTS`).
@@ -119,4 +139,4 @@ Os testes cobrem autenticação, CSRF/Origin/Host, venda fracionária e dinheiro
 
 ## Limites comerciais e fiscais
 
-Esta prévia **não emite NFC-e nem DANFE**, não assina XML, não implementa contingência fiscal ou homologação na SEFAZ-RJ. Uma venda local não é documento fiscal. Não houve teste físico de balança, gaveta, leitor, impressora ou energia em loja. O backup local não substitui backup externo; não há recuperação remota; o instalador Windows com atualização automática assinada existe ([INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md)), mas ainda não foi validado em Windows físico. O SaaS ainda precisa de conciliação operacional de estoque e assinatura/cobrança automática antes de venda como produto completo.
+Esta prévia **não emite NFC-e nem DANFE**, não assina XML, não implementa contingência fiscal ou homologação na SEFAZ-RJ. Uma venda local não é documento fiscal. Não houve teste físico de balança, gaveta, leitor, impressora ou energia em loja. O backup local não substitui backup externo; a réplica em segundo disco e a recuperação pela nuvem (fase 2) ainda não foram validadas em loja; o instalador Windows com atualização automática assinada existe ([INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md)), mas ainda não foi validado em Windows físico. O SaaS ainda precisa de conciliação operacional de estoque e assinatura/cobrança automática antes de venda como produto completo.

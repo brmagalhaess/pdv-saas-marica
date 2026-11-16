@@ -55,6 +55,18 @@ O superadministrador pode usar `GET/POST platform/users` e `GET/PATCH platform/u
 - `POST terminal/heartbeat` com Bearer e `{version,pending_events,last_error,client_time}` → `{ok,server_time,terminal_id,last_seen_at}`. O endpoint é idempotente e mantém a presença do terminal mesmo sem vendas.
 - `POST terminal/sync` com Bearer e `{events:[...]}` (1 a 50) → `{accepted_event_ids:[...],conflicts:[...],quarantined:[...]}`. Contrato completo, exemplos e todos os campos em [SYNC-VENDAS.md](SYNC-VENDAS.md).
 
+### Recuperação e troca de computador (fase 2)
+
+Visão geral em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md). A nuvem anuncia `capabilities: ["restore","send-only","terminal-config","mirror-key"]` em `pair`, `lease` e `bootstrap`; o terminal só usa o que foi anunciado.
+
+- `POST terminals/<id>/transfer` (owner, admin), corpo `{}` → dados do terminal mais `{recovery_code:"XXXX-XXXX-XXXX",recovery_expires_at,license_key,pending_events,open_cash_session,send_only_days:7,history_days:90}`. Mesmo `Terminal.id`; o código vale 30 minutos e não muda o token em uso. 409 `terminal_not_paired` se o terminal nunca foi conectado. `PATCH terminals/<id>` aceita `{"end_send_only": true}`.
+- `POST terminal/pair` aceita o código de recuperação em maiúsculas ou minúsculas e sem hífen. Com outro `device_id`, o token anterior vira **só-envio por 7 dias**. A resposta ganha `recovery` (há histórico para restaurar), `history_days`, `capabilities` e `mirror_key: {"key_id","key"} | null`. `lease` também devolve `mirror_key`.
+- **Token só-envio:** `terminal/sync` responde 200 com `send_only: true, send_only_until`; `lease`, `bootstrap`, `heartbeat` e `restore` respondem 403 `{"error":"Este caixa foi transferido para outro computador.","code":"terminal_transferred","send_only_until","transferred_at"}`. Vencido o prazo, o `sync` também responde 403.
+- `GET terminal/restore?cursor=&limit=` com Bearer (1 a 500, padrão 200; página também fecha em 1 MB) → `{records,next_cursor,done,progress:{position,total},cutoff,history_days,server_time,totals}`. `records` traz, nesta ordem, `config`, `cash_session` (com `movements`), `sale` (com o `data` original do `sale.completed` e `returns`) e `credit_receipt`. Datas em milissegundos. Entram vendas dos últimos 90 dias, as com fiado em aberto e as do caixa aberto. O cursor é opaco e retomável; cursor de outro terminal ou vencido → 400 `invalid_cursor`. `totals` só vem na última página e soma o que foi enviado.
+- Evento `terminal.config` em `terminal/sync`: `aggregate_id` = id do terminal; `data = {version:1,print_settings:[{kind,driver,target,format}],mirror:{enabled},app_version,updated_at}`. A nuvem guarda a versão de maior `updated_at`, devolve no restore e mostra no painel se a cópia em segundo disco está ligada.
+- `GET backup-key` (owner, admin) → `{exists,key_id,revealed_at,can_reveal}`. `POST backup-key/reveal` (só owner), corpo `{"confirm": true}` → `{key_id,key,revealed_at}` **uma única vez**; depois 409 `backup_key_already_revealed`. É a chave que cifra a réplica em segundo disco; a nuvem a guarda cifrada e nunca a registra em log ou auditoria.
+- Respostas de erro com código estável trazem `{"error","code",…}`; as demais continuam só com `error`.
+
 ### Sincronização: o que aconteceu no balcão é fato
 
 O contrato antigo (lote atômico) não vale mais. Hoje:

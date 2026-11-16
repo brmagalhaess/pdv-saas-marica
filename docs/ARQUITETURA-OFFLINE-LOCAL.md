@@ -120,7 +120,7 @@ Base: proposta **mvp** (dois de três juízes; é a única que cumpre ao pé da 
 - Proibido para estação: `/api/pair`, `/api/unpair`, `/api/new-profile`, `/api/bootstrap`, exportação e backup.
 - Bloqueio de PIN por operador e por estação. Hoje a autorização de gerente usa um contador único `manager_override` (`store.py:879`): um erro repetido trava a loja toda.
 - Token da nuvem cifrado com DPAPI e amarrado ao `MachineGuid`: banco copiado cai em "Recuperar".
-- Réplica e backup cifrados com chave da empresa, exibida uma vez no painel.
+- Réplica e backup cifrados com chave da empresa, exibida uma vez no painel. Na fase 2 isso vale para a réplica em segundo disco (`terminal/mirror.py`, Fernet); o backup diário em `data/backups` continua em claro, protegido só pelas permissões do sistema.
 
 ## 10. Plano de entrega
 
@@ -139,6 +139,8 @@ Base: proposta **mvp** (dois de três juízes; é a única que cumpre ao pé da 
 - Mudanças: nuvem `terminal/restore`, token só-envio, evento `terminal.config`; `store.py` `apply_restore`, `restore_state`, importação de fila; novo `terminal/mirror.py`; tela "Recuperar minha loja".
 - Testar: restaurar com queda de rede no meio; comparar totais com a nuvem; reenvio duplicado.
 - Lojista ganha: troca de computador sem perder dados.
+- Contrato detalhado, formato dos arquivos da réplica e limites: [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md). Onde este documento cita linhas de código antigas, valem as daquele.
+- Ajustes em relação ao desenho acima: o código de recuperação vale 30 min e tem a forma `XXXX-XXXX-XXXX`; o token antigo vira só-envio quando o computador novo pareia (não no clique do painel); a fila lida da réplica não é aplicada direto no banco local, sobe para a nuvem e volta por uma segunda passada do restore; a cópia do banco na réplica não leva o token do terminal.
 
 **Fase 3. Estações** (depende da quarentena em produção)
 - Mudanças: `store.py` (tabela `stations`; `station_id` em `cash_sessions`, `sales`, `sale_returns`, `credit_receipts`, `print_jobs`, `print_settings`; índice `cash_one_open` por estação, hoje global em `:134`; `_open_cash` por estação, `:937-941`); novos `terminal/lan.py`, `terminal/station.py`, `terminal/discovery.py`; réplica pela rede; promoção; nuvem: `station` em `cash.opened`, `Shop.hub_terminal`.
