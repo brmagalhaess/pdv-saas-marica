@@ -146,6 +146,8 @@ Base: proposta **mvp** (dois de três juízes; é a única que cumpre ao pé da 
 - Mudanças: `store.py` (tabela `stations`; `station_id` em `cash_sessions`, `sales`, `sale_returns`, `credit_receipts`, `print_jobs`, `print_settings`; índice `cash_one_open` por estação, hoje global em `:134`; `_open_cash` por estação, `:937-941`); novos `terminal/lan.py`, `terminal/station.py`, `terminal/discovery.py`; réplica pela rede; promoção; nuvem: `station` em `cash.opened`, `Shop.hub_terminal`.
 - Testar: é a refatoração mais cara; suíte com dois e três caixas simultâneos, cabo puxado no meio da venda, servidor reiniciado, promoção com e sem internet.
 - Lojista ganha: vários caixas com estoque único.
+- Contrato detalhado (rede entre caixas, tela do caixa adicional, réplica pela rede e promoção): [ESTACOES.md](ESTACOES.md).
+- Ajustes em relação ao desenho acima: as telas dizem "O caixa principal está fora do ar" e "Assumir como caixa principal" (não "Caixa principal fora do ar" e "Tornar este o caixa principal"); a primeira tela real é o formulário de ativação com endereço da nuvem, "Recuperar minha loja (troquei de computador)" e "Este é um caixa adicional (a loja já tem um caixa principal)"; a regra de firewall é criada pelo instalador só com a opção marcada, senão pelo próprio serviço (`lan.ensure_firewall`) quando o principal abre a rede entre caixas, e vale para todos os perfis de rede, só na sub-rede local; o caixa adicional não se atualiza sozinho (o cartão Caixas da loja do principal avisa quando ele está em versão antiga); a impressão do caixa adicional é feita pelo serviço dele, não pelo atalho; a promoção aplica o diário com `Store.apply_journal_events` e não pede código: a regularização com a nuvem é o cartão posterior, com o código de Trocar de computador; o principal antigo religado na rede da loja descobre o novo pela busca (com prova de geração) e para de vender; o caixa adicional não assume com o próprio computador sem rede; cancelar venda só no caixa que a fez.
 
 **Fase 4. Acabamento**
 - Conflito de fiado entre lojas, cancelamentos do painel descendo ao caixa e, se o dono decidir, venda de contingência na estação.
@@ -154,9 +156,9 @@ Base: proposta **mvp** (dois de três juízes; é a única que cumpre ao pé da 
 
 - **Servidor e rede local são ponto único da loja.** Cabo, switch ou Wi-Fi ruim param a estação. Recomendar cabo e nobreak no servidor.
 - **Janela de perda:** disco do servidor morrendo perde no máximo o que ainda não chegou à réplica (segundos, com estação ligada). Loja de um caixa sem segundo disco e sem internet perde desde a última sincronização.
-- **Promoção sem internet** deixa por alguns dias dois aparelhos com a mesma identidade se o antigo ressuscitar; a nuvem aceita só o token novo após a regularização, e a fila do antigo sobe como só-envio.
+- **Promoção sem internet** deixa por alguns dias dois aparelhos com a mesma identidade se o antigo ressuscitar **fora** da rede da loja; na mesma rede ele encontra o novo principal e para de vender. A nuvem aceita só o token novo após a regularização, e a fila do antigo sobe como só-envio.
 - **SmartScreen e antivírus** contra PyInstaller nas primeiras semanas do certificado.
-- **Rede marcada como Pública, IP que muda:** diagnóstico na tela da estação.
+- **IP que muda, principal desligado ou com o PDV2 fechado, relógio atrasado:** diagnóstico na tela da estação. A regra de firewall vale para todos os perfis, então a rede marcada como Pública não impede os caixas.
 - **Cadastro de produto e alteração de preço continuam só na nuvem.** Este desenho cobre vender offline, não cadastrar.
 - **NFC-e em contingência** tem prazo fiscal próprio; fora deste escopo.
 - **Tablet ou celular como estação:** não, exigiria HTTPS de verdade na rede.

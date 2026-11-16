@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import terminal
 from terminal import paths, runtime, updater
 
 
@@ -119,8 +120,10 @@ class CreateTests(unittest.TestCase):
         fake = types.ModuleType("terminal.promotion")
         fake.pending = lambda data_dir: asked.append(Path(data_dir)) or True
         app, _worker, _watchdog, _lan_server, patches = self.fake_server()
-        with patch.dict(sys.modules, {"terminal.promotion": fake}), patches[0], patches[1], patches[2]:
+        with patch.dict(sys.modules, {"terminal.promotion": fake}), \
+                patch.object(terminal, "promotion", fake, create=True), patches[0], patches[1], patches[2]:
             current = runtime.create(self.env)
+        self.addCleanup(current.stop)
         self.assertEqual((current.mode, current.app), ("server", app))
         self.assertEqual(asked, [self.data])
         self.assertEqual(paths.read_mode(self.data, {}), "server")
@@ -129,9 +132,11 @@ class CreateTests(unittest.TestCase):
         paths.write_mode(self.data, "station")
         fake = types.ModuleType("terminal.promotion")
         fake.pending = MagicMock(side_effect=[False, RuntimeError("cópia ilegível")])
-        with patch.dict(sys.modules, {"terminal.promotion": fake}):
+        with patch.dict(sys.modules, {"terminal.promotion": fake}), \
+                patch.object(terminal, "promotion", fake, create=True):
             for _attempt in range(2):
                 current = runtime.create(self.env)
+                self.addCleanup(current.stop)
                 current.stop()
                 self.assertEqual(current.mode, "station")
         self.assertEqual(paths.read_mode(self.data, {}), "station")

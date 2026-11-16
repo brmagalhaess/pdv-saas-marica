@@ -200,6 +200,85 @@ class CaixaPrincipalTests(Fase3Base):
         self.assertEqual(self.panel("PATCH", f"/api/v1/terminals/{theirs.id}", {"hub": True}).status_code, 404)
         self.assertIsNone(Shop.objects.get(pk=foreign_shop.pk).hub_terminal_id)
 
+    def test_terminal_without_a_computer_cannot_become_the_hub(self):
+        # Through the API directly (the panel does not offer the button): the main register in use
+        # would lose its additional registers while nobody answers as the new one.
+        waiting = Terminal.objects.create(tenant=self.tenant, shop=self.shop, name="Aguardando")
+        response = self.panel("PATCH", f"/api/v1/terminals/{waiting.id}", {"hub": True})
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "terminal_not_paired"),
+                         response.content)
+        self.assertIsNone(Shop.objects.get(pk=self.shop.pk).hub_terminal_id)
+        self.assertEqual((self.claims()["max_stations"], self.claims()["hub"]), (2, True))
+        self.assertFalse(AuditEvent.objects.filter(action="terminal.hub_set").exists())
+        # Even with the pointer set by another road, an unpaired terminal does not count.
+        Shop.objects.filter(pk=self.shop.pk).update(hub_terminal=waiting)
+        self.assertEqual(effective_hub_id(Shop.objects.get(pk=self.shop.pk)), self.terminal.id)
+        self.assertEqual(self.claims()["max_stations"], 2)
+
+
+class CaixaDeOutraEmpresaTests(Fase3Base):
+    """The id of a cashier is chosen by the terminal: it must never reach another company."""
+
+    def setUp(self):
+        super().setUp()
+        from .models import Subscription, Tenant
+        self.foreign = Tenant.objects.create(name="Outra")
+        foreign_shop = Shop.objects.create(tenant=self.foreign, name="Loja")
+        Subscription.objects.create(tenant=self.foreign, plan=Plan.objects.get(slug="management"), status="trial",
+                                    trial_ends_at=timezone.now() + timedelta(days=14))
+        user = get_user_model().objects.create_user(username="eles@example.test", email="eles@example.test",
+                                                    password="Synthetic-42!")
+        self.intruder = str(Membership.objects.create(tenant=self.foreign, user=user, name="Eles", role="owner").id)
+        self.foreign_token = "token-deles-" + uuid.uuid4().hex
+        theirs = Terminal.objects.create(tenant=self.foreign, shop=foreign_shop, name="Deles", device_id="pc-x",
+                                         token_hash=sha(self.foreign_token))
+        self.foreign_identity = {"tenant_id": str(self.foreign.id), "shop_id": str(foreign_shop.id),
+                                 "terminal_id": str(theirs.id)}
+        self.assertClean(self.sync(self.station(self.opened(), "3f2a9c", "Caixa 2")))
+        self.before = CashSession.objects.filter(pk=self.session_id).values().get()
+
+    def attack(self, kind, aggregate, data):
+        event = self.event(kind, aggregate, data, self.foreign_identity)
+        event["station"] = {"id": "hacked", "name": "Invasor"}
+        response = self.term("POST", "/api/v1/terminal/sync", {"events": [event]}, token=self.foreign_token)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_cash_events_of_another_company_never_touch_this_cashier(self):
+        attempts = [
+            ("cash.opened", self.session_id, {"opening_cents": 999999, "operator_id": self.intruder, "created_at": 1000}),
+            ("cash.closed", self.session_id, {"counted_cents": 0, "expected_cents": 0, "difference_cents": 0,
+                                              "created_at": self.now + 5000}),
+            ("cash.withdrawn", str(uuid.uuid4()), {"cash_session_id": self.session_id, "amount_cents": 5000,
+                                                   "reason": "Sangria", "operator_id": self.intruder,
+                                                   "created_at": self.now + 600}),
+            ("cash.supplied", str(uuid.uuid4()), {"cash_session_id": self.session_id, "amount_cents": 5000,
+                                                  "reason": "Troco", "operator_id": self.intruder,
+                                                  "created_at": self.now + 700}),
+        ]
+        for kind, aggregate, data in attempts:
+            body = self.attack(kind, aggregate, data)
+            self.assertEqual(len(body["quarantined"]), 1, (kind, body))
+            self.assertIn("outro terminal", json.dumps(body["quarantined"], ensure_ascii=False), kind)
+        self.assertEqual(CashSession.objects.filter(pk=self.session_id).values().get(), self.before)
+        session = CashSession.objects.get(pk=self.session_id)
+        self.assertEqual((session.tenant_id, session.station_name, session.closed_at), (self.tenant.id, "Caixa 2", None))
+        self.assertEqual(session.movements.count(), 0)
+        # The owner of the cashier goes on as before, and the same shift of its own terminal after
+        # "Trocar de computador" (same Terminal row) is still accepted.
+        self.assertClean(self.sync(self.withdrawn()))
+        self.assertClean(self.sync(self.closed(self.session_id, self.now + 9000)))
+        self.assertEqual(CashSession.objects.get(pk=self.session_id).movements.count(), 1)
+
+    def test_movement_of_another_cashier_is_not_taken_over(self):
+        movement = self.withdrawn()
+        self.assertClean(self.sync(movement))
+        body = self.attack("cash.withdrawn", movement["aggregate_id"], {
+            "cash_session_id": str(uuid.uuid4()), "amount_cents": 1, "reason": "x", "operator_id": self.intruder,
+            "created_at": self.now + 800})
+        self.assertEqual(len(body["quarantined"]), 1, body)
+        self.assertEqual(CashSession.objects.get(pk=self.session_id).movements.get().amount_cents, 5000)
+
 
 class EtiquetaDeEstacaoTests(Fase3Base):
     def test_station_of_reads_only_a_well_formed_label(self):

@@ -1,5 +1,5 @@
 const API_ROOT = "/api/v1";
-export const APP_VERSION = "2.0.0";
+export const APP_VERSION = "2.1.0";
 export const VENDOR = {
   name: "CrownTech",
   site: "crowntech.com.br",
@@ -434,16 +434,22 @@ export function stationLabel(row) {
 
 // Choices of the "Caixa" filter: every register, the main one, then the additional
 // ones the terminals reported and the ones seen in the rows already loaded.
+// Each shop names its own registers ("Caixa 2", "Caixa 3"…): when the same name shows up
+// for different registers, the terminal they belong to is added to tell them apart.
 export function stationFilterOptions(terminals = [], rows = []) {
-  const options = [["", "Todos os caixas"], [MAIN_STATION_ID, "Caixa principal"]], seen = new Set(["", MAIN_STATION_ID]);
-  const add = (id, name) => {
+  const found = [], seen = new Set(["", MAIN_STATION_ID]);
+  const add = (id, name, place) => {
     if (typeof id !== "string" || seen.has(id)) return;
     seen.add(id);
-    options.push([id, String(name || "").trim() || "Caixa adicional"]);
+    found.push([id, String(name || "").trim() || "Caixa adicional", String(place || "").trim()]);
   };
-  (Array.isArray(terminals) ? terminals : []).forEach(terminal => activeStations(terminal).forEach(item => add(item.id, item.name)));
-  (Array.isArray(rows) ? rows : []).forEach(row => add(row?.station_id, row?.station_name));
-  return options;
+  (Array.isArray(terminals) ? terminals : []).forEach(terminal =>
+    activeStations(terminal).forEach(item => add(item.id, item.name, terminal?.name)));
+  (Array.isArray(rows) ? rows : []).forEach(row => add(row?.station_id, row?.station_name, row?.terminal_name));
+  const count = new Map();
+  found.forEach(([, label]) => count.set(label, (count.get(label) || 0) + 1));
+  return [["", "Todos os caixas"], [MAIN_STATION_ID, "Caixa principal"],
+    ...found.map(([id, label, place]) => [id, count.get(label) > 1 && place ? label + " · " + place : label])];
 }
 
 export const transferConfirmText = "Use quando o computador do caixa quebrou ou foi trocado. As vendas dos últimos 90 dias e o fiado em aberto voltam no computador novo. Se o antigo ainda liga, feche o caixa nele e espere a fila zerar antes.";

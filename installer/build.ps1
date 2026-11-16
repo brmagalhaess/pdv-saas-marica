@@ -141,6 +141,45 @@ try {
             Remove-Item Env:PDV_TERMINAL_DATA, Env:PDV_TERMINAL_PORT, Env:PDV_STOP_FILE, Env:PDV_VERSION -ErrorAction SilentlyContinue
             Remove-Item $SmokeData -Recurse -Force -ErrorAction SilentlyContinue
         }
+
+        Write-Host "== Teste de fumaça do caixa adicional empacotado =="
+        # O mesmo executável no modo caixa adicional: sem isto, um pacote sem station.html ou com
+        # erro de importação em station.py só quebraria no cliente, ao escolher "caixa adicional".
+        $SmokeData = Join-Path $env:TEMP ("pdv2-smoke-station-" + [guid]::NewGuid().ToString("N"))
+        $StopFile = Join-Path $SmokeData "stop"
+        New-Item -ItemType Directory -Force -Path $SmokeData | Out-Null
+        $env:PDV_TERMINAL_DATA = $SmokeData
+        $env:PDV_TERMINAL_PORT = "8019"
+        $env:PDV_STOP_FILE = $StopFile
+        $env:PDV_VERSION = $Version
+        $env:PDV_MODE = "station"
+        $Server = Start-Process -FilePath (Join-Path $App "PDV2Server.exe") -PassThru
+        try {
+            $Healthy = $false
+            foreach ($Attempt in 1..60) {
+                Start-Sleep -Seconds 1
+                if ($Server.HasExited) { break }
+                try {
+                    $Response = Invoke-RestMethod -Uri "http://127.0.0.1:8019/health" -TimeoutSec 2
+                    if ($Response.status -eq "ok" -and $Response.mode -eq "station") { $Healthy = $true; break }
+                } catch { }
+            }
+            if (-not $Healthy) {
+                Get-ChildItem (Join-Path $SmokeData "logs") -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName }
+                throw "O caixa adicional empacotado não respondeu em /health com mode = station"
+            }
+            foreach ($Path in @("/station/", "/station/static/station.js")) {
+                $Page = Invoke-WebRequest -Uri ("http://127.0.0.1:8019" + $Path) -UseBasicParsing -TimeoutSec 5
+                if ($Page.StatusCode -ne 200) { throw "O caixa adicional empacotado não serviu $Path" }
+            }
+            New-Item -ItemType File -Path $StopFile | Out-Null
+            if (-not $Server.WaitForExit(20000)) { throw "O caixa adicional empacotado não parou com o pedido de parada" }
+            Write-Host "Caixa adicional empacotado respondeu e parou corretamente."
+        } finally {
+            if (-not $Server.HasExited) { $Server.Kill() }
+            Remove-Item Env:PDV_TERMINAL_DATA, Env:PDV_TERMINAL_PORT, Env:PDV_STOP_FILE, Env:PDV_VERSION, Env:PDV_MODE -ErrorAction SilentlyContinue
+            Remove-Item $SmokeData -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     Write-Host "== Assinatura dos executáveis =="

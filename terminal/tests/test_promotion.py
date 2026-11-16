@@ -223,6 +223,29 @@ class PinDoGerenteTests(PromotionCase):
 
 
 class PromoverTests(PromotionCase):
+    def test_relogio_atrasado_em_relacao_ao_principal_recusa_antes_de_trocar_qualquer_coisa(self):
+        # A marca contra volta de relógio viaja na cópia, no relógio do caixa principal.
+        last_seen = int(promotion.time.time())
+        with self.store.transaction() as conn:
+            self.store._set_meta(conn, "last_seen", str(last_seen))
+        self.replicate(before=2, after=1)
+        old = self.station_dir / "terminal.sqlite3"
+        old.write_bytes(b"banco que estava aqui antes")
+        with patch.object(promotion.time, "time", return_value=last_seen - 7 * 60):
+            with self.assertRaises(TerminalError) as caught:
+                self.promote()
+        self.assertEqual((caught.exception.status, caught.exception.code), (409, "clock_behind"))
+        self.assertIn("relógio deste computador está atrasado", str(caught.exception))
+        self.assertEqual([entry[0] for entry in self.log], [], "o banco nem chegou a ser aberto")
+        self.assertEqual(old.read_bytes(), b"banco que estava aqui antes")
+        self.assertFalse((self.station_dir / "terminal.sqlite3.promoting").exists())
+        self.assertFalse(promotion.pending(self.station_dir))
+        self.assertEqual(self.saved()["state"], "failed")
+        # Dentro da tolerância da licença (5 min) e com o relógio certo, assume normalmente.
+        with patch.object(promotion.time, "time", return_value=last_seen - 4 * 60):
+            promotion._check_clock(self.store.path)
+        self.assertTrue(self.promote()["promoted"])
+
     def test_passos_na_ordem_estado_e_troca_do_banco(self):
         later = self.replicate(before=2, after=3)
         snapshot = self.server_status()["snapshot"]

@@ -177,10 +177,12 @@ class LocalRoutesTests(StationCase):
         self.assertEqual(page.status_code, 200)
         text = page.get_data(as_text=True)
         for needle in ("Este é um caixa adicional", "Procurando o caixa principal na rede da loja…",
-                       "Código de 6 números mostrado no caixa principal (Sistema → Adicionar caixa)",
+                       "Código de 6 números mostrado no caixa principal (Sistema → Caixas da loja → Adicionar caixa)",
                        "Como este caixa vai se chamar? (ex.: Caixa 2)", "Conectar este caixa",
                        "Endereço do caixa principal (aparece na tela dele, ex.: 192.168.0.10)", "Procurar de novo",
                        "Este computador é o caixa principal? Voltar", "O caixa principal está fora do ar",
+                       "Este computador não vai mais ser caixa adicional desta loja",
+                       "Não é este computador? Digitar o endereço", "Este caixa não está liberado para vender",
                        "Este caixa não vende enquanto o principal não voltar. Ele tenta de novo sozinho a cada 2 "
                        "segundos.", "Assumir como caixa principal",
                        "Só faça isso se o computador principal não vai voltar agora (quebrou, queimou, foi "
@@ -215,7 +217,12 @@ class LocalRoutesTests(StationCase):
         script = (STATIC / "station.js").read_text(encoding="utf-8")
         for needle in ("Caixa principal do ' + shop + ' encontrado (", "Não encontrei o caixa principal sozinho.",
                        "O caixa principal agora é outro computador (",
-                       "Peça ao gerente o código de 6 números em Sistema → Adicionar caixa e digite aqui.",
+                       "Peça ao gerente o código de 6 números em Sistema → Caixas da loja → Adicionar caixa, no novo "
+                       "caixa principal, e digite aqui.",
+                       "api('unlink', { confirm: true })", "status.state === 'blocked'",
+                       "Sem rede não dá para saber se o caixa principal parou",
+                       "Encontrei mais de um caixa principal nesta rede. Toque no desta loja:",
+                       "Confira se o código foi gerado no computador ",
                        "Este caixa foi removido do caixa principal. Para voltar a usar, peça um novo código ao "
                        "gerente.", "Atualize este caixa: instale a versão nova do PDV2.",
                        "Atualize o caixa principal", "Cópia deste caixa: de ", "Abrindo a cópia…",
@@ -370,7 +377,8 @@ class LinkTests(StationCase):
         self.assertEqual((status["linked"], status["state"], status["station"]["name"]), (True, "up", "Caixa 2"))
         self.assertNotIn(saved["token"], json.dumps(status))
         echo = client.get("/api/echo", base_url=BASE).json
-        self.assertEqual(echo["station"], {"id": saved["station_id"], "name": "Caixa 2"})
+        self.assertEqual(echo["station"], {"id": saved["station_id"], "name": "Caixa 2",
+                                           "version": station.paths.source_version()})
 
     def test_server_refusals_are_passed_on(self):
         app, bridge = self.station_app(link=False)
@@ -445,7 +453,8 @@ class BridgeTests(StationCase):
             "Connection": "keep-alive, X-Segredo", "X-Segredo": "hop", "X-Outro": "fica"})
         self.assertEqual(response.status_code, 200)
         data = response.json
-        self.assertEqual(data["station"], {"id": bridge.test_id, "name": "Caixa 2"},
+        self.assertEqual(data["station"], {"id": bridge.test_id, "name": "Caixa 2",
+                                           "version": station.paths.source_version()},
                          "the token of station.json wins over anything the browser sends")
         self.assertEqual((data["host"], data["origin"]), ("127.0.0.1:8010", BASE))
         self.assertEqual((data["cookie"], data["csrf"]), ("pdv2_session=sessao-1", "csrf-1"))
@@ -693,7 +702,7 @@ class ServerDownTests(StationCase):
             self.assertIsNotNone(status["server"]["down_since"])
             self.assertIsNotNone(status["server"]["last_ok_at"])
             self.assertEqual([item["id"] for item in status["diagnosis"]][:4],
-                             ["network", "public_profile", "server_off", "blocked"])
+                             ["network", "server_off", "service_off", "clock_behind"])
             self.restart_server(port)
             self.assertEqual(self.server.fingerprint, fingerprint, "same certificate after the restart")
             wait_for(lambda: bridge.status == "up", message="station up again")
@@ -714,24 +723,33 @@ class ServerDownTests(StationCase):
             items = {item["id"]: item for item in bridge.diagnosis()}
         self.assertEqual((items["network"]["ok"], items["network"]["title"], items["network"]["help"]),
                          (True, "Este computador está sem rede", "Confira o cabo de rede ou o Wi-Fi."))
-        self.assertEqual((items["public_profile"]["ok"], items["public_profile"]["title"]),
-                         (False, "A rede está marcada como Pública no Windows"))
-        self.assertEqual(items["public_profile"]["help"], "Em Configurações → Rede, mude para Particular neste "
-                                                          "computador e no caixa principal.")
-        self.assertEqual((items["server_off"]["ok"], items["server_off"]["title"], items["server_off"]["help"]),
-                         (False, "O computador principal está desligado ou com o PDV2 fechado",
-                          "Ligue o computador principal e abra o PDV2 nele."))
-        self.assertEqual((items["blocked"]["ok"], items["blocked"]["title"], items["blocked"]["help"]),
-                         (True, "O caixa principal não respondeu (rede bloqueada)",
-                          "Confira se os dois computadores estão na mesma rede e se o firewall permite o PDV2."))
+        # The firewall rule covers every profile: a "Public" network is not a cause to show.
+        self.assertNotIn("public_profile", items)
+        # The connection was REFUSED: the computer is on and the PDV2 is not listening on it.
+        self.assertEqual(bridge.error_kind, "refused")
+        self.assertEqual((items["service_off"]["ok"], items["service_off"]["title"], items["service_off"]["help"]),
+                         (False, "O computador principal está ligado, mas o PDV2 não está aberto nele",
+                          "Abra o PDV2 no computador principal ou reinicie-o."))
+        self.assertTrue(items["server_off"]["ok"])
+        self.assertTrue(items["clock_behind"]["ok"])
+        # No answer at all (timeout) is what a computer that is OFF looks like.
         bridge.error_kind = "timeout"
-        with patch.object(station.discovery, "local_addresses", return_value=[]):
-            items = {item["id"]: item for item in bridge.diagnosis()}
-        self.assertEqual((items["network"]["ok"], items["server_off"]["ok"], items["blocked"]["ok"]),
-                         (False, True, True), "without network only the network is blamed")
         with patch.object(station.discovery, "local_addresses", return_value=["192.168.0.20"]):
             items = {item["id"]: item for item in bridge.diagnosis()}
-        self.assertEqual((items["server_off"]["ok"], items["blocked"]["ok"]), (True, False))
+        self.assertEqual((items["server_off"]["ok"], items["server_off"]["title"]),
+                         (False, "O computador principal está desligado ou fora da rede"))
+        self.assertIn("Ligue o computador principal e espere um minuto.", items["server_off"]["help"])
+        self.assertIn("firewall", items["server_off"]["help"])
+        self.assertTrue(items["service_off"]["ok"])
+        with patch.object(station.discovery, "local_addresses", return_value=[]):
+            items = {item["id"]: item for item in bridge.diagnosis()}
+        self.assertEqual((items["network"]["ok"], items["server_off"]["ok"], items["service_off"]["ok"]),
+                         (False, True, True), "without network only the network is blamed")
+        bridge.clock_behind = 420
+        with patch.object(station.discovery, "local_addresses", return_value=["192.168.0.20"]):
+            items = {item["id"]: item for item in bridge.diagnosis()}
+        self.assertEqual((items["clock_behind"]["ok"], items["clock_behind"]["title"]),
+                         (False, "O relógio deste computador está atrasado em relação ao do caixa principal"))
 
     def test_revoked_token_during_use(self):
         app, bridge = self.station_app()
@@ -868,7 +886,8 @@ class RediscoveryTests(StationCase):
                                             "terminal_name": "Caixa 1"})
         self.assertEqual(status["diagnosis"][-1], {
             "id": "identity_changed", "ok": False, "title": "O caixa principal mudou de computador",
-            "help": "Peça ao gerente o código de 6 números em Sistema → Adicionar caixa e digite aqui."})
+            "help": "Peça ao gerente o código de 6 números em Sistema → Caixas da loja → Adicionar caixa e "
+                    "digite aqui."})
         saved = station.load_state(bridge.test_dir)
         self.assertEqual((saved["server"]["fingerprint"], saved["server"]["port"]), (self.fingerprint, self.port),
                          "nothing is saved before the manager gives a new code")
@@ -1246,7 +1265,10 @@ class ReplicaPullerTests(StationCase):
             app, bridge = self.station_app(PING_UP_SECONDS=30, PING_DOWN_SECONDS=30)
             station.start_background(app)
             self.assertEqual(started[0][0], bridge.test_dir)
-            response = started[0][1]().request("GET", "/lan/v1/ping")
+            own = started[0][1]()
+            self.addCleanup(own.close)
+            self.assertIsNot(own, bridge.client(), "the puller closes its client: never the one of the bridge")
+            response = own.request("GET", "/lan/v1/ping", headers=dict([station.lanclient.NATIVE_HEADER]))
             self.assertEqual(response.status, 200)
             response.close()
             status = app.test_client().get("/station/api/status", base_url=BASE).json

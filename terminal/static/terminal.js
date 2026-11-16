@@ -305,7 +305,7 @@ function renderStatus() {
   $('reviewChip').classList.toggle('hidden', !indicator.review);
   setChip('reviewChip', 'warn', indicator.reviewLabel, 'Registros que o servidor separou para revisão do gestor. As vendas seguintes continuam sendo enviadas. Toque para ver os detalhes.');
   const leaseText = license.clock ? 'Relógio incorreto' : license.warning ? leaseWarningText(license)
-    : {active: 'Licença ativa', expired: 'Licença vencida', clock_rollback: 'Relógio incorreto', invalid: 'Licença inválida', transferred: 'Caixa transferido'}[license.state] || 'Licença pendente';
+    : {active: 'Licença ativa', expired: 'Licença vencida', clock_rollback: 'Relógio incorreto', invalid: 'Licença inválida', transferred: 'Caixa transferido', superseded: 'Outro computador assumiu'}[license.state] || 'Licença pendente';
   // Warn: about to expire, or expired while the open cashier keeps selling.
   const leaseState = !license.can_sell ? 'danger' : (license.warning || license.state !== 'active') ? 'warn' : 'ok';
   setChip('leaseChip', leaseState, leaseText, license.reason || '', leaseState === 'ok' ? 'Licença' : '');
@@ -315,7 +315,8 @@ function renderStatus() {
   $('hoursChip').classList.toggle('hidden', !hours.configured || hours.open);
   setChip('hoursChip', 'warn', 'Fora do horário', 'Fora do horário de funcionamento da empresa. Um caixa já aberto continua ativo.');
   const update = session.update || {}, staged = update.state === 'staged' && update.staged_version;
-  $('releaseChip').classList.toggle('hidden', !staged && !update.available);
+  // On an additional cashier this is the update of the MAIN computer, and the button is not here.
+  $('releaseChip').classList.toggle('hidden', notice.isStation || (!staged && !update.available));
   setChip('releaseChip', 'muted', staged ? `Atualização ${update.staged_version} pronta` : update.available ? `Versão ${update.available.version} disponível` : '',
     staged ? 'A nova versão já foi baixada. Com o caixa fechado, o gerente toca em Atualizar agora, na aba Sistema.' : 'Há uma atualização do terminal. Veja em Sistema.');
   // The second-disk copy stopped or fell behind: said here, not only inside the Sistema tab.
@@ -338,6 +339,10 @@ const leaseWarningText = license => (license.days_left >= 1 ? `Licença vence em
 function licenseBlock(license = {}) {
   // The shop moved to another computer: this one only finishes sending what it had.
   if (license.state === 'transferred') return C.transferredBlock(license, state.session?.sync?.pending, Date.now());
+  // A cashier that took over while this computer was off is on the network: two main cashiers would split the sales.
+  if (license.state === 'superseded') return {title: 'Outro computador assumiu como caixa principal', recheck: false,
+    text: 'Enquanto este computador estava parado, um caixa adicional assumiu como caixa principal desta loja. Este computador não vende mais.',
+    steps: ['Use o novo caixa principal para vender.', 'Não apague nem formate este computador: as vendas que ficaram só aqui precisam ser trazidas pelo suporte.']};
   if (license.clock) {
     const computer = dateTimeText(license.clock.computer_time * 1000).slice(0, -3), reference = dateTimeText(license.clock.reference_time * 1000).slice(0, -3);
     return {title: 'Acerte a data e a hora deste computador', recheck: true,
@@ -411,6 +416,8 @@ function renderOperatorSelect() {
   }
   select.disabled = !operators.length;
   $('operatorEmptyHint').classList.toggle('hidden', !!operators.length);
+  const stationHint = C.stationNotice(state.session).operatorHint;
+  if (stationHint) $('operatorEmptyHint').textContent = stationHint;
   $('loginTitle').textContent = state.session.license?.state === 'transferred' ? 'Este caixa foi transferido' : state.session.cash ? 'Caixa bloqueado' : 'Pronto para vender';
 }
 // Session answers are applied in the order they were asked for, so a slow poll cannot bring back an older state.
@@ -441,9 +448,11 @@ async function loadSession() {
     renderOperatorSelect();
     const first = $('loginView').classList.contains('hidden');
     showView('loginView');
-    if (first) (session.operators?.length ? $('operatorPin') : $('refreshBootstrap')).focus();
+    const onStation = C.stationNotice(session).isStation;
+    if (first) (session.operators?.length || onStation ? $('operatorPin') : $('refreshBootstrap')).focus();
     // People can be added in the panel after pairing, but a full bootstrap every poll is wasteful.
-    if (Date.now() - state.lastOperatorsRefreshAt > 300000) {
+    // An additional cashier never asks for it: the bootstrap belongs to the main computer.
+    if (!onStation && Date.now() - state.lastOperatorsRefreshAt > 300000) {
       state.lastOperatorsRefreshAt = Date.now();
       refreshOperators(true).then(async () => { const updated = await fetchSession(); if (!updated) return; applySession(updated); if (!updated.operator) renderOperatorSelect(); }).catch(() => {});
     }
@@ -496,9 +505,13 @@ function applyRoleUi() {
 function applyStationUi() {
   const notice = C.stationNotice(state.session);
   document.body.dataset.station = String(notice.isStation);
-  for (const id of notice.hidden) $(id).classList.add('hidden');
+  for (const id of notice.hidden) { const node = $(id); if (!node) continue; if (!node.classList.contains('hidden')) node.dataset.stationHidden = '1'; node.classList.add('hidden'); }
   $('stationPrinterHint').classList.toggle('hidden', !notice.isStation);
-  if (!notice.isStation) for (const id of ['backupCard', 'stationsCard', 'changeConnection', 'newProfileLoginBtn']) $(id).classList.remove('hidden');
+  if (!notice.isStation) {
+    for (const id of ['backupCard', 'stationsCard', 'changeConnection', 'newProfileLoginBtn']) $(id).classList.remove('hidden');
+    // What was hidden only because this was an additional cashier comes back (a promoted computer).
+    for (const node of document.querySelectorAll('[data-station-hidden]')) { delete node.dataset.stationHidden; if (!['mirrorChooseBtn', 'mirrorSnapshotBtn', 'updateApplyBtn', 'exportLink'].includes(node.id)) node.classList.remove('hidden'); }
+  }
 }
 function renderPromotion(promotion) {
   const view = C.promotionCard(promotion);
@@ -1771,7 +1784,7 @@ const ACTIONS = {
   discardSale: {label: 'Cancelar a venda atual', words: 'descartar limpar nova venda', sale: true, why: needsCart, pin: () => role() === 'cashier', run: discardSale},
   scale: {label: 'Balança e etiquetas', words: 'peso serial conectar', sell: true, run: scaleDialog},
   recheckLicense: {label: 'Verificar licença e relógio de novo', words: 'licenca renovar hora data relogio', run: recheckLicense},
-  refreshCatalog: {label: 'Atualizar catálogo e operadores', words: 'sincronizar produtos precos', run: async () => { await refreshOperators(); await poll(); await refreshCartProducts(); }},
+  refreshCatalog: {label: 'Atualizar catálogo e operadores', words: 'sincronizar produtos precos', run: async () => { if (!C.stationNotice(state.session).isStation) await refreshOperators(); await poll(); await refreshCartProducts(); }},
   lock: {label: 'Trocar operador (bloquear caixa)', words: 'bloquear sair trocar', run: lockTerminal},
   logout: {label: 'Sair', words: 'logout encerrar', why: () => (state.session?.cash ? 'Feche o caixa antes de sair' : ''), run: logout},
   themeLight: {label: 'Tema claro', words: 'aparencia cor', run: () => setTheme('light')},
@@ -1911,8 +1924,10 @@ function openMenu() {
 const badge = ([label, kind] = ['—', '']) => `<span class="badge ${kind || ''}">${esc(label)}</span>`;
 async function loadSales() {
   const data = await api('/api/sales'), sells = canSell(role());
+  // A sale is cancelled on the cashier that made it (its drawer gives the money back); elsewhere, a return.
+  const here = state.session?.station?.id || 'server', mine = sale => (sale.station_id || 'server') === here;
   $('salesList').innerHTML = data.sales.length ? data.sales.map(sale => `<div class="list-row"><span><strong>${money(sale.total_cents)} ${badge(saleStatusNames[sale.status] || [sale.status, ''])}</strong><small>${dateTimeText(sale.created_at)} · ${esc(sale.customer_name || 'Consumidor não identificado')} · venda ${esc(sale.id.slice(0, 8))}${sale.void_reason ? ' · ' + esc(sale.void_reason) : ''}</small></span>
-    <span class="list-actions"><button class="btn" data-detail="${esc(sale.id)}">Comprovante</button>${sells ? `<button class="btn" data-reprint="${esc(sale.id)}">Reimprimir</button>` : ''}${sells && sale.status === 'completed' ? `<button class="btn" data-return="${esc(sale.id)}">Devolver</button><button class="btn danger" data-void="${esc(sale.id)}">Cancelar</button>` : ''}</span></div>`).join('') : '<p class="list-empty">Nenhuma venda neste terminal.</p>';
+    <span class="list-actions"><button class="btn" data-detail="${esc(sale.id)}">Comprovante</button>${sells ? `<button class="btn" data-reprint="${esc(sale.id)}">Reimprimir</button>` : ''}${sells && sale.status === 'completed' ? `<button class="btn" data-return="${esc(sale.id)}">Devolver</button>${mine(sale) ? `<button class="btn danger" data-void="${esc(sale.id)}">Cancelar</button>` : `<button class="btn" disabled title="Venda feita em ${esc(sale.station_name || 'outro caixa')}: cancele nele ou registre uma devolução aqui.">Cancelar</button>`}` : ''}</span></div>`).join('') : '<p class="list-empty">Nenhuma venda neste terminal.</p>';
 }
 async function voidSale(id) {
   const reason = await textDialog('Motivo do cancelamento', 'Descreva o motivo para registrar na auditoria da venda.', {eyebrow: 'Cancelamento de venda', fieldLabel: 'Motivo', placeholder: 'Ex.: produto lançado incorretamente', acceptLabel: 'Continuar', multiline: true, minLength: 3, maxLength: 240});
@@ -1946,7 +1961,8 @@ async function loadPrinters() {
 }
 async function loadSystem() {
   const result = await api('/api/sync'), sync = result.sync, license = result.license, indicator = syncIndicator(sync, Date.now());
-  $('aboutVersion').textContent = `Versão instalada: ${result.version || '—'}`;
+  // On an additional cashier the answer comes from the main computer: show the version of THIS one.
+  $('aboutVersion').textContent = `Versão instalada: ${C.stationNotice(state.session).version || result.version || '—'}`;
   renderLease(license);
   api('/api/update/status').then(renderUpdate).catch(() => { $('updateState').textContent = 'Estado: não foi possível consultar a atualização.'; });
   $('systemPending').textContent = sync.pending;
@@ -2091,6 +2107,12 @@ async function addStation() {
   tick();
   const timer = setInterval(tick, 1000);
   modal.body.append(code, left, address);
+  if (data.server && data.server.running === false) {
+    const broken = el('p', 'hint');
+    broken.setAttribute('role', 'alert');
+    broken.textContent = 'A rede entre os caixas não abriu neste computador. O outro caixa não vai conseguir conectar: feche, reinicie o PDV2 e tente de novo.' + (data.server.error ? ` (${data.server.error})` : '');
+    modal.body.append(broken);
+  }
   modal.action('Pronto', 'primary', () => modal.close(true));
   await modal.promise;
   clearInterval(timer);

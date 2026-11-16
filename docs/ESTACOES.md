@@ -1,6 +1,6 @@
 # Vários caixas na mesma loja (fase 3)
 
-Este documento descreve a fase 3 de [ARQUITETURA-OFFLINE-LOCAL.md](ARQUITETURA-OFFLINE-LOCAL.md): uma loja com mais de um caixa. A primeira parte é o guia do lojista; a segunda é a parte técnica da **réplica pela rede** e da **promoção** (`terminal/replica_net.py`, `terminal/promotion.py`, e o que `terminal/mirror.py` ganhou). A escuta de rede, o vínculo e as telas ficam com as outras frentes da fase e são descritos em [TERMINAL-V2.md](TERMINAL-V2.md) e [INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md); a réplica em segundo disco, que usa os mesmos arquivos, em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md).
+Este documento descreve a fase 3 de [ARQUITETURA-OFFLINE-LOCAL.md](ARQUITETURA-OFFLINE-LOCAL.md): uma loja com mais de um caixa. A primeira parte é o guia do lojista; a segunda é a parte técnica da **réplica pela rede** e da **promoção** (`terminal/replica_net.py`, `terminal/promotion.py`, e o que `terminal/mirror.py` ganhou). A escuta de rede, o vínculo, a ponte e a tela do caixa adicional estão na [seção 6](#6-parte-técnica-rede-e-tela-do-caixa-adicional) (`terminal/lan.py`, `terminal/station.py`); o modelo local (tabela `stations`, rotas do principal) em [TERMINAL-V2.md](TERMINAL-V2.md); instalação e firewall em [INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md); a réplica em segundo disco, que usa os mesmos arquivos, em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md).
 
 Dois nomes, sempre os mesmos:
 
@@ -21,7 +21,9 @@ Dois nomes, sempre os mesmos:
 
 Pronto: o caixa adicional mostra a mesma tela de venda. Estoque, fiado e preços são os mesmos nos dois, na hora. Cada caixa abre e fecha o **seu** caixa de dinheiro e usa a **sua** impressora.
 
-Se o computador novo não achar o principal sozinho, digite nele o endereço que aparece na tela do principal (por exemplo `192.168.0.10`). Se mesmo assim não achar, veja se a rede do Windows está como **Particular** nos dois computadores.
+Se o computador novo não achar o principal sozinho, toque em **Não é este computador? Digitar o endereço** e digite o endereço que aparece na tela do principal (por exemplo `192.168.0.10`). Se a rede tiver mais de um caixa principal (duas lojas no mesmo prédio, dois terminais da mesma loja), a tela lista os que encontrou para você tocar no certo; ela nunca escolhe sozinha. Se mesmo assim não achar, confira se os dois estão na mesma rede e se o firewall do Windows do principal tem a regra **PDV2 - Servidor da loja** (o instalador ou o próprio PDV2 a criam; vale para rede Particular, Domínio e Pública, sempre só para a rede local). O cartão **Caixas da loja** do principal avisa quando o firewall não liberou ou quando a rede entre caixas não abriu.
+
+Cada caixa responde pela própria gaveta: uma venda só pode ser **cancelada no caixa que a fez**. Em outro caixa, use **Devolver** (o dinheiro sai da gaveta de quem devolve).
 
 Poucos minutos depois de conectado, o caixa adicional passa a guardar uma **cópia de segurança do caixa principal**. No principal, em **Sistema → Caixas da loja**, cada caixa mostra "Cópia de segurança em dia" ou "atrasada". Você não precisa fazer nada: a cópia se atualiza sozinha a cada venda.
 
@@ -30,16 +32,23 @@ Poucos minutos depois de conectado, o caixa adicional passa a guardar uma **cóp
 O caixa adicional mostra **O caixa principal está fora do ar** e **para de vender**. Isso é de propósito: é o que garante que estoque e fiado nunca fiquem diferentes entre os caixas.
 
 - O que já estava lançado na tela **não se perde**: quando o principal voltar, o caixa adicional volta sozinho e a venda continua de onde parou.
-- Quase sempre é coisa simples: o computador principal desligou, reiniciou por causa de uma atualização do Windows, ou o cabo de rede soltou. A tela do caixa adicional diz o que encontrou em **Ver o que aconteceu**.
+- Quase sempre é coisa simples: o computador principal desligou, reiniciou por causa de uma atualização do Windows, ou o cabo de rede soltou. A tela do caixa adicional diz o que encontrou em **Ver o que aconteceu**: "O computador principal está desligado ou fora da rede" (nenhuma resposta), "O computador principal está ligado, mas o PDV2 não está aberto nele" (a conexão foi recusada), "Este computador está sem rede" ou "O relógio deste computador está atrasado em relação ao do caixa principal".
+- Se o principal estiver ligado mostrando a tela de restauração do banco, o adicional mostra **O caixa principal está com o banco de dados danificado** e não oferece assumir: chame o suporte.
 - Enquanto isso, **venda pelo caixa principal**, se ele estiver funcionando.
 
 Não toque em "Assumir como caixa principal" se o computador principal só está desligado ou sem rede. Ligue-o de novo.
+
+Outras telas do caixa adicional:
+
+- **Este caixa não está liberado para vender**: o plano da loja encolheu (o caixa mais novo fica de fora) ou outro terminal virou o caixa principal da loja no painel. A rede está funcionando e o caixa volta sozinho quando o plano for ampliado; não há o que assumir.
+- **O caixa principal mudou de computador**: outro caixa assumiu como principal. Peça o código ao gerente no novo principal. Mesmo que o computador antigo volte a ser ligado, este caixa **não volta a vender por ele**.
+- **Este computador não vai mais ser caixa adicional desta loja** (link no pé das telas acima e da tela de fora do ar): desfaz o vínculo. Depois disso aparece "Este computador é o caixa principal? Voltar", que leva à tela de ativação, onde fica **Recuperar minha loja**.
 
 ### 1.3 Assumir como caixa principal
 
 Use **só** quando o computador principal não vai voltar agora: quebrou, queimou ou foi roubado.
 
-1. No caixa adicional, na tela "O caixa principal está fora do ar", toque em **Assumir como caixa principal**. O botão aparece depois de um minuto sem resposta do principal.
+1. No caixa adicional, na tela "O caixa principal está fora do ar" (na tela de venda, toque antes em **Ver o que aconteceu**), toque em **Assumir como caixa principal**. O botão fica desabilitado até completar um minuto sem resposta do principal, e não libera com **este** computador sem rede (sem rede não dá para saber se o principal parou).
 2. Leia o aviso. A tela mostra de quando é a cópia que este caixa guarda ("Cópia deste caixa: de 14:32").
 3. Digite o **PIN de um gerente** e confirme.
 4. Espere os três passos: "Abrindo a cópia…", "Aplicando as últimas vendas…", "Preparando este computador…".
@@ -47,12 +56,13 @@ Use **só** quando o computador principal não vai voltar agora: quebrou, queimo
 
 O que você precisa saber:
 
-- **Depois de assumir, o computador antigo NÃO pode voltar a vender.** Se ele for consertado, não o religue na loja como caixa: fale com o suporte.
+- **Depois de assumir, o computador antigo NÃO pode voltar a vender.** Se ele for consertado, não o religue na loja como caixa: fale com o suporte. Se for religado na mesma rede, ele encontra o novo principal, mostra "Outro computador assumiu como caixa principal" e para de vender; os caixas adicionais que já viram o novo principal também não voltam para ele.
 - Vêm junto todas as vendas, o estoque, o fiado e os caixas que o principal tinha. O que pode faltar são as vendas dos **últimos segundos** antes de o principal parar, se ainda não tinham chegado a este caixa.
 - O **caixa de dinheiro que estava aberto no computador antigo** aparece em **Sistema → Caixas da loja** como "Caixa principal anterior". Conte o dinheiro daquela gaveta e feche por ali.
 - Errou o PIN cinco vezes? O assistente espera cinco minutos antes de aceitar outra tentativa.
-- "Este caixa ainda não tem uma cópia completa do caixa principal": o caixa foi adicionado há muito pouco tempo e a primeira cópia não terminou. Neste caso o caminho é o da [troca de computador](RECUPERACAO-E-REPLICA.md) (Recuperar minha loja).
-- "Atualize este caixa antes de assumir": o caixa principal usava uma versão do PDV2 com formato de banco mais novo (o primeiro ou o segundo número da versão é maior). Instale a versão nova neste computador e tente de novo. Versão de correção (só o terceiro número diferente, ex.: 2.1.0 e 2.1.7) não impede de assumir.
+- "Este caixa ainda não tem uma cópia completa do caixa principal": o caixa foi adicionado há muito pouco tempo e a primeira cópia não terminou. Neste caso o caminho é o da [troca de computador](RECUPERACAO-E-REPLICA.md): toque em **Este computador não vai mais ser caixa adicional desta loja**, depois em **Este computador é o caixa principal? Voltar** e, na tela de ativação, em **Recuperar minha loja**.
+- "Atualize este caixa antes de assumir": o caixa principal usava uma versão do PDV2 com formato de banco mais novo (o primeiro ou o segundo número da versão é maior). Instale a versão nova neste computador e tente de novo. Versão de correção (só o terceiro número diferente, ex.: 2.1.0 e 2.1.7) não impede de assumir. Para não descobrir isso na hora ruim, o cartão **Caixas da loja** do principal avisa "Versão antiga (x.y.z): instale a versão nova neste caixa" enquanto o principal está no ar.
+- "O relógio deste computador está atrasado em relação ao do caixa principal": acerte a data e a hora do Windows e tente de novo. A promoção recusa antes de trocar qualquer coisa, porque o banco promovido não venderia com o relógio atrasado mais de 5 minutos.
 
 ### 1.4 Regularizar com a nuvem
 
@@ -211,10 +221,10 @@ Depois da promoção o banco está em `promotion_state = awaiting_cloud`: vende 
 - **Com o principal fora do ar o caixa adicional não vende.** É decisão de projeto; a alternativa (venda independente por caixa) deixaria estoque e fiado aproximados.
 - **Janela de perda na promoção: segundos.** A venda é confirmada no principal antes de chegar à cópia do caixa adicional. O que o principal vendeu e ainda não tinha chegado a **este** caixa não entra no banco promovido. Se outro caixa adicional recebeu essas vendas, elas ficam na pasta `anterior-<ms>` dele, para o suporte.
 - **Caixa adicional recém-ligado não pode assumir** antes de a primeira cópia terminar.
-- **Caixa adicional com versão antiga não pode assumir** quando o principal já usava um formato de banco mais novo (primeiro ou segundo número da versão maior). O caixa adicional não se atualiza sozinho nesta fase; depois de uma versão que muda o segundo número é preciso instalar a versão nova em cada caixa adicional. O aviso antecipado na tela (com o principal ainda no ar) depende de a tela do caixa adicional e o cartão "Caixas da loja" mostrarem `promotion.status().reason`; fica para a integração e para decisão do dono.
-- **O computador antigo não pode voltar.** Se ele ressuscitar antes da regularização, os dois têm a mesma identidade por alguns dias; depois dela, a nuvem aceita dele só o envio da fila que ficou.
+- **Caixa adicional com versão antiga não pode assumir** quando o principal já usava um formato de banco mais novo (primeiro ou segundo número da versão maior). O caixa adicional não se atualiza sozinho nesta fase; depois de uma versão que muda o segundo número é preciso instalar a versão nova em cada caixa adicional (o instalador é o mesmo do principal, ver INSTALADOR-WINDOWS.md §8). O cartão "Caixas da loja" do principal compara a versão de cada caixa (`app_version`, de `X-PDV-Station-Version`) com a dele (`version` de `/api/stations`) e avisa com antecedência.
+- **O computador antigo não pode voltar.** Se ele ressuscitar na mesma rede, encontra o novo principal pela busca, confere a prova de geração (seção 6.4), grava `superseded_at` e para de vender (`lease_status` = `superseded`); as vendas que ficaram só nele precisam do suporte. Religado **fora** da rede da loja e sem internet, ele não tem como saber e continua vendendo com a licença que tinha até a regularização do novo principal chegar a ele pela nuvem (aí vira `transferred` e sobe a fila como só-envio).
 - **Estoque e fiado podem contar em dobro por instantes** entre a primeira carga da nuvem depois da regularização e o envio completo da fila; corrigem-se sozinhos.
-- **A chave da cópia fica no disco do caixa adicional** (`replica/state.json`, permissão 600, pasta 700). Quem tem acesso de administrador a esse computador consegue abrir a cópia do banco da loja.
+- **A chave da cópia fica no disco do caixa adicional** (`replica/state.json`, permissão 600, pasta 700). Quem tem acesso de administrador a esse computador consegue abrir a cópia do banco da loja. O navegador do caixa não alcança a chave nem a cópia: a ponte recusa `/lan/*` e o principal só responde às rotas nativas com o cabeçalho dos agentes (seção 6.1).
 - **A conferência do PIN na promoção decifra a cópia inteira** a cada tentativa; em banco grande leva alguns segundos.
 - **A cópia de saída ocupa até duas vezes o tamanho do banco** no disco do principal, e a de cada caixa adicional outras duas, mais as gerações guardadas em `anterior-<ms>`, que não são apagadas sozinhas.
 - **O progresso por caixa no principal é só em memória**: depois de reiniciar o serviço, a tela mostra a cópia como desligada até cada caixa adicional pedir de novo (segundos).
@@ -228,4 +238,54 @@ Depois da promoção o banco está em `promotion_state = awaiting_cloud`: vende 
 - `python -m unittest terminal.tests.test_replica_net`: primeira cópia conferida, diário em segundos, arquivos ilegíveis sem a chave, leitores da fase 2 na pasta do caixa adicional, cabo puxado no meio do download (retomada por `Range`) e do diário, linha adulterada ou de outra chave, chave trocada, principal reiniciado, principal que voltou no tempo ou mudou de `device_id`, principal trocado por promoção (mesma identidade, fila divergente; geração diferente), `no_key`, `restoring`, cadência da cópia, três caixas ao mesmo tempo, ganchos sem E/S.
 - `python -m unittest terminal.tests.test_promotion`: PIN de gerente e de operador de caixa, bloqueio de cinco minutos, sem cópia, versão mais nova e versão de correção, pendência só até o modo ser gravado e nova promoção do mesmo computador, ordem dos passos e `promotion.json`, falha em cada passo, promoção repetida, uma por vez, queda no meio, cópia danificada.
 - `python -m unittest terminal.tests.test_mirror`: inclui `restore_database` e as funções novas.
-- `terminal/tests/test_e2e_promocao.py`: ponta a ponta com o `Store` de verdade e a nuvem Django (principal vende, caixa adicional replica, principal morre, promoção sem e com internet). Depende do núcleo e da nuvem da fase 3; é pulado enquanto eles não estiverem na árvore.
+- `terminal/tests/test_e2e_promocao.py`: ponta a ponta com o `Store` de verdade e a nuvem Django (principal vende, caixa adicional replica, principal morre, promoção sem e com internet, regularização com a fila subindo sem duplicar).
+- `terminal/tests/test_e2e_estacoes.py`: o app inteiro do principal, a escuta TLS de verdade e duas pontes reais; principal e dois caixas adicionais vendendo ao mesmo tempo em threads, cabo puxado no meio da venda.
+- `terminal/tests/test_fase3_integracao.py`: o que só apareceu na integração (rotas nativas fora do alcance do navegador, principal que sobe com banco danificado, principal substituído, caixa fora do plano, desvincular, promoção sem rede, cliente fixado que nunca vira TCP simples).
+
+## 6. Parte técnica: rede e tela do caixa adicional
+
+### 6.1 Rotas `/lan/v1` (escuta TLS do caixa principal, TCP 8011)
+
+O caixa adicional fala com o principal por TLS com o certificado fixado no vínculo (`<dados>/lan/cert.pem`). Cabeçalhos que ele envia: `X-PDV-Station-Token` (o token do vínculo), `X-PDV-Station-Api` (versão do protocolo, hoje 1), `X-PDV-Station-Version` (versão do PDV2 deste caixa) e `X-PDV-Station-Host` (nome do computador). Toda recusa da camada de rede vem como `{"error","code"}` com o cabeçalho `x-pdv-lan-error: <code>`.
+
+| Rota | Quem | Resposta |
+|---|---|---|
+| `GET /lan/v1/hello[?challenge=<32 hex>]` | qualquer um na rede | identidade do principal (`shop_id`, `terminal_id`, nomes, `host`, `port`, `generation`, `fingerprint`, `enroll_open`). Com `challenge`, também `proof` = HMAC-SHA256 da chave da cópia sobre `pdv2-generation\|challenge\|terminal_id\|generation\|fingerprint` (seção 6.4). |
+| `POST /lan/v1/enroll` `{"code","name","station_id"?}` | quem tem o código de 6 números | `{"api","station_id","station_name","token","fingerprint","server"}`; 401 `invalid_code`; 409 `station_limit`; 429 `too_many_attempts` (10 por endereço a cada 10 min). |
+| `GET /lan/v1/ping` | agente do caixa | `{"ok","api","version","station","server_time","generation"}` |
+| `/lan/v1/replica/*` | agente do caixa | seção 2.1 |
+| `POST /lan/v1/print/next` · `POST /lan/v1/print/<id>/done` `{"error"?}` · `POST /lan/v1/print/recover` | agente de impressão do caixa | próximo recibo da fila **deste** caixa (`payload_b64`), conclusão, e volta dos que ficaram em `sending` |
+| qualquer outra rota | navegador do caixa, pela ponte | o app Flask do principal, com `environ["pdv2.station"] = {"id","name","version"}`; rotas de `SERVER_ONLY_ENDPOINTS` dão 403 `server_only` |
+
+**Rotas nativas só para os agentes.** `/lan/*` (qualquer caixa de letra, barras repetidas) exige também `X-PDV-Station-Native: 1`, que só o monitor, o agente de impressão e o puxador da cópia enviam. A ponte local recusa `/lan/*` com 404 antes de encaminhar e descarta todo cabeçalho `X-PDV-Station*` vindo do navegador, então uma página aberta no computador do caixa não lê a chave da cópia, não baixa o banco e não tira recibo da fila.
+
+Códigos de recusa: `station_unauthorized` (401), `station_revoked` (403), `station_limit` (403: fora do plano, ou o principal deixou de ser o principal da loja no painel), `station_outdated`/`server_outdated` (426), `server_damaged` (503: o principal subiu com o banco danificado; a escuta continua aberta para os caixas que já tinha), `server_superseded` (409: outro computador assumiu), `server_busy` (503), `too_many_attempts` (429), `not_found` (404). Na ponte: `server_unreachable` e `server_timeout` (503/504), `server_replaced` (409: este caixa já viu um principal de geração maior).
+
+### 6.2 Tela e rotas locais do caixa adicional (`127.0.0.1:8010`)
+
+`/health` responde `{"status":"ok","service":"terminal-local","mode":"station","server":"unlinked|up|down"}` (`down` cobre também os estados em que o principal recusa este caixa). A tela própria fica em `/station/`; o resto é encaminhado ao principal. As rotas de escrita de `/station/api/*` exigem `X-PDV-Station-Local: 1` e Origin local.
+
+| Rota | Resposta |
+|---|---|
+| `GET /station/api/status` | `{"linked","state","station","server","reason","reason_text","relink","diagnosis","replica","promotion","can_promote","promote_block","version"}` |
+| `POST /station/api/discover` | caixas principais achados pela busca UDP 8012 (`known`, `same_shop`) |
+| `POST /station/api/probe` `{"address","port"?}` | o `hello` do endereço digitado |
+| `POST /station/api/link` `{"address","port","fingerprint","code","name"?}` | vincula; `fingerprint_mismatch` se outro computador respondeu |
+| `POST /station/api/unlink` `{"confirm":true}` | `{"linked":false}`; o vínculo vai para `station-anterior.json` |
+| `POST /station/api/mode/server` `{"confirm":true}` | só sem vínculo: volta a ser caixa principal (reinicia o serviço) |
+| `GET /station/api/promotion` · `POST …/promotion/verify` · `POST …/promotion/start` | assistente da seção 3; `start` recusa com 409 `server_alive`, `no_network`, ou com o principal danificado |
+
+Estados (`state`): `unlinked`, `up`, `down` (sem resposta), `blocked` (recusado por `station_limit`; sem oferta de assumir; volta sozinho), `relink` (o principal mudou de computador), `revoked`, `incompatible` (`station_outdated`/`server_outdated`) e `damaged`. Numa navegação, toda recusa que é estado deste caixa redireciona para `/station/`; recusas passageiras (`server_busy`, `too_many_attempts`) mostram uma página curta que tenta de novo em 3 s, nunca o JSON cru.
+
+Arquivos do caixa adicional em `<dados>`: `station.json` (600: endereço, impressão digital e geração do principal, token, e `superseded` quando viu um principal mais novo), `station-anterior.json` (vínculo desfeito), `station-print-pending.json` (recibo em impressão quando o serviço parou) e `replica\` (seção 2.3).
+
+### 6.3 Instalação em Docker
+
+`compose.terminal.yaml` define `PDV_LAN_DISABLED=1`: a rede do contêiner não é a da loja, então a escuta não abre e a tela não oferece o código. Caixas adicionais exigem o terminal nativo (instalador Windows ou `python -m terminal`).
+
+### 6.4 Principal substituído
+
+Cada promoção soma 1 a `meta.server_generation`. A busca anuncia a geração, mas o anúncio sozinho não basta (qualquer um na rede poderia mentir): quem acha um anúncio de geração maior com o mesmo `terminal_id` pede `hello?challenge=…` e confere a `proof` com a chave da cópia, que só o principal e os caixas que guardam a cópia dele têm.
+
+- **No principal antigo** (`LanServer.check_superseded`, na partida e a cada reavaliação): prova conferida → `Store.mark_superseded` grava `superseded_at`, `lease_status` passa a `superseded` (não vende nem abre caixa), a busca deixa de anunciá-lo e a escuta recusa caixas com `server_superseded`. Só uma nova configuração (pareamento, recuperação ou promoção) limpa a marca.
+- **No caixa adicional** (`Station.rediscover`): prova conferida → `station.json` guarda `superseded` e o caixa fica em `relink` mesmo que o principal antigo volte a responder; a ponte responde `server_replaced`. O vínculo com o novo principal limpa a marca. Sem prova, nada é gravado e o principal original, se voltar, cancela a pista.

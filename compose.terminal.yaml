@@ -11,6 +11,9 @@ services:
       PDV_TERMINAL_PORT: "8010"
       PDV_TERMINAL_DB: /data/terminal.sqlite3
       PDV_TERMINAL_DATA: /data
+      # Caixas adicionais (rede entre caixas, 8011/TCP e 8012/UDP) exigem o terminal nativo: a rede
+      # do contêiner não é a da loja. Aqui a escuta fica desligada e a tela não oferece o código.
+      PDV_LAN_DISABLED: "1"
       # Docker Desktop routes this hostname to the macOS host, where CUPS
       # owns the USB printer queue. Native Linux deployments can override it.
       CUPS_SERVER: host.docker.internal:631

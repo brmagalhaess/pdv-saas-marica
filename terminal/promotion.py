@@ -60,6 +60,8 @@ MSG_ALREADY = "Este computador já assumiu como caixa principal."
 MSG_RUNNING = "A promoção já está em andamento neste computador."
 MSG_INTERRUPTED = "A operação foi interrompida antes de terminar. Tente de novo."
 MSG_FAILED = "Não foi possível assumir como caixa principal"
+MSG_CLOCK = ("O relógio deste computador está atrasado em relação ao do caixa principal. Acerte a data e a hora "
+             "e tente de novo.")
 
 _ACTIVE = set()
 _ACTIVE_LOCK = threading.Lock()
@@ -357,6 +359,25 @@ def _check_restored(path, copy):
         raise TerminalError(MSG_NO_COPY, 409)
 
 
+def _check_clock(path):
+    """O relógio deste computador não pode estar atrás da marca que veio na cópia.
+
+    ``meta.last_seen`` é a marca contra volta de relógio, no relógio do caixa principal. Com o
+    relógio daqui atrasado além da tolerância, o banco promovido subiria como "relógio voltou" e a
+    loja ficaria sem vender logo depois de assumir: melhor recusar antes de trocar qualquer coisa.
+    """
+    from shared.licensing import CLOCK_TOLERANCE_SECONDS
+
+    with closing(sqlite3.connect(path)) as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key='last_seen'").fetchone()
+    try:
+        last_seen = int(row[0]) if row and row[0] else 0
+    except (TypeError, ValueError):
+        last_seen = 0
+    if last_seen and int(time.time()) + CLOCK_TOLERANCE_SECONDS < last_seen:
+        raise TerminalError(MSG_CLOCK, 409, code="clock_behind")
+
+
 def _swap(data_dir, promoting, now):
     """Troca atômica: o banco que existia aqui é renomeado (nunca apagado) e o promovido assume."""
     data_dir = Path(data_dir)
@@ -414,6 +435,7 @@ def promote(data_dir, pin, *, station_id, station_name, store_factory=None):
             step("restoring")
             restored = _restore(data_dir, copy, promoting)
             _check_restored(promoting, copy)
+            _check_clock(promoting)
 
             step("replaying")
             if store_factory is None:

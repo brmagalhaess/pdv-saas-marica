@@ -13,6 +13,7 @@ Secrets (station tokens, the 6-digit code, the TLS private key) never reach a lo
 import base64
 import datetime
 import hashlib
+import hmac
 import inspect
 import io
 import json
@@ -29,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote
 
-from . import discovery, paths
+from . import discovery, lanclient, paths
 
 try:  # the network replica belongs to another module and may not be installed
     from . import replica_net
@@ -59,6 +60,9 @@ ENROLL_WINDOW_SECONDS = 10 * 60
 FIREWALL_RULE = "PDV2 - Servidor da loja"
 CERT_YEARS = 20
 
+SUPERSEDED_MESSAGE = ("Este computador não é mais o caixa principal desta loja: outro computador assumiu. "
+                      "Procure o novo caixa principal.")
+_CHALLENGE = re.compile(r"[0-9a-f]{32}")
 SERVER_ONLY_MESSAGE = "Esta operação só pode ser feita no caixa principal da loja."
 UNAVAILABLE_MESSAGE = "Rede entre caixas indisponível nesta instalação"
 # Canonical list (contract 2.2): the path itself and everything below it, any method.
@@ -73,6 +77,7 @@ _JOB_DONE = re.compile(r"/lan/v1/print/([A-Za-z0-9_-]{1,64})/done")
 _STATION_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 SERVER_STATION_ID = "server"
 PREVIOUS_SERVER_PREFIX = "anterior-"
+_BUSY_ERRNOS = (48, 98, 10013, 10048)  # EADDRINUSE (macOS, Linux), WSAEACCES, WSAEADDRINUSE
 _BUSY = json.dumps({"error": "O caixa principal está ocupado. Tente de novo em instantes.",
                     "code": "server_busy"}, ensure_ascii=False).encode("utf-8")
 log = logging.getLogger("pdv2.lan")
@@ -164,7 +169,7 @@ def ensure_firewall(port=DEFAULT_PORT, discovery_port=discovery.PORT, *, run=sub
         for protocol, number in (("TCP", port), ("UDP", discovery_port)):
             result = run(["netsh", "advfirewall", "firewall", "add", "rule", f"name={FIREWALL_RULE}", "dir=in",
                           "action=allow", f"protocol={protocol}", f"localport={number}",
-                          "remoteip=localsubnet", "profile=any"], **options)
+                          "remoteip=localsubnet", "profile=any"], **options)  # every profile: see ESTACOES.md
             created = created and result.returncode == 0
         return "ok" if created else "missing"
     except (OSError, subprocess.SubprocessError):
@@ -180,6 +185,13 @@ def default_port(env=None):
     except ValueError:
         return DEFAULT_PORT
     return port if 0 <= port < 65536 else DEFAULT_PORT
+
+
+def disabled(env=None):
+    """PDV_LAN_DISABLED=1: this installation never serves other cashiers (the Docker terminal,
+    whose container network the other computers of the shop cannot reach)."""
+    env = os.environ if env is None else env
+    return str(env.get("PDV_LAN_DISABLED") or "").strip() == "1"
 
 
 def normalize_path(path):
@@ -219,6 +231,46 @@ def _generation(meta):
         return max(1, int(meta.get("server_generation") or 1))
     except (TypeError, ValueError):
         return 1
+
+
+def _copy_key(store):
+    """Key of the shop copy (meta.mirror_key), the secret shared with the cashiers that keep it."""
+    try:
+        value = json.loads(store.meta().get("mirror_key") or "null")
+    except (ValueError, AttributeError, TypeError):
+        return None
+    key = value.get("key") if isinstance(value, dict) else None
+    return key if isinstance(key, str) and key else None
+
+
+def prove_generation(client_factory, address, port, presented, key, terminal_id, above):
+    """Asks whoever answers at that address, with that certificate pinned, to prove it is a newer
+    generation of `terminal_id`. Returns the proven generation (> above) or None."""
+    if (not isinstance(address, str) or isinstance(port, bool) or not isinstance(port, int)
+            or not isinstance(presented, str) or not key):
+        return None
+    challenge = os.urandom(16).hex()
+    client = client_factory(address, port, presented, None, timeout=3.0)
+    try:
+        response = client.request("GET", "/lan/v1/hello?challenge=" + challenge, timeout=3.0)
+        try:
+            body = response.json() if response.status == 200 else None
+        finally:
+            response.close()
+    except OSError:
+        return None
+    finally:
+        client.close()
+    if not isinstance(body, dict) or body.get("terminal_id") != terminal_id or body.get("fingerprint") != presented:
+        return None
+    generation = body.get("generation")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation <= above:
+        return None
+    expected = lanclient.generation_proof(key, challenge, terminal_id, generation, presented)
+    proof = body.get("proof")
+    if not expected or not isinstance(proof, str) or not hmac.compare_digest(expected, proof):
+        return None
+    return generation
 
 
 def reserved_station(station_id):
@@ -347,14 +399,23 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/lan/v1/hello":
             self._method("GET")
-            self._json(200, manager.hello(store))
+            challenge = (parse_qs(query).get("challenge") or [""])[0]
+            self._json(200, manager.hello(store, challenge if _CHALLENGE.fullmatch(challenge) else None))
             return
+        if manager.superseded:
+            # A newer generation of this terminal is on the network: nobody links or sells here.
+            raise _Refused(409, SUPERSEDED_MESSAGE, "server_superseded")
         if path == "/lan/v1/enroll":
             self._method("POST")
             self._enroll(manager, store, address, body)
             return
         station = self._authenticate(manager, store, address)
-        if path == "/lan" or path.startswith("/lan/"):
+        normalized = (normalize_path(path) or "").lower()
+        if normalized == "/lan" or normalized.startswith("/lan/"):
+            # Native routes are for the agents of the station, never for its browser: the local
+            # bridge refuses /lan/* and cannot send this header (it drops every X-PDV-Station*).
+            if self.headers.get(lanclient.NATIVE_HEADER[0]) != lanclient.NATIVE_HEADER[1]:
+                raise _Refused(404, "Rota não encontrada.", "not_found")
             self._native(manager, store, station, path, query, body)
         elif server_only(path):
             raise _Refused(403, SERVER_ONLY_MESSAGE, "server_only")
@@ -547,7 +608,8 @@ class _Handler(BaseHTTPRequestHandler):
             "wsgi.version": (1, 0), "wsgi.url_scheme": "http", "wsgi.input": io.BytesIO(body),
             "wsgi.errors": sys.stderr, "wsgi.multithread": True, "wsgi.multiprocess": False,
             "wsgi.run_once": False,
-            "pdv2.station": {"id": station["id"], "name": station["name"]},
+            "pdv2.station": {"id": station["id"], "name": station["name"],
+                             "version": _clean(self.headers.get("X-PDV-Station-Version"), 20)},
         }
         if self.headers.get("Content-Type"):
             environ["CONTENT_TYPE"] = self.headers.get("Content-Type")
@@ -731,6 +793,10 @@ class LanServer:
         self._enrolls = {}
         self._touched = {}
         self.connection_limit = MAX_CONNECTIONS
+        self.superseded = False
+        self.discover = app.config.get("LAN_DISCOVER") or (
+            None if app.config.get("TESTING") else discovery.discover)
+        self.client_factory = app.config.get("LAN_CLIENT_FACTORY") or lanclient.LanClient
 
     # -- state
     @property
@@ -742,8 +808,15 @@ class LanServer:
 
     def _wanted(self):
         store = self._store()
-        if store is None or self._stop.is_set():
+        if self._stop.is_set() or disabled():
             return False
+        if store is None:
+            # Damaged database on a computer that already served stations: keep answering, so the
+            # stations say "the main cashier is damaged" instead of "it is off" (and never offer
+            # to take over while this computer is on, showing the restore screen).
+            folder = _data_dir(self.app) / "lan"
+            return bool(self.app.extensions.get("terminal_damage")
+                        and (folder / "cert.pem").is_file() and (folder / "key.pem").is_file())
         try:
             if not store.identity().get("terminal_id"):
                 return False
@@ -778,13 +851,29 @@ class LanServer:
     def _open(self):
         try:
             store = self._store()
-            certificate = ensure_certificate(_data_dir(self.app), store.identity().get("shop_id"))
+            if store is None:
+                # Damaged: only the certificate the stations already know (never a new identity).
+                folder = _data_dir(self.app) / "lan"
+                certificate = {"cert_path": folder / "cert.pem", "key_path": folder / "key.pem",
+                               "fingerprint": fingerprint((folder / "cert.pem").read_bytes())}
+            else:
+                certificate = ensure_certificate(_data_dir(self.app), store.identity().get("shop_id"))
+                try:
+                    self.superseded = bool(store.superseded())
+                except Exception:
+                    self.superseded = False
             self.context = _load_context(certificate["cert_path"], certificate["key_path"])
             self.fingerprint = certificate["fingerprint"]
             listener = _Listener((self.host, self.port), self)
+        except OSError as exc:
+            self.error = (f"Não foi possível abrir a rede entre caixas (a porta {self.port} está em uso por outro "
+                          "programa)" if isinstance(exc, OSError) and getattr(exc, "errno", None) in _BUSY_ERRNOS
+                          else "Não foi possível abrir a rede entre caixas neste computador")
+            log.error("%s: %s", self.error, type(exc).__name__)
+            return
         except Exception as exc:
-            self.error = "Não foi possível abrir a rede entre caixas: " + type(exc).__name__
-            log.error("%s", self.error)
+            self.error = "Não foi possível abrir a rede entre caixas neste computador"
+            log.error("%s: %s", self.error, type(exc).__name__)
             return
         self.port = listener.server_address[1]
         self._listener = listener
@@ -822,6 +911,10 @@ class LanServer:
             if self.running and not self._firewall_checked:
                 self._firewall_checked = True
                 self.firewall = ensure_firewall(self.port, self.discovery_port or discovery.PORT)
+            try:
+                self.check_superseded()
+            except Exception as exc:
+                log.error("Falha ao procurar outro caixa principal na rede: %s", type(exc).__name__)
             self._wake.wait(REEVALUATE_SECONDS)
             self._wake.clear()
             if self._stop.is_set():
@@ -830,6 +923,44 @@ class LanServer:
                 self.evaluate()
             except Exception as exc:
                 log.error("Falha ao reavaliar a rede entre caixas: %s", type(exc).__name__)
+
+    def check_superseded(self):
+        """Looks for a NEWER generation of this same terminal on the network (a cashier that took
+        over while this computer was off). Finding one, this computer stops selling for good.
+
+        The discovery answer is only a hint: the other side must prove, over TLS with the
+        certificate it announced, that it holds the key of the shop copy. Returns True when
+        this computer is (now or already) superseded.
+        """
+        store = self._store()
+        if self.superseded or store is None or not self.running or self.discover is None:
+            return self.superseded
+        identity = store.identity()
+        terminal_id, shop_id = identity.get("terminal_id"), identity.get("shop_id")
+        key = _copy_key(store)
+        if not terminal_id or not shop_id or key is None:
+            return False
+        own = _generation(store.meta())
+        for item in self.discover(shop_id) or []:
+            if not isinstance(item, dict):
+                continue
+            generation, presented = item.get("generation"), item.get("fingerprint")
+            if (item.get("terminal_id") != terminal_id or presented == self.fingerprint
+                    or isinstance(generation, bool) or not isinstance(generation, int) or generation <= own):
+                continue
+            proven = prove_generation(self.client_factory, item.get("address"), item.get("port"), presented,
+                                      key, terminal_id, own)
+            if proven is None:
+                continue
+            try:
+                store.mark_superseded(proven, presented)
+            except Exception as exc:
+                log.error("Não foi possível registrar que outro computador assumiu: %s", type(exc).__name__)
+                continue
+            self.superseded = True
+            log.error("Outro computador assumiu como caixa principal desta loja; este parou de vender")
+            return True
+        return False
 
     def poke(self):
         try:
@@ -856,8 +987,14 @@ class LanServer:
                 "terminal_name": info.get("terminal_name"), "host": socket.gethostname(), "port": self.port,
                 "generation": _generation(store.meta())}
 
-    def hello(self, store):
+    def hello(self, store, challenge=None):
         info = self.server_info(store)
+        proof = None
+        if challenge:
+            proof = lanclient.generation_proof(_copy_key(store), challenge, info.get("terminal_id"),
+                                               info["generation"], self.fingerprint)
+        if proof:
+            info["proof"] = proof
         try:
             enroll_open = int(store.station_limit().get("limit") or 0) > 0
         except Exception:
@@ -868,7 +1005,7 @@ class LanServer:
 
     def _discovery_info(self):
         store = self._store()
-        if store is None or not self.running:
+        if store is None or not self.running or self.superseded:
             return None
         try:
             details = self.hello(store)
@@ -952,13 +1089,13 @@ def poke(app):
 
 def status(app):
     server = app.extensions.get("terminal_lan")
-    result = {"supported": True, "running": False, "port": default_port() or DEFAULT_PORT,
+    result = {"supported": not disabled(), "running": False, "port": default_port() or DEFAULT_PORT,
               "addresses": discovery.local_addresses(), "hostname": socket.gethostname(), "fingerprint": None,
               "network_profile": discovery.network_profile(), "firewall": "unknown", "error": ""}
     if server is None:
         return result
     result.update(running=server.running, port=server.port, fingerprint=server.fingerprint,
-                  firewall=server.firewall, error=server.error)
+                  firewall=server.firewall, error=server.error, superseded=server.superseded)
     if result["fingerprint"] is None:
         try:
             result["fingerprint"] = fingerprint((_data_dir(app) / "lan" / "cert.pem").read_bytes())

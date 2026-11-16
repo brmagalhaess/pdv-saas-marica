@@ -24,12 +24,14 @@
         <h1 id="linkTitle">Este é um caixa adicional</h1>
         <p id="linkLead" class="lead hidden" role="status"></p>
         <p id="searchStatus" role="status" aria-live="polite">Procurando o caixa principal na rede da loja…</p>
+        <ul id="serverList" class="diagnosis hidden" aria-label="Caixas principais encontrados na rede"></ul>
         <form id="linkForm" class="form-stack hidden" autocomplete="off">
-          <label class="field"><span>Código de 6 números mostrado no caixa principal (Sistema → Adicionar caixa)</span>
+          <label class="field"><span>Código de 6 números mostrado no caixa principal (Sistema → Caixas da loja → Adicionar caixa)</span>
             <input id="linkCode" class="code" inputmode="numeric" maxlength="7" placeholder="000 000" required></label>
           <label class="field"><span>Como este caixa vai se chamar? (ex.: Caixa 2)</span>
             <input id="linkName" maxlength="40" placeholder="Caixa 2"></label>
           <button id="linkBtn" class="btn primary big" type="submit">Conectar este caixa</button>
+          <button id="manualLink" class="link" type="button">Não é este computador? Digitar o endereço</button>
         </form>
         <form id="manualForm" class="form-stack hidden" autocomplete="off">
           <label class="field"><span>Endereço do caixa principal (aparece na tela dele, ex.: 192.168.0.10)</span>
@@ -38,6 +40,7 @@
         </form>
         <p id="linkError" class="error hidden" role="alert"></p>
         <button id="backToServerBtn" class="link hidden" type="button">Este computador é o caixa principal? Voltar</button>
+        <button id="unlinkLinkBtn" class="link unlink hidden" type="button">Este computador não vai mais ser caixa adicional desta loja</button>
       </section>
 
       <section id="viewDown" class="hidden">
@@ -52,6 +55,17 @@
           <button id="promoteBtn" class="btn big danger" type="button" disabled>Assumir como caixa principal</button>
         </div>
         <p id="promoteHint" class="hint"></p>
+        <button id="unlinkDownBtn" class="link unlink" type="button">Este computador não vai mais ser caixa adicional desta loja</button>
+        <p id="unlinkDownError" class="error hidden" role="alert"></p>
+      </section>
+
+      <section id="viewBlocked" class="hidden">
+        <span class="eyebrow">Caixa adicional</span>
+        <h1>Este caixa não está liberado para vender</h1>
+        <p id="blockedText" role="status"></p>
+        <p class="hint">A rede e o caixa principal estão funcionando. Assim que for liberado, este caixa volta sozinho.</p>
+        <button id="unlinkBlockedBtn" class="link unlink" type="button">Este computador não vai mais ser caixa adicional desta loja</button>
+        <p id="unlinkBlockedError" class="error hidden" role="alert"></p>
       </section>
 
       <section id="viewDamaged" class="hidden">

@@ -113,7 +113,7 @@ class StationsContractTests(unittest.TestCase):
         claims = json.loads(store.meta()["lease"])["payload"]
         self.assertEqual(claims["max_stations"], 2)
         self.assertEqual(store.lease_status()["max_stations"], 2)
-        self.assertEqual(store.station_limit(), {"limit": 2, "used": 0, "available": 2})
+        self.assertEqual(store.station_limit(), {"limit": 2, "used": 0, "available": 2, "hub": True})
 
         operator = store.login(str(Membership.objects.get(tenant=tenant).id), "543210")
         linked = store.enroll_station(store.create_station_code(operator["id"])["code"], name="Caixa 2")

@@ -403,8 +403,9 @@ def create_app(config=None):
         station = request_station()
         if station:
             name = station.get("name") if isinstance(station.get("name"), str) else ""
+            version = station.get("version") if isinstance(station.get("version"), str) else ""
             return {"id": station["id"], "name": name or store.station_name(station["id"]) or "Caixa",
-                    "is_server": False}
+                    "is_server": False, "version": version}
         return {"id": SERVER_STATION_ID, "name": store.station_name(SERVER_STATION_ID), "is_server": True}
 
     def mirror_status():
@@ -1010,19 +1011,21 @@ def create_app(config=None):
     @authenticated(*MANAGER_ROLES)
     def stations_list(_operator):
         return jsonify({"supported": sync.lan is not None, "limit": store.station_limit(), "lan": lan_status(),
-                        "replica": replica_status(), "stations": store.stations()})
+                        "replica": replica_status(), "stations": store.stations(), "version": sync.VERSION})
 
     @app.post("/api/stations/code")
     @authenticated(*MANAGER_ROLES)
     def stations_code(operator):
         data = body()
-        if sync.lan is None:
+        if sync.lan is None or lan_status().get("supported") is False:
             raise TerminalError(LAN_UNAVAILABLE, 409)
         result = store.create_station_code(operator["id"], data.get("name") or "")
         lan_poke()  # the listener may have to start now: this can be the first additional cashier
         network = lan_status()
+        # The code is useless when the listener did not open: the screen says so right away.
         result["server"] = {"addresses": network.get("addresses") or [], "port": network.get("port"),
-                            "hostname": network.get("hostname") or ""}
+                            "hostname": network.get("hostname") or "", "running": bool(network.get("running")),
+                            "error": str(network.get("error") or network.get("message") or "")}
         response = jsonify(result)
         response.headers["Cache-Control"] = "no-store"
         return response, 201

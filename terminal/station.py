@@ -10,6 +10,7 @@ The station token lives in <data_dir>/station.json (0600) and never reaches a lo
 """
 
 import base64
+import hmac
 import json
 import logging
 import os
@@ -66,7 +67,23 @@ REFUSAL_TEXTS = {
     "station_unauthorized": "Este caixa não está vinculado ao caixa principal.",
     "station_outdated": "Atualize este caixa: a versão do PDV2 dele é antiga.",
     "server_outdated": "Atualize o caixa principal: a versão do PDV2 dele é antiga.",
+    "station_limit": ("O plano da loja não inclui mais este caixa adicional. Fale com o responsável pela loja. "
+                      "Este caixa volta sozinho quando o plano for ampliado."),
+    "server_superseded": "O caixa principal mudou de computador. Ligue este caixa ao novo caixa principal.",
 }
+# Refusals of the LAN layer that pass by themselves: the page waits and asks again.
+TRANSIENT_REFUSALS = {
+    "too_many_attempts": "O caixa principal recebeu pedidos demais deste caixa. Tentando de novo…",
+    "server_busy": "O caixa principal está ocupado. Tentando de novo…",
+    "server_error": "O caixa principal teve um erro. Tentando de novo…",
+}
+# Refusals that are a state of this caixa: a navigation goes to the local screen, which explains.
+SCREEN_REFUSALS = ("station_outdated", "server_outdated", "server_damaged", "station_limit", "server_superseded")
+REPLACED_TEXT = ("O caixa principal desta loja mudou de computador. Este caixa não vende pelo computador antigo: "
+                 "ligue-o ao novo caixa principal.")
+NO_NETWORK_TEXT = ("Este computador está sem rede. Confira o cabo ou o Wi-Fi antes de assumir: sem rede não dá "
+                   "para saber se o caixa principal parou.")
+CLOCK_TOLERANCE_SECONDS = 300
 NOT_FOUND_TEXT = ("Não encontrei o caixa principal neste endereço. Confira o número e se o computador "
                   "principal está ligado.")
 DAMAGED_TEXT = "O caixa principal está com o banco de dados danificado. Chame o suporte."
@@ -157,6 +174,7 @@ class Station:
         self.client_factory = config.get("CLIENT_FACTORY") or LanClient
         self.discover = config.get("DISCOVER") or (lambda shop_id=None: discovery.discover(shop_id))
         self.fingerprint_of = config.get("PEER_FINGERPRINT") or lanclient.peer_fingerprint
+        self.local_addresses = config.get("LOCAL_ADDRESSES") or (lambda: discovery.local_addresses())
         self.send_bytes = config.get("SEND_BYTES")
         self.ping_up = float(config.get("PING_UP_SECONDS", PING_UP_SECONDS))
         self.ping_down = float(config.get("PING_DOWN_SECONDS", PING_DOWN_SECONDS))
@@ -174,6 +192,8 @@ class Station:
         self.error_kind = ""
         self.ip_change = None
         self.relink = None
+        self.reason_text = ""
+        self.clock_behind = 0
         self.promoting = False
         self.promoted = False
         self.promotion_error = ""
@@ -186,6 +206,7 @@ class Station:
         self._puller = None
         self._recovered = False
         self._print_lock = threading.Lock()
+        self._restore_superseded()
 
     # -- identity
     @property
@@ -195,6 +216,44 @@ class Station:
     def identity_headers(self):
         return [("X-PDV-Station-Version", paths.source_version()),
                 ("X-PDV-Station-Host", socket.gethostname()[:64])]
+
+    def native_headers(self):
+        """For the agents of this caixa (monitor, print): the native routes of the server only
+        answer with this header, and the bridge never forwards it from the browser."""
+        return [*self.identity_headers(), lanclient.NATIVE_HEADER]
+
+    # -- a newer generation of the main cashier was seen (a promoted computer)
+    def _superseded(self):
+        """The record of a proven newer generation, while the pinned server is older than it."""
+        state = self.state
+        record = state.get("superseded") if state else None
+        if not isinstance(record, dict) or not isinstance(record.get("generation"), int):
+            return None
+        current = state["server"].get("generation")
+        return record if not isinstance(current, int) or current < record["generation"] else None
+
+    def _restore_superseded(self):
+        record = self._superseded()
+        if record:
+            self.status, self.reason = "relink", "server_superseded"
+            self.relink = {key: record.get(key) for key in
+                           ("host", "address", "port", "fingerprint", "shop_name", "terminal_name")}
+            self.down_since = self._down_mono = None
+
+    def replaced(self):
+        with self.lock:
+            return self._superseded() is not None
+
+    def _copy_key(self):
+        """Key of the copy this caixa keeps (None without a copy): proves who the new server is."""
+        if replica_net is None:
+            return None
+        try:
+            key = replica_net._load_state(self.data_dir).get("key")
+        except Exception:
+            return None
+        value = key.get("key") if isinstance(key, dict) else None
+        return value if isinstance(value, str) and value else None
 
     def client(self):
         with self.lock:
@@ -220,7 +279,13 @@ class Station:
         with self.lock:
             if self.status in ("unlinked", "revoked"):
                 return
-            self.status, self.reason = "up", ""
+            if self._superseded() is not None:
+                # The OLD main cashier came back after another computer took over: answering is
+                # not a reason to sell through it again.
+                self.status, self.reason = "relink", "server_superseded"
+                self.down_since = self._down_mono = None
+                return
+            self.status, self.reason, self.reason_text = "up", "", ""
             self.last_ok_at = _now_ms()
             self.down_since = self._down_mono = None
             self.error = self.error_kind = ""
@@ -259,20 +324,41 @@ class Station:
                     self.down_since = self._down_mono = None
                     self.error, self.error_kind = "banco de dados danificado", ""
                     self.relink = None
-            elif code != "server_busy" and response.status < 500:
+            elif code == "station_limit":
+                # The plan shrank (or the server is no longer the main one of the shop). The
+                # server is fine: no taking over; the monitor keeps asking and comes back by itself.
+                if self.status not in ("unlinked", "revoked"):
+                    self.status, self.reason = "blocked", code
+                    self.reason_text = self.reason_text or REFUSAL_TEXTS[code]
+                    self.down_since = self._down_mono = None
+                    self.error = self.error_kind = ""
+            elif code == "server_superseded":
+                # The server itself found a newer generation on the network and stopped.
+                if self.status not in ("unlinked", "revoked"):
+                    self.status, self.reason = "relink", code
+                    self.down_since = self._down_mono = None
+            elif code is None and response.status < 500:
                 self.mark_up()
         return code
 
     def can_promote(self):
         with self.lock:
-            return bool(promotion is not None and self.status == "down" and not self.promoted
-                        and self._down_mono is not None
-                        and time.monotonic() - self._down_mono >= self.promote_after)
+            waited = bool(promotion is not None and self.status == "down" and not self.promoted
+                          and self._down_mono is not None
+                          and time.monotonic() - self._down_mono >= self.promote_after)
+        # Without a network this caixa cannot tell "the server stopped" from "my cable is loose".
+        return waited and self.has_network()
+
+    def has_network(self):
+        try:
+            return bool(self.local_addresses())
+        except Exception:
+            return False
 
     # -- requests of the background threads
     def lan_request(self, method, path, body=None, timeout=10.0):
         try:
-            response = self.client().request(method, path, body=body, headers=self.identity_headers(),
+            response = self.client().request(method, path, body=body, headers=self.native_headers(),
                                              timeout=timeout)
         except LanError as exc:
             self.mark_down(exc)
@@ -301,7 +387,7 @@ class Station:
         client = self.client_factory(server["address"], server["port"], server["fingerprint"], token,
                                      timeout=CONNECT_SECONDS)
         try:
-            client.request("GET", "/lan/v1/ping", headers=self.identity_headers(), timeout=CONNECT_SECONDS).close()
+            client.request("GET", "/lan/v1/ping", headers=self.native_headers(), timeout=CONNECT_SECONDS).close()
             return True
         except OSError:
             return False
@@ -318,16 +404,35 @@ class Station:
             status, body = self.lan_json("GET", "/lan/v1/ping", timeout=5.0)
             if status == 200 and isinstance(body, dict):
                 self._note_generation(body.get("generation"))
+                self._note_clock(body.get("server_time"))
+            elif isinstance(body, dict) and body.get("code") == "station_limit" and isinstance(body.get("error"), str):
+                with self.lock:
+                    self.reason_text = body["error"][:300]
         except LanError as exc:
             self.rediscover(include_last=exc.code == "fingerprint_mismatch")
+            return self.status
+        with self.lock:
+            looking = self.status == "relink" and (self.relink is None or self._superseded() is not None)
+        if looking:
+            # The old server answers, but it is not the main cashier any more: find the new one.
+            self.rediscover()
         return self.status
 
     def _note_generation(self, generation):
         with self.lock:
-            if (self.state is not None and isinstance(generation, int)
+            if (self.state is not None and isinstance(generation, int) and not isinstance(generation, bool)
                     and self.state["server"].get("generation") != generation):
                 self.state["server"]["generation"] = generation
                 self._save()
+                if self.status == "relink" and self._superseded() is None and self.reason == "server_superseded":
+                    self.status, self.reason, self.relink = "up", "", None
+
+    def _note_clock(self, server_time):
+        """How far behind the clock of this computer is (seconds), when it matters for taking over."""
+        if isinstance(server_time, int) and not isinstance(server_time, bool):
+            behind = server_time - int(time.time())
+            with self.lock:
+                self.clock_behind = behind if behind > CLOCK_TOLERANCE_SECONDS else 0
 
     def _save(self):
         try:
@@ -395,13 +500,53 @@ class Station:
             other = self._hello_at(address, number, presented)
             if (other and server.get("shop_id") and other.get("shop_id") == server["shop_id"]
                     and (not server.get("terminal_id") or other.get("terminal_id") == server["terminal_id"])):
+                relink = {"host": other.get("host") or address, "address": address, "port": number,
+                          "fingerprint": presented, "shop_name": other.get("shop_name"),
+                          "terminal_name": other.get("terminal_name")}
+                proven = self._proven_generation(address, number, presented, server)
                 with self.lock:
-                    self.status, self.reason = "relink", ""
-                    self.relink = {"host": other.get("host") or address, "address": address, "port": number,
-                                   "fingerprint": presented, "shop_name": other.get("shop_name"),
-                                   "terminal_name": other.get("terminal_name")}
+                    if self.state is None:
+                        return None
+                    self.status, self.relink = "relink", relink
+                    self.reason = "server_superseded" if proven else ""
+                    if proven:
+                        # Remembered on disk: if the old computer is turned on again, this caixa
+                        # does not go back to it by itself.
+                        self.state["superseded"] = {**relink, "generation": proven}
+                        self.down_since = self._down_mono = None
+                        self._save()
                 return "relink"
         return None
+
+    def _proven_generation(self, address, port, presented, server):
+        """Generation of the computer found there, when it is newer than the pinned server AND it
+        proved to hold the key of the copy this caixa keeps. None otherwise (nothing is remembered:
+        an answer anyone on the network could forge must not block this caixa for good)."""
+        key, terminal_id = self._copy_key(), server.get("terminal_id")
+        current = server.get("generation") if isinstance(server.get("generation"), int) else 1
+        if not key or not terminal_id:
+            return None
+        challenge = os.urandom(16).hex()
+        client = self.client_factory(address, port, presented, None, timeout=CONNECT_SECONDS)
+        try:
+            response = client.request("GET", "/lan/v1/hello?challenge=" + challenge, timeout=CONNECT_SECONDS)
+            try:
+                body = response.json() if response.status == 200 else None
+            finally:
+                response.close()
+        except OSError:
+            return None
+        finally:
+            client.close()
+        if not isinstance(body, dict) or body.get("terminal_id") != terminal_id:
+            return None
+        generation, proof = body.get("generation"), body.get("proof")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation <= current:
+            return None
+        expected = lanclient.generation_proof(key, challenge, terminal_id, generation, presented)
+        if not expected or not isinstance(proof, str) or not hmac.compare_digest(expected, proof):
+            return None
+        return generation
 
     def _adopt_address(self, address, port):
         with self.lock:
@@ -425,28 +570,32 @@ class Station:
             relink = self.relink
         items = []
         if status == "down":
-            has_network = bool(discovery.local_addresses())
+            has_network = self.has_network()
             items.append({"id": "network", "ok": has_network, "title": "Este computador está sem rede",
                           "help": "Confira o cabo de rede ou o Wi-Fi."})
-            items.append({"id": "public_profile", "ok": discovery.network_profile() != "public",
-                          "title": "A rede está marcada como Pública no Windows",
-                          "help": "Em Configurações → Rede, mude para Particular neste computador e no caixa "
+            # A computer that is off does not refuse the connection: the attempt just times out.
+            # A refusal means the computer is ON and the PDV2 is not listening on it.
+            items.append({"id": "server_off", "ok": not has_network or kind != "timeout",
+                          "title": "O computador principal está desligado ou fora da rede",
+                          "help": "Ligue o computador principal e espere um minuto. Se ele já está ligado, "
+                                  "confira o cabo de rede ou o Wi-Fi dos dois computadores e, por último, o "
+                                  "firewall."})
+            items.append({"id": "service_off", "ok": not has_network or kind == "timeout",
+                          "title": "O computador principal está ligado, mas o PDV2 não está aberto nele",
+                          "help": "Abra o PDV2 no computador principal ou reinicie-o."})
+            behind = self.clock_behind
+            items.append({"id": "clock_behind", "ok": not behind,
+                          "title": "O relógio deste computador está atrasado em relação ao do caixa principal",
+                          "help": "Acerte a data e a hora deste computador antes de assumir como caixa "
                                   "principal."})
-            items.append({"id": "server_off", "ok": not has_network or kind == "timeout",
-                          "title": "O computador principal está desligado ou com o PDV2 fechado",
-                          "help": "Ligue o computador principal e abra o PDV2 nele."})
-            items.append({"id": "blocked", "ok": not has_network or kind != "timeout",
-                          "title": "O caixa principal não respondeu (rede bloqueada)",
-                          "help": "Confira se os dois computadores estão na mesma rede e se o firewall permite "
-                                  "o PDV2."})
         if change and time.monotonic() - change["at"] < 600:
             items.append({"id": "ip_changed", "ok": True, "help": "",
                           "title": f"O endereço do caixa principal mudou (era {change['old']}, agora "
                                    f"{change['new']}). Já foi corrigido."})
         if status == "relink" and relink:
             items.append({"id": "identity_changed", "ok": False, "title": "O caixa principal mudou de computador",
-                          "help": "Peça ao gerente o código de 6 números em Sistema → Adicionar caixa e digite "
-                                  "aqui."})
+                          "help": "Peça ao gerente o código de 6 números em Sistema → Caixas da loja → Adicionar "
+                                  "caixa e digite aqui."})
         return items
 
     def status_payload(self):
@@ -463,11 +612,14 @@ class Station:
                        "station": {"id": state["station_id"], "name": state.get("station_name") or ""}
                        if state is not None else None,
                        "server": server, "reason": self.reason,
+                       "reason_text": self.reason_text if status == "blocked" else (
+                           REPLACED_TEXT if status == "relink" and self.reason == "server_superseded" else ""),
                        "relink": dict(self.relink) if self.relink else None}
         payload["diagnosis"] = self.diagnosis()
         payload["replica"] = _guarded(lambda: replica_net.puller_status(self.data_dir)) if replica_net else None
         payload["promotion"] = _guarded(lambda: promotion.status(self.data_dir)) if promotion else None
         payload["can_promote"] = self.can_promote()
+        payload["promote_block"] = "no_network" if status == "down" and not self.has_network() else None
         payload["version"] = paths.source_version()
         return payload
 
@@ -542,6 +694,7 @@ class Station:
             self.down_since = self._down_mono = None
             self.error = self.error_kind = ""
             self.relink = self.ip_change = None
+            self.reason_text, self.clock_behind = "", 0
             self._recovered = False
         self._reset_client()
         self._monitor_wake.set()
@@ -557,6 +710,7 @@ class Station:
             self.status, self.reason = "unlinked", ""
             self.down_since = self._down_mono = self.last_ok_at = None
             self.relink = self.ip_change = None
+            self.reason_text, self.clock_behind = "", 0
         self._reset_client()
 
     # -- printing on THIS computer
@@ -702,7 +856,14 @@ class Station:
             wake.clear()
 
     def _replica_client(self):
-        return self.client()
+        """A client of its own for the copy puller: the puller closes it after every failure, and
+        closing the one of the bridge would cut requests of the screen in the middle."""
+        with self.lock:
+            if self.state is None:
+                raise LanError("unreachable", "sem vínculo")
+            server, token = dict(self.state["server"]), self.state["token"]
+        return self.client_factory(server["address"], server["port"], server["fingerprint"], token,
+                                   timeout=READ_SECONDS)
 
     def start(self):
         if self._threads:
@@ -812,6 +973,7 @@ def create_app(config=None):
     def health():
         with station.lock:
             server = "unlinked" if not station.linked else ("up" if station.status == "up" else "down")
+            # "down" also covers a caixa the server refuses (plan, version, new main cashier).
         return jsonify({"status": "ok", "service": "terminal-local", "mode": "station", "server": server})
 
     @app.get("/station/")
@@ -928,6 +1090,8 @@ def create_app(config=None):
         if not station.linked:
             return refuse(409, "Este caixa não está ligado a um caixa principal.")
         if not station.can_promote():
+            if station.status == "down" and not station.has_network():
+                return refuse(409, NO_NETWORK_TEXT, "no_network")
             if station.status == "up":
                 return refuse(409, "O caixa principal voltou a responder. Não é preciso assumir.", "server_alive")
             if station.status == "damaged":
@@ -956,6 +1120,11 @@ def create_app(config=None):
             if path == "station":
                 return redirect("/station/", 302)
             return refuse(404, "Rota não encontrada")  # reserved prefix: never forwarded
+        first = next((segment for segment in path.split("/") if segment), "").lower()
+        if first == "lan":
+            # The native routes of the shop network (copy key, database copy, print queue) are
+            # for the agents of this caixa, never for a browser: they have no login and no CSRF.
+            return refuse(404, "Rota não encontrada")
         wants_html = request.method == "GET" and (
             request.path == "/" or "text/html" in request.headers.get("Accept", ""))
         if not station.linked:
@@ -964,6 +1133,9 @@ def create_app(config=None):
             revoked = station.reason if station.status == "revoked" else None
         if revoked:
             return redirect("/station/", 302) if wants_html else refuse(403, REFUSAL_TEXTS[revoked], revoked)
+        if station.replaced():
+            station.wake_monitor()
+            return redirect("/station/", 302) if wants_html else refuse(409, REPLACED_TEXT, "server_replaced")
         if (request.content_length or 0) > MAX_BODY:
             return refuse(413, "Conteúdo grande demais.", "too_large")
         content = request.get_data(cache=False)
@@ -993,9 +1165,21 @@ def create_app(config=None):
         if code in ("station_revoked", "station_unauthorized"):
             upstream.close()
             return redirect("/station/", 302) if wants_html else refuse(403, REFUSAL_TEXTS[code], code)
-        if code in ("station_outdated", "server_outdated", "server_damaged") and wants_html:
+        if code in SCREEN_REFUSALS:
+            station.wake_monitor()
+            if wants_html:
+                upstream.close()
+                return redirect("/station/", 302)
+        if code in TRANSIENT_REFUSALS and wants_html:
+            # Never the raw JSON of the refusal on the screen: a small page that tries again.
             upstream.close()
-            return redirect("/station/", 302)
+            page = ("<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">"
+                    "<meta http-equiv=\"refresh\" content=\"3\"><title>PDV2</title></head>"
+                    "<body style=\"font-family:sans-serif;padding:2rem\"><h1>Só um instante</h1><p>"
+                    + TRANSIENT_REFUSALS[code] + "</p></body></html>")
+            response = Response(page, status=503, mimetype="text/html")
+            response.headers["Cache-Control"] = "no-store"
+            return response
         if request.method == "GET" and request.path == "/api/print/discover" and upstream.status == 200:
             # The server checked the login; the printers are the ones of THIS computer.
             upstream.close()

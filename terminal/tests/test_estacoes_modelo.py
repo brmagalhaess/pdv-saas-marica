@@ -628,7 +628,7 @@ class EnrollTests(StationCase):
         with self.assertRaisesCode(401, "invalid_code"):
             self.store.enroll_station(created["code"])
         self.assertEqual(self.link()["station_name"], "Caixa 3")
-        self.assertEqual(self.store.station_limit(), {"limit": 2, "used": 2, "available": 0})
+        self.assertEqual(self.store.station_limit(), {"limit": 2, "used": 2, "available": 0, "hub": True})
         row = self.store.stations()[1]
         self.assertEqual((row["hostname"], row["app_version"], row["last_address"], row["linked"], row["online"],
                           row["cash_open"], row["is_server"]),
@@ -674,15 +674,20 @@ class EnrollTests(StationCase):
 
     def test_a_plan_without_additional_cashiers_refuses(self):
         code = self.code()["code"]
-        for change in (lambda: self.set_limit(0), lambda: self.set_limit(None),
-                       lambda: self.set_limit(2, hub=False), lambda: self.set_capabilities(["restore"])):
+        for change, text in ((lambda: self.set_limit(0), "não inclui caixas adicionais"),
+                             (lambda: self.set_limit(None), "não inclui caixas adicionais"),
+                             # The plan includes cashiers, but another terminal is the main one of the shop:
+                             # the way out is in the panel, not "ask the support for a bigger plan".
+                             (lambda: self.set_limit(2, hub=False), "não é o caixa principal desta loja"),
+                             (lambda: self.set_capabilities(["restore"]), "não inclui caixas adicionais")):
             self.set_limit(2)
             self.set_capabilities(["stations"])
             change()
             self.assertEqual(self.store.station_limit()["limit"], 0)
+            self.assertEqual(self.store.station_limit()["hub"], "principal desta loja" not in text)
             with self.assertRaisesCode(409, "station_limit") as refused:
                 self.code()
-            self.assertIn("não inclui caixas adicionais", str(refused.exception))
+            self.assertIn(text, str(refused.exception))
             with self.assertRaisesCode(409, "station_limit"):
                 self.store.enroll_station(code)
         # The code was never spent: it works once the plan allows.
@@ -699,7 +704,7 @@ class EnrollTests(StationCase):
         self.assertIn("inclui 1 caixa(s) adicional(is) e todos já estão em uso", str(refused.exception))
         with self.assertRaisesCode(409, "station_limit"):
             self.code()
-        self.assertEqual(self.store.station_limit(), {"limit": 1, "used": 1, "available": 0})
+        self.assertEqual(self.store.station_limit(), {"limit": 1, "used": 1, "available": 0, "hub": True})
         self.set_limit(2)
         self.assertEqual(self.store.enroll_station(code)["station_name"], "Caixa 3")
 
@@ -742,7 +747,7 @@ class EnrollTests(StationCase):
         self.store.revoke_station(removed["station_id"], self.manager_id)
         time.sleep(0.005)
         newer = self.link("Novo")
-        self.assertEqual(self.store.station_limit(), {"limit": 1, "used": 1, "available": 0})
+        self.assertEqual(self.store.station_limit(), {"limit": 1, "used": 1, "available": 0, "hub": True})
         # The removed line is no reason to hand out a code on a full plan.
         with self.assertRaisesCode(409, "station_limit"):
             self.code()
@@ -792,7 +797,7 @@ class TokenTests(StationCase):
             self.store.authenticate_station(first["token"])
         self.assertIn("removido", str(refused.exception))
         self.assertEqual(self.store.authenticate_station(second["token"])["id"], second["station_id"])
-        self.assertEqual(self.store.station_limit(), {"limit": 2, "used": 1, "available": 1})
+        self.assertEqual(self.store.station_limit(), {"limit": 2, "used": 1, "available": 1, "hub": True})
         self.assertEqual([row["id"] for row in self.store.stations(include_revoked=False)],
                          ["server", second["station_id"]])
 
@@ -931,8 +936,17 @@ class RestoreWithStationsTests(StationCase):
                 "promo_discount_cents": 0, "discount_cents": 0, "total_cents": 1000, "change_cents": 0,
                 "customer_id": None, "customer_name": "", "customer_document": "", "operator_id": self.cashier_id,
                 "seller_id": None, "items": [], "payments": [{"method": "cash", "amount_cents": 1000}]}
+        # The cloud sends the config first: the stations the shop still has are known before the history.
         page = {"records": [
+            {"kind": "config", "data": {"version": 1, "print_settings": [
+                {"kind": "receipt", "driver": "file", "target": "/tmp/x", "format": "escpos58"}],
+                "stations": [{"id": "st-a", "name": "Caixa 2", "revoked": False},
+                             {"id": "st-b", "name": "Caixa 3", "revoked": True}, {"id": "server", "name": "x"}]}},
             dict(session, id="c-server", opened_at=1),
+            # A cashier that exists only in the history (the one that took over in a promotion and
+            # became "server"): it must not come back as a ghost holding a place of the plan.
+            dict(session, id="c-fantasma", opened_at=1, closed_at=2, station_id="st-promovido",
+                 station_name="Caixa 4"),
             dict(session, id="c-estacao", opened_at=2, station_id="st-a", station_name="Caixa 2"),
             dict(session, id="c-estacao-antigo", opened_at=1, station_id="st-a", station_name="Caixa 2"),
             {"kind": "sale", "id": "v1", "status": "completed", "station_id": "st-a", "data": sale,
@@ -940,13 +954,9 @@ class RestoreWithStationsTests(StationCase):
             {"kind": "sale", "id": "v2", "status": "completed", "data": dict(sale, request_id="r2")},
             {"kind": "credit_receipt", "id": "f1", "customer_id": self.customer_id, "method": "cash",
              "amount_cents": 500, "created_at": 7},
-            {"kind": "config", "data": {"version": 1, "print_settings": [
-                {"kind": "receipt", "driver": "file", "target": "/tmp/x", "format": "escpos58"}],
-                "stations": [{"id": "st-a", "name": "Outro nome", "revoked": False},
-                             {"id": "st-b", "name": "Caixa 3", "revoked": True}, {"id": "server", "name": "x"}]}},
-        ], "next_cursor": "c2", "progress": {"total": 7}}
+        ], "next_cursor": "c2", "progress": {"total": 8}}
         result = new.apply_restore(page, "")
-        self.assertEqual((result["applied"], result["warnings"]), (7, 1))  # the older open one enters closed
+        self.assertEqual((result["applied"], result["warnings"]), (8, 1))  # the older open one enters closed
         with new.connection() as conn:
             opened = {row["id"]: row["station_id"] for row in conn.execute(
                 "SELECT id,station_id FROM cash_sessions WHERE closed_at IS NULL")}
@@ -959,7 +969,12 @@ class RestoreWithStationsTests(StationCase):
             self.assertEqual([tuple(row) for row in conn.execute("SELECT * FROM print_settings")],
                              [("receipt", "file", "/tmp/x", "escpos58", "server")])
         stations = {row["id"]: row for row in new.stations()}
-        self.assertEqual(set(stations), {"server", "st-a", "st-b"})
+        self.assertEqual(set(stations), {"server", "st-a", "st-b", "st-promovido"})
+        self.assertTrue(stations["st-promovido"]["revoked_at"], "known only from the history: comes back removed")
+        self.assertEqual(new.station_limit(), {"limit": 2, "used": 1, "available": 1, "hub": True},
+                         "the ghost takes no place of the plan")
+        # A real computer that still has that identity links again, taking a free place.
+        self.assertFalse(stations["st-a"]["revoked_at"])
         self.assertEqual((stations["st-a"]["name"], stations["st-a"]["linked"], stations["st-a"]["cash_open"]),
                          ("Caixa 2", False, True))
         self.assertTrue(stations["st-b"]["revoked_at"])
@@ -968,6 +983,81 @@ class RestoreWithStationsTests(StationCase):
         # Giving the recovery up forgets the stations that came with it.
         new.restore_abandon()
         self.assertEqual([row["id"] for row in new.stations()], ["server"])
+
+
+
+class IntegrationFixesTests(StationCase):
+    """What only showed when the core met the network, the promotion and the cloud."""
+
+    def test_sale_is_cancelled_only_on_the_cashier_that_made_it(self):
+        other = self.link("Caixa 2")["station_id"]
+        self.store.open_cash(self.cashier_id, 0)
+        sale = self.sell("venda-do-principal")  # R$ 10,00 in cash in the drawer of the main cashier
+        with self.store.station(other):
+            self.store.open_cash(self.second_id, 20000)
+            with self.assertRaisesCode(409, "other_station") as refused:
+                self.store.void_sale(self.second, sale["id"], "Cliente desistiu", "654321")
+            self.assertIn("Caixa principal", str(refused.exception))
+            self.assertIn("devolução", str(refused.exception))
+            self.assertEqual(self.store.cash_summary()["expected_cents"], 20000)
+            theirs = self.sell("venda-do-caixa-2", self.second)
+        # Nothing moved: the drawer that received the money still expects it, and no event went out.
+        self.assertEqual(self.store.cash_summary()["expected_cents"], 10000)
+        self.assertEqual(self.store.sale_detail(sale["id"])["status"], "completed")
+        self.assertEqual(self.events("sale.voided"), [])
+        with self.assertRaisesCode(409, "other_station"):
+            self.store.void_sale(self.manager, theirs["id"], "Engano")
+        # Each one cancels its own; the event carries the cashier that sold.
+        self.store.void_sale(self.manager, sale["id"], "Cliente desistiu")
+        self.assertEqual(self.store.cash_summary()["expected_cents"], 0)
+        with self.store.station(other):
+            self.store.void_sale(self.second, theirs["id"], "Engano", "654321")
+            self.assertEqual(self.store.cash_summary()["expected_cents"], 20000)
+        self.assertEqual(len(self.events("sale.voided")), 2)
+        # The return, on any cashier, keeps working (it refunds from the drawer where it is made).
+        again = self.sell("outra-venda")
+        with self.store.station(other):
+            self.store.return_sale(self.manager, again["id"], {
+                "return_id": str(uuid.uuid4()), "refund_method": "cash", "reason": "Defeito",
+                "items": [{"product_id": self.product_id, "quantity_milli": 1000}]})
+
+    def test_terminal_that_is_not_the_hub_says_so_instead_of_blaming_the_plan(self):
+        linked = self.link("Caixa 2")
+        self.set_limit(2, hub=False)  # the panel made another terminal the main one of the shop
+        self.assertEqual(self.store.station_limit(), {"limit": 0, "used": 1, "available": 0, "hub": False})
+        with self.assertRaisesCode(409, "station_limit") as refused:
+            self.store.create_station_code(self.manager_id)
+        self.assertIn("Tornar principal desta loja", str(refused.exception))
+        self.assertNotIn("suporte", str(refused.exception))
+        with self.assertRaisesCode(403, "station_limit") as refused:
+            self.store.authenticate_station(linked["token"])
+        self.assertIn("deixou de ser o caixa principal", str(refused.exception))
+        self.assertNotIn("plano", str(refused.exception))
+        self.set_limit(0)
+        with self.assertRaisesCode(403, "station_limit") as refused:
+            self.store.authenticate_station(linked["token"])
+        self.assertIn("O plano da loja não inclui mais este caixa adicional", str(refused.exception))
+
+    def test_superseded_main_cashier_stops_selling_until_it_is_set_up_again(self):
+        station = self.link("Caixa 2")["station_id"]
+        self.store.open_cash(self.cashier_id, 0)
+        self.sell("antes")
+        self.assertEqual((self.store.superseded(), self.store.server_generation()), (False, 1))
+        self.assertTrue(self.store.mark_superseded(2, "ab" * 32))
+        self.assertFalse(self.store.mark_superseded(3, "cd" * 32), "only the first one is news")
+        status = self.store.lease_status()
+        self.assertEqual((status["state"], status["can_sell"], status["can_open_cash"]), ("superseded", False, False))
+        self.assertIn("Outro computador assumiu como caixa principal", status["reason"])
+        self.assertEqual(status["pending_events"], len(self.store.pending_events(50)))
+        with self.assertRaisesCode(403):
+            self.sell("depois")
+        with self.assertRaisesCode(403):
+            self.store.create_station_code(self.manager_id)
+        self.assertIn("terminal.superseded", [row["action"] for row in self.rows("SELECT action FROM audit")])
+        # It never travels with a promotion: the database that takes over starts clean.
+        self.store.finish_promotion(station, "Caixa 2", MIRROR_KEY, self.manager_id)
+        self.assertEqual((self.store.superseded(), self.store.server_generation()), (False, 2))
+        self.assertTrue(self.store.lease_status()["can_sell"])
 
 
 class JournalTests(StationCase):

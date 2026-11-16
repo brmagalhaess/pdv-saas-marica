@@ -25,7 +25,11 @@
 | `C:\ProgramData\PDV2\mode.json` | Papel deste computador: `server` (caixa principal, o padrão quando o arquivo não existe) ou `station` (caixa adicional). Escrito pela própria tela; ver a seção 9. |
 | `C:\ProgramData\PDV2\lan\` | Só no caixa principal com caixas adicionais: `cert.pem` e `key.pem` da rede entre caixas. Apagar a pasta cria outra identidade e todos os caixas adicionais têm de ser ligados de novo. |
 | `C:\ProgramData\PDV2\station.json` | Só no caixa adicional: endereço e impressão digital do caixa principal e o token deste caixa. |
-| Firewall | A opção "Este computador será o servidor da loja" (desmarcada) cria a regra `PDV2 - Servidor da loja` para TCP 8011 e UDP 8012, só para a rede local. Sem a opção, o próprio serviço cria a mesma regra na primeira vez em que o caixa principal abre a rede entre caixas (plano com caixas adicionais). O caixa adicional não precisa de regra: ele só faz conexões de saída. |
+| `C:\ProgramData\PDV2\station-anterior.json` | Só no caixa adicional: o vínculo anterior, guardado ao desvincular ou ao ligar a outro principal. |
+| `C:\ProgramData\PDV2\station-print-pending.json` | Só no caixa adicional: o recibo que estava sendo impresso quando o serviço parou. |
+| `C:\ProgramData\PDV2\replica\` | Só no caixa adicional: cópia cifrada do banco do caixa principal, o diário e a chave da cópia (`state.json`). Ver ESTACOES.md, seção 2.3. |
+| `C:\ProgramData\PDV2\replica-out\` | Só no caixa principal com caixas adicionais: as duas últimas cópias cifradas que os caixas adicionais baixam. |
+| Firewall | A opção "Este computador será o caixa principal de uma loja com mais de um caixa" (desmarcada) cria a regra `PDV2 - Servidor da loja` para TCP 8011 e UDP 8012, só para a rede local e em todos os perfis de rede (Particular, Domínio e Pública). O instalador apaga a regra antes de criar, para reinstalar não a duplicar. Sem a opção, o próprio serviço cria a mesma regra na primeira vez em que o caixa principal abre a rede entre caixas (plano com caixas adicionais). O caixa adicional não precisa de regra: ele só faz conexões de saída. |
 
 Passo a passo do instalador (`installer/pdv2.iss`):
 
@@ -205,11 +209,11 @@ Formato e regras em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md). O caix
 - **Impressora por usuário:** ver 7.4.
 - **Pasta `bin\` só muda com o instalador completo.** Correções no serviço ou no atalho estável não chegam por bundle; publique com `kind: installer`.
 - **O bundle não é diferencial:** cada atualização baixa o programa inteiro (dezenas de MB).
-- **A volta de versão não desfaz mudanças de esquema do banco.** As migrações do terminal são aditivas; se uma versão futura fizer uma mudança incompatível, publique-a como `installer` e planeje a volta com restauração de backup.
+- **A volta de versão não desfaz mudanças de esquema do banco.** A 2.1.0 (vários caixas na loja) mudou o esquema de um jeito que o executável 2.0.x não consegue usar (abrir caixa e salvar impressora falham). Por isso o bundle da 2.1 leva `min_version: 2.1.0` (`scripts/package_terminal.py`) e um terminal 2.0.x só passa para a 2.1 pelo **instalador completo**; publique a primeira versão da fase 3 como `kind: installer`. Toda versão que mudar o formato do banco sobe o segundo número e o `BUNDLE_MIN_VERSION`.
 - **Um instalador mais antigo por cima de um mais novo** é aceito pelo Inno Setup; o banco pode ter sido migrado pela versão nova.
 - **Cópia em outro disco e conta de sistema:** o serviço roda como SYSTEM e não enxerga unidade de rede mapeada por um usuário; use pendrive, HD externo ou caminho UNC liberado para a conta do computador. Pendrive em FAT/exFAT não tem permissão por arquivo: o conteúdo é cifrado, mas `manifest.json` mostra o nome da empresa, da loja e do caixa.
 - **Token da nuvem cifrado com DPAPI** não faz parte desta fase.
-- **Caixa adicional não se atualiza sozinho** nesta fase: a tela vem do caixa principal e o protocolo entre eles é versionado; quando for preciso, a tela pede ("Atualize este caixa") e instala-se por este mesmo instalador.
+- **Caixa adicional não se atualiza sozinho** nesta fase: a tela vem do caixa principal e o protocolo entre eles é versionado; quando for preciso, a tela pede ("Atualize este caixa") e instala-se por este mesmo instalador, baixado do mesmo lugar que o do principal (link enviado pelo suporte ou a página de versões do painel). O cartão **Caixas da loja** do principal avisa antes, com "Versão antiga (x.y.z): instale a versão nova neste caixa".
 - **Vínculo confia no primeiro contato:** o código de 6 números viaja dentro de TLS ainda não fixado; alguém já dentro da rede da loja, atacando no minuto do vínculo, poderia se passar pelo caixa principal.
 - **Reinício fora do serviço:** rodando à mão (`python -m terminal`), a troca de modo reexecuta o processo; se falhar, feche e abra o PDV2 de novo. Instalado, quem reinicia é o serviço.
 
@@ -223,8 +227,9 @@ O mesmo instalador serve para os dois papéis. O que muda é o arquivo `mode.jso
 | Caixa adicional (`station`) | Uma ponte em `127.0.0.1:8010` que repassa tudo ao caixa principal; não tem banco de dados | Nenhuma de entrada |
 
 - **Virar caixa adicional:** no computador novo, na tela de ativação, "Este é um caixa adicional". O serviço reinicia sozinho (arquivo `updates\restart.request`, o mesmo da atualização) e abre a tela `/station/`.
-- **Ligar ao principal:** no caixa principal, **Sistema → Adicionar caixa** mostra 6 números por 5 minutos; no adicional, digitar os números. Se a busca automática não achar, digitar o endereço que aparece na tela do principal.
-- **Voltar a ser principal:** na tela do caixa adicional sem vínculo, "Este computador é o caixa principal? Voltar".
+- **Ligar ao principal:** no caixa principal, **Sistema → Caixas da loja → Adicionar caixa** mostra 6 números por 5 minutos; no adicional, digitar os números. Se a busca automática não achar, digitar o endereço que aparece na tela do principal.
+- **Voltar a ser principal:** na tela do caixa adicional, "Este computador não vai mais ser caixa adicional desta loja" desfaz o vínculo; sem vínculo, "Este computador é o caixa principal? Voltar" leva à tela de ativação (onde fica "Recuperar minha loja").
+- **Docker:** `compose.terminal.yaml` desliga a rede entre caixas (`PDV_LAN_DISABLED=1`); caixas adicionais exigem o terminal nativo.
 - **Caixa principal fora do ar:** o adicional para de vender, mostra o diagnóstico e tenta de novo a cada 2 segundos. Depois de 1 minuto oferece "Assumir como caixa principal" (pede PIN de gerente).
 - **Impressão:** o recibo da venda feita no caixa adicional sai na impressora configurada **naquele** computador.
 - **Variáveis para suporte e testes:** `PDV_MODE` (`server`/`station`, vence o arquivo), `PDV_LAN_PORT` (padrão 8011), `PDV_DISCOVERY_PORT` (padrão 8012), `PDV_LAN_HOST` (padrão `0.0.0.0`).
@@ -235,7 +240,11 @@ O mesmo instalador serve para os dois papéis. O que muda é o arquivo `mode.jso
 - [ ] Principal com plano que inclui caixas: 8011 em escuta; regra `PDV2 - Servidor da loja` presente (`netsh advfirewall firewall show rule name="PDV2 - Servidor da loja"`), mesmo sem ter marcado a opção no instalador.
 - [ ] Adicional: escolher "Este é um caixa adicional"; a tela `/station/` aparece em até 10 s sem fechar o navegador; achar o principal sozinho; digitar o código; cair na tela de PIN.
 - [ ] Vender no adicional: o estoque muda na tela do principal na hora; o recibo sai na impressora do adicional.
-- [ ] Rede marcada como **Pública** em um dos dois: o adicional mostra a orientação de mudar para Particular.
+- [ ] Rede marcada como **Pública** em um dos dois: os caixas continuam se conectando (a regra vale para todos os perfis) e nenhuma tela pede para mudar a rede.
+- [ ] Reinstalar com a opção do firewall marcada: `netsh advfirewall firewall show rule name="PDV2 - Servidor da loja"` mostra só duas regras (TCP 8011 e UDP 8012).
+- [ ] Desligar o principal da tomada: em "Ver o que aconteceu" o adicional diz "O computador principal está desligado ou fora da rede"; com o principal ligado e o serviço parado, "está ligado, mas o PDV2 não está aberto nele".
+- [ ] Tirar o cabo do **adicional** por mais de 1 minuto: o botão "Assumir como caixa principal" continua desabilitado com o aviso de que este computador está sem rede.
+- [ ] Promover um adicional com o principal desligado e depois religar o principal antigo na mesma rede: em até um minuto o antigo mostra "Outro computador assumiu como caixa principal" e não vende; o outro adicional não volta para ele.
 - [ ] Puxar o cabo do principal no meio de uma venda: aviso "O caixa principal está fora do ar"; recolocar o cabo; repetir a venda; ela aparece uma única vez.
 - [ ] Reiniciar o Windows do principal: o adicional volta sozinho, sem novo código.
 - [ ] Trocar o IP do principal (renovar DHCP): o adicional acha o novo endereço e avisa que corrigiu.

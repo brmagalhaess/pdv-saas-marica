@@ -18,6 +18,11 @@ on:
       - 'terminal/launcher.py'
       - 'terminal/service_win.py'
       - 'terminal/paths.py'
+      - 'terminal/runtime.py'
+      - 'terminal/lan.py'
+      - 'terminal/station.py'
+      - 'terminal/discovery.py'
+      - 'terminal/lanclient.py'
       - '.github/workflows/windows-installer.yml'
 permissions:
   contents: read
@@ -37,7 +42,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r terminal/requirements.txt -r installer/requirements-build.txt
       - name: Installer, updater and service tests
-        run: python -m unittest -v terminal.tests.test_updater terminal.tests.test_launcher terminal.tests.test_service_win
+        run: python -m unittest -v terminal.tests.test_updater terminal.tests.test_launcher terminal.tests.test_service_win terminal.tests.test_runtime terminal.tests.test_discovery
         env:
           PDV_ENV: test
       # The rest of the terminal suite was written on Linux/macOS. It runs here to

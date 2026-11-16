@@ -1,5 +1,5 @@
 // Bump VERSION on every release: the old cache is dropped when the new worker activates.
-const VERSION = "2.0.0-painel.5";
+const VERSION = "2.1.0-painel.6";
 const CACHE = "pdv2-shell-" + VERSION;
 const PAGES = ["/", "/login/", "/app/", "/platform/", "/offline/"];
 const SHELL = [

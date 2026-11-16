@@ -631,6 +631,21 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("app-3.2.1/shared/licensing.py", names)
         self.assertFalse([name for name in names if "/tests/" in name or name.endswith((".sqlite3", ".pem", ".pyc"))])
 
+    def test_bundle_is_not_offered_to_a_terminal_older_than_the_database_change(self):
+        # The automatic way back swaps only the program: a terminal 2.0.x sent back to its old
+        # program over the database migrated by 2.1 (cashiers of the shop) would not open a cashier.
+        with patch("builtins.print"):
+            (_legacy, legacy_meta), (_bundle, bundle_meta) = self.module.main(
+                ["--out", str(self.out), "--version", "2.1.0"])
+        self.assertEqual(bundle_meta["min_version"], "2.1.0")
+        self.assertNotIn("min_version", legacy_meta)
+        manifest = {"kind": "bundle", "min_version": bundle_meta["min_version"]}
+        self.assertIn("instalador completo", updater.manifest_block(manifest, "2.0.7"))
+        self.assertEqual(updater.manifest_block(manifest, "2.1.0"), "")
+        self.assertEqual(updater.manifest_block(manifest, "2.1.4"), "")
+        self.assertEqual((ROOT / "VERSION").read_text().strip().split(".")[:2], ["2", "1"],
+                         "the version that brought the change carries a new second number")
+
     def test_frozen_bundle_and_installer_metadata(self):
         frozen = self.out / "stage" / "app-3.2.1"
         (frozen / "_internal").mkdir(parents=True)

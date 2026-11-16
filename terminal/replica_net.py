@@ -26,7 +26,8 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs
 
-from . import mirror
+from . import mirror, paths
+from .lanclient import NATIVE_HEADER
 from .store import TerminalError
 
 PREFIX = "/lan/v1/replica/"
@@ -69,7 +70,7 @@ def _now_ms():
 
 
 def _version():
-    return os.environ.get("PDV_VERSION", "2.0.0")
+    return os.environ.get("PDV_VERSION") or paths.source_version()
 
 
 # ================================================================ lado do caixa principal
@@ -684,6 +685,8 @@ class Puller:
         self._wake.set()
         if self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout)
+        if not self._thread.is_alive():
+            self._drop_client()  # o cliente é deste puxador: ninguém mais o usa
         with _SERVERS_LOCK:
             if _PULLERS.get(str(self.data_dir)) is self:
                 del _PULLERS[str(self.data_dir)]
@@ -714,7 +717,10 @@ class Puller:
         try:
             if self._client is None:
                 self._client = self.client_factory()
-            return self._client.request(method, path, body=body, headers=headers, timeout=timeout)
+            # Rota nativa da rede entre caixas: a ponte local nunca repassa este cabeçalho.
+            merged = dict(headers or {})
+            merged[NATIVE_HEADER[0]] = NATIVE_HEADER[1]
+            return self._client.request(method, path, body=body, headers=merged, timeout=timeout)
         except Exception:
             # O texto do erro de rede não é guardado: pode trazer endereço ou trecho do pedido.
             raise _Network() from None

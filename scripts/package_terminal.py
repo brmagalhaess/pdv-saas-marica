@@ -32,11 +32,20 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
-def write_metadata(target, version, notes, kind=None, channel='pilot'):
+# Oldest terminal that may receive a bundle by swapping folders. The automatic way back only
+# changes the program, never the database: a version that migrates the database (2.1.0 brought the
+# cashiers of the shop) must not be offered to a terminal that could be sent back to the old
+# program over the new schema. Older terminals get the full installer.
+BUNDLE_MIN_VERSION = '2.1.0'
+
+
+def write_metadata(target, version, notes, kind=None, channel='pilot', min_version=None):
     summary = {'component': 'terminal', 'channel': channel, 'version': version, 'sha256': file_sha256(target),
                'size_bytes': target.stat().st_size, 'notes': notes}
     if kind:
         summary['kind'] = kind
+    if min_version:
+        summary['min_version'] = min_version
     metadata = target.with_name(target.stem + '.metadata.json')
     metadata.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     return summary
@@ -71,7 +80,7 @@ def build_source_bundle(version, out, root=ROOT):
     target = build_bundle(version, out, files, 'source', f'PDV2-Terminal-{version}-bundle.zip')
     notes = ('Bundle de código-fonte (app-<versão>/). Serve a instalações de desenvolvimento; terminais Windows '
              'instalados só aceitam o bundle gerado por installer/build.ps1.')
-    return target, write_metadata(target, version, notes, kind='bundle')
+    return target, write_metadata(target, version, notes, kind='bundle', min_version=BUNDLE_MIN_VERSION)
 
 
 def build_frozen_bundle(version, out, frozen_dir):
@@ -81,7 +90,7 @@ def build_frozen_bundle(version, out, frozen_dir):
     files = [(path, path.relative_to(frozen_dir)) for path in sorted(frozen_dir.rglob('*')) if path.is_file()]
     target = build_bundle(version, out, files, 'frozen-win64', f'PDV2-Terminal-{version}-win64-bundle.zip')
     return target, write_metadata(target, version, 'Atualização automática para Windows 64 bits.', kind='bundle',
-                                  channel='stable')
+                                  channel='stable', min_version=BUNDLE_MIN_VERSION)
 
 
 def main(argv=None):

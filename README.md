@@ -67,7 +67,7 @@ A chave empresarial não autoriza um dispositivo sozinha: o servidor também con
 
 Se um caixa foi conectado à empresa errada e ainda não contém operações nem backups, a opção **Corrigir conexão deste caixa** limpa os dados baixados e permite novo pareamento. Depois de registrar operações ou backups, preserve o banco local e use uma instalação ou diretório de dados separado para outra empresa.
 
-Em uma loja, cada computador de caixa executa seu próprio terminal e pode usar a mesma porta local `8010`. A licença, o código de pareamento, o `device_id` e o banco SQLite identificam o caixa; a porta não participa dessa identificação. A porta `8011` existe somente para testar duas instâncias no mesmo Docker Desktop, onde dois processos não conseguem escutar a mesma porta do mesmo computador. Para esse teste, use o perfil `multi-terminal`; em computadores diferentes, não é necessário mudar a porta.
+Em uma loja, cada computador de caixa executa seu próprio terminal e pode usar a mesma porta local `8010`. A licença, o código de pareamento, o `device_id` e o banco SQLite identificam o caixa; a porta não participa dessa identificação. Numa loja com mais de um caixa, um computador é o caixa principal e os outros são caixas adicionais que vendem por ele ([ESTACOES.md](docs/ESTACOES.md)): a porta `8011` é a rede entre caixas (TLS) do caixa principal e a `8012/UDP` é a busca. O perfil `multi-terminal` do Docker publica um segundo terminal na `8011` do host para testar duas instâncias independentes; não o rode junto com um terminal nativo que tenha caixas adicionais. O terminal em Docker (`compose.terminal.yaml`) não serve caixas adicionais.
 
 ## Testes
 
@@ -110,6 +110,8 @@ As regressões de marca, landing, login, tela offline e manifesto ficam em `clou
 - [Auditoria de novembro/2026 e plano por ondas](docs/AUDITORIA-2026-11.md) (detalhes em [docs/auditoria-2026-11/](docs/auditoria-2026-11/))
 - [Arquitetura offline local: servidor da loja, estações e nuvem](docs/ARQUITETURA-OFFLINE-LOCAL.md)
 - [Recuperação e réplica em segundo disco (fase 2)](docs/RECUPERACAO-E-REPLICA.md)
+- [Vários caixas na mesma loja (fase 3)](docs/ESTACOES.md)
+- [Instalador Windows](docs/INSTALADOR-WINDOWS.md)
 - [Relatório de auditoria completa e plano de evolução](RELATORIO-AUDITORIA-COMPLETA.md) (outubro/2026)
 - [Roadmap de completude e andamento](docs/ROADMAP-COMPLETUDE.md)
 - [Checklist de teste e promoção](docs/RELEASE-CHECKLIST.md)

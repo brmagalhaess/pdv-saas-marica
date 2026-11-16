@@ -155,11 +155,12 @@ class StationEntryTests(RouteCase):
     def test_session_tells_which_cashier_this_is(self):
         server = self.client.get("/api/session").json
         self.assertEqual(server["station"], {"id": "server", "name": "Caixa principal", "is_server": True})
-        self.assertEqual(server["stations_limit"], {"limit": 2, "used": 1, "available": 1})
+        self.assertEqual(server["stations_limit"], {"limit": 2, "used": 1, "available": 1, "hub": True})
         self.assertEqual(server["promotion"]["state"], "none")
         self.assertEqual(server["license"]["max_stations"], 2)
         station = self.sget("/api/session").json
-        self.assertEqual(station["station"], {"id": self.station_id, "name": "Caixa 2", "is_server": False})
+        self.assertEqual(station["station"], {"id": self.station_id, "name": "Caixa 2", "is_server": False,
+                                              "version": ""})
         self.assertTrue(station["paired"])
         self.assertEqual(self.client.get("/health").json,
                          {"status": "ok", "service": "terminal-local", "mode": "server"})
@@ -264,9 +265,10 @@ class StationsRoutesTests(RouteCase):
         self.assertEqual((without["supported"], without["replica"]), (sync.lan is not None, without["replica"]))
         self.use_lan()
         data = self.client.get("/api/stations").json
-        self.assertEqual(set(data), {"supported", "limit", "lan", "replica", "stations"})
+        self.assertEqual(set(data), {"supported", "limit", "lan", "replica", "stations", "version"})
+        self.assertEqual(data["version"], sync.VERSION)
         self.assertTrue(data["supported"])
-        self.assertEqual(data["limit"], {"limit": 2, "used": 1, "available": 1})
+        self.assertEqual(data["limit"], {"limit": 2, "used": 1, "available": 1, "hub": True})
         self.assertEqual(data["lan"]["addresses"], ["192.168.0.10"])
         self.assertEqual([(row["name"], row["is_server"], row["linked"]) for row in data["stations"]],
                          [("Caixa principal", True, True), ("Caixa 2", False, True)])
@@ -305,9 +307,16 @@ class StationsRoutesTests(RouteCase):
         self.assertRegex(created.json["code"], r"^\d{6}$")
         self.assertEqual(created.json["expires_in"], 300)
         self.assertEqual(created.json["server"], {"addresses": ["192.168.0.10"], "port": 8011,
-                                                  "hostname": "CAIXA-PRINCIPAL"})
+                                                  "hostname": "CAIXA-PRINCIPAL", "running": True, "error": ""})
+        # The listener did not open (port taken): the screen is told together with the code.
+        lan.state.update(running=False, error="Não foi possível abrir a rede entre caixas (a porta 8011 está em uso "
+                                              "por outro programa)")
+        broken = self.post("/api/stations/code", {}).json["server"]
+        self.assertEqual((broken["running"], "porta 8011" in broken["error"]), (False, True))
+        lan.state.update(running=True, error="")
+        created = self.post("/api/stations/code", {"name": "Caixa do fundo"})
         self.assertEqual(created.headers["Cache-Control"], "no-store")
-        self.assertEqual(lan.pokes, 1)
+        self.assertEqual(lan.pokes, 3)
         new = self.store.enroll_station(created.json["code"])
         self.assertEqual(new["station_name"], "Caixa do fundo")
         full = self.post("/api/stations/code", {})
@@ -325,7 +334,7 @@ class StationsRoutesTests(RouteCase):
         self.assertEqual(revoked.status_code, 200, revoked.json)
         self.assertTrue(revoked.json["revoked_at"])
         self.assertTrue(revoked.json["cash_open"])  # it stays open until the manager counts the drawer
-        self.assertEqual(lan.pokes, 2)
+        self.assertEqual(lan.pokes, 4)
         with self.assertRaises(TerminalError) as refused:
             self.store.authenticate_station(self.linked["token"])
         self.assertEqual(refused.exception.code, "station_revoked")
@@ -645,6 +654,15 @@ const out = {
   noPlan: C.stationsCard({supported: true, limit: {limit: 0, used: 0}, lan: {supported: true}, stations: stations.slice(0, 1)}),
   noLan: C.stationsCard({supported: false, limit: {limit: 2, used: 0}, lan: {supported: false}, stations: []}),
   publicNetwork: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, network_profile: 'public'}, stations: []}),
+  notHub: C.stationsCard({supported: true, limit: {limit: 0, used: 0, hub: false}, lan: {supported: true}, stations: stations.slice(0, 1)}),
+  firewall: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, firewall: 'missing'}, stations: []}),
+  lanError: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, firewall: 'missing', error: 'porta em uso'}, stations: []}),
+  outdated: C.stationsCard({supported: true, version: '2.1.3', limit: {limit: 3, used: 3}, lan: {supported: true}, stations: [
+    {id: 'server', name: 'Caixa principal', is_server: true, linked: true, online: true},
+    {id: 'old', name: 'Caixa 2', linked: true, online: true, app_version: '2.0.9'},
+    {id: 'fix', name: 'Caixa 3', linked: true, online: true, app_version: '2.1.0'},
+    {id: 'gone', name: 'Caixa 4', linked: true, revoked_at: 5, app_version: '1.0.0', cash_open: true}]}),
+  stationUi: C.stationNotice({station: {id: 's2', name: 'Caixa 2', is_server: false, version: '2.0.4'}, connection: {shop_name: 'Mercado X'}}),
   nothing: C.stationsCard(null),
   promotion: [C.promotionCard(null), C.promotionCard({state: 'none'}), C.promotionCard({state: 'done'}),
     C.promotionCard({state: 'awaiting_cloud', previous_server_cash_open: false, pending_events: 0}),
@@ -698,9 +716,30 @@ console.log(JSON.stringify(out));
         self.assertFalse(self.out["noPlan"]["canAdd"])
         self.assertIn("não inclui caixas adicionais", self.out["noPlan"]["summary"])
         self.assertEqual(self.out["noLan"]["addBlocked"], "Rede entre caixas indisponível nesta instalação.")
-        self.assertEqual(self.out["publicNetwork"]["warning"],
-                         "A rede deste computador está marcada como Pública no Windows. Mude para Particular para os "
-                         "outros caixas enxergarem este.")
+        # The firewall rule covers every network profile: "Public" is not reported as a problem.
+        self.assertEqual(self.out["publicNetwork"]["warning"], "")
+        # Another terminal is the main one of the shop: the answer is in the panel, not a bigger plan.
+        for text in (self.out["notHub"]["summary"], self.out["notHub"]["addBlocked"]):
+            self.assertIn("não é o caixa principal desta loja", text)
+            self.assertIn("Tornar principal desta loja", text)
+        self.assertIn("firewall do Windows deste computador não liberou", self.out["firewall"]["warning"])
+        self.assertEqual(self.out["lanError"]["warning"], "A rede entre os caixas não está funcionando: porta em uso")
+
+    def test_outdated_cashier_is_warned_before_the_main_one_breaks(self):
+        card = self.out["outdated"]
+        rows = {row["id"]: row["status"] for row in card["rows"]}
+        self.assertEqual(rows["old"], "Conectado agora · Versão antiga (2.0.9): instale a versão nova neste caixa")
+        self.assertEqual((rows["fix"], rows["gone"]), ("Conectado agora", "Removido"),
+                         "a correction (third number) and a removed cashier are not warned about")
+        self.assertIn("não poderá assumir se este computador quebrar", card["warning"])
+
+    def test_additional_cashier_hides_what_only_the_main_computer_does(self):
+        notice = self.out["stationUi"]
+        self.assertLessEqual({"refreshBootstrap", "bootstrapBtn", "mirrorCard", "updateCard", "loginMaintenance"},
+                             set(notice["hidden"]))
+        self.assertEqual(notice["version"], "2.0.4")
+        self.assertIn("pelo caixa principal", notice["operatorHint"])
+        self.assertEqual((self.out["server"]["version"], self.out["server"]["operatorHint"]), ("", ""))
         self.assertEqual((self.out["nothing"]["rows"], self.out["nothing"]["canAdd"]), ([], False))
 
     def test_a_removed_cashier_does_not_enable_adding_on_a_full_plan(self):

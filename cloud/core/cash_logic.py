@@ -8,6 +8,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone as utc_timezone
 
+from .api_common import APIError
 from .models import CashMovement, CashSession, CreditReceipt, Membership, Sale, SalePayment, SaleReturn
 from .sale_logic import open_conflict
 from .station_logic import station_of
@@ -33,6 +34,10 @@ def _session(terminal, session_id, when):
         pk=uuid.UUID(str(session_id)),
         defaults={"tenant": terminal.tenant, "shop": terminal.shop, "terminal": terminal,
                   "opened_at": when, "incomplete": True})
+    if session.tenant_id != terminal.tenant_id or session.terminal_id != terminal.id:
+        # The id is chosen by the terminal: without this check a terminal of one company could
+        # rewrite (or close) the cashier of another one by sending its id. Goes to the quarantine.
+        raise APIError("Caixa já recebido de outro terminal", 409)
     return session
 
 
@@ -84,6 +89,9 @@ def apply_cash_event(terminal, event, conflicts=None):
                 counted_cents=data["counted_cents"], difference_cents=data["difference_cents"]))
     else:
         session = _session(terminal, data["cash_session_id"], when)
+        existing = CashMovement.objects.filter(pk=uuid.UUID(str(event["aggregate_id"]))).select_related("session").first()
+        if existing is not None and existing.session_id != session.id:
+            raise APIError("Movimento de caixa já recebido de outro caixa", 409)
         CashMovement.objects.get_or_create(
             pk=uuid.UUID(str(event["aggregate_id"])),
             defaults={"session": session, "kind": kind.split(".", 1)[1],

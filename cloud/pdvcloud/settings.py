@@ -13,7 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 
 DEBUG = os.environ.get("PDV_DEBUG", "0") == "1" and os.environ.get("PDV_ENV") != "production"
 PLATFORM_MFA_REQUIRED = os.environ.get("PDV_PLATFORM_MFA_REQUIRED", "1" if not DEBUG else "0") == "1"
-PDV_VERSION = os.environ.get("PDV_VERSION", "2.0.0")
+PDV_VERSION = os.environ.get("PDV_VERSION", "2.1.0")
 # /control/ (Django admin) is opt-in outside development; see core/admin.py.
 PDV_ENABLE_DJANGO_ADMIN = os.environ.get("PDV_ENABLE_DJANGO_ADMIN", "1" if DEBUG else "0") == "1"
 SECRET_KEY = os.environ.get("PDV_SECRET_KEY")

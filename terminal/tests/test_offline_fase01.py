@@ -839,14 +839,14 @@ class UpdaterHookTests(OfflineCase):
 
     def test_terminal_without_the_module_only_says_update_is_unavailable(self):
         self.use(None)
-        self.store.set_release_result({"version": "2.1.0", "url": "https://updates.example.test/t.zip"})
+        self.store.set_release_result({"version": "9.9.0", "url": "https://updates.example.test/t.zip"})
         with patch("terminal.sync._request", side_effect=self.cloud):
             self.assertEqual(sync.Worker(self.store).run_once(), [])
         self.login(self.manager_id, "654321")
         status = self.client.get("/api/update/status").json
         self.assertEqual((status["supported"], status["can_apply"]), (False, False))
         self.assertIn("indisponível", status["blocked_reason"])
-        self.assertEqual(status["available"]["version"], "2.1.0")
+        self.assertEqual(status["available"]["version"], "9.9.0")
         self.assertEqual(self.post("/api/update/apply").status_code, 409)
         # The published version is not "available" when it is the one already running.
         self.store.set_release_result({"version": sync.VERSION, "url": "https://updates.example.test/t.zip"})

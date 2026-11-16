@@ -66,11 +66,11 @@ O computador antigo, se ainda ligar, mostra "Este caixa foi transferido": não v
 
 ## Mais de um caixa na loja (estações)
 
-Uma loja pode ter um **caixa principal** (o computador que guarda o banco e fala com a nuvem) e **caixas adicionais** (outros computadores da mesma rede que vendem através dele). No código: `server` e `station`. Esta seção descreve o que o núcleo do terminal (`terminal/store.py`, `terminal/app.py`, `terminal/sync.py` e a tela) faz; a rede entre os caixas (`terminal/lan.py`, `terminal/station.py`), a cópia pela rede e a promoção assistida estão em [ESTACOES.md](ESTACOES.md).
+Uma loja pode ter um **caixa principal** (o computador que guarda o banco e fala com a nuvem) e **caixas adicionais** (outros computadores da mesma rede que vendem através dele). No código: `server` e `station`. Esta seção descreve o que o núcleo do terminal (`terminal/store.py`, `terminal/app.py`, `terminal/sync.py` e a tela) faz; a rede entre os caixas (`terminal/lan.py`, `terminal/station.py`: rotas `/lan/v1`, tela e rotas do caixa adicional, estados e códigos de recusa) está na seção 6 de [ESTACOES.md](ESTACOES.md#6-parte-técnica-rede-e-tela-do-caixa-adicional), e a cópia pela rede e a promoção assistida nas seções 2 e 3 do mesmo documento.
 
 **Regras que não mudam**
 
-- Um só escritor: só o processo do caixa principal abre o SQLite. O caixa adicional nunca cria `Store` nem `terminal.sqlite3`.
+- Um só escritor: só o processo do caixa principal abre o SQLite. O caixa adicional nunca abre `Store` nem `terminal.sqlite3` (uma instalação nova sobe como caixa principal e cria o banco vazio antes de a tela trocar o modo; esse banco fica parado).
 - O navegador de cada computador continua falando só com `127.0.0.1`. As requisições do caixa adicional entram no mesmo app Flask do principal com `environ["pdv2.station"] = {"id", "name"}`, chave que só a escuta da rede consegue criar (um cliente HTTP só cria chaves `HTTP_*`).
 - Com o caixa principal fora do ar, o caixa adicional **para de vender**, mostra "O caixa principal está fora do ar" e tenta de novo a cada 2 segundos. O que estava na tela fica: a venda em andamento repete com o mesmo `request_id` e o carrinho continua no rascunho. O `request_id` é guardado junto do rascunho antes do envio, então vale também depois de a página recarregar ("Ver o que aconteceu", promoção). Um caixa removido só volta a se vincular com vaga livre no plano; e cada promoção apresenta à nuvem um `device_id` novo.
 - A quantidade de caixas adicionais vem da licença assinada (claim `max_stations`) e só vale com a nuvem que anuncia a capacidade `stations`. Sem os dois o limite é 0. O limite não conta o caixa principal.
@@ -79,7 +79,7 @@ Uma loja pode ter um **caixa principal** (o computador que guarda o banco e fala
 
 - Tabelas novas `stations` (uma linha fixa `server`, "Caixa principal") e `station_enroll_codes`. `cash_sessions`, `sales`, `sale_returns`, `credit_receipts` e `print_jobs` ganharam `station_id` (padrão `server`); `print_settings` passou a ter uma configuração por caixa (`PRIMARY KEY(station_id, kind)`); o índice "um só caixa aberto" passou a ser por estação (`cash_one_open_station`). A migração (`Store._migrate_stations`) roda na partida e é idempotente: o banco existente inteiro vira do caixa `server`.
 - Quem está pedindo fica no contexto da thread (`Store.set_station`, `current_station`, `with store.station(id)`), nunca em parâmetro de método. O Worker e a cópia em segundo disco rodam sempre como `server`.
-- Cada caixa abre, movimenta e fecha o **seu** caixa; a venda baixa o mesmo estoque e respeita o mesmo fiado, dentro de uma transação por vez. Carrinhos em espera continuam compartilhados. A lista de vendas mostra a loja inteira, com o nome do caixa.
+- Cada caixa abre, movimenta e fecha o **seu** caixa; a venda baixa o mesmo estoque e respeita o mesmo fiado, dentro de uma transação por vez. Carrinhos em espera continuam compartilhados. A lista de vendas mostra a loja inteira, com o nome do caixa. **Cancelar** uma venda só no caixa que a fez (409 `other_station` nos outros, e a tela desabilita o botão): o dinheiro devolvido sai da gaveta que o recebeu. A **devolução** pode ser feita em qualquer caixa e sai da gaveta de quem devolve.
 - Idempotência não mudou: repetir `request_id`, `return_id` ou `receipt_id` devolve o mesmo resultado, venha de qual caixa vier.
 - PIN errado trava só aquele operador naquele caixa (chave `<operador>|<estação>`); a autorização de gerente e o teto de 30 erros em 15 minutos também são por caixa. PIN trocado no painel destrava em todos.
 - Impressão: o recibo da venda feita no caixa adicional entra na fila dele e sai na impressora dele; o Worker do principal só imprime a fila `server`. `POST /api/print/flush` vindo de um caixa adicional responde `{"status": "delegated"}`.
@@ -94,17 +94,17 @@ No principal, o gerente abre **Sistema → Caixas da loja → Adicionar caixa**.
 
 | Rota | Quem | Resposta |
 |---|---|---|
-| `GET /api/stations` | gerente | `{"supported", "limit": {"limit","used","available"}, "lan", "replica", "stations": [...]}` |
-| `POST /api/stations/code` `{"name"?}` | gerente | 201 `{"code","expires_at","expires_in":300,"server":{"addresses","port","hostname"}}`; 409 `station_limit` |
+| `GET /api/stations` | gerente | `{"supported", "limit": {"limit","used","available","hub"}, "lan", "replica", "stations": [...], "version"}`. `hub` falso: o plano pode incluir caixas, mas outro terminal é o principal da loja no painel. |
+| `POST /api/stations/code` `{"name"?}` | gerente | 201 `{"code","expires_at","expires_in":300,"server":{"addresses","port","hostname","running","error"}}` (`running` falso: a escuta não abriu e a tela avisa junto do código); 409 `station_limit` |
 | `POST /api/stations/<id>/rename` `{"name"}` | gerente | o caixa; 404 "Caixa não encontrado" |
 | `POST /api/stations/<id>/revoke` `{"confirm": true}` | gerente | o caixa, com `cash_open` |
 | `POST /api/stations/<id>/cash/close` `{"counted_cents","manager_pin"}` | gerente | resumo do fechamento |
 | `POST /api/mode/station` `{"confirm": true}` | sem login, só em computador sem loja | `{"mode":"station","restart": bool}` |
 | `POST /api/promotion/regularize` `{"license_key","code","cloud_url"?,"manager_pin"?}` | gerente logado ou PIN | `{"regularized": true, "promotion", "bootstrap", "warning"?}` |
 
-`/api/session` ganhou `station` (`id`, `name`, `is_server`), `promotion` e `stations_limit`; `/health` ganhou `"mode": "server"`. Erros com motivo estável trazem `code` (`server_only`, `station_limit`, `invalid_code`, `other_terminal`...).
+`/api/session` ganhou `station` (`id`, `name`, `is_server` e, num caixa adicional, `version`: a versão do PDV2 dele), `promotion` e `stations_limit`; `/health` ganhou `"mode": "server"`. Erros com motivo estável trazem `code` (`server_only`, `station_limit`, `invalid_code`, `other_terminal`...).
 
-Um caixa adicional recebe 403 `{"error": "Esta operação só pode ser feita no caixa principal da loja.", "code": "server_only"}` em pareamento, recuperação, exportação, backup local, escolha de disco, aplicação de atualização, `/api/stations`, `/api/promotion/` e `/api/mode/station` (lista `SERVER_ONLY_ENDPOINTS` em `terminal/app.py`). A sessão do operador vale só no caixa em que ele entrou: o cookie copiado de um computador não vale em outro. Host, Origin e CSRF continuam exigidos como antes.
+Um caixa adicional recebe 403 `{"error": "Esta operação só pode ser feita no caixa principal da loja.", "code": "server_only"}` em pareamento, carga do catálogo (`/api/bootstrap`), `/api/unpair`, `/api/new-profile`, recuperação, exportação, backup local, escolha de disco, aplicação de atualização, `/api/stations`, `/api/promotion/` e `/api/mode/station` (lista `SERVER_ONLY_ENDPOINTS` em `terminal/app.py`). A tela do caixa adicional esconde o que só o principal faz (atualizar operadores e catálogo, cópia em outro disco, atualização, manutenção do terminal) e mostra em "Sobre" a versão dele. A sessão do operador vale só no caixa em que ele entrou: o cookie copiado de um computador não vale em outro. Host, Origin e CSRF continuam exigidos como antes.
 
 A atualização automática e "Criar novo perfil" só acontecem com o caixa fechado **em todos os computadores** ("Feche o caixa em todos os computadores para atualizar").
 
@@ -114,7 +114,7 @@ O assistente da promoção reconstrói o banco no caixa adicional a partir da c�
 
 **Limites conhecidos**
 
-- Depois da migração da fase 3, o executável da versão anterior não consegue abrir caixa nem vender neste banco. A volta automática de versão do atualizador não restaura o banco: voltar exige o backup feito antes da atualização.
+- Depois da migração da fase 3, o executável da versão anterior não consegue abrir caixa nem vender neste banco. Por isso a fase 3 sobe a versão para **2.1.0** e o bundle de atualização leva `min_version: 2.1.0`: um terminal 2.0.x não recebe a troca automática e precisa do instalador completo. A volta automática de versão do atualizador não restaura o banco: voltar exige o backup feito antes da atualização.
 - O estoque e o fiado podem contar em dobro por instantes entre a primeira carga depois da promoção e o envio completo da fila; corrigem-se sozinhos.
 - Tablet ou celular como caixa adicional está fora desta fase.
 

@@ -17,6 +17,7 @@ from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
+from . import paths
 from .printers import (LABEL_PRINTER_REQUIRED, PAYMENT_LABELS, label_bytes, layout_bytes, receipt_bytes,
                        receipt_layout, voucher_layout)
 
@@ -110,6 +111,12 @@ STATION_TABLES = ("cash_sessions", "sales", "sale_returns", "credit_receipts", "
 STATION_LIMIT_NONE = "O plano desta loja não inclui caixas adicionais. Fale com o suporte para ampliar o plano."
 STATION_LIMIT_FULL = ("O plano desta loja inclui {n} caixa(s) adicional(is) e todos já estão em uso. Remova um "
                       "caixa em Sistema → Caixas da loja ou amplie o plano.")
+STATION_NOT_HUB = ("Este computador não é o caixa principal desta loja. No painel, em Terminais, escolha "
+                   "\"Tornar principal desta loja\" ou adicione os caixas no computador principal.")
+STATION_NOT_HUB_STATION = ("O computador a que este caixa está ligado deixou de ser o caixa principal desta loja. "
+                           "No painel, em Terminais, confira qual é o caixa principal.")
+SUPERSEDED_REASON = ("Outro computador assumiu como caixa principal desta loja. Este computador não vende mais: "
+                     "use o novo caixa principal e chame o suporte para trazer as vendas que ficaram aqui.")
 STATION_CODE_INVALID = "Código inválido ou vencido. Peça um novo código no caixa principal."
 PROMOTION_META = ("promotion_state", "promoted_at", "promotion_previous_station", "promotion_device_id",
                   "server_generation")
@@ -615,7 +622,8 @@ class Store:
                     "discount_max_bps", "issuer_profile", "business_hours", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at",
                     "last_heartbeat_at", "last_heartbeat_error", "bootstrap_summary", "catalog_skipped",
-                    "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at", *PHASE2_META,
+                    "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at",
+                    "superseded_at", "superseded_by", *PHASE2_META,
                     *PROMOTION_META):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
         conn.execute("DELETE FROM meta WHERE key LIKE 'manager_override_window|%'")
@@ -859,6 +867,13 @@ class Store:
                 return {"state": "transferred", "can_sell": False, "can_open_cash": False,
                         "reason": reason, "send_only_closed": closed, "pending_events": pending,
                         "send_only_until": None if closed else self._meta(conn, "send_only_until") or None}
+            if self._meta(conn, "superseded_at"):
+                # A promoted computer with a newer generation of this same terminal answered on the
+                # network: two main cashiers would split the sales of the shop.
+                return {"state": "superseded", "can_sell": False, "can_open_cash": False,
+                        "reason": SUPERSEDED_REASON,
+                        "pending_events": conn.execute(
+                            "SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0]}
             last_seen = int(self._meta(conn, "last_seen") or 0)
             if last_seen and now + CLOCK_TOLERANCE_SECONDS < last_seen:
                 return {"state": "clock_rollback", "can_sell": False, "can_open_cash": False,
@@ -919,6 +934,30 @@ class Store:
         if now - last_seen >= LAST_SEEN_WRITE_SECONDS:
             self.touch_last_seen(now)
         return status
+
+    def mark_superseded(self, generation, fingerprint=""):
+        """Another computer answered as this same terminal with a newer generation. Returns True
+        when this is news. Only a new pairing, a recovery or a promotion clears it."""
+        with self.transaction() as conn:
+            if self._meta(conn, "superseded_at"):
+                return False
+            self._set_meta(conn, "superseded_at", str(_now_ms()))
+            self._set_meta(conn, "superseded_by", _json({"generation": int(generation),
+                                                         "fingerprint": str(fingerprint or "")[:64]}))
+            self._audit(conn, None, "terminal.superseded", self._meta(conn, "terminal_id"),
+                        f"generation={int(generation)}")
+            return True
+
+    def superseded(self):
+        with self.connection() as conn:
+            return bool(self._meta(conn, "superseded_at"))
+
+    def server_generation(self):
+        with self.connection() as conn:
+            try:
+                return max(1, int(self._meta(conn, "server_generation") or 1))
+            except ValueError:
+                return 1
 
     @staticmethod
     def _claim_stations(claims):
@@ -2088,6 +2127,11 @@ class Store:
                 raise TerminalError("Venda não encontrada", 404)
             if row["status"] == "voided":
                 return self.sale_detail(sale_id)
+            if (row["station_id"] or SERVER_STATION_ID) != self.current_station():
+                # Each cashier answers for its own drawer: the refund would leave another one.
+                other = self._station_name(conn, row["station_id"] or SERVER_STATION_ID) or "outro caixa"
+                raise TerminalError(f"Esta venda foi feita em outro caixa ({other}). Cancele nele ou registre "
+                                    "uma devolução aqui.", 409, code="other_station")
             if conn.execute("SELECT 1 FROM sale_returns WHERE sale_id=?", (sale_id,)).fetchone():
                 raise TerminalError("Venda com devolução não pode ser cancelada; devolva os itens restantes", 409)
             original_cash = conn.execute("SELECT closed_at FROM cash_sessions WHERE id=?", (row["session_id"],)).fetchone()
@@ -2677,9 +2721,14 @@ class Store:
                                                 if isinstance(row, dict))
         session_id, opened_at = str(record["id"]), int(record["opened_at"])
         station_id = str(record.get("station_id") or SERVER_STATION_ID)[:64]
-        # A cashier of another computer comes back with its identity, but has to be linked again.
-        conn.execute("INSERT OR IGNORE INTO stations(id,name,token_hash,created_at) VALUES (?,?,NULL,?)",
-                     (station_id, str(record.get("station_name") or "Caixa")[:STATION_NAME_MAX], _now_ms()))
+        # A cashier known only from the history comes back as removed: the stations the shop still
+        # has came first, in the config record. A removed one takes no place of the plan, still
+        # shows its open cashier for the manager to close, and a real computer links again with
+        # the same identity.
+        created = _now_ms()
+        conn.execute("INSERT OR IGNORE INTO stations(id,name,token_hash,created_at,revoked_at) VALUES (?,?,NULL,?,?)",
+                     (station_id, str(record.get("station_name") or "Caixa")[:STATION_NAME_MAX], created,
+                      None if station_id == SERVER_STATION_ID else created))
         values = [session_id, str(record.get("operator_id") or ""), int(record.get("opening_cents") or 0), opened_at,
                   record.get("closed_at"), record.get("counted_cents"), record.get("expected_cents"), station_id]
         upsert = """INSERT INTO cash_sessions
@@ -2892,7 +2941,7 @@ class Store:
                 or self._meta(conn, "transferred_at")
                 or "terminal-config" not in self._meta_json(self._meta(conn, "cloud_capabilities"), [])):
             return None
-        data = {"version": 1, "app_version": os.environ.get("PDV_VERSION", "2.0.0")[:80],
+        data = {"version": 1, "app_version": (os.environ.get("PDV_VERSION") or paths.source_version())[:80],
                 # Only the printers of the main cashier: the others belong to each computer.
                 "print_settings": [dict(row) for row in conn.execute(
                     "SELECT kind,driver,target,format FROM print_settings WHERE station_id=? ORDER BY kind",
@@ -3032,12 +3081,14 @@ class Store:
         """Additional cashiers the signed license allows (the main one is never counted)."""
         claims = self._meta_json(self._meta(conn, "lease"), {}).get("payload")
         limit = 0
-        if (isinstance(claims, dict) and claims.get("hub") is not False
+        hub = not (isinstance(claims, dict) and claims.get("hub") is False)
+        if (isinstance(claims, dict) and hub
                 and "stations" in self._meta_json(self._meta(conn, "cloud_capabilities"), [])):
             limit = self._claim_stations(claims)
         used = conn.execute("SELECT COUNT(*) FROM stations WHERE id != ? AND revoked_at IS NULL",
                             (SERVER_STATION_ID,)).fetchone()[0]
-        return {"limit": limit, "used": used, "available": max(0, limit - used)}
+        # hub False: the plan may include stations, but another terminal is the main one of the shop.
+        return {"limit": limit, "used": used, "available": max(0, limit - used), "hub": hub}
 
     def station_limit(self):
         with self.connection() as conn:
@@ -3084,7 +3135,8 @@ class Store:
         with self.transaction() as conn:
             limit = self._station_limit(conn)
             if limit["limit"] <= 0:
-                raise TerminalError(STATION_LIMIT_NONE, 409, code="station_limit")
+                raise TerminalError(STATION_LIMIT_NONE if limit["hub"] else STATION_NOT_HUB, 409,
+                                    code="station_limit")
             # A cashier that lost its link (promotion, recovery) links again with its own identity
             # and takes no new place: the code is refused only when nobody could use it. A removed
             # cashier gave its place away, so it is not a reason to hand out a code on a full plan.
@@ -3197,9 +3249,11 @@ class Store:
                 """SELECT COUNT(*) FROM stations WHERE id != ? AND revoked_at IS NULL
                    AND (created_at < ? OR (created_at = ? AND id < ?))""",
                 (SERVER_STATION_ID, row["created_at"], row["created_at"], row["id"])).fetchone()[0]
-            if position > self._station_limit(conn)["limit"]:
+            limit = self._station_limit(conn)
+            if position > limit["limit"]:
                 raise TerminalError("O plano da loja não inclui mais este caixa adicional. Fale com o responsável "
-                                    "pela loja.", 403, code="station_limit")
+                                    "pela loja." if limit["hub"] else STATION_NOT_HUB_STATION, 403,
+                                    code="station_limit")
             return {"id": row["id"], "name": row["name"]}
 
     def touch_station(self, station_id, *, address="", app_version="", hostname=""):
@@ -3494,6 +3548,7 @@ class Store:
             # came in the copy and is the device_id of the computer that has just stopped: reusing it
             # would overwrite that computer's token instead of marking it as transferred.
             conn.execute("DELETE FROM meta WHERE key='promotion_device_id'")
+            conn.execute("DELETE FROM meta WHERE key IN ('superseded_at','superseded_by')")
             # The cloud token stayed on the computer that stopped (the copy never carries it).
             for key in ("token", "last_heartbeat_at", "last_heartbeat_error", "last_sync_error"):
                 conn.execute("DELETE FROM meta WHERE key=?", (key,))

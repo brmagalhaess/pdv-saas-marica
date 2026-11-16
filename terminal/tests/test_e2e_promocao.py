@@ -86,10 +86,10 @@ class PromotionCase(RealPhaseTwoCase):
         with patch.object(replica_net, "_maybe_build", lambda *args, **kwargs: None):
             self.sell(old, 3)
             old.store.return_sale(old.operator, first["id"], {
-                "return_id": "dev-" + uuid.uuid4().hex, "refund_method": "cash", "reason": "Produto vencido",
+                "return_id": str(uuid.uuid4()), "refund_method": "cash", "reason": "Produto vencido",
                 "items": [{"product_id": str(self.product.id), "quantity_milli": 1000}]})
             old.store.receive_credit(old.operator, {
-                "receipt_id": "rec-" + uuid.uuid4().hex, "customer_id": str(self.customer.id),
+                "receipt_id": str(uuid.uuid4()), "customer_id": str(self.customer.id),
                 "amount_cents": 1000, "method": "cash"})
             old.store.close_cash(old.operator["id"], 10000, PIN)
             old.store.open_cash(old.operator["id"], 5000)
@@ -226,8 +226,9 @@ class OnlinePromotionTests(PromotionCase):
                               json={"version": sync.VERSION, "pending_events": 0})
             self.assertEqual(getattr(caught.exception, "remote_code", None), "terminal_transferred")
             # ...e o envio dele ainda é aceito.
-            sync._request("POST", CLOUD_URL + "/api/v1/terminal/sync", headers=sync._auth_headers(old_meta),
-                          json={"events": []})
+            again = sync._request("POST", CLOUD_URL + "/api/v1/terminal/sync", headers=sync._auth_headers(old_meta),
+                                  json={"events": [json.loads(before["queue"][-1][3])]})
+            self.assertTrue(again.get("send_only"), again)
 
     @unittest.skipUnless(hasattr(Store, "enroll_station"), "depende do núcleo da fase 3 (Store.enroll_station)")
     def test_outro_caixa_religado_com_o_mesmo_station_id_conserva_o_caixa_aberto(self):

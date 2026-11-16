@@ -472,6 +472,12 @@ test("caixas: rótulo do caixa e opções do filtro", () => {
   assert.deepEqual(stationFilterOptions(terminals, rows),
     [["", "Todos os caixas"], ["server", "Caixa principal"], ["3f2a", "Caixa 2"], ["9b", "Balcão"]]);
   assert.deepEqual(stationFilterOptions(null, null), [["", "Todos os caixas"], ["server", "Caixa principal"]]);
+  // Two shops of the same company, each with its own "Caixa 2": the terminal tells them apart.
+  const twoShops = [{ name: "Loja Centro", stations: [{ id: "a", name: "Caixa 2", revoked: false }] },
+    { name: "Loja Praia", stations: [{ id: "c", name: "Caixa 2", revoked: false }, { id: "d", name: "Balcão", revoked: false }] }];
+  assert.deepEqual(stationFilterOptions(twoShops, [{ station_id: "e", station_name: "Caixa 2", terminal_name: "Loja Norte" }]),
+    [["", "Todos os caixas"], ["server", "Caixa principal"], ["a", "Caixa 2 · Loja Centro"],
+     ["c", "Caixa 2 · Loja Praia"], ["d", "Balcão"], ["e", "Caixa 2 · Loja Norte"]]);
 });
 
 test("painel usa os caixas adicionais e o service worker sobe de versão", async () => {
@@ -483,12 +489,14 @@ test("painel usa os caixas adicionais e o service worker sobe de versão", async
   assert.match(app, /stationLimitText\(license\)/);
   assert.match(app, /\{ label: "Caixa", render: row => stationLabel\(row\) \}/);
   assert.match(app, /params\.set\("station_id", station\.value\)/);
+  // The "Caixa" filter follows the shop chosen beside it.
+  assert.match(app, /shop\.select\.addEventListener\("change", fillStations\)/);
   assert.match(app, /key:"max_stations",label:"Caixas adicionais por loja",type:"number",required:true,min:0,max:50,default:0/);
   assert.match(app, /label:"Caixas adicionais por loja",render:row=>row\.max_stations\?\?"—"/);
   // The filter never depends on a request only owner/admin may make.
   assert.match(app, /if \(can\("owner", "admin"\)\) api\.get\("\/terminals\?limit=100"\)[^\n]*\.catch\(\(\) => \{\}\)/);
   const worker = await readFile(new URL("../sw.js", import.meta.url), "utf8");
-  assert.match(worker, /const VERSION = "2\.0\.0-painel\.5";/);
+  assert.match(worker, /const VERSION = "2\.1\.0-painel\.6";/);
 });
 
 test("terminais e caixas renderizam respostas sem os campos novos (nuvem antiga em cache)", () => {

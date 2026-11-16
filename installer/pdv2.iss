@@ -11,7 +11,7 @@
 ; Siga a lista de testes manuais de docs\INSTALADOR-WINDOWS.md antes de entregar.
 
 #ifndef AppVersion
-  #define AppVersion "2.0.0"
+  #define AppVersion "2.1.0"
 #endif
 #ifndef StageDir
   #define StageDir "..\dist\windows\stage"
@@ -61,7 +61,9 @@ Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"
 ; Rede entre caixas (TCP 8011 e UDP 8012). Sem marcar, o serviço cria a mesma regra sozinho quando o
 ; caixa principal passa a ter caixas adicionais (terminal\lan.py, ensure_firewall).
-Name: "lanserver"; Description: "Este computador será o servidor da loja (libera a rede local para outros caixas)"; Flags: unchecked
+; A regra vale para todos os perfis de rede (Particular, Domínio e Pública), sempre limitada à sub-rede local:
+; com a rede da loja marcada como Pública os caixas continuam se enxergando (docs\ESTACOES.md, 1.1).
+Name: "lanserver"; Description: "Este computador será o caixa principal de uma loja com mais de um caixa (libera a rede local para os caixas adicionais)"; Flags: unchecked
 
 [Dirs]
 Name: "{commonappdata}\PDV2"
@@ -80,6 +82,8 @@ Name: "{autoprograms}\PDV2"; Filename: "{app}\bin\PDV2.exe"; WorkingDir: "{app}\
 Name: "{autodesktop}\PDV2"; Filename: "{app}\bin\PDV2.exe"; WorkingDir: "{app}\bin"; Comment: "Abrir o caixa PDV2"; Tasks: desktopicon
 
 [Run]
+; Apaga antes de criar: "netsh add" não substitui, e reinstalar com a opção marcada duplicaria a regra.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FirewallRule}"""; Flags: runhidden; Tasks: lanserver
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=TCP localport=8011 remoteip=localsubnet profile=any"; Flags: runhidden; Tasks: lanserver
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=UDP localport=8012 remoteip=localsubnet profile=any"; Flags: runhidden; Tasks: lanserver
 Filename: "{app}\bin\PDV2.exe"; Description: "Abrir o PDV2 agora"; Flags: postinstall nowait skipifsilent runasoriginaluser

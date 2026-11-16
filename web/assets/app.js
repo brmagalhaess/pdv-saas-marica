@@ -1428,7 +1428,9 @@ async function cashPage() {
   let stationTerminals = [], stationRows = [];
   const fillStations = () => {
     const chosen = station.value;
-    station.replaceChildren(...stationFilterOptions(stationTerminals, stationRows).map(([value, text]) => {
+    // Only the registers of the shop chosen beside it (all of them with "every shop").
+    const inShop = item => !shop.select.value || item?.shop_id === shop.select.value;
+    station.replaceChildren(...stationFilterOptions(stationTerminals.filter(inShop), stationRows.filter(inShop)).map(([value, text]) => {
       const option = el("option", "", text); option.value = value; return option;
     }));
     if ([...station.options].some(option => option.value === chosen)) station.value = chosen;
@@ -1482,6 +1484,7 @@ async function cashPage() {
     }
   }
   if (current === state.renderId) load();
+  shop.select.addEventListener("change", fillStations);
   [shop.select, station, status].forEach(input => input.addEventListener("change", () => load()));
 }
 

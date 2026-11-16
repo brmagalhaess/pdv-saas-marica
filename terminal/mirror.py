@@ -41,6 +41,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from . import paths
 from .store import TerminalError
 
 ROOT_NAME = "PDV2-copia-de-seguranca"
@@ -479,7 +480,7 @@ def _load_manifest(replica):
 
 def _save_manifest(replica, manifest, now):
     manifest["updated_at"] = now
-    manifest["app_version"] = os.environ.get("PDV_VERSION", "2.0.0")
+    manifest["app_version"] = os.environ.get("PDV_VERSION") or paths.source_version()
     _atomic_write(Path(replica) / MANIFEST_NAME, _canon(manifest).encode("utf-8"))
 
 

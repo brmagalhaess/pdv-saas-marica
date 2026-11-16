@@ -318,6 +318,9 @@ def terminal_detail(request, pk):
         if data.get("hub"):
             if row.revoked:
                 raise APIError("Terminal revogado", 409)
+            if not row.token_hash:
+                raise APIError("Conecte este terminal a um computador antes de torná-lo o caixa principal.", 409,
+                               code="terminal_not_paired")
             previous_hub = effective_hub_id(shop)
             if shop.hub_terminal_id != row.id:
                 shop.hub_terminal = row

@@ -18,9 +18,12 @@ STATIONS_MAX = 64
 
 def effective_hub_id(shop):
     """Terminal that is the shop's main register: the one chosen, while it is
-    not revoked, else the oldest paired terminal of the shop that is not revoked."""
+    paired and not revoked, else the oldest paired terminal of the shop that is not revoked."""
     if shop.hub_terminal_id:
-        if Terminal.objects.filter(pk=shop.hub_terminal_id, shop=shop, revoked=False).exists():
+        # A terminal with no computer cannot be the main register: choosing it would take the
+        # additional registers away from the one in use while nobody answers as the new one.
+        if Terminal.objects.filter(pk=shop.hub_terminal_id, shop=shop, revoked=False,
+                                   token_hash__isnull=False).exists():
             return shop.hub_terminal_id
     return (Terminal.objects.filter(shop=shop, revoked=False, token_hash__isnull=False)
             .order_by("created_at", "id").values_list("id", flat=True).first())

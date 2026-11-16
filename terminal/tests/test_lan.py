@@ -26,7 +26,9 @@ from terminal import lan, lanclient
 from terminal.lanclient import LanClient, LanError
 
 HOST = "127.0.0.1"
-BROWSER = {"Host": "127.0.0.1:8010", "Origin": "http://127.0.0.1:8010"}
+# What an agent of a station sends. The native header never comes from a browser: the bridge
+# of the station drops every X-PDV-Station* header (see NativeOnlyTests).
+BROWSER = {"Host": "127.0.0.1:8010", "Origin": "http://127.0.0.1:8010", "X-PDV-Station-Native": "1"}
 
 
 def wait_for(condition, timeout=10, message="condition"):
@@ -615,7 +617,7 @@ class BridgeTests(LanCase):
         response, data = self.call("POST", "/api/echo?a=1&b=%C3%A7", token=token, body=b'{"x":1}',
                                    headers={**headers, "Content-Type": "application/json"})
         self.assertEqual(response.status, 200)
-        self.assertEqual(data["station"], {"id": station_id, "name": "Caixa 2"})
+        self.assertEqual(data["station"], {"id": station_id, "name": "Caixa 2", "version": ""})
         self.assertEqual((data["host"], data["origin"]), ("127.0.0.1:8010", "http://127.0.0.1:8010"))
         self.assertEqual((data["cookie"], data["csrf"]), ("pdv2_session=abc", "csrf-1"))
         self.assertEqual((data["method"], data["path"], data["query"]), ("POST", "/api/echo", "a=1&b=%C3%A7"))

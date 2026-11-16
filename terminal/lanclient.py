@@ -21,6 +21,20 @@ CODES = ("unreachable", "timeout", "tls", "fingerprint_mismatch")
 # The server drops a connection idle for 30 s; never reuse one that is close to that.
 MAX_IDLE_SECONDS = 20.0
 RETRY_METHODS = ("GET", "HEAD")
+# Sent only by the background agents of a station (monitor, print agent, replica puller). The
+# local bridge drops every X-PDV-Station* header that comes from the browser, so a page can
+# never reach a native /lan/v1 route of the server through it.
+NATIVE_HEADER = ("X-PDV-Station-Native", "1")
+
+
+def generation_proof(key, challenge, terminal_id, generation, fingerprint):
+    """Proof that whoever answers as a newer generation of a terminal holds the key of the shop
+    copy (only the main cashier and the cashiers that kept its copy have it). Hex, or None."""
+    if not isinstance(key, str) or not key or not isinstance(challenge, str) or not challenge:
+        return None
+    message = "|".join(("pdv2-generation", challenge, str(terminal_id or ""), str(int(generation)),
+                        str(fingerprint or "")))
+    return hmac.new(key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 class LanError(OSError):
@@ -166,7 +180,10 @@ class LanClient:
                 pass
             raise LanError("fingerprint_mismatch", "o servidor apresentou outra identidade")
         connection = http.client.HTTPConnection(self.address, self.port)
-        connection.sock = tls  # http.client only opens a socket when there is none
+        # Never let http.client open a socket by itself: it would be plain TCP, with no TLS and no
+        # fingerprint check, and the token would leave in the clear. A closed connection fails.
+        connection.auto_open = 0
+        connection.sock = tls
         with self._lock:
             self._all.add(connection)
         return connection
@@ -249,6 +266,9 @@ class LanClient:
             response = connection.getresponse()
         except (socket.timeout, TimeoutError) as exc:
             raise LanError("timeout", "sem resposta", sent=True, kind="timeout") from exc
+        except (http.client.NotConnected, AttributeError) as exc:
+            # The connection was closed by another thread (close()) before a byte left.
+            raise LanError("unreachable", type(exc).__name__, sent=False) from exc
         except (OSError, http.client.HTTPException, ValueError) as exc:
             raise LanError("timeout" if sent else "unreachable", type(exc).__name__, sent=sent) from exc
         return LanResponse(response, lambda reusable: self._release(connection, reusable))

@@ -326,8 +326,13 @@
     // A shop with a single computer keeps seeing the name it gave the terminal in the panel.
     const several = isStation || Number(limit.limit) > 0 || Number(limit.used) > 0;
     const name = several ? (station.name || (isStation ? 'Caixa adicional' : 'Caixa principal')) : (connection.terminal_name || 'Caixa');
+    // Everything here either always fails on an additional cashier (the route is only of the main
+    // computer) or talks about the main computer: the copy on another disk, its update, its bootstrap.
     return {isStation, name, place: `${shop} · ${name}`,
-            hidden: isStation ? ['backupCard', 'mirrorChooseBtn', 'mirrorSnapshotBtn', 'updateApplyBtn', 'stationsCard', 'exportLink', 'changeConnection', 'newProfileLoginBtn'] : [],
+            hidden: isStation ? ['backupCard', 'mirrorChooseBtn', 'mirrorSnapshotBtn', 'updateApplyBtn', 'stationsCard', 'exportLink', 'changeConnection', 'newProfileLoginBtn',
+              'refreshBootstrap', 'bootstrapBtn', 'mirrorCard', 'updateCard', 'loginMaintenance'] : [],
+            version: isStation && typeof station.version === 'string' ? station.version : '',
+            operatorHint: isStation ? 'Nenhum operador com PIN está disponível. Cadastre o PIN em Equipe, no painel da empresa; os operadores chegam a este caixa pelo caixa principal.' : '',
             printerHint: isStation ? 'Impressora deste caixa' : ''};
   }
   const clockText = value => { const date = new Date(Number(value)); return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`; };
@@ -335,13 +340,21 @@
   function stationsCard(data) {
     const info = data || {}, limit = info.limit || {}, lan = info.lan || {}, replica = info.replica || {};
     const total = Number(limit.limit) || 0, used = Number(limit.used) || 0;
+    // hub false: the plan may include cashiers, but another terminal is the main one of this shop.
+    const notHub = limit.hub === false;
+    const NOT_HUB = 'Este computador não é o caixa principal desta loja. No painel, em Terminais, escolha “Tornar principal desta loja” ou adicione os caixas no computador principal.';
     const summary = total > 0 ? `Seu plano inclui ${total} caixa(s) adicional(is); ${used} em uso.`
-      : 'Seu plano não inclui caixas adicionais. Fale com o suporte para ampliar o plano.';
+      : notHub ? NOT_HUB : 'Seu plano não inclui caixas adicionais. Fale com o suporte para ampliar o plano.';
+    // Only (major, minor) counts: a correction never changes what the cashiers exchange.
+    const compat = value => { const parts = String(value || '').split('.').map(Number); return parts.length >= 2 && parts.slice(0, 2).every(Number.isInteger) ? parts[0] * 100000 + parts[1] : null; };
+    const mine = compat(info.version);
+    const outdated = station => !station.is_server && !station.revoked_at && station.linked && mine !== null && compat(station.app_version) !== null && compat(station.app_version) < mine;
     const behind = replica.stations || {};
     const rows = (info.stations || []).map(station => {
       const removed = !!station.revoked_at, copy = behind[station.id];
-      const status = station.is_server ? 'Este computador' : removed ? 'Removido' : !station.linked ? 'Precisa ser conectado de novo'
+      const seen = station.is_server ? 'Este computador' : removed ? 'Removido' : !station.linked ? 'Precisa ser conectado de novo'
         : station.online ? 'Conectado agora' : station.last_seen_at ? `Visto por último às ${clockText(station.last_seen_at)}` : 'Ainda não conectou';
+      const status = outdated(station) ? `${seen} · Versão antiga (${station.app_version}): instale a versão nova neste caixa` : seen;
       return {id: station.id, name: station.name || 'Caixa', isServer: !!station.is_server, removed, status,
               cash: station.cash_open ? 'Caixa aberto' : 'Caixa fechado',
               copy: station.is_server || removed || !copy ? '' : Number(copy.behind) > 0 ? 'Cópia de segurança atrasada' : 'Cópia de segurança em dia',
@@ -350,11 +363,12 @@
     // A removed cashier gave its place away: only one that lost its link can come back on a full plan.
     const relinkable = (info.stations || []).some(station => !station.is_server && !station.linked && !station.revoked_at);
     const blocked = !info.supported || lan.supported === false ? 'Rede entre caixas indisponível nesta instalação.'
-      : total <= 0 ? 'O plano desta loja não inclui caixas adicionais.'
+      : total <= 0 ? (notHub ? NOT_HUB : 'O plano desta loja não inclui caixas adicionais.')
       : used >= total && !relinkable ? 'Todos os caixas adicionais do plano já estão em uso. Remova um caixa ou amplie o plano.' : '';
-    const warning = lan.network_profile === 'public'
-      ? 'A rede deste computador está marcada como Pública no Windows. Mude para Particular para os outros caixas enxergarem este.'
-      : lan.error ? `A rede entre os caixas não está funcionando: ${lan.error}` : '';
+    // The firewall rule covers every network profile, so "Public" is not a problem to report.
+    const warning = lan.error ? `A rede entre os caixas não está funcionando: ${lan.error}`
+      : lan.firewall === 'missing' ? 'O firewall do Windows deste computador não liberou os outros caixas. Chame o suporte (regra “PDV2 - Servidor da loja”).'
+      : (info.stations || []).some(outdated) ? 'Há caixa adicional com versão antiga: ele não poderá assumir se este computador quebrar. Instale a versão nova do PDV2 nele.' : '';
     return {summary, rows, canAdd: !blocked, addBlocked: blocked, warning};
   }
   // "483920" is read out loud as "483 920".

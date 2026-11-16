@@ -8,6 +8,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 
+from . import paths
 from .printers import send_bytes
 from .store import TerminalError
 
@@ -39,7 +40,7 @@ except ImportError:
     runtime = None
 
 
-VERSION = os.environ.get("PDV_VERSION", "2.0.0")
+VERSION = os.environ.get("PDV_VERSION") or paths.source_version()
 # Tells the cloud this build accepts leases longer than the old 72 hours.
 CAPABILITIES = "long-lease"
 CAPABILITY_HEADERS = {"X-PDV-Capabilities": CAPABILITIES}

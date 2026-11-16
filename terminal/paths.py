@@ -141,7 +141,7 @@ def source_version(env=None):
             continue
         if VERSION_RE.fullmatch(value):
             return value
-    return "2.0.0"
+    return "2.1.0"
 
 
 def terminal_port(env=None):
