@@ -736,6 +736,32 @@ class EnrollTests(StationCase):
         self.assertTrue(self.store.enroll_station(code, station_id=second["station_id"])["token"])
         self.assertTrue(first["token"])
 
+    def test_a_removed_cashier_never_pushes_a_legitimate_one_out_of_a_full_plan(self):
+        self.set_limit(1)
+        removed = self.link("Antigo")
+        self.store.revoke_station(removed["station_id"], self.manager_id)
+        time.sleep(0.005)
+        newer = self.link("Novo")
+        self.assertEqual(self.store.station_limit(), {"limit": 1, "used": 1, "available": 0})
+        # The removed line is no reason to hand out a code on a full plan.
+        with self.assertRaisesCode(409, "station_limit"):
+            self.code()
+        # Even with a valid code in hand, the removed computer needs a free place.
+        self.set_limit(2)
+        code = self.code()["code"]
+        self.set_limit(1)
+        with self.assertRaisesCode(409, "station_limit"):
+            self.store.enroll_station(code, station_id=removed["station_id"])
+        self.assertEqual(self.store.station_limit()["used"], 1)
+        self.assertEqual(self.store.authenticate_station(newer["token"])["id"], newer["station_id"])
+        with self.assertRaisesCode(401, "station_revoked"):
+            self.store.authenticate_station(removed["token"])
+        # The code was not spent: with a place free the removed computer comes back as itself.
+        self.set_limit(2)
+        back = self.store.enroll_station(code, station_id=removed["station_id"])
+        self.assertEqual(back["station_id"], removed["station_id"])
+        self.assertEqual(self.store.authenticate_station(newer["token"])["id"], newer["station_id"])
+
     def test_code_needs_a_valid_license(self):
         expired = self.signed(max_stations=2, issued=int(time.time()) - 7200)
         with self.store.transaction() as conn:
@@ -1252,6 +1278,41 @@ class PromotionTests(StationCase):
         self.assertEqual(self.store.cash_state()["id"], self.station_cash["id"])
         with self.assertRaisesCode(409):
             self.store.adopt_pairing(answer, "https://nuvem.example")
+
+
+    def test_a_second_promotion_presents_a_new_device_to_the_cloud(self):
+        self.promote()
+        first_device = self.store.promotion_device_id()
+        self.store.adopt_pairing(self.pairing_answer(), "https://nuvem.example")
+        self.assertEqual(self.store.identity()["device_id"], first_device)
+        # Months later this main cashier stops. The copy another cashier rebuilds carries the whole
+        # meta table except the cloud token and the copy key (mirror._local_copy).
+        with self.store.transaction() as conn:
+            conn.execute("DELETE FROM meta WHERE key IN ('token','mirror_key')")
+        self.store.finish_promotion(self.second_station["station_id"], "Caixa 3", MIRROR_KEY, self.manager_id)
+        self.assertNotIn("promotion_device_id", self.store.meta())
+        second_device = self.store.promotion_device_id()
+        # The same identity would overwrite the token of the computer that stopped in the cloud
+        # instead of marking it as transferred.
+        self.assertNotEqual(second_device, first_device)
+        self.assertNotEqual(second_device, self.store.identity()["device_id"])
+        self.assertEqual(self.store.promotion_device_id(), second_device)
+        self.assertEqual(self.store.meta()["server_generation"], "3")
+
+    def test_the_identity_of_the_stopped_computer_is_never_presented(self):
+        self.promote()
+        with self.store.transaction() as conn:  # a copy made by a build that kept the old value
+            self.store._set_meta(conn, "promotion_device_id", self.store._meta(conn, "device_id"))
+        device = self.store.promotion_device_id()
+        self.assertNotEqual(device, self.store.identity()["device_id"])
+        self.assertEqual(self.store.promotion_device_id(), device)
+        # A refused attempt may ask for another identity; nothing changes outside a promotion.
+        self.store.reset_promotion_device_id()
+        other = self.store.promotion_device_id()
+        self.assertNotEqual(other, device)
+        self.store.adopt_pairing(self.pairing_answer(), "https://nuvem.example")
+        self.store.reset_promotion_device_id()
+        self.assertEqual(self.store.promotion_device_id(), other)
 
 
 if __name__ == "__main__":

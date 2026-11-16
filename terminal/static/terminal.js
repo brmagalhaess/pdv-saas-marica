@@ -591,7 +591,8 @@ function persistCart() {
     if (!state.session?.operator) return;
     if (!state.cart.length) { sessionStorage.removeItem('pdv2.cart'); return; }
     sessionStorage.setItem('pdv2.cart', JSON.stringify({operator: state.session.operator.id,
-      items: state.cart.map(item => ({id: item.id, quantity_milli: item.quantity_milli})), discount: state.discount, customer: state.customer}));
+      items: state.cart.map(item => ({id: item.id, quantity_milli: item.quantity_milli})), discount: state.discount, customer: state.customer,
+      saleRequest: state.saleRequest || null}));
   } catch { /* storage unavailable */ }
 }
 // A reload (or a lost session) must not be a way to throw a sale away.
@@ -602,6 +603,10 @@ async function restoreCart() {
     const saved = JSON.parse(sessionStorage.getItem('pdv2.cart') || 'null');
     if (!saved || saved.operator !== state.session.operator.id || !saved.items?.length || state.cart.length) return;
     await loadCartSnapshot(saved);
+    // A sale that was already sent keeps its id: if the main cashier recorded it before the
+    // connection dropped, confirming again returns that same sale instead of a second one.
+    state.saleRequest = C.draftSaleRequest(saved, state.cart);
+    persistCart();
     toast('Venda em andamento recuperada');
   } catch { /* nothing to restore */ }
 }
@@ -1176,6 +1181,7 @@ async function confirmSale() {
       if (!pin) throw Error('Venda não registrada: o desconto precisa da autorização do gerente.');
     }
     state.saleRequest ||= uuid();
+    persistCart();  // before the POST: a reload in the middle of it must repeat with the same id
     const request = {request_id: state.saleRequest, items: state.cart.map(item => ({product_id: item.id, quantity_milli: item.quantity_milli})), discount_cents: discount,
       customer_name: state.customer.name.trim(), customer_document: state.customer.document.trim(), customer_id: state.customer.id || null, seller_id: state.customer.sellerId || null, payments};
     let sale;

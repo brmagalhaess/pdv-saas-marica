@@ -444,13 +444,13 @@ class RegularizeTests(RouteCase):
         answer.update(changes)
         return answer
 
-    def cloud(self, pair_answer, bootstrap=None):
+    def cloud(self, pair_answer, bootstrap=None, released=True):
         def request(method, url, **kwargs):
             self.calls.append((method, url, kwargs))
             if url.endswith("/api/v1/terminal/pair"):
                 return FakeResponse(pair_answer)
             if url.endswith("/api/v1/terminal/release"):
-                return FakeResponse({"released": True})
+                return FakeResponse({"released": released})
             if "/terminal/bootstrap" in url and bootstrap is not None:
                 return FakeResponse(bootstrap)
             return FakeResponse({"error": "indisponível"}, 503)
@@ -512,6 +512,26 @@ class RegularizeTests(RouteCase):
         self.assertNotIn("token", self.store.meta())
         self.assertNotIn(foreign["token"], json.dumps(self.store.audit()))
 
+    def test_a_code_of_a_never_connected_terminal_does_not_block_the_right_one(self):
+        # The cloud bound this device_id to that other terminal and cannot give it back
+        # (released=false): with the same identity the right code would be refused afterwards.
+        first_device = self.store.promotion_device_id()
+        foreign = self.pairing(terminal_id=str(uuid.uuid4()), token="token-alheio-" + "y" * 40)
+        with self.cloud(foreign, released=False):
+            refused = self.post("/api/promotion/regularize", self.BODY)
+        self.assertEqual((refused.status_code, refused.json["code"]), (409, "other_terminal"))
+        self.assertIn("Trocar de computador", refused.json["error"])
+        self.assertEqual(self.calls[0][2]["json"]["device_id"], first_device)
+        second_device = self.store.promotion_device_id()
+        self.assertNotEqual(second_device, first_device)
+        self.calls.clear()
+        with self.cloud(self.pairing()):
+            answer = self.post("/api/promotion/regularize", self.BODY)
+        self.assertEqual(answer.status_code, 200, answer.json)
+        self.assertEqual(self.calls[0][2]["json"]["device_id"], second_device)
+        self.assertEqual((self.store.meta()["device_id"], self.store.promotion_status()["state"]),
+                         (second_device, "done"))
+
     def test_cloud_refusals_and_bad_input_change_nothing(self):
         with self.cloud({"error": "Código inválido"}) as _:
             with patch.object(sync.requests, "request", return_value=FakeResponse({"error": "Código inválido"}, 400)):
@@ -567,6 +587,16 @@ class ScreenTests(unittest.TestCase):
         overlay = self.script[start:self.script.index("/* ---------- barcode reader bursts", start)]
         for forbidden in ("saleRequest", "clearLocalSale", "resetSale", "sessionStorage", "state.cart ="):
             self.assertNotIn(forbidden, overlay, forbidden)
+        # The id of a sale already sent is saved with the draft before the POST and comes back
+        # with it after a reload (cable pulled, "Ver o que aconteceu", promotion).
+        start = self.script.index("function persistCart")
+        self.assertIn("saleRequest: state.saleRequest", self.script[start:self.script.index("async function restoreCart")])
+        start = self.script.index("async function restoreCart")
+        restore = self.script[start:self.script.index("function normalizeDiscount", start)]
+        self.assertLess(restore.index("await loadCartSnapshot(saved)"),
+                        restore.index("state.saleRequest = C.draftSaleRequest(saved, state.cart)"))
+        start = self.script.index("state.saleRequest ||= uuid();")
+        self.assertLess(self.script.index("persistCart();", start), self.script.index("api('/api/sales', 'POST'", start))
         for selector in (".server-down", ".promotion-card", ".enroll-code"):
             self.assertIn(selector, self.style)
 
@@ -601,6 +631,17 @@ const out = {
     replica: {supported: true, stations: {a: {behind: 0}, b: {behind: 7}}}, stations}),
   full: C.stationsCard({supported: true, limit: {limit: 1, used: 1}, lan: {supported: true}, stations: stations.slice(0, 2)}),
   relink: C.stationsCard({supported: true, limit: {limit: 1, used: 1}, lan: {supported: true}, stations: [stations[0], stations[3]]}),
+  removedOnly: C.stationsCard({supported: true, limit: {limit: 1, used: 1}, lan: {supported: true}, stations: [stations[0], stations[1], stations[4]]}),
+  draft: [
+    C.draftSaleRequest({saleRequest: 'r1', items: [{id: 'p1', quantity_milli: 1000}, {id: 'p2', quantity_milli: 500}]},
+      [{id: 'p1', quantity_milli: 1000, name: 'Arroz'}, {id: 'p2', quantity_milli: 500}]),
+    C.draftSaleRequest({saleRequest: 'r1', items: [{id: 'p1', quantity_milli: 1000}, {id: 'p2', quantity_milli: 500}]}, [{id: 'p1', quantity_milli: 1000}]),
+    C.draftSaleRequest({saleRequest: 'r1', items: [{id: 'p1', quantity_milli: 1000}]}, [{id: 'p1', quantity_milli: 2000}]),
+    C.draftSaleRequest({saleRequest: null, items: [{id: 'p1', quantity_milli: 1000}]}, [{id: 'p1', quantity_milli: 1000}]),
+    C.draftSaleRequest({items: [{id: 'p1', quantity_milli: 1000}]}, [{id: 'p1', quantity_milli: 1000}]),
+    C.draftSaleRequest({saleRequest: 7, items: [{id: 'p1', quantity_milli: 1000}]}, [{id: 'p1', quantity_milli: 1000}]),
+    C.draftSaleRequest({saleRequest: 'r1', items: []}, []), C.draftSaleRequest(null, null),
+  ],
   noPlan: C.stationsCard({supported: true, limit: {limit: 0, used: 0}, lan: {supported: true}, stations: stations.slice(0, 1)}),
   noLan: C.stationsCard({supported: false, limit: {limit: 2, used: 0}, lan: {supported: false}, stations: []}),
   publicNetwork: C.stationsCard({supported: true, limit: {limit: 2, used: 0}, lan: {supported: true, network_profile: 'public'}, stations: []}),
@@ -661,6 +702,13 @@ console.log(JSON.stringify(out));
                          "A rede deste computador está marcada como Pública no Windows. Mude para Particular para os "
                          "outros caixas enxergarem este.")
         self.assertEqual((self.out["nothing"]["rows"], self.out["nothing"]["canAdd"]), ([], False))
+
+    def test_a_removed_cashier_does_not_enable_adding_on_a_full_plan(self):
+        self.assertFalse(self.out["removedOnly"]["canAdd"])
+        self.assertIn("já estão em uso", self.out["removedOnly"]["addBlocked"])
+
+    def test_the_sale_id_survives_only_with_the_same_draft(self):
+        self.assertEqual(self.out["draft"], ["r1", None, None, None, None, None, None, None])
 
     def test_promotion_card(self):
         none, plain, done, waiting, with_cash = self.out["promotion"]

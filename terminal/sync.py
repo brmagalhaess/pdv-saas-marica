@@ -160,14 +160,19 @@ def regularize_promotion(store, cloud_url, license_key, code):
         store.adopt_pairing(response, cloud_url)
     except TerminalError as exc:
         token = response.get("token")
-        if getattr(exc, "code", None) == "other_terminal" and isinstance(token, str) and token:
-            # The code belonged to another terminal and the cloud has just moved that one here:
-            # give it back to its computer (best effort) before telling the person.
-            try:
-                _request("POST", cloud_url + "/api/v1/terminal/release",
-                         headers={"Authorization": "Bearer " + token, **CAPABILITY_HEADERS}, json={})
-            except TerminalError:
-                pass
+        if getattr(exc, "code", None) == "other_terminal":
+            if isinstance(token, str) and token:
+                # The code belonged to another terminal and the cloud has just moved that one here:
+                # give it back to its computer (best effort) before telling the person.
+                try:
+                    _request("POST", cloud_url + "/api/v1/terminal/release",
+                             headers={"Authorization": "Bearer " + token, **CAPABILITY_HEADERS}, json={})
+                except TerminalError:
+                    pass
+            # The cloud now knows this device_id as that other terminal (and a terminal that was
+            # never connected cannot be given back): with the same identity the right code would be
+            # refused as "device already bound". The next attempt presents a new one.
+            store.reset_promotion_device_id()
         raise
     result = {"regularized": True, "bootstrap": None}
     try:

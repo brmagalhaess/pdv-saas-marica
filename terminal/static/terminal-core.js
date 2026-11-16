@@ -347,7 +347,8 @@
               copy: station.is_server || removed || !copy ? '' : Number(copy.behind) > 0 ? 'Cópia de segurança atrasada' : 'Cópia de segurança em dia',
               canRename: !removed, canRevoke: !station.is_server && !removed, canCloseCash: !station.is_server && !!station.cash_open};
     }).filter(row => !row.removed || row.canCloseCash);
-    const relinkable = (info.stations || []).some(station => !station.is_server && (!station.linked || station.revoked_at));
+    // A removed cashier gave its place away: only one that lost its link can come back on a full plan.
+    const relinkable = (info.stations || []).some(station => !station.is_server && !station.linked && !station.revoked_at);
     const blocked = !info.supported || lan.supported === false ? 'Rede entre caixas indisponível nesta instalação.'
       : total <= 0 ? 'O plano desta loja não inclui caixas adicionais.'
       : used >= total && !relinkable ? 'Todos os caixas adicionais do plano já estão em uso. Remova um caixa ou amplie o plano.' : '';
@@ -372,9 +373,19 @@
             pending};
   }
 
+  // The id of a sale already sent to the main cashier survives a reload only while the draft that
+  // came back is exactly the one that was sent: the repetition then hits the server's idempotency.
+  function draftSaleRequest(saved, cart) {
+    const id = saved && typeof saved.saleRequest === 'string' ? saved.saleRequest : '';
+    const items = saved && Array.isArray(saved.items) ? saved.items : [], now = Array.isArray(cart) ? cart : [];
+    if (!id || id.length > 100 || !items.length || items.length !== now.length) return null;
+    return items.every((item, index) => item && now[index] && String(item.id) === String(now[index].id)
+      && Number(item.quantity_milli) === Number(now[index].quantity_milli)) ? id : null;
+  }
+
   return {restoreStep, restoreProgress, restoreErrorText, restoreSummary, restoreImportText, restoreImportNotice,
           transferredBlock, mirrorNotice, mirrorCard,
-          stationNotice, stationsCard, enrollCodeText, promotionCard, SERVER_DOWN_CODES, STATION_GONE_CODES,
+          stationNotice, stationsCard, enrollCodeText, promotionCard, draftSaleRequest, SERVER_DOWN_CODES, STATION_GONE_CODES,
           SHORTCUTS, PAY_KEYS, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
           parseMoney, parsePercent, parseQty, parseScanInput, ean13Valid, scaleLabel, scaleLabelQuantity,
           scaleReading, createWeightGate, scaleTarget, discountCents, discountNeedsPin, syncIndicator,

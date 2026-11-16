@@ -3085,10 +3085,11 @@ class Store:
             limit = self._station_limit(conn)
             if limit["limit"] <= 0:
                 raise TerminalError(STATION_LIMIT_NONE, 409, code="station_limit")
-            # A cashier that lost its link (promotion, recovery, removal) links again with its own
-            # identity and takes no new place: the code is refused only when nobody could use it.
-            relinkable = conn.execute("SELECT 1 FROM stations WHERE id != ? AND (token_hash IS NULL "
-                                      "OR revoked_at IS NOT NULL) LIMIT 1", (SERVER_STATION_ID,)).fetchone()
+            # A cashier that lost its link (promotion, recovery) links again with its own identity
+            # and takes no new place: the code is refused only when nobody could use it. A removed
+            # cashier gave its place away, so it is not a reason to hand out a code on a full plan.
+            relinkable = conn.execute("SELECT 1 FROM stations WHERE id != ? AND token_hash IS NULL "
+                                      "AND revoked_at IS NULL LIMIT 1", (SERVER_STATION_ID,)).fetchone()
             if limit["available"] <= 0 and not relinkable:
                 raise TerminalError(STATION_LIMIT_FULL.format(n=limit["limit"]), 409, code="station_limit")
             code = f"{secrets.randbelow(10 ** 6):06d}"
@@ -3138,7 +3139,11 @@ class Store:
                 if isinstance(station_id, str) and station_id and station_id != SERVER_STATION_ID:
                     existing = conn.execute("SELECT * FROM stations WHERE id=?", (station_id,)).fetchone()
                 limit = self._station_limit(conn)
-                if existing is None and limit["used"] >= limit["limit"]:
+                # A known cashier that was not removed already holds its place. A new computer, or a
+                # removed one coming back, needs a free place: otherwise it would push the newest
+                # legitimate cashier out of the plan in the middle of a shift.
+                takes_place = existing is None or existing["revoked_at"] is not None
+                if takes_place and limit["used"] >= limit["limit"]:
                     # The code is not spent: it still serves once a place is freed.
                     message = STATION_LIMIT_FULL.format(n=limit["limit"]) if limit["limit"] else STATION_LIMIT_NONE
                     error = TerminalError(message, 409, code="station_limit")
@@ -3485,6 +3490,10 @@ class Store:
             self._set_meta(conn, "promotion_state", "awaiting_cloud")
             self._set_meta(conn, "promotion_previous_station", old)
             self._set_meta(conn, "server_generation", str(generation))
+            # Each promotion presents a new identity to the cloud. The one of an earlier promotion
+            # came in the copy and is the device_id of the computer that has just stopped: reusing it
+            # would overwrite that computer's token instead of marking it as transferred.
+            conn.execute("DELETE FROM meta WHERE key='promotion_device_id'")
             # The cloud token stayed on the computer that stopped (the copy never carries it).
             for key in ("token", "last_heartbeat_at", "last_heartbeat_error", "last_sync_error"):
                 conn.execute("DELETE FROM meta WHERE key=?", (key,))
@@ -3509,14 +3518,29 @@ class Store:
         """Identity this computer presents to the cloud when it regularizes the promotion."""
         with self.connection() as conn:
             value = self._meta(conn, "promotion_device_id")
-        if value:
+            awaiting = self._meta(conn, "promotion_state") == "awaiting_cloud"
+            current = self._meta(conn, "device_id")
+        # While the cloud is awaited, the device_id in the database is the one of the computer that
+        # stopped: this computer never presents that same identity.
+        if value and not (awaiting and value == current):
             return value
         with self.transaction() as conn:
             value = self._meta(conn, "promotion_device_id")
-            if not value:
+            if not value or (self._meta(conn, "promotion_state") == "awaiting_cloud"
+                             and value == self._meta(conn, "device_id")):
                 value = _uuid()
                 self._set_meta(conn, "promotion_device_id", value)
             return value
+
+    def reset_promotion_device_id(self):
+        """Forget the identity presented to the cloud: the next attempt uses a new one.
+
+        Needed when the cloud bound that identity to another terminal (a code typed by mistake):
+        it would refuse the same device for the right terminal afterwards.
+        """
+        with self.transaction() as conn:
+            if self._meta(conn, "promotion_state") == "awaiting_cloud":
+                conn.execute("DELETE FROM meta WHERE key='promotion_device_id'")
 
     def adopt_pairing(self, response, cloud_url):
         """The cloud accepted this computer as the new home of the same terminal (after a promotion).

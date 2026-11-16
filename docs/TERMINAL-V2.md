@@ -72,7 +72,7 @@ Uma loja pode ter um **caixa principal** (o computador que guarda o banco e fala
 
 - Um só escritor: só o processo do caixa principal abre o SQLite. O caixa adicional nunca cria `Store` nem `terminal.sqlite3`.
 - O navegador de cada computador continua falando só com `127.0.0.1`. As requisições do caixa adicional entram no mesmo app Flask do principal com `environ["pdv2.station"] = {"id", "name"}`, chave que só a escuta da rede consegue criar (um cliente HTTP só cria chaves `HTTP_*`).
-- Com o caixa principal fora do ar, o caixa adicional **para de vender**, mostra "O caixa principal está fora do ar" e tenta de novo a cada 2 segundos. O que estava na tela fica: a venda em andamento repete com o mesmo `request_id` e o carrinho continua no rascunho.
+- Com o caixa principal fora do ar, o caixa adicional **para de vender**, mostra "O caixa principal está fora do ar" e tenta de novo a cada 2 segundos. O que estava na tela fica: a venda em andamento repete com o mesmo `request_id` e o carrinho continua no rascunho. O `request_id` é guardado junto do rascunho antes do envio, então vale também depois de a página recarregar ("Ver o que aconteceu", promoção). Um caixa removido só volta a se vincular com vaga livre no plano; e cada promoção apresenta à nuvem um `device_id` novo.
 - A quantidade de caixas adicionais vem da licença assinada (claim `max_stations`) e só vale com a nuvem que anuncia a capacidade `stations`. Sem os dois o limite é 0. O limite não conta o caixa principal.
 
 **Modelo local**
