@@ -157,6 +157,8 @@ def read_pending(directory, key, identity, replica_id=None) -> dict
 
 `read_pending()` devolve `{terminal_id, replica_id, snapshot: {name, created_at, outbox_seq} | None, journal_last_seq, events: [{seq, event_id, created_at, event}], warnings: [texto]}`.
 
+A fase 3 acrescentou, sem mudar nada do que está acima, `key_from_meta`, `make_snapshot`, `verify_snapshot`, `journal_lines`, `parse_journal_line`, `max_seq`, `add_listener`/`remove_listener` e `restore_database`; estão descritas em [ESTACOES.md](ESTACOES.md), seção 2.4.
+
 O módulo só importa a biblioteca padrão, `cryptography` e `TerminalError`. `store.py` chama os ganchos por import tardio e engole qualquer erro; `sync.py` importa `mirror` protegido, como faz com o `updater`.
 
 ## 4. Troca de computador
@@ -211,7 +213,10 @@ As rotas de cópia (`backups` e `import-backup`) valem em `awaiting_backup`, em 
 - **Depois que a recuperação termina (`done`), não dá mais para ler uma cópia de segurança** por esta tela; vendas que tenham ficado só em um pendrive não lido precisam do suporte.
 - **Fechamento do mesmo caixa nos dois computadores** não é impedido: vira o conflito `cash_closed_twice` para o gestor conferir.
 - **Caixas "abertos" antigos na nuvem**, além do mais recente, não são restaurados.
-- **Restaurar o banco inteiro a partir da cópia do segundo disco** (sem passar pela nuvem) não existe nesta fase; a cópia serve para recuperar a fila e para a promoção de estação da fase 3.
+- **Restaurar o banco inteiro a partir da cópia** (sem passar pela nuvem) existe a partir da fase 3, em `mirror.restore_database`, e hoje é usado só pela promoção de um caixa adicional ([ESTACOES.md](ESTACOES.md)). A tela "Recuperar minha loja" continua indo pela nuvem e usando a cópia do segundo disco apenas para recuperar a fila: não há tela para refazer o banco a partir do pendrive.
+- **A cópia nos caixas adicionais (fase 3) usa os mesmos arquivos**, em `<dados>/replica` de cada caixa adicional, e os mesmos limites: janela de perda de segundos, sem rotação de chave. Ela não substitui o segundo disco em loja de um caixa só. A chave fica guardada no disco de cada caixa adicional (`replica/state.json`, permissão 600).
+- **A cópia do segundo disco e a cópia de saída para os caixas adicionais são feitas separadas**, cada uma com o seu arquivo temporário ao lado do banco (`.mirror-*.tmp` e `.replica-*.tmp`): com as duas ligadas, o disco do caixa principal precisa de folga para duas cópias do banco ao mesmo tempo, além das duas guardadas em `replica-out/`.
+- **Diário com numeração faltando** (linha perdida por defeito do disco) não é reconstruído: `restore_database` avisa "Faltam registros no diário desta cópia" e segue com o que tem.
 - Nada disto foi validado em Windows físico; ver a lista em [INSTALADOR-WINDOWS.md](INSTALADOR-WINDOWS.md).
 
 ## 6. Testes
