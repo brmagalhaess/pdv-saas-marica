@@ -4,7 +4,8 @@
 Uso (de ios/PDV2OwnerMonitor): python3 scripts/generate_project.py
 Todo .swift em PDV2OwnerMonitor/ entra no app; Assets.xcassets e PrivacyInfo.xcprivacy
 são recursos; os .plist são só referência (INFOPLIST_FILE). Em PDV2GestaoTests/, .swift
-são testes e Fixtures/*.json são recursos do alvo de testes. IDs são estáveis (hash do caminho).
+são testes e Fixtures/*.json são recursos do alvo de testes. Em PDV2GestaoUITests/, .swift
+são testes de interface (XCUITest). IDs são estáveis (hash do caminho).
 """
 import hashlib
 import os
@@ -15,6 +16,8 @@ TEST_DIR = "PDV2GestaoTests"
 CONFIG_DIR = "Config"
 APP = "PDV2Gestao"
 TESTS = "PDV2GestaoTests"
+UI_DIR = "PDV2GestaoUITests"
+UITESTS = "PDV2GestaoUITests"
 BUNDLE_ID = "br.com.crowntech.pdv2gestao"
 
 
@@ -35,7 +38,7 @@ def file_type(name):
             ".xcassets": "folder.assetcatalog", ".json": "text.json", ".xcconfig": "text.xcconfig"}.get(ext, "text")
 
 
-app_sources, app_resources, test_sources, test_resources = [], [], [], []
+app_sources, app_resources, test_sources, test_resources, ui_sources = [], [], [], [], []
 file_refs = {}
 
 
@@ -67,6 +70,9 @@ def walk_group(rel_dir, name=None, kind="app"):
                 test_sources.append((rel, entry))
             elif entry.endswith(".json"):
                 test_resources.append((rel, entry))
+        elif kind == "uitests":
+            if entry.endswith(".swift"):
+                ui_sources.append((rel, entry))
     lines = ",\n".join(f"\t\t\t\t{c} /* {n} */" for c, n in children)
     add(gid, f'{{\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n{lines},\n\t\t\t);\n\t\t\tpath = "{name or os.path.basename(rel_dir)}";\n\t\t\tsourceTree = "<group>";\n\t\t}}')
     return gid
@@ -75,16 +81,19 @@ def walk_group(rel_dir, name=None, kind="app"):
 app_group = walk_group(APP_DIR)
 test_group = walk_group(TEST_DIR, kind="tests")
 config_group = walk_group(CONFIG_DIR, kind="config")
+ui_group = walk_group(UI_DIR, kind="uitests")
 
 app_product = uid("product", APP)
 test_product = uid("product", TESTS)
 add(app_product, f'{{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = {APP}.app; sourceTree = BUILT_PRODUCTS_DIR; }}')
 add(test_product, f'{{isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = {TESTS}.xctest; sourceTree = BUILT_PRODUCTS_DIR; }}')
+ui_product = uid("product", UITESTS)
+add(ui_product, f'{{isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = {UITESTS}.xctest; sourceTree = BUILT_PRODUCTS_DIR; }}')
 
 products_group = uid("group", "Products")
-add(products_group, f'{{\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t\t{app_product} /* {APP}.app */,\n\t\t\t\t{test_product} /* {TESTS}.xctest */,\n\t\t\t);\n\t\t\tname = Products;\n\t\t\tsourceTree = "<group>";\n\t\t}}')
+add(products_group, f'{{\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t\t{app_product} /* {APP}.app */,\n\t\t\t\t{test_product} /* {TESTS}.xctest */,\n\t\t\t\t{ui_product} /* {UITESTS}.xctest */,\n\t\t\t);\n\t\t\tname = Products;\n\t\t\tsourceTree = "<group>";\n\t\t}}')
 main_group = uid("group", "main")
-add(main_group, f'{{\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t\t{app_group} /* {APP_DIR} */,\n\t\t\t\t{test_group} /* {TEST_DIR} */,\n\t\t\t\t{config_group} /* {CONFIG_DIR} */,\n\t\t\t\t{products_group} /* Products */,\n\t\t\t);\n\t\t\tsourceTree = "<group>";\n\t\t}}')
+add(main_group, f'{{\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t\t{app_group} /* {APP_DIR} */,\n\t\t\t\t{test_group} /* {TEST_DIR} */,\n\t\t\t\t{ui_group} /* {UI_DIR} */,\n\t\t\t\t{config_group} /* {CONFIG_DIR} */,\n\t\t\t\t{products_group} /* Products */,\n\t\t\t);\n\t\t\tsourceTree = "<group>";\n\t\t}}')
 
 
 def build_phase(kind, target, items, phase_name):
@@ -105,6 +114,9 @@ app_res = build_phase("PBXResourcesBuildPhase", APP, app_resources, "Resources")
 test_src = build_phase("PBXSourcesBuildPhase", TESTS, test_sources, "Sources")
 test_fw = build_phase("PBXFrameworksBuildPhase", TESTS, [], "Frameworks")
 test_res = build_phase("PBXResourcesBuildPhase", TESTS, test_resources, "Resources")
+ui_src = build_phase("PBXSourcesBuildPhase", UITESTS, ui_sources, "Sources")
+ui_fw = build_phase("PBXFrameworksBuildPhase", UITESTS, [], "Frameworks")
+ui_res = build_phase("PBXResourcesBuildPhase", UITESTS, [], "Resources")
 
 
 def settings_block(d):
@@ -193,6 +205,19 @@ test_common = {
 test_debug = config((TESTS, "Debug"), test_common)
 test_release = config((TESTS, "Release"), test_common)
 
+ui_common = {
+    "CODE_SIGN_STYLE": "Automatic",
+    "DEVELOPMENT_TEAM": "",
+    "GENERATE_INFOPLIST_FILE": "YES",
+    "PRODUCT_BUNDLE_IDENTIFIER": f"{BUNDLE_ID}.uitests",
+    "PRODUCT_NAME": "$(TARGET_NAME)",
+    "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
+    "TARGETED_DEVICE_FAMILY": "1",
+    "TEST_TARGET_NAME": APP,
+}
+ui_debug = config((UITESTS, "Debug"), ui_common)
+ui_release = config((UITESTS, "Release"), ui_common)
+
 
 def config_list(name, ids):
     lid = uid("configlist", name)
@@ -204,6 +229,7 @@ def config_list(name, ids):
 proj_list = config_list("project", [proj_debug, proj_release])
 app_list = config_list(APP, [app_debug, app_release])
 test_list = config_list(TESTS, [test_debug, test_release])
+ui_list = config_list(UITESTS, [ui_debug, ui_release])
 
 project_id = uid("project")
 app_target = uid("target", APP)
@@ -212,6 +238,12 @@ proxy = uid("proxy", TESTS)
 dependency = uid("dependency", TESTS)
 add(proxy, f'{{\n\t\t\tisa = PBXContainerItemProxy;\n\t\t\tcontainerPortal = {project_id} /* Project object */;\n\t\t\tproxyType = 1;\n\t\t\tremoteGlobalIDString = {app_target};\n\t\t\tremoteInfo = {APP};\n\t\t}}')
 add(dependency, f'{{\n\t\t\tisa = PBXTargetDependency;\n\t\t\ttarget = {app_target} /* {APP} */;\n\t\t\ttargetProxy = {proxy} /* PBXContainerItemProxy */;\n\t\t}}')
+ui_target = uid("target", UITESTS)
+ui_proxy = uid("proxy", UITESTS)
+ui_dependency = uid("dependency", UITESTS)
+add(ui_proxy, f'{{\n\t\t\tisa = PBXContainerItemProxy;\n\t\t\tcontainerPortal = {project_id} /* Project object */;\n\t\t\tproxyType = 1;\n\t\t\tremoteGlobalIDString = {app_target};\n\t\t\tremoteInfo = {APP};\n\t\t}}')
+add(ui_dependency, f'{{\n\t\t\tisa = PBXTargetDependency;\n\t\t\ttarget = {app_target} /* {APP} */;\n\t\t\ttargetProxy = {ui_proxy} /* PBXContainerItemProxy */;\n\t\t}}')
+add(ui_target, f'{{\n\t\t\tisa = PBXNativeTarget;\n\t\t\tbuildConfigurationList = {ui_list};\n\t\t\tbuildPhases = (\n\t\t\t\t{ui_src} /* Sources */,\n\t\t\t\t{ui_fw} /* Frameworks */,\n\t\t\t\t{ui_res} /* Resources */,\n\t\t\t);\n\t\t\tbuildRules = (\n\t\t\t);\n\t\t\tdependencies = (\n\t\t\t\t{ui_dependency} /* PBXTargetDependency */,\n\t\t\t);\n\t\t\tname = {UITESTS};\n\t\t\tproductName = {UITESTS};\n\t\t\tproductReference = {ui_product} /* {UITESTS}.xctest */;\n\t\t\tproductType = "com.apple.product-type.bundle.ui-testing";\n\t\t}}')
 add(app_target, f'{{\n\t\t\tisa = PBXNativeTarget;\n\t\t\tbuildConfigurationList = {app_list};\n\t\t\tbuildPhases = (\n\t\t\t\t{app_src} /* Sources */,\n\t\t\t\t{app_fw} /* Frameworks */,\n\t\t\t\t{app_res} /* Resources */,\n\t\t\t);\n\t\t\tbuildRules = (\n\t\t\t);\n\t\t\tdependencies = (\n\t\t\t);\n\t\t\tname = {APP};\n\t\t\tproductName = {APP};\n\t\t\tproductReference = {app_product} /* {APP}.app */;\n\t\t\tproductType = "com.apple.product-type.application";\n\t\t}}')
 add(test_target, f'{{\n\t\t\tisa = PBXNativeTarget;\n\t\t\tbuildConfigurationList = {test_list};\n\t\t\tbuildPhases = (\n\t\t\t\t{test_src} /* Sources */,\n\t\t\t\t{test_fw} /* Frameworks */,\n\t\t\t\t{test_res} /* Resources */,\n\t\t\t);\n\t\t\tbuildRules = (\n\t\t\t);\n\t\t\tdependencies = (\n\t\t\t\t{dependency} /* PBXTargetDependency */,\n\t\t\t);\n\t\t\tname = {TESTS};\n\t\t\tproductName = {TESTS};\n\t\t\tproductReference = {test_product} /* {TESTS}.xctest */;\n\t\t\tproductType = "com.apple.product-type.bundle.unit-test";\n\t\t}}')
 add(project_id, f'''{{
@@ -223,6 +255,7 @@ add(project_id, f'''{{
 \t\t\t\tTargetAttributes = {{
 \t\t\t\t\t{app_target} = {{ CreatedOnToolsVersion = 27.0; }};
 \t\t\t\t\t{test_target} = {{ CreatedOnToolsVersion = 27.0; TestTargetID = {app_target}; }};
+\t\t\t\t\t{ui_target} = {{ CreatedOnToolsVersion = 27.0; TestTargetID = {app_target}; }};
 \t\t\t\t}};
 \t\t\t}};
 \t\t\tbuildConfigurationList = {proj_list};
@@ -240,6 +273,7 @@ add(project_id, f'''{{
 \t\t\ttargets = (
 \t\t\t\t{app_target} /* {APP} */,
 \t\t\t\t{test_target} /* {TESTS} */,
+\t\t\t\t{ui_target} /* {UITESTS} */,
 \t\t\t);
 \t\t}}''')
 
@@ -267,6 +301,7 @@ ref = lambda target, name, product: (f'<BuildableReference BuildableIdentifier =
                                      f'ReferencedContainer = "container:PDV2OwnerMonitor.xcodeproj"></BuildableReference>')
 app_ref = ref(app_target, APP, f"{APP}.app")
 test_ref = ref(test_target, TESTS, f"{TESTS}.xctest")
+ui_ref = ref(ui_target, UITESTS, f"{UITESTS}.xctest")
 scheme = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion = "2700" version = "1.7">
    <BuildAction parallelizeBuildables = "YES" buildImplicitDependencies = "YES">
@@ -280,6 +315,9 @@ scheme = f'''<?xml version="1.0" encoding="UTF-8"?>
       <Testables>
          <TestableReference skipped = "NO" parallelizable = "NO">
             {test_ref}
+         </TestableReference>
+         <TestableReference skipped = "NO" parallelizable = "NO">
+            {ui_ref}
          </TestableReference>
       </Testables>
    </TestAction>
@@ -299,4 +337,5 @@ scheme = f'''<?xml version="1.0" encoding="UTF-8"?>
 '''
 with open(os.path.join(scheme_dir, f"{APP}.xcscheme"), "w", encoding="utf-8") as fh:
     fh.write(scheme)
-print(f"{len(app_sources)} fontes do app, {len(app_resources)} recursos, {len(test_sources)} testes, {len(test_resources)} fixtures")
+print(f"{len(app_sources)} fontes do app, {len(app_resources)} recursos, {len(test_sources)} testes, "
+      f"{len(test_resources)} fixtures, {len(ui_sources)} testes de interface")

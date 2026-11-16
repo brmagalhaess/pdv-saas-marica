@@ -87,12 +87,32 @@ formatação de dinheiro/quantidade/datas, `code` → ação, recusa de `http` f
 Debug, renovação de token (repetição única, single-flight, renovação antecipada,
 aparelho revogado, sem rede) e fluxo de entrada do `AppState`.
 
+## Modo demonstração ("Ver demonstração")
+
+- Botão na tela de entrada, também em Release: abre o app inteiro com os dados
+  fictícios do **Mercadinho Exemplo** (2 lojas: Centro e Jardim) e da Padaria
+  Exemplo (para testar a troca de empresa). Serve para a revisão das lojas, sem senha.
+- Dados gerados no aparelho (`Core/DemoData.swift`, `DemoGestaoAPI`) a partir da
+  data de hoje e de uma semente fixa: Resumo, vendas com detalhe, caixas abertos e
+  fechados com detalhe, estoque, fiado, terminais, conflitos e conta.
+- Sem nenhuma chamada de rede, sem sessão, sem token, sem Keychain e sem gravar
+  preferências (empresa/loja/período/Face ID). Faixa fixa no alto "Demonstração ·
+  dados fictícios" com "Sair da demonstração", que volta à entrada sem deixar estado;
+  "Sair" em Conta faz o mesmo.
+- Testes: `PDV2GestaoTests/DemoModeTests` (sem rede, nada gravado, saída limpa) e
+  `PDV2GestaoUITests/DemoModeUITests` (botão, faixa em todas as abas, saída).
+
 ## Dados fictícios (Previews e capturas)
 
 - Todas as telas têm `#Preview` com os exemplos do contrato (`PreviewGestaoAPI`).
-- Só em Debug: abrir o app com o argumento `-PDV2Demo` (empresa) ou
-  `-PDV2DemoPlatform` (equipe) mostra os dados fictícios sem servidor — útil para
-  as capturas da loja (Resumo com dados).
+- Só em Debug: `-PDV2Demo` abre direto na demonstração; `-PDV2Tab
+  resumo|vendas|caixa|estoque|mais`, `-PDV2More fiado|terminais|conflitos|conta` e
+  `-PDV2Period hoje|ontem|7d|mes` escolhem a tela. `-PDV2DemoPlatform` usa as
+  fixtures do contrato com o perfil da equipe.
+- Capturas da App Store (iPhone 6,9", 1320×2868, sem transparência) em
+  `store/apple/capturas/`, geradas com `xcrun simctl status_bar … override
+  --time 9:41 --batteryLevel 100` e `xcrun simctl io … screenshot`. O app é só
+  iPhone (`TARGETED_DEVICE_FAMILY = 1`): não há capturas de iPad.
 
 ## Scripts
 
@@ -106,6 +126,5 @@ aparelho revogado, sem rede) e fluxo de entrada do `AppState`.
 
 ## Loja
 
-Textos da App Store em `store/apple/`. Antes de enviar: Team ID, conta de
-demonstração sem MFA, backend em produção e páginas `/privacidade/`,
+Textos da App Store em `store/apple/`. Antes de enviar: Team ID, backend em produção e páginas `/privacidade/`,
 `/suporte/` e `/excluir-conta/` publicadas.

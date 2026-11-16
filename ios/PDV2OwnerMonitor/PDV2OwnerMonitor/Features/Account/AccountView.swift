@@ -64,9 +64,10 @@ struct AccountView: View {
                 Toggle("Abrir com \(app.biometryLabel)", isOn: Binding(
                     get: { app.biometricLockEnabled },
                     set: { value in Task { await app.setBiometricLock(value) } }))
-                    .disabled(!app.biometrics.canAuthenticate)
+                    .disabled(!app.biometrics.canAuthenticate || app.isDemo)
             } footer: {
-                Text("Pede \(app.biometryLabel) ou o código do aparelho ao abrir o app e ao voltar depois de 5 minutos.")
+                Text(app.isDemo ? "Na demonstração esta opção fica desligada."
+                     : "Pede \(app.biometryLabel) ou o código do aparelho ao abrir o app e ao voltar depois de 5 minutos.")
             }
 
             Section {
@@ -85,8 +86,13 @@ struct AccountView: View {
             }
 
             Section {
-                Button("Sair", role: .destructive) { confirmSignOut = true }
-                    .frame(maxWidth: .infinity)
+                if app.isDemo {
+                    Button("Sair da demonstração", role: .destructive) { app.exitDemo() }
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Button("Sair", role: .destructive) { confirmSignOut = true }
+                        .frame(maxWidth: .infinity)
+                }
             } footer: {
                 Text("PDV2 Gestão · versão \(app.config.versionText) · © 2026 CrownTech")
                     .frame(maxWidth: .infinity)

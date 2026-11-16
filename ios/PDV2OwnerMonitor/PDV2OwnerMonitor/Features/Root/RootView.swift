@@ -18,7 +18,10 @@ struct RootView: View {
             case .accessDenied:
                 AccessDeniedView()
             case .home:
-                HomeView()
+                VStack(spacing: 0) {
+                    if app.isDemo { DemoBanner() }
+                    HomeView()
+                }
             }
             if app.isLocked {
                 LockView()
@@ -39,6 +42,37 @@ struct RootView: View {
                 .presentationDetents([.medium])
                 .interactiveDismissDisabled()
         }
+    }
+}
+
+/// Faixa fixa no alto durante a demonstração, com a saída sempre à mão.
+struct DemoBanner: View {
+    @EnvironmentObject private var app: AppState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(PDVTheme.blue)
+                .accessibilityHidden(true)
+            Text("Demonstração · dados fictícios")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 8)
+            Button("Sair da demonstração") { app.exitDemo() }
+                .font(.footnote.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .accessibilityIdentifier("sairDemonstracao")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(PDVTheme.blue.opacity(0.10).ignoresSafeArea(edges: .top))
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("faixaDemonstracao")
     }
 }
 
