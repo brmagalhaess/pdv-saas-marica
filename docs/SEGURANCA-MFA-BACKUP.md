@@ -27,11 +27,14 @@ valida o dump com `pg_restore --list`, cifra e envia para o repositório Restic
 configurado em `RESTIC_REPOSITORY`. O banco principal nunca é usado como alvo
 de restauração.
 
-Configure no arquivo de ambiente do Dokploy:
+A senha do repositório (`restic_password`) é gerada pelo próprio servidor no
+volume `pdv2_secrets` e entra no kit de recuperação (docs/DEPLOY-DOKPLOY.md).
+Sem destino externo, o padrão é um repositório local em `/status/restic`.
+Para o destino externo, configure no ambiente do Dokploy:
 
 ```dotenv
 RESTIC_REPOSITORY=s3:https://endpoint-do-provedor/bucket/pdv2
-RESTIC_PASSWORD=uma-senha-longa-e-aleatoria
+PDV_BACKUP_OFFSITE=1
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 AWS_DEFAULT_REGION=us-east-1

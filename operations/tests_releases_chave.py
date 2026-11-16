@@ -117,7 +117,12 @@ class ProductionReleaseKeyTests(TestCase):
         if not path.exists():
             self.skipTest('compose.production.yaml fora da imagem')
         compose = path.read_text()
-        for secret, variable in (('release_private', 'PDV_RELEASE_PRIVATE_KEY_PATH'), ('release_public', 'PDV_RELEASE_PUBLIC_KEY_PATH')):
-            line = re.search(r'^  %s: (.*)$' % secret, compose, flags=re.MULTILINE).group(1)
-            self.assertIn('${%s:?' % variable, line)
-            self.assertNotIn('LICENSE', line)
+        # The server generates the dedicated pair (secrets-init); compose points at it, never at the license pair.
+        for variable, filename in (('PDV_RELEASE_PRIVATE_KEY_FILE', 'release-private.pem'),
+                                   ('PDV_RELEASE_PUBLIC_KEY_FILE', 'release-public.pem')):
+            line = re.search(r'^  %s: (.*)$' % variable, compose, flags=re.MULTILINE).group(1)
+            self.assertEqual(line, '/secrets/' + filename)
+            self.assertNotIn('license', line)
+        from operations.secrets_init import PAIRS
+        self.assertIn(('release-private.pem', 'release-public.pem'), PAIRS)
+        self.assertIn(('license-private.pem', 'license-public.pem'), PAIRS)

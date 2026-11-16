@@ -32,7 +32,9 @@ exit 0
 
 FAKE_RESTIC = """#!/bin/sh
 echo "restic $*" >> "$FAKE_LOG"
+echo "restic-env pw=${RESTIC_PASSWORD:-} pwfile=${RESTIC_PASSWORD_FILE:-} pg=${PGPASSWORD:-}" >> "$FAKE_LOG"
 case ",$FAKE_FAIL," in *,"restic-$1",*) echo "restic $1: Fatal: unable to open repository" >&2; exit 1 ;; esac
+case ",$FAKE_FAIL,$1 $*" in *,restic-secrets,*"backup "*pdv2-secrets*) echo "restic: secrets failed" >&2; exit 1 ;; esac
 case "$1" in
   backup) printf '{"message_type":"summary","snapshot_id":"%s"}\\n' "$FAKE_SNAPSHOT" ;;
   snapshots) printf '[{"id":"%s","short_id":"0a1b2c3d","time":"2026-11-16T03:00:00Z","hostname":"pdv2","tags":["pdv2-database"],"paths":["/tmp/pdv2.dump"]}]\\n' "$FAKE_SNAPSHOT" ;;
@@ -81,8 +83,8 @@ class Sandbox:
     def close(self):
         self._tmp.cleanup()
 
-    def env(self, fail="", prune="0"):
-        return {
+    def env(self, fail="", prune="0", **extra):
+        return {**{
             "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
             "PGHOST": "db", "PGDATABASE": "pdv2", "PGUSER": "pdv2", "PGPASSWORD": "fake",
             "RESTIC_REPOSITORY": str(self.root / "repository"), "RESTIC_PASSWORD": "fake",
@@ -90,7 +92,8 @@ class Sandbox:
             "BACKUP_INTERVAL_SECONDS": "3600", "TMPDIR": str(self.work),
             "FAKE_LOG": str(self.log), "FAKE_FAIL": fail, "FAKE_SLEPT": str(self.slept),
             "FAKE_SNAPSHOT": SNAPSHOT, "FAKE_REAL_SLEEP": shutil.which("sleep") or "/bin/sleep",
-        }
+            "BACKUP_SECRETS_DIR": str(self.root / "sem-segredos"),
+        }, **extra}
 
     def run_once(self, **options):
         return subprocess.run([self.shell, str(SCRIPT), "once"], env=self.env(**options),
@@ -124,7 +127,12 @@ class Sandbox:
         return path.read_text() if path.exists() else None
 
     def calls(self):
-        return self.log.read_text().splitlines() if self.log.exists() else []
+        lines = self.log.read_text().splitlines() if self.log.exists() else []
+        return [line for line in lines if not line.startswith("restic-env ")]
+
+    def restic_env(self):
+        lines = self.log.read_text().splitlines() if self.log.exists() else []
+        return [line for line in lines if line.startswith("restic-env ")]
 
 
 class BackupScriptCases:
@@ -208,6 +216,60 @@ class BackupScriptCases:
         calls = [call.split()[1] for call in box.calls() if call.startswith("restic ")]
         self.assertEqual(calls, ["cat", "backup", "forget", "snapshots"])
         self.assertTrue(box.text("last-success").strip().isdigit())
+
+    def secrets_dir(self, box):
+        directory = box.root / "secrets"
+        directory.mkdir()
+        (directory / "db_password").write_text("senha-do-arquivo")
+        (directory / "restic_password").write_text("restic-do-arquivo")
+        return directory
+
+    def test_secrets_directory_goes_to_its_own_tagged_snapshot(self):
+        box = self.sandbox()
+        directory = self.secrets_dir(box)
+        result = box.run_once(prune="1", BACKUP_SECRETS_DIR=str(directory))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        restic = [call for call in box.calls() if call.startswith("restic ")]
+        self.assertEqual([call.split()[1] for call in restic], ["cat", "backup", "backup", "forget", "snapshots"])
+        self.assertIn(f"restic backup {directory} --tag pdv2-secrets", restic[2])
+        self.assertIn("--tag pdv2-database --tag pdv2-secrets", restic[3])
+        # The panel keeps listing only database snapshots.
+        self.assertIn("--tag pdv2-database", restic[4])
+        self.assertNotIn("pdv2-secrets", restic[4])
+
+    def test_secrets_backup_failure_is_a_backup_failure(self):
+        box = self.sandbox()
+        directory = self.secrets_dir(box)
+        stderr = box.run_loop_iteration(fail="restic-secrets", BACKUP_SECRETS_DIR=str(directory))
+        self.assert_failure_recorded(box, "segredos do servidor")
+        self.assertIn("Backup failed", stderr)
+
+    def test_passwords_come_from_files_when_variables_are_empty(self):
+        box = self.sandbox()
+        directory = self.secrets_dir(box)
+        result = box.run_once(PGPASSWORD="", PGPASSWORD_FILE=str(directory / "db_password"),
+                              RESTIC_PASSWORD="", RESTIC_PASSWORD_FILE=str(directory / "restic_password"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = box.restic_env()[0]
+        self.assertIn(f"pw= pwfile={directory / 'restic_password'} pg=senha-do-arquivo", env)
+
+    def test_old_variables_still_win_over_files(self):
+        box = self.sandbox()
+        directory = self.secrets_dir(box)
+        result = box.run_once(PGPASSWORD="senha-da-variavel", PGPASSWORD_FILE=str(directory / "db_password"),
+                              RESTIC_PASSWORD="restic-da-variavel",
+                              RESTIC_PASSWORD_FILE=str(directory / "restic_password"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pw=restic-da-variavel pwfile= pg=senha-da-variavel", box.restic_env()[0])
+
+    def test_missing_password_files_stop_before_any_work(self):
+        box = self.sandbox()
+        result = box.run_once(PGPASSWORD="", PGPASSWORD_FILE=str(box.root / "nao-existe"))
+        self.assertNotEqual(result.returncode, 0)
+        result = box.run_once(RESTIC_PASSWORD="", RESTIC_PASSWORD_FILE=str(box.root / "nao-existe"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("RESTIC_PASSWORD_FILE", result.stderr)
+        self.assertEqual(box.calls(), [])
 
 
 for _shell in available_shells():

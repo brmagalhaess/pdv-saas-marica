@@ -10,6 +10,10 @@ COPY operations ./operations
 COPY web ./web
 COPY logo-pdv2.svg ./web/assets/logo-pdv2.svg
 RUN PDV_DEBUG=1 python cloud/manage.py collectstatic --noinput && mkdir -p /data && chown app:app /data
+# Mount point of the pdv2_secrets volume. A new, empty volume copies this
+# owner and mode, so secrets-init (user 10001:70) can write without root.
+# Group 70 is postgres in postgres:17-alpine (reads db_password).
+RUN mkdir -p /secrets && chown 10001:70 /secrets && chmod 0750 /secrets
 USER app
 WORKDIR /app/cloud
 EXPOSE 8080

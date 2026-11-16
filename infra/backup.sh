@@ -1,8 +1,29 @@
 #!/bin/sh
 set -eu
 umask 077
-: "${PGHOST:?PGHOST required}" "${PGDATABASE:?PGDATABASE required}" "${PGUSER:?PGUSER required}" "${PGPASSWORD:?PGPASSWORD required}"
-: "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY required}" "${RESTIC_PASSWORD:?RESTIC_PASSWORD required}"
+# Secrets come from files written by secrets-init (/secrets). A variable that
+# is set (old installs) wins over its file.
+if [ -z "${PGPASSWORD:-}" ] && [ -n "${PGPASSWORD_FILE:-}" ]; then
+  PGPASSWORD=$(cat "$PGPASSWORD_FILE") || { echo "PGPASSWORD_FILE ilegível: $PGPASSWORD_FILE" >&2; exit 1; }
+  export PGPASSWORD
+fi
+unset PGPASSWORD_FILE
+if [ -n "${RESTIC_PASSWORD:-}" ]; then
+  unset RESTIC_PASSWORD_FILE
+else
+  unset RESTIC_PASSWORD
+  if [ -n "${RESTIC_PASSWORD_FILE:-}" ] && [ ! -r "$RESTIC_PASSWORD_FILE" ]; then
+    echo "RESTIC_PASSWORD_FILE ilegível: $RESTIC_PASSWORD_FILE" >&2; exit 1
+  fi
+fi
+: "${PGHOST:?PGHOST required}" "${PGDATABASE:?PGDATABASE required}" "${PGUSER:?PGUSER required}" "${PGPASSWORD:?PGPASSWORD or PGPASSWORD_FILE required}"
+: "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY required}"
+if [ -z "${RESTIC_PASSWORD:-}" ] && [ -z "${RESTIC_PASSWORD_FILE:-}" ]; then
+  echo "RESTIC_PASSWORD or RESTIC_PASSWORD_FILE required" >&2; exit 1
+fi
+# Server secrets (secrets-init volume, mounted read-only) go into their own
+# snapshot, tag pdv2-secrets. They are encrypted by restic like the dump.
+SECRETS_DIR="${BACKUP_SECRETS_DIR:-/secrets}"
 STATUS_DIR="${BACKUP_STATUS_DIR:-/status}"
 REASON_FILE="$STATUS_DIR/.backup-reason.$$"
 mkdir -p "$STATUS_DIR"
@@ -51,8 +72,13 @@ backup_once() {
     || fail "Falha ao enviar a cópia para o repositório Restic (restic backup)"
   mv "$STATUS_DIR/latest.json.tmp" "$STATUS_DIR/latest.json" \
     || fail "Não foi possível gravar o estado do backup"
+  if [ -d "$SECRETS_DIR" ]; then
+    restic backup "$SECRETS_DIR" --tag pdv2-secrets --host pdv2 --quiet >/dev/null \
+      || fail "Falha ao enviar os segredos do servidor para o repositório Restic (restic backup $SECRETS_DIR)"
+  fi
   if [ "${BACKUP_PRUNE:-0}" = "1" ]; then
-    restic forget --tag pdv2-database --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune \
+    # Repeated --tag is OR; --group-by tags keeps dump and secrets apart.
+    restic forget --tag pdv2-database --tag pdv2-secrets --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune \
       || fail "Cópia enviada, mas a limpeza de snapshots antigos falhou (restic forget)"
   fi
   write_snapshots || fail "Cópia enviada, mas não foi possível listar os snapshots (restic snapshots)"
