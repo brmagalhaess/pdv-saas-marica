@@ -7,6 +7,7 @@ import br.com.crowntech.pdv2gestao.core.api.ApiException
 import br.com.crowntech.pdv2gestao.core.api.AppConfig
 import br.com.crowntech.pdv2gestao.core.api.DataScope
 import br.com.crowntech.pdv2gestao.core.api.ErrorAction
+import br.com.crowntech.pdv2gestao.core.api.GestaoApi
 import br.com.crowntech.pdv2gestao.core.format.PeriodKey
 import br.com.crowntech.pdv2gestao.core.model.DeviceInfo
 import br.com.crowntech.pdv2gestao.core.model.Me
@@ -58,7 +59,9 @@ data class DataContext(
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     val container = (app as PDV2App).container
-    val api get() = container.api
+    private val demo get() = container.demo
+    /** API real ou, no modo demonstração, dados fictícios sem rede. */
+    val api: GestaoApi get() = demo.api
     private val session get() = container.session
     private val prefs get() = container.prefs
 
@@ -81,6 +84,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Pedido para trocar de aba (ex.: "Abrir empresa" na Plataforma → Resumo). */
     private val _tabRequest = MutableStateFlow<String?>(null)
     val tabRequest: StateFlow<String?> = _tabRequest.asStateFlow()
+
+    /** Modo demonstração ligado (faixa "Demonstração · dados fictícios"). */
+    val demoActive: StateFlow<Boolean> get() = demo.active
+
+    /** Contexto de antes da demonstração, devolvido intacto ao sair. */
+    private var contextBeforeDemo: DataContext? = null
 
     private val _devServer = MutableStateFlow(AppConfig.defaultBaseUrl)
     val devServer: StateFlow<String> = _devServer.asStateFlow()
@@ -262,6 +271,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setBiometric(enabled: Boolean) {
+        if (demo.active.value) return // demonstração não grava preferências
         viewModelScope.launch {
             prefs.setBiometric(enabled)
             _biometricEnabled.value = enabled
@@ -272,9 +282,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { resetToLogin(null) }
     }
 
+    // ---------- Demonstração ----------
+
+    /**
+     * "Ver demonstração" (tela Entrar): abre o app com dados fictícios, sem rede.
+     * Não cria sessão, não grava token, Keystore nem preferências.
+     */
+    fun enterDemo() {
+        // Só a partir da tela Entrar: nunca por cima de uma sessão real.
+        if (demo.active.value || session.hasSession) return
+        val api = demo.enter()
+        contextBeforeDemo = _context.value
+        val me = api.data.me()
+        val first = me.tenants.first()
+        _me.value = me
+        _context.value = DataContext(tenantId = first.id, tenantName = first.name, shops = first.shops, period = PeriodKey.TODAY)
+        _biometricEnabled.value = false
+        _showTenantPicker.value = false
+        _tabRequest.value = null
+        _screen.value = Screen.Home
+    }
+
+    /** "Sair da demonstração": volta à tela Entrar sem deixar nada da demonstração. */
+    fun exitDemo() {
+        if (!demo.active.value) return
+        demo.exit()
+        _me.value = null
+        _context.value = contextBeforeDemo ?: DataContext()
+        contextBeforeDemo = null
+        _biometricEnabled.value = false
+        _showTenantPicker.value = false
+        _tabRequest.value = null
+        _screen.value = Screen.Login()
+    }
+
     // ---------- Sessão ----------
 
     fun logout() {
+        if (demo.active.value) { exitDemo(); return }
         viewModelScope.launch {
             session.logout()
             resetToLogin(null)
@@ -283,6 +328,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Depois de pedir exclusão ou desconectar este aparelho: só apaga localmente. */
     fun localLogout(message: String?) {
+        if (demo.active.value) { exitDemo(); return }
         viewModelScope.launch {
             session.clearLocal()
             resetToLogin(message)
@@ -290,6 +336,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun resetLocal() {
+        if (demo.active.value) {
+            demo.exit()
+            contextBeforeDemo = null
+        }
         session.clearLocal()
         prefs.clearSession()
         _me.value = null
@@ -376,6 +426,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun persistContext() {
+        if (demo.active.value) return // demonstração não grava o contexto
         val c = _context.value
         viewModelScope.launch { prefs.saveContext(c.tenantId, c.tenantName, c.shopId, c.period.key) }
     }

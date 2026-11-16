@@ -56,6 +56,7 @@ import kotlinx.coroutines.launch
 fun AccountScreen(vm: AppViewModel, onBack: () -> Unit, onDelete: () -> Unit) {
     val me by vm.me.collectAsStateWithLifecycle()
     val biometric by vm.biometricEnabled.collectAsStateWithLifecycle()
+    val demo by vm.demoActive.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val links = me?.links ?: Links()
@@ -118,8 +119,11 @@ fun AccountScreen(vm: AppViewModel, onBack: () -> Unit, onDelete: () -> Unit) {
                         Column(Modifier.weight(1f)) {
                             Text("Abrir com biometria", style = MaterialTheme.typography.bodyLarge)
                             Text(
-                                if (biometricAvailable) "Pede digital, rosto ou bloqueio de tela ao abrir o app."
-                                else "Configure a biometria ou o bloqueio de tela do aparelho para usar.",
+                                when {
+                                    demo -> "Indisponível na demonstração."
+                                    biometricAvailable -> "Pede digital, rosto ou bloqueio de tela ao abrir o app."
+                                    else -> "Configure a biometria ou o bloqueio de tela do aparelho para usar."
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -127,7 +131,7 @@ fun AccountScreen(vm: AppViewModel, onBack: () -> Unit, onDelete: () -> Unit) {
                         Switch(
                             checked = biometric,
                             onCheckedChange = { vm.setBiometric(it) },
-                            enabled = biometricAvailable || biometric,
+                            enabled = !demo && (biometricAvailable || biometric),
                             modifier = Modifier.semantics { contentDescription = "Abrir com biometria" },
                         )
                     }
@@ -174,8 +178,8 @@ fun AccountScreen(vm: AppViewModel, onBack: () -> Unit, onDelete: () -> Unit) {
     }
     if (confirmLogout) {
         ConfirmDialog(
-            title = "Sair da conta?",
-            message = "Você precisará do e-mail e da senha para entrar de novo.",
+            title = if (demo) "Sair da demonstração?" else "Sair da conta?",
+            message = if (demo) "Você volta para a tela Entrar." else "Você precisará do e-mail e da senha para entrar de novo.",
             confirmLabel = "Sair",
             onDismiss = { confirmLogout = false },
             onConfirm = { confirmLogout = false; vm.logout() },
