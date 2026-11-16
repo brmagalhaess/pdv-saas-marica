@@ -487,7 +487,7 @@ const resourceSpecs = {
     fields: [
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
       { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
-      { key: "barcode", label: "Código de barras (EAN)", max: 14, inputMode: "numeric", pattern: "[0-9]{8}|[0-9]{12,14}", placeholder: "Vazio = gerar código interno", help: "Informe o EAN de fábrica (8, 12, 13 ou 14 dígitos). Deixe vazio para o sistema gerar um código interno EAN-13." },
+      { key: "barcode", label: "Código de barras (EAN)", sendIfChanged: true, max: 14, inputMode: "numeric", pattern: "[0-9]{8}|[0-9]{12,14}", placeholder: "Vazio = gerar código interno", help: "Informe o EAN de fábrica (8, 12, 13 ou 14 dígitos). Deixe vazio para o sistema gerar um código interno EAN-13." },
       { key: "ncm", label: "NCM (opcional)", max: 8, inputMode: "numeric", pattern: "[0-9]{7,8}", help: "Informe o NCM do produto quando a empresa tiver a classificação fiscal definida." },
       { key: "scale_code", label: "Código PLU da balança (opcional)", max: 6, inputMode: "numeric", pattern: "[0-9]{1,6}", help: "Use o código numérico programado na balança para etiquetas EAN-13 com peso." },
       { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
@@ -847,7 +847,7 @@ async function resourceForm(spec, record) {
     event.preventDefault();
     if (!form.reportValidity()) return;
     let payload;
-    try { payload = formPayload(form, fields, { editing }); }
+    try { payload = formPayload(form, fields, { editing, record }); }
     catch (error) { handleError(error, message); return; }
     if (spec.endpoint === "/shops" && typeof payload.address === "string") payload.address = { text: payload.address };
     save.disabled = true;

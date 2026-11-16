@@ -179,13 +179,16 @@ function clearedValue(field) {
 
 // With `editing`, an emptied optional field is sent explicitly (""/null/default):
 // dropping the key would make it impossible to clear a value through PATCH.
-export function formPayload(form, fields, { editing = false } = {}) {
+// A `sendIfChanged` field is left out of an edit while it still equals the stored
+// value: the server revalidates whatever it receives, legacy values included.
+export function formPayload(form, fields, { editing = false, record = null } = {}) {
   const payload = {};
   for (const field of fields) {
     if (field.generated) continue;
     const input = form.elements.namedItem(field.key);
     if (!input) continue;
     const raw = field.type === "checkbox" ? "" : String(input.value ?? "").trim();
+    if (editing && record && field.sendIfChanged && raw === String(record[field.key] ?? "").trim()) continue;
     const numeric = NUMERIC_FIELDS.includes(field.type);
     let value;
     if (field.type === "checkbox") value = input.checked;

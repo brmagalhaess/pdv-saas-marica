@@ -300,3 +300,29 @@ test("marca e versão: rodapé da barra lateral, Sobre e cache do service worker
   assert.match(sw, /const CACHE = "pdv2-shell-" \+ VERSION/);
   assert.match(sw, /cache: "no-cache"/);
 });
+
+test("edição de produto não reenvia o código de barras inalterado (legado não-GTIN)", () => {
+  const fields = [
+    { key: "name", label: "Nome", required: true },
+    { key: "barcode", label: "Código de barras (EAN)", sendIfChanged: true },
+    { key: "price_cents", label: "Preço de venda (R$)", type: "money", required: true }
+  ];
+  const record = { id: "p1", name: "Arroz branco 1 kg", barcode: "7891000000001", price_cents: 899 };
+  const unchanged = formPayload(fakeForm({ name: "Arroz branco 1 kg", barcode: "7891000000001", price_cents: "9,49" }), fields, { editing: true, record });
+  assert.deepEqual(unchanged, { name: "Arroz branco 1 kg", price_cents: 949 });
+  assert.ok(!("barcode" in unchanged));
+  // A new value is sent, and clearing it still asks the server for an internal code.
+  assert.equal(formPayload(fakeForm({ name: "Arroz", barcode: "7894900011517", price_cents: "9,49" }), fields, { editing: true, record }).barcode, "7894900011517");
+  assert.equal(formPayload(fakeForm({ name: "Arroz", barcode: "", price_cents: "9,49" }), fields, { editing: true, record }).barcode, "");
+  // A product without a stored code keeps the empty field out of the PATCH.
+  assert.ok(!("barcode" in formPayload(fakeForm({ name: "Arroz", barcode: "", price_cents: "9,49" }), fields, { editing: true, record: { ...record, barcode: null } })));
+  // On create nothing changes: a typed code goes, an empty one stays out.
+  assert.equal(formPayload(fakeForm({ name: "Arroz", barcode: "7894900011517", price_cents: "9,49" }), fields).barcode, "7894900011517");
+  assert.ok(!("barcode" in formPayload(fakeForm({ name: "Arroz", barcode: "", price_cents: "9,49" }), fields)));
+});
+
+test("formulário de produto marca o código de barras como enviado só quando muda", async () => {
+  const app = await readFile(new URL("../assets/app.js", import.meta.url), "utf8");
+  assert.match(app, /\{ key: "barcode",[^}]*sendIfChanged: true/);
+  assert.match(app, /formPayload\(form, fields, \{ editing, record \}\)/);
+});
