@@ -254,6 +254,31 @@ def create_app(config=None):
         return jsonify({"products": store.products(request.args.get("q", ""), request.args.get("category", "")),
                         "categories": store.categories()})
 
+    @app.get("/api/products/scale/<scale_code>")
+    @authenticated()
+    def product_by_scale_code(_operator, scale_code):
+        # Scale labels must resolve over the whole catalog: the product list is capped at 150 rows.
+        code = str(scale_code)[:20]
+        with store.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM products WHERE active=1 AND unit='KG' AND scale_code IN (?,?) ORDER BY name LIMIT 1",
+                (code, code.lstrip("0") or code)).fetchone()
+        if not row:
+            raise TerminalError("Nenhum produto por quilo com este código de balança", 404)
+        return jsonify({"product": dict(row)})
+
+    @app.get("/api/products/batch")
+    @authenticated()
+    def products_batch(_operator):
+        # Current price and stock for the products of a cart (resume, reload, catalog refresh).
+        ids = [value for value in request.args.get("ids", "").split(",") if value][:100]
+        if not ids:
+            return jsonify({"products": []})
+        with store.connection() as conn:
+            rows = conn.execute("SELECT * FROM products WHERE active=1 AND id IN (" +
+                                ",".join("?" for _ in ids) + ")", ids).fetchall()
+        return jsonify({"products": [dict(row) for row in rows]})
+
     @app.get("/api/cash")
     @authenticated()
     def cash(_operator):

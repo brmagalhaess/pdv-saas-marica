@@ -1,510 +1,2102 @@
+'use strict';
+/* PDV2 por CrownTech · Caixa Rápido. Pure helpers live in terminal-core.js (window.PDVCore). */
+const C = window.PDVCore;
+const {esc, money, moneyPlain, qtyText, documentText, parseMoney, parsePercent, parseQty} = C;
 const $ = id => document.getElementById(id);
-const state = {session:null,csrf:'',products:[],stockProducts:[],categories:[],category:'',cart:[],saleRequest:null,discountApproval:null,paymentMethod:null,cardMethod:null,tab:'checkout',bootstrapRefreshInFlight:false,lastOperatorsRefreshAt:0,loginLockedUntil:0,scannerLastAt:0,scale:{port:null,reader:null,buffer:'',targetId:null,barcodeMode:localStorage.getItem('pdv2.scale.barcodeMode')||'weight',baudRate:localStorage.getItem('pdv2.scale.baudRate')||'9600'}};
-const roleNames = {owner:'Proprietário',admin:'Administrador',manager:'Gerente',cashier:'Operador de caixa',inventory:'Estoque',finance:'Financeiro',viewer:'Consulta'};
-const canSell = role => ['owner','admin','manager','cashier'].includes(role);
-const canManage = role => ['owner','admin','manager'].includes(role);
-const canAdjustStock = role => canManage(role)||role==='inventory';
-const money = cents => new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format((Number(cents)||0)/100);
-const documentText = value => { const digits=String(value??'').replace(/\D/g,''); if(digits.length===14)return `${digits.slice(0,2)}.${digits.slice(2,5)}.${digits.slice(5,8)}/${digits.slice(8,12)}-${digits.slice(12)}`; if(digits.length===11)return `${digits.slice(0,3)}.${digits.slice(3,6)}.${digits.slice(6,9)}-${digits.slice(9)}`; return String(value??'') };
-const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const qtyText = (milli, unit='') => (Number(milli)/1000).toLocaleString('pt-BR',{minimumFractionDigits:String(unit).toUpperCase()==='KG'?3:0,maximumFractionDigits:3});
-function productImageUrl(product){const source=String(product?.image_url||'');if(!source)return '/static/product-images/generic.svg';if(source.startsWith('/assets/product-images/'))return source.replace('/assets/product-images/','/static/product-images/');return source}
-function productCodeMeta(product){const barcode=String(product?.barcode||'').trim();const sku=String(product?.sku||'').trim();if(barcode)return `EAN ${barcode}${sku?` · SKU ${sku}`:''}`;return sku||String(product?.unit||'')}
-function parseMoney(raw){let text=String(raw??'').trim().replace(/R\$|\s/g,'');if(!text)return 0;if(text.includes(','))text=text.replace(/\./g,'').replace(',','.');else if(!/^\d+\.\d{1,2}$/.test(text))text=text.replace(/\./g,'');if(!/^\d+(\.\d{1,2})?$/.test(text))throw Error('Valor monetário inválido');return Math.round(Number(text)*100)}
-function formatMoneyInput(input){try{if(!input.value.trim())return;input.value=(parseMoney(input.value)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}catch{input.setCustomValidity('Informe um valor em reais válido');return}input.setCustomValidity('')}
-function parsePercent(raw){let text=String(raw??'').trim().replace('%','').replace(/\s/g,'');if(!text)return 0;if(text.includes(','))text=text.replace(/\./g,'').replace(',','.');if(!/^\d+(\.\d{1,2})?$/.test(text))throw Error('Percentual inválido');const value=Number(text);if(value<0||value>100)throw Error('Percentual deve ficar entre 0 e 100');return value}
-function formatPercentInput(input){try{if(!input.value.trim())return;input.value=parsePercent(input.value).toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:2})}catch{input.setCustomValidity('Informe um percentual entre 0 e 100');return}input.setCustomValidity('')}
-function parseQty(raw,signed=false){const text=String(raw??'').trim().replace(',','.');if(!(signed?/^[+-]?\d+(\.\d{1,3})?$/:/^\d+(\.\d{1,3})?$/).test(text))throw Error('Quantidade inválida: use até três casas decimais');return Math.round(Number(text)*1000)}
-function scaleStatus(message,kind=''){const node=$('scaleStatus');if(!node)return;node.innerHTML=`<span class="scanner-dot ${kind}"></span> ${esc(message)}`}
-function scaleReading(raw){const match=String(raw||'').replace(',','.').match(/(-?\d+(?:\.\d{1,3})?)\s*(kg|g|gramas?)?/i);if(!match)return null;let value=Number(match[1]);if(!Number.isFinite(value)||value<=0)return null;if(/^g|gram/i.test(match[2]||''))value/=1000;const milli=Math.round(value*1000);return milli>0&&milli<=1000000?milli:null}
-function applyScaleWeight(milli,source='balança'){const target=state.scale.targetId?state.cart.find(item=>item.id===state.scale.targetId):null;const item=target||[...state.cart].reverse().find(row=>row.unit==='KG');if(!item){scaleStatus('Selecione um produto em KG para aplicar o peso','error');toast('Selecione um produto em KG antes de pesar',true);return false}const stockError=stockLimitError(item,milli);if(stockError){scaleStatus(stockError,'error');toast(stockError,true);return false}item.quantity_milli=milli;state.scale.targetId=item.id;state.saleRequest=null;state.discountApproval=null;renderCart();scaleStatus(`Peso recebido: ${qtyText(milli,'KG')} kg · ${source}`,'success');return true}
-function decodeScaleBarcode(code,products){const digits=String(code||'').trim();if(!/^2\d{12}$/.test(digits))return null;const scaleCode=digits.slice(1,6);const payload=digits.slice(6,11);const product=(products||[]).find(item=>item.unit==='KG'&&String(item.scale_code||'')===scaleCode);if(!product)return null;let milli;if(state.scale.barcodeMode==='price'){const encodedCents=Number(payload);if(!encodedCents||!Number(product.price_cents))return null;milli=Math.round(encodedCents*1000/Number(product.price_cents))}else milli=Number(payload);return Number.isSafeInteger(milli)&&milli>0?{product,milli}:null}
-async function readScale(port,reader){const decoder=new TextDecoder();try{while(state.scale.port===port&&port.readable){const result=await reader.read();if(result.done)break;if(!result.value)continue;state.scale.buffer+=decoder.decode(result.value,{stream:true});const lines=state.scale.buffer.split(/[\r\n]+/);state.scale.buffer=lines.pop()||'';for(const line of lines){const milli=scaleReading(line);if(milli)applyScaleWeight(milli,'balança serial')}}}catch(error){if(state.scale.port===port){scaleStatus('Balança desconectada · '+(error.message||'erro de leitura'),'error');toast('A conexão com a balança foi encerrada',true)}}finally{try{reader.releaseLock()}catch{}if(state.scale.port===port){state.scale.port=null;state.scale.reader=null;state.scale.buffer='';$('scaleConnectBtn').textContent='Conectar balança'}}}
-async function disconnectScale(){const port=state.scale.port;state.scale.port=null;const reader=state.scale.reader;state.scale.reader=null;if(reader){try{await reader.cancel()}catch{}try{reader.releaseLock()}catch{}}if(port){try{await port.close()}catch{}}state.scale.buffer='';$('scaleConnectBtn').textContent='Conectar balança';scaleStatus('Balança manual · use o peso digitado ou etiqueta EAN-13','')}
-async function connectScale(){if(state.scale.port){await disconnectScale();return}if(!navigator.serial)throw Error('Este navegador não oferece Web Serial. Use Chrome ou Edge no terminal local.');const port=await navigator.serial.requestPort();await port.open({baudRate:Number(state.scale.baudRate)||9600,dataBits:8,stopBits:1,parity:'none'});state.scale.port=port;state.scale.buffer='';$('scaleConnectBtn').textContent='Desconectar balança';scaleStatus(`Balança serial conectada · ${state.scale.baudRate} bps`,'success');const reader=port.readable.getReader();state.scale.reader=reader;readScale(port,reader)}
+const el = (tag, className = '', html = '') => { const node = document.createElement(tag); if (className) node.className = className; if (html) node.innerHTML = html; return node; };
+const ico = (name, extra = '') => `<svg class="ico ${extra}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const prefs = {
+  get(key, fallback) { try { return localStorage.getItem('pdv2.' + key) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem('pdv2.' + key, value); } catch { /* storage unavailable */ } },
+};
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
+const fold = text => String(text ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const timeText = value => new Date(Number(value)).toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'});
+const dateTimeText = value => new Date(Number(value)).toLocaleString('pt-BR');
+const emptyCustomer = () => ({name: '', document: '', id: '', sellerId: ''});
+
+const roleNames = {owner: 'Proprietário', admin: 'Administrador', manager: 'Gerente', cashier: 'Operador de caixa', inventory: 'Estoque', finance: 'Financeiro', viewer: 'Consulta'};
+const saleStatusNames = {completed: ['Concluída', 'ok'], voided: ['Cancelada', 'bad']};
+const jobStatusNames = {queued: ['Na fila', 'warn'], sending: ['Enviando', 'warn'], printed: ['Impresso', 'ok'], uncertain: ['Resultado incerto', 'bad'], blocked: ['Bloqueado', 'bad']};
+const driverNames = {file: 'Arquivo de teste', cups: 'CUPS', tcp: 'Rede (TCP)', windows_raw: 'Fila do Windows'};
+const canSell = role => ['owner', 'admin', 'manager', 'cashier'].includes(role);
+const canManage = role => ['owner', 'admin', 'manager'].includes(role);
+const canAdjustStock = role => canManage(role) || role === 'inventory';
+
+// No manager PIN is ever kept here: authorizations are asked for at the moment they are needed.
+const state = {
+  session: null, csrf: '', tab: 'checkout', indicator: null, pendingSince: 0,
+  cart: [], selectedId: null, lastItemId: null, flashId: null, flashAt: 0, pendingQty: null,
+  quote: null, saleRequest: null, discount: null, customer: emptyCustomer(), customers: [],
+  pay: {active: false, method: null, other: null}, payOptions: [], payOptionsSig: '',
+  done: null, doneRendered: null, lastSale: null, submitting: false, scanBusy: false,
+  suspendedCount: 0, printer: null, categories: [], stockProducts: [], cartRestored: false,
+  bootstrapRefreshInFlight: false, lastOperatorsRefreshAt: 0, loginLockedUntil: 0,
+  scale: {port: null, reader: null, buffer: '', awaitingId: null, gate: C.createWeightGate(2), settleTimer: null,
+          barcodeMode: prefs.get('scale.barcodeMode', 'weight'), baudRate: prefs.get('scale.baudRate', '9600')},
+};
+const role = () => state.session?.operator?.role;
+
+/* ---------- feedback ---------- */
 let toastTimer;
-function toast(message,error=false){const box=$('toast');box.textContent=message;box.className='show'+(error?' error':'');clearTimeout(toastTimer);toastTimer=setTimeout(()=>box.className='',5000)}
-let activeConfirm = null;
-function confirmDialog(title,description,acceptLabel='Confirmar'){
-  if(activeConfirm)activeConfirm(false);
-  return new Promise(resolve=>{
-    const previous=document.activeElement;
-    const backdrop=document.createElement('div');
-    backdrop.className='confirm-backdrop';
-    const dialog=document.createElement('section');
-    dialog.className='confirm-dialog';
-    dialog.setAttribute('role','alertdialog');
-    dialog.setAttribute('aria-modal','true');
-    const titleId='confirm-title-'+Math.random().toString(36).slice(2);
-    const descriptionId='confirm-description-'+Math.random().toString(36).slice(2);
-    dialog.setAttribute('aria-labelledby',titleId);
-    dialog.setAttribute('aria-describedby',descriptionId);
-    const icon=document.createElement('div');icon.className='confirm-icon';icon.setAttribute('aria-hidden','true');icon.textContent='!';
-    const copy=document.createElement('div');copy.className='confirm-copy';
-    const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent='Confirmação necessária';
-    const heading=document.createElement('h2');heading.id=titleId;heading.textContent=title;
-    const message=document.createElement('p');message.id=descriptionId;message.textContent=description;
-    copy.append(eyebrow,heading,message);
-    const actions=document.createElement('div');actions.className='confirm-actions';
-    const cancel=document.createElement('button');cancel.type='button';cancel.className='secondary';cancel.textContent='Cancelar';
-    const accept=document.createElement('button');accept.type='button';accept.className='primary confirm-accept';accept.textContent=acceptLabel;
-    actions.append(cancel,accept);dialog.append(icon,copy,actions);backdrop.append(dialog);document.body.append(backdrop);
-    let settled=false;
-    const finish=value=>{if(settled)return;settled=true;document.removeEventListener('keydown',onKey);backdrop.remove();activeConfirm=null;previous?.focus?.();resolve(value)};
-    const onKey=event=>{
-      if(event.key==='Escape'){event.preventDefault();finish(false);return}
-      if(event.key!=='Tab')return;
-      const focusables=[cancel,accept].filter(node=>!node.disabled);
-      if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}
-      else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}
-    };
-    activeConfirm=finish;document.addEventListener('keydown',onKey);backdrop.addEventListener('click',event=>{if(event.target===backdrop)finish(false)});cancel.addEventListener('click',()=>finish(false));accept.addEventListener('click',()=>finish(true));accept.focus();
-  });
+function toast(message, error = false) {
+  const box = $('toast');
+  box.textContent = message;
+  box.className = 'show' + (error ? ' error' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { box.className = ''; }, 5000);
 }
-function textDialog(title,description,placeholder='Digite um nome',inputType='text',options={}){
-  if(activeConfirm)activeConfirm(false);
-  return new Promise(resolve=>{
-    const previous=document.activeElement;
-    const backdrop=document.createElement('div');backdrop.className='confirm-backdrop';
-    const dialog=document.createElement('section');dialog.className='confirm-dialog text-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
-    const titleId='text-title-'+Math.random().toString(36).slice(2),descriptionId='text-description-'+Math.random().toString(36).slice(2);
-    dialog.setAttribute('aria-labelledby',titleId);dialog.setAttribute('aria-describedby',descriptionId);
-    const icon=document.createElement('div');icon.className='confirm-icon';icon.setAttribute('aria-hidden','true');icon.textContent=options.icon||'✎';
-    const copy=document.createElement('div');copy.className='confirm-copy';
-    const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent=options.eyebrow||'Informação necessária';
-    const heading=document.createElement('h2');heading.id=titleId;heading.textContent=title;
-    const message=document.createElement('p');message.id=descriptionId;message.textContent=description;copy.append(eyebrow,heading,message);
-    const field=document.createElement('label');field.className='confirm-field';field.textContent=options.fieldLabel||'Informação';
-    const input=document.createElement(options.multiline?'textarea':'input');input.className='confirm-input';if(!options.multiline)input.type=inputType;input.maxLength=options.maxLength||120;input.placeholder=placeholder;input.autocomplete='off';if(inputType==='password')input.inputMode='numeric';if(options.multiline)input.rows=4;field.append(input);copy.append(field);
-    const actions=document.createElement('div');actions.className='confirm-actions';
-    const cancel=document.createElement('button');cancel.type='button';cancel.className='secondary';cancel.textContent='Cancelar';
-    const accept=document.createElement('button');accept.type='button';accept.className='primary confirm-accept';accept.textContent=options.acceptLabel||'Confirmar';accept.disabled=true;
-    actions.append(cancel,accept);dialog.append(icon,copy,actions);backdrop.append(dialog);document.body.append(backdrop);
-    const validationError=document.createElement('small');validationError.className='confirm-error';validationError.setAttribute('role','alert');copy.append(validationError);
-    let settled=false,validating=false;
-    const finish=value=>{if(settled)return;settled=true;document.removeEventListener('keydown',onKey);backdrop.remove();activeConfirm=null;previous?.focus?.();resolve(value)};
-    const minimum=options.minLength||1;
-    const submit=async()=>{const value=input.value.trim();if(settled||validating||value.length<minimum)return;validating=true;accept.disabled=true;input.disabled=true;validationError.textContent='';validationError.classList.remove('show');try{if(options.validate)await options.validate(value);finish(value)}catch(error){validationError.textContent=error?.message||'Valor inválido';validationError.classList.add('show');input.disabled=false;accept.disabled=false;validating=false;input.focus()}};
-    const onKey=event=>{if(event.key==='Escape'){event.preventDefault();finish(null);return}if(event.key==='Enter'&&document.activeElement===input&&!options.multiline&&!accept.disabled){event.preventDefault();submit();return}if(event.key!=='Tab')return;const focusables=[input,cancel,accept].filter(node=>!node.disabled);if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}};
-    activeConfirm=finish;input.addEventListener('input',()=>{validationError.textContent='';validationError.classList.remove('show');accept.disabled=input.value.trim().length<minimum});document.addEventListener('keydown',onKey);backdrop.addEventListener('click',event=>{if(event.target===backdrop)finish(null)});cancel.addEventListener('click',()=>finish(null));accept.addEventListener('click',submit);input.focus();
-  });
+let audioContext = null;
+function beep(kind = 'ok') {
+  if (prefs.get('sound', 'on') !== 'on') return;
+  try {
+    audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === 'suspended') audioContext.resume();
+    const oscillator = audioContext.createOscillator(), gain = audioContext.createGain();
+    const start = audioContext.currentTime, length = kind === 'error' ? .3 : .07;
+    oscillator.type = kind === 'error' ? 'square' : 'sine';
+    oscillator.frequency.value = kind === 'error' ? 196 : 1320;
+    gain.gain.setValueAtTime(.0001, start);
+    gain.gain.exponentialRampToValueAtTime(kind === 'error' ? .1 : .07, start + .012);
+    gain.gain.exponentialRampToValueAtTime(.0001, start + length);
+    oscillator.connect(gain).connect(audioContext.destination);
+    oscillator.start(start);
+    oscillator.stop(start + length + .03);
+  } catch { /* audio is optional */ }
 }
-function paymentName(method,configuredId,names){if(method==='other')return (names||{})[configuredId]||(state.session?.payment_methods||[]).find(m=>m.id===configuredId)?.name||'Outra forma';return ({cash:'Dinheiro',pix:'PIX',card:'Cartão',card_credit:'Crédito',card_debit:'Débito',credit_account:'A prazo (fiado)',store_credit:'Crédito na loja'})[method]||method||'Pagamento'}
-function legacyReceiptMarkup(sale){
-  const connection=state.session?.connection||{};
-  const issuer=connection.issuer||{};
-  const company=issuer.trade_name||issuer.legal_name||connection.tenant_name||'PDV2';
-  const legalName=issuer.trade_name&&issuer.legal_name&&issuer.trade_name!==issuer.legal_name?issuer.legal_name:'';
-  const shop=connection.shop_name||'';
-  const terminal=connection.terminal_name||'';
-  const date=sale.created_at?new Date(Number(sale.created_at)).toLocaleString('pt-BR'):new Date().toLocaleString('pt-BR');
-  const address=issuer.address||{};
-  const addressText=[address.line,address.number,address.complement,address.neighborhood,address.city,address.state].filter(Boolean).join(', ');
-  const fiscal=sale.fiscal||{};
-  const authorized=Boolean(fiscal.authorized&&fiscal.access_key);
-  const items=(sale.items||[]).map(item=>`<div class="receipt-line"><div><strong>${esc(item.name)}</strong><small>${item.sku?`Cód. ${esc(item.sku)} · `:''}${item.ncm?`NCM ${esc(item.ncm)} · `:''}${qtyText(item.quantity_milli,item.unit||'UN')} ${esc(item.unit||'UN')} × ${money(item.unit_price_cents)}</small></div><strong>${money(item.line_total_cents??item.gross_cents)}</strong></div>`).join('')||'<p class="receipt-empty">Nenhum item registrado.</p>';
-  const payments=(sale.payments||[]).map(payment=>`<div class="receipt-summary-row"><span>${esc(paymentName(payment.method,payment.payment_method_id,sale.payment_names))}</span><strong>${money(payment.amount_cents)}</strong></div>`).join('');
-  const fiscalBlock=authorized?`<section class="receipt-fiscal"><strong>DANFE NFC-e autorizada</strong><span>Número ${esc(fiscal.number||'—')} · Série ${esc(fiscal.series||'—')}</span><span>Chave de acesso: ${esc(fiscal.access_key)}</span>${fiscal.protocol?`<span>Protocolo: ${esc(fiscal.protocol)}</span>`:''}${fiscal.authorized_at?`<span>Autorizada em: ${esc(fiscal.authorized_at)}</span>`:''}${fiscal.qr_url?`<span>Consulta: ${esc(fiscal.qr_url)}</span>`:''}${fiscal.taxes_cents!=null?`<span>Tributos: ${money(fiscal.taxes_cents)}</span>`:''}</section>`:`<section class="receipt-fiscal pending"><strong>NFC-e não emitida</strong><span>Comprovante de venda sem valor fiscal.</span></section>`;
-  const qrImage=authorized&&fiscal.qr_data_uri?`<div class="receipt-qr"><img src="${esc(fiscal.qr_data_uri)}" alt="QR Code para consulta da NFC-e"><small>Leia o QR Code para consultar</small></div>`:'';
-  return `<div class="receipt-paper"><header class="receipt-header"><strong>${esc(company)}</strong>${legalName?`<span>${esc(legalName)}</span>`:''}${issuer.document?`<span>CNPJ/CPF: ${esc(documentText(issuer.document))}</span>`:''}${issuer.state_registration?`<span>IE: ${esc(issuer.state_registration)}</span>`:''}${addressText?`<span>${esc(addressText)}</span>`:''}${address.zip?`<span>CEP: ${esc(address.zip)}</span>`:''}${shop?`<span>${esc(shop)}</span>`:''}<small>${authorized?'DANFE NFC-e':'Comprovante de venda · não fiscal'}</small></header><div class="receipt-meta"><span>${esc(date)}</span><span>${terminal?`Caixa ${esc(terminal)}`:''}</span></div><div class="receipt-items">${items}</div><div class="receipt-totals"><div class="receipt-summary-row"><span>Subtotal</span><strong>${money(sale.gross_cents)}</strong></div>${Number(sale.discount_cents)>0?`<div class="receipt-summary-row discount"><span>Desconto</span><strong>− ${money(sale.discount_cents)}</strong></div>`:''}<div class="receipt-summary-row receipt-total"><span>Total</span><strong>${money(sale.total_cents)}</strong></div>${payments}${Number(sale.change_cents)>0?`<div class="receipt-summary-row change"><span>Troco</span><strong>${money(sale.change_cents)}</strong></div>`:''}</div>${sale.customer_name||sale.customer_document?`<div class="receipt-customer">${sale.customer_name?`Cliente: ${esc(sale.customer_name)}<br>`:''}${sale.customer_document?`CPF/CNPJ: ${esc(documentText(sale.customer_document))}`:''}</div>`:''}${fiscalBlock}${qrImage}<footer>Obrigado pela preferência!</footer></div>`
-}
-function receiptDimensions(sale){
-  const model=sale.receipt||{};
-  const width=Number(model.paper_width_mm)===58?58:80;
-  return {width,printable:width===58?48:72,columns:width===58?32:48,feed:Math.max(20,Math.min(40,Number(model.bottom_feed_mm)||20))};
-}
-function receiptMarkup(sale){
-  const model=sale.receipt;
-  if(!model||!Array.isArray(model.blocks))return legacyReceiptMarkup(sale);
-  const dimensions=receiptDimensions(sale);
-  const blocks=model.blocks.map(block=>{
-    if(block.kind==='rule')return '<div class="receipt-rule" aria-hidden="true"></div>';
-    if(block.kind==='qr'){
-      const uri=String(block.data_uri||'');
-      if(!/^data:image\/(?:svg\+xml|png);base64,[a-zA-Z0-9+/=]+$/.test(uri))return '';
-      const qrWidth=Number(block.width_mm)>0?Math.min(100,Number(block.width_mm)/dimensions.printable*100):45;
-      return `<div class="receipt-qr" style="--receipt-qr-width:${qrWidth}%"><img src="${esc(uri)}" alt="QR Code para consulta do comprovante">${block.label?`<small>${esc(block.label)}</small>`:''}</div>`;
-    }
-    if(block.kind!=='text'||!Array.isArray(block.lines))return '';
-    const classes=['receipt-text',block.align==='center'?'receipt-text-center':block.align==='right'?'receipt-text-right':'receipt-text-left',block.bold?'receipt-text-bold':'',block.tall?'receipt-text-tall':'',block.wide?'receipt-text-wide':''].filter(Boolean).join(' ');
-    return `<div class="${classes}">${block.lines.map(line=>`<div class="receipt-text-line"><span>${esc(line)||'&nbsp;'}</span></div>`).join('')}</div>`;
-  }).join('');
-  return `<article class="receipt-paper receipt-paper-canonical" aria-label="Comprovante em bobina de ${dimensions.width} milímetros" style="--receipt-paper-mm:${dimensions.width}mm;--receipt-printable-mm:${dimensions.printable}mm;--receipt-columns:${dimensions.columns};--receipt-feed-mm:${dimensions.feed}mm;--receipt-screen-inset:${(dimensions.width-dimensions.printable)*50/dimensions.width}%;--receipt-feed-ratio:${dimensions.feed/dimensions.printable}"><div class="receipt-content">${blocks}</div><div class="receipt-bottom-feed" aria-hidden="true"></div></article>`;
-}
-async function receiptDialog(sale,printStatus='',options={}){
-  if(!sale.receipt&&sale.id){
-    try{const detail=await api('/api/sales/'+encodeURIComponent(sale.id));sale=detail.sale||sale}catch{}
+
+async function api(path, method = 'GET', data) {
+  const options = {method, credentials: 'same-origin', headers: {}};
+  if (method !== 'GET') {
+    options.headers['Content-Type'] = 'application/json';
+    options.headers['X-CSRF-Token'] = state.csrf;
+    options.body = JSON.stringify(data ?? {});
   }
-  if(activeConfirm)activeConfirm(false);
-  return new Promise(resolve=>{
-    const dimensions=receiptDimensions(sale);
-    const previous=document.activeElement;
-    const backdrop=document.createElement('div');backdrop.className='confirm-backdrop receipt-backdrop';
-    const dialog=document.createElement('section');dialog.className='confirm-dialog receipt-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
-    dialog.style.setProperty('--receipt-paper-mm',dimensions.width+'mm');
-    const titleId='receipt-title-'+Math.random().toString(36).slice(2);dialog.setAttribute('aria-labelledby',titleId);
-    const header=document.createElement('header');header.className='receipt-dialog-heading';
-    const icon=document.createElement('div');icon.className='confirm-icon receipt-icon';icon.setAttribute('aria-hidden','true');icon.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2V3Z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>';
-    const copy=document.createElement('div');copy.className='confirm-copy';
-    const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent=sale.status==='voided'?'Venda cancelada':'Venda registrada';
-    const heading=document.createElement('h2');heading.id=titleId;heading.textContent='Comprovante da venda';
-    const description=document.createElement('p');description.className='receipt-dialog-description';description.textContent='Confira a via do cliente antes de entregar.';copy.append(eyebrow,heading,description);
-    header.append(icon,copy);
-    const stage=document.createElement('div');stage.className='receipt-preview-stage';stage.tabIndex=0;stage.setAttribute('role','region');stage.setAttribute('aria-label','Prévia do comprovante. Role para conferir todos os itens.');
-    const previewLabel=document.createElement('div');previewLabel.className='receipt-preview-label';previewLabel.innerHTML=`<span>Prévia de impressão</span><span>Bobina ${dimensions.width} mm</span>`;
-    const paper=document.createElement('div');paper.className='receipt-preview-paper';paper.innerHTML=receiptMarkup(sale);stage.append(previewLabel,paper);
-    const footer=document.createElement('div');footer.className='receipt-dialog-footer';
-    const status=document.createElement('p');status.className='receipt-print-status '+(/configure|não|erro|falha/i.test(printStatus)?'warning':'success');status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.textContent=printStatus||'O comprovante está pronto para impressão.';
-    const actions=document.createElement('div');actions.className='confirm-actions';
-    const close=document.createElement('button');close.type='button';close.className='secondary';close.textContent='Fechar';
-    const browserPrint=document.createElement('button');browserPrint.type='button';browserPrint.className='secondary';browserPrint.textContent='Imprimir no sistema';
-    const print=document.createElement('button');print.type='button';print.className='primary';print.textContent='Reimprimir na térmica';
-    actions.append(close,browserPrint,print);footer.append(status,actions);dialog.append(header,stage,footer);backdrop.append(dialog);document.body.append(backdrop);
-    let settled=false,printTimer;
-    const printPageStyle=document.createElement('style');
-    const prepareBrowserPrint=()=>{
-      const paperNode=paper.querySelector('.receipt-paper');
-      const contentNode=paperNode?.querySelector('.receipt-content')||paperNode;
-      const paperHeightMm=Math.ceil((contentNode?.scrollHeight||900)*dimensions.printable/(contentNode?.offsetWidth||396)+dimensions.feed+4);
-      printPageStyle.textContent=`@media print{@page{size:${dimensions.width}mm ${Math.max(100,paperHeightMm+5)}mm;margin:0;}}`;
-      if(!printPageStyle.isConnected)document.head.append(printPageStyle);
-    };
-    const openBrowserPrint=()=>{if(settled)return;status.textContent='Abrindo a impressão do sistema…';status.className='receipt-print-status success';prepareBrowserPrint();printTimer=window.setTimeout(()=>{if(!settled)window.print()},120)};
-    const finish=()=>{if(settled)return;settled=true;window.clearTimeout(printTimer);document.removeEventListener('keydown',onKey);window.removeEventListener('beforeprint',prepareBrowserPrint);printPageStyle.remove();backdrop.remove();activeConfirm=null;previous?.focus?.();resolve()};
-    const onKey=event=>{if(event.key==='Escape'){event.preventDefault();finish();return}if(event.key!=='Tab')return;const focusables=[stage,close,browserPrint,print].filter(node=>!node.disabled);if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}};
-    activeConfirm=finish;document.addEventListener('keydown',onKey);window.addEventListener('beforeprint',prepareBrowserPrint);backdrop.addEventListener('click',event=>{if(event.target===backdrop)finish()});close.addEventListener('click',finish);browserPrint.addEventListener('click',openBrowserPrint);if(!sale.id)print.hidden=true;print.addEventListener('click',async()=>{print.disabled=true;try{await api('/api/sales/'+encodeURIComponent(sale.id)+'/reprint','POST',{});status.textContent='Recibo colocado na fila da impressora térmica.';status.className='receipt-print-status success';toast('Recibo colocado na fila')}catch(error){status.textContent=error.status===409?'Configure uma impressora de recibos antes de reenviar para a fila.':error.message;status.className='receipt-print-status warning';toast(status.textContent,true)}finally{print.disabled=false}});browserPrint.focus();if(options.autoPrint)printTimer=window.setTimeout(openBrowserPrint,180);
-  });
+  let response;
+  try { response = await fetch(path, options); } catch { throw Error('Sem resposta do terminal local. Confira o serviço.'); }
+  let body = {};
+  try { body = await response.json(); } catch { /* empty body */ }
+  if (!response.ok) {
+    const error = Error(body.error || `Erro ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return body;
 }
-async function autoPrintReceipt(sale){
-  try{
-    const data=await api('/api/print/settings');
-    const receipt=(data.settings||[]).find(setting=>setting.kind==='receipt');
-    if(!receipt)return {status:'Impressora de recibos ainda não está configurada. A janela de impressão do sistema será aberta automaticamente.',autoPrint:true};
-    if(receipt.driver==='cups'){
-      try{
-        const discovered=await api('/api/print/discover');
-        if(!(discovered.queues||[]).includes(receipt.target))return {status:`A fila ${receipt.target||'da impressora'} não está acessível pelo contêiner. A janela do sistema será aberta automaticamente.`,autoPrint:true};
-      }catch{return {status:'A fila CUPS não está acessível pelo contêiner. A janela do sistema será aberta automaticamente.',autoPrint:true}}
-    }
-    try{await api('/api/print/flush','POST',{})}catch{return {status:'Não foi possível enviar à fila térmica. A janela de impressão do sistema será aberta automaticamente.',autoPrint:true}}
-    return {status:`Recibo enviado para ${receipt.target||'a impressora térmica'}.`,autoPrint:false};
-  }catch{return {status:'Venda salva. A janela de impressão do sistema será aberta automaticamente.',autoPrint:true}}
+
+/* ---------- barcode reader bursts ---------- */
+const typing = {times: []};
+function noteKey(event) {
+  if (event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return;
+  typing.times.push(performance.now());
+  if (typing.times.length > 8) typing.times.shift();
 }
-async function api(path,method='GET',data){const options={method,credentials:'same-origin',headers:{}};if(method!=='GET'){options.headers['Content-Type']='application/json';options.headers['X-CSRF-Token']=state.csrf;options.body=JSON.stringify(data??{})}let response;try{response=await fetch(path,options)}catch{throw Error('Sem resposta do terminal local. Confira o serviço.')}let body={};try{body=await response.json()}catch{}if(!response.ok){const error=Error(body.error||`Erro ${response.status}`);error.status=response.status;throw error}return body}
-function visible(view){for(const id of ['pairView','loginView','appView'])$(id).classList.toggle('hidden',id!==view)}
-function focusScannerInput(select=false){const input=$('productSearch');if(!input||input.disabled||!state.session?.operator||!canSell(state.session.operator.role))return;if(document.activeElement===input){if(select)input.select();return}const active=document.activeElement;if(active&&active!==document.body&&active.matches?.('input,textarea,select,button,[contenteditable="true"]'))return;input.focus({preventScroll:true});if(select)input.select()}
-function connectionLabel(c){if(!c?.paired)return 'Empresa não vinculada';return [c.tenant_name||'Empresa',c.shop_name||'Loja',c.terminal_name||'Caixa'].join(' · ')}
-function renderConnection(){const c=state.session?.connection||{};const label=connectionLabel(c);const badge=$('connectionBadge');badge.textContent=label;badge.className='badge '+(c.paired?'good':'warn');const card=$('connectionIdentity');if(card)card.innerHTML=c.paired?`<strong>${esc(label)}</strong><small><span class="connection-dot"></span> Vinculado à empresa · licença •••• ${esc(c.license_hint||'—')}</small><small class="muted">Dispositivo ${esc(c.device_id||'—')} · servidor ${esc(c.cloud_url||'local')}</small>`:'<strong>Este terminal ainda não está conectado</strong><small>Informe a chave da licença e o código criado no painel da empresa.</small>';const sync=$('operatorSyncStatus');if(sync&&state.session?.paired){const at=state.session.sync?.bootstrap_at;const count=state.session.operators?.length||0;sync.textContent=`${count} ${count===1?'operador disponível':'operadores disponíveis'} neste caixa${at?' · última atualização '+new Date(Number(at)).toLocaleString('pt-BR'):''}. Os logins já baixados continuam disponíveis sem internet.`}}
-function statusBadges(){const s=state.session;if(!s)return;renderConnection();const l=s.license||{};const sync=s.sync||{};const role=s.operator?.role;$('operatorName').textContent=s.operator?`${s.operator.name} · ${roleNames[role]||role}`:'Sem operador';$('logoutBtn').classList.toggle('hidden',!s.operator);$('lockBtn').classList.toggle('hidden',!s.operator);$('cashOpenHeaderBtn').classList.toggle('hidden',!s.operator||!!s.cash);$('closeCashHeaderBtn').classList.toggle('hidden',!s.operator||!s.cash);document.querySelector('.top-nav')?.classList.toggle('hidden',!s.operator);$('logoutBtn').textContent='Sair';const lease=$('leaseBadge');lease.textContent=l.state==='active'?'Licença ativa':l.state==='expired'?'Licença vencida':l.state==='clock_rollback'?'Relógio incorreto':'Licença pendente';lease.className='badge '+(l.can_sell?'good':'bad');const pending=$('pendingBadge');pending.textContent=`Fila: ${sync.pending??0}`;pending.className='badge '+(sync.pending?'warn':'good');const net=$('networkBadge');net.textContent=sync.last_sync_error?'Offline · dados locais':sync.last_sync_at?'Sincronizado':'Modo local';net.className='badge '+(sync.last_sync_error?'warn':'good');const release=$('releaseBadge');release.classList.toggle('hidden',!sync.release);release.textContent=sync.release?'Versão '+sync.release.version:'';release.className='badge warn'+(sync.release?'':' hidden');$('cashChip').textContent=s.cash?'Caixa aberto':'Caixa fechado';$('cashChip').classList.toggle('open',!!s.cash);$('cashStatus').textContent=s.cash?'Aberto':'Fechado';$('cashStatus').className='cash-status '+(s.cash?'open':'closed');$('cashInfo').textContent=s.cash?`Aberto em ${new Date(s.cash.opened_at).toLocaleString('pt-BR')} · Saldo inicial ${money(s.cash.opening_cents)}`:'Informe o dinheiro físico disponível antes da primeira venda.';$('cashOpeningPrompt').classList.toggle('hidden',!!s.cash);$('cashMovementControls').classList.toggle('hidden',!s.cash);const schedule=state.hoursStatus||{};const hoursAlert=$('hoursAlert');hoursAlert.classList.toggle('hidden',!schedule.configured);hoursAlert.textContent=schedule.configured?(schedule.open?'Horário normal':'Fora do horário · caixa aberto continua ativo'):'';hoursAlert.className='badge hours-alert '+(schedule.open?'good':'warn')+(schedule.configured?'':' hidden');$('sellBtn').disabled=!s.cash||!l.can_sell||!canSell(role)}
-async function refreshOperators(silent=false){if(state.bootstrapRefreshInFlight)return;state.bootstrapRefreshInFlight=true;const button=$('refreshBootstrap');if(button)button.disabled=true;try{await api('/api/bootstrap','POST',{});if(!silent)toast('Operadores e catálogo atualizados')}finally{state.bootstrapRefreshInFlight=false;if(button)button.disabled=false}}
-function applyRoleUi(){const role=state.session?.operator?.role;const manager=canManage(role);document.body.dataset.canSell=String(canSell(role));document.querySelector('[data-tab="checkout"]').classList.toggle('hidden',!canSell(role));document.querySelectorAll('.admin-only').forEach(node=>node.classList.toggle('hidden',!manager));$('adjustStockBtn').closest('.inline-controls').classList.toggle('hidden',!canAdjustStock(role));$('printerForm').classList.toggle('hidden',!manager);$('flushPrintBtn').classList.toggle('hidden',!canSell(role));$('syncNowBtn').classList.toggle('hidden',!manager);document.querySelector('a[href="/api/export"]').classList.toggle('hidden',!manager);$('backupBtn').classList.toggle('hidden',!manager)}
-function selectedCustomer(){const id=$('customerSelect')?.value;return id?(state.customers||[]).find(c=>c.id===id)||null:null}
-async function renderCustomers(){const select=$('customerSelect');if(!select)return;const data=await api('/api/customers');state.customers=data.customers||[];const current=select.value;select.innerHTML='<option value="">Consumidor não identificado</option>'+state.customers.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}${c.credit_limit_cents?' · fiado disp. '+money(c.available_credit_cents):''}${c.store_credit_cents>0?' · crédito '+money(c.store_credit_cents):''}</option>`).join('');select.value=state.customers.some(c=>c.id===current)?current:''}
-async function returnDialog(saleId){
-  const info=await api('/api/sales/'+encodeURIComponent(saleId)+'/returnable');
-  const lines=info.items.filter(item=>item.available_milli>0);
-  if(!lines.length){toast('Todos os itens desta venda já foram devolvidos',true);return}
-  const backdrop=document.createElement('div');backdrop.className='confirm-backdrop';
-  const dialog=document.createElement('section');dialog.className='confirm-dialog return-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
-  const refunds=[['cash','Dinheiro (sai do caixa)'],['store_credit','Crédito na loja (troca)']];if(info.on_account)refunds.push(['account','Abater do fiado']);
-  const customerOptions=(state.customers||[]).map(c=>`<option value="${esc(c.id)}" ${c.id===info.customer_id?'selected':''}>${esc(c.name)}</option>`).join('');
-  dialog.innerHTML=`<div class="confirm-copy"><span class="confirm-eyebrow">Devolução de venda ${esc(saleId.slice(0,8))}</span><h2>Quais itens voltaram?</h2><p>Informe a quantidade devolvida de cada item. O estoque volta automaticamente.</p></div>
-    <div class="return-lines">${lines.map((item,index)=>`<label class="return-line"><span><strong>${esc(item.name)}</strong><small>Disponível: ${qtyText(item.available_milli,item.unit)} ${esc(item.unit)}</small></span><input data-return-index="${index}" inputmode="decimal" value="0" aria-label="Quantidade devolvida de ${esc(item.name)}"></label>`).join('')}</div>
-    <label>Como devolver o valor<select id="returnRefund">${refunds.map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select></label>
-    <label id="returnCustomerField" class="hidden">Cliente que recebe o crédito<select id="returnCustomer"><option value="">Escolha o cliente</option>${customerOptions}</select></label>
-    <label>Motivo<input id="returnReason" maxlength="240" placeholder="Ex.: produto com defeito, troca de tamanho"></label>
-    ${state.session.operator.role==='cashier'?'<label>PIN do gerente<input id="returnPin" type="password" inputmode="numeric" autocomplete="off"></label>':''}
-    <p id="returnTotal" class="hint">Total a devolver: R$ 0,00</p>
-    <div class="confirm-actions"><button type="button" class="secondary" id="returnCancel">Cancelar</button><button type="button" class="primary" id="returnConfirm">Registrar devolução</button></div>`;
-  backdrop.append(dialog);document.body.append(backdrop);
-  const close=()=>backdrop.remove();
-  const quantities=()=>lines.map((item,index)=>{const raw=dialog.querySelector(`[data-return-index="${index}"]`).value.replace(',','.');const milli=Math.round(Number(raw)*1000);return {item,milli:Number.isFinite(milli)?milli:NaN}});
-  const refresh=()=>{let total=0;for(const {item,milli} of quantities())if(milli>0)total+=Math.round(item.line_total_cents*Math.min(milli,item.available_milli)/item.quantity_milli);dialog.querySelector('#returnTotal').textContent='Total a devolver: '+money(total);dialog.querySelector('#returnCustomerField').classList.toggle('hidden',dialog.querySelector('#returnRefund').value!=='store_credit'||!!info.customer_id)};
-  dialog.addEventListener('input',refresh);dialog.addEventListener('change',refresh);refresh();
-  dialog.querySelector('#returnCancel').onclick=close;
-  dialog.querySelector('#returnConfirm').onclick=async()=>{
-    try{
-      const items=[];for(const {item,milli} of quantities()){if(Number.isNaN(milli)||milli<0||milli>item.available_milli)throw Error(`Quantidade inválida para ${item.name}`);if(item.unit==='UN'&&milli%1000)throw Error(`${item.name} aceita somente quantidade inteira`);if(milli)items.push({product_id:item.product_id,quantity_milli:milli})}
-      if(!items.length)throw Error('Informe ao menos um item devolvido');
-      const reason=dialog.querySelector('#returnReason').value.trim();if(reason.length<3)throw Error('Informe o motivo da devolução');
-      const refund=dialog.querySelector('#returnRefund').value;
-      const body={return_id:crypto.randomUUID(),refund_method:refund,reason,items,manager_pin:dialog.querySelector('#returnPin')?.value.trim()||undefined};
-      if(refund==='store_credit'&&!info.customer_id){body.customer_id=dialog.querySelector('#returnCustomer').value;if(!body.customer_id)throw Error('Escolha o cliente que recebe o crédito')}
-      dialog.querySelector('#returnConfirm').disabled=true;
-      const result=await api('/api/sales/'+encodeURIComponent(saleId)+'/return','POST',body);
-      close();
-      toast(`Devolução registrada: ${money(result.total_cents)} · ${refund==='cash'?'entregue em dinheiro':refund==='store_credit'?'em crédito na loja':'abatido do fiado'}`);
-      await Promise.all([loadSales(),loadProducts(),renderCustomers()]);
-      if(result.receipt)await receiptDialog({receipt:result.receipt},result.print_job_id?'Comprovante de devolução enviado à impressora.':'Comprovante de devolução pronto para visualização.');
-    }catch(error){dialog.querySelector('#returnConfirm').disabled=false;toast(error.message,true)}
-  };
+// A reader types faster than a person: four keys under 50 ms apart, just now.
+function scannerBurst() {
+  const times = typing.times;
+  if (times.length < 4 || performance.now() - times[times.length - 1] > 120) return false;
+  for (let index = times.length - 3; index < times.length; index++) if (times[index] - times[index - 1] > 50) return false;
+  return true;
 }
-function renderPaymentMethods(){const config=state.session?.payment_methods||[];const active=kind=>config.some(m=>m.kind===kind&&m.active);for(const kind of ['cash','pix','credit_account','store_credit']){const button=document.querySelector(`[data-payment-method="${kind}"]`);if(button)button.classList.toggle('hidden',!active(kind))}document.querySelector('[data-payment-method="card"]')?.classList.toggle('hidden',!active('card_credit')&&!active('card_debit'));document.querySelectorAll('[data-card-method]').forEach(b=>b.classList.toggle('hidden',!active(b.dataset.cardMethod)));const group=$('paymentMethods');if(!group)return;group.querySelectorAll('.payment-method.custom').forEach(b=>b.remove());for(const m of config.filter(m=>m.kind==='other'&&m.active)){const button=document.createElement('button');button.type='button';button.className='payment-method custom';button.dataset.paymentMethod='other';button.dataset.paymentId=m.id;button.innerHTML=`<span class="payment-method-icon">◇</span><strong>${esc(m.name)}</strong><small>Forma da empresa</small>`;button.addEventListener('click',()=>selectPaymentMethod('other',{id:m.id,name:m.name}));group.append(button)}if(state.paymentMethod==='other'&&!config.some(m=>m.id===state.otherMethod?.id&&m.active)){state.paymentMethod=null;state.otherMethod=null;clearPaymentValues()}renderPaymentUI()}
-async function receiveCreditDialog(){
-  await renderCustomers();
-  const debtors=(state.customers||[]).filter(c=>c.open_credit_cents>0);
-  if(!debtors.length){toast('Nenhum cliente com fiado em aberto neste caixa',true);return}
-  const backdrop=document.createElement('div');backdrop.className='confirm-backdrop';
-  const dialog=document.createElement('section');dialog.className='confirm-dialog return-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
-  const preset=$('customerSelect')?.value;
-  dialog.innerHTML=`<div class="confirm-copy"><span class="confirm-eyebrow">Fiado</span><h2>Receber pagamento de fiado</h2><p>O valor quita primeiro as compras mais antigas. Em dinheiro, entra no caixa e na conferência.</p></div>
-    <label>Cliente<select id="creditCustomer">${debtors.map(c=>`<option value="${esc(c.id)}" ${c.id===preset?'selected':''}>${esc(c.name)} · em aberto ${money(c.open_credit_cents)}</option>`).join('')}</select></label>
-    <label>Valor recebido<input id="creditAmount" class="money-input" inputmode="decimal"></label>
-    <label>Forma<select id="creditMethod"><option value="cash">Dinheiro</option><option value="pix">Pix</option><option value="card_debit">Débito</option><option value="card_credit">Crédito</option></select></label>
-    <div class="confirm-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="button" class="primary" data-ok>Confirmar recebimento</button></div>`;
-  backdrop.append(dialog);document.body.append(backdrop);
-  const customer=()=>debtors.find(c=>c.id===dialog.querySelector('#creditCustomer').value);
-  const fill=()=>{dialog.querySelector('#creditAmount').value=(customer().open_credit_cents/100).toFixed(2).replace('.',',')};
-  dialog.querySelector('#creditCustomer').onchange=fill;fill();
-  dialog.querySelector('[data-close]').onclick=()=>backdrop.remove();
-  const requestId=crypto.randomUUID();
-  dialog.querySelector('[data-ok]').onclick=async()=>{
-    const button=dialog.querySelector('[data-ok]');
-    try{
-      const amount=parseMoney(dialog.querySelector('#creditAmount').value);
-      if(!amount)throw Error('Informe o valor recebido');
-      button.disabled=true;
-      const result=await api('/api/customers/receive','POST',{receipt_id:requestId,customer_id:customer().id,amount_cents:amount,method:dialog.querySelector('#creditMethod').value});
+
+/* ---------- one dialog component ---------- */
+const modalStack = [];
+let modalSeq = 0;
+const focusables = root => [...root.querySelectorAll('button,input,select,textarea,a[href],[tabindex]:not([tabindex="-1"])')].filter(node => !node.disabled && node.offsetParent !== null);
+function openModal({title, eyebrow = '', text = '', className = '', backdropClass = '', dismissible = true, onKey = null} = {}) {
+  const previous = document.activeElement;
+  const backdrop = el('div', 'modal-backdrop ' + backdropClass);
+  const dialog = el('section', 'modal ' + className);
+  const head = el('header', 'modal-head'), body = el('div', 'modal-body'), error = el('p', 'modal-error'), actions = el('div', 'modal-actions');
+  const heading = el('h2'), lead = el('p');
+  heading.id = 'modal-title-' + (++modalSeq);
+  heading.textContent = title;
+  lead.textContent = text;
+  if (eyebrow) head.append(Object.assign(el('span', 'eyebrow'), {textContent: eyebrow}));
+  head.append(heading);
+  if (text) head.append(lead);
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-labelledby', heading.id);
+  error.setAttribute('role', 'alert');
+  dialog.append(head, body, error, actions);
+  backdrop.append(dialog);
+  let settled = false, busy = false, resolve;
+  const modal = {
+    backdrop, dialog, head, heading, lead, body, actions, primary: null,
+    promise: new Promise(done => { resolve = done; }),
+    error(message) {
+      error.textContent = message || '';
+      error.classList.toggle('show', !!message);
+      if (message) beep('error');
+    },
+    close(value = null) {
+      if (settled) return;
+      settled = true;
+      modalStack.splice(modalStack.indexOf(modal), 1);
       backdrop.remove();
-      toast(`Fiado recebido: ${money(result.amount_cents)} · em aberto ${money(result.open_credit_cents)}`);
-      await Promise.all([renderCustomers(),loadSession()]);
-      if(result.receipt)await receiptDialog({receipt:result.receipt},result.print_job_id?'Recibo enviado à impressora.':'Recibo pronto para visualização.');
-    }catch(error){button.disabled=false;toast(error.message,true)}
+      if (modalStack.length) (focusables(modalStack.at(-1).dialog)[0] || modalStack.at(-1).dialog).focus?.();
+      else if (previous && previous !== document.body && previous.isConnected && !previous.disabled && previous.offsetParent !== null) previous.focus();
+      else focusHome();
+      resolve(value);
+    },
+    action(label, kind, handler) {
+      const button = el('button', 'btn ' + (kind || ''));
+      button.type = 'button';
+      button.innerHTML = label;
+      button.addEventListener('click', () => modal.run(handler));
+      actions.append(button);
+      if (/\bprimary\b/.test(kind || '')) modal.primary = button;
+      return button;
+    },
+    async run(handler) {
+      if (busy || settled) return;
+      busy = true;
+      modal.error('');
+      dialog.classList.add('busy');
+      try { await handler(modal); } catch (failure) { modal.error(failure?.message || 'Não foi possível concluir'); } finally { busy = false; dialog.classList.remove('busy'); }
+    },
+    handleKey(event) {
+      if (onKey && onKey(event, modal) === true) return;
+      if (event.key === 'Escape') { event.preventDefault(); if (dismissible && !busy) modal.close(null); return; }
+      if (event.key === 'Enter') {
+        // The reader ends every code with Enter; it must never confirm a dialog.
+        if (scannerBurst()) { event.preventDefault(); event.stopPropagation(); return; }
+        if (event.target.matches?.('input:not([type="checkbox"]):not([type="radio"]),select') && modal.primary && !modal.primary.disabled) { event.preventDefault(); modal.primary.click(); }
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const nodes = focusables(dialog);
+      if (!nodes.length) { event.preventDefault(); return; }
+      if (event.shiftKey && document.activeElement === nodes[0]) { event.preventDefault(); nodes.at(-1).focus(); }
+      else if (!event.shiftKey && document.activeElement === nodes.at(-1)) { event.preventDefault(); nodes[0].focus(); }
+      else if (!dialog.contains(document.activeElement)) { event.preventDefault(); nodes[0].focus(); }
+    },
+  };
+  backdrop.addEventListener('mousedown', event => { if (event.target === backdrop && dismissible && !busy) modal.close(null); });
+  modalStack.push(modal);
+  document.body.append(backdrop);
+  return modal;
+}
+// Arrow keys walk through the option buttons of a dialog.
+function arrowNav(selector) {
+  return (event, modal) => {
+    const forward = event.key === 'ArrowDown' || event.key === 'ArrowRight';
+    if (!forward && event.key !== 'ArrowUp' && event.key !== 'ArrowLeft') return false;
+    if (event.target.matches?.('select,textarea,input')) return false;
+    const nodes = [...modal.dialog.querySelectorAll(selector)].filter(node => !node.disabled);
+    if (!nodes.length) return false;
+    event.preventDefault();
+    const index = nodes.indexOf(document.activeElement);
+    const next = index < 0 ? (forward ? 0 : nodes.length - 1) : (index + (forward ? 1 : -1) + nodes.length) % nodes.length;
+    nodes[next].focus();
+    return true;
   };
 }
-function renderSellers(){const select=$('sellerSelect');if(!select)return;const current=select.value;const operators=state.session?.operators||[];select.innerHTML='<option value="">Sem vendedor</option>'+operators.map(o=>`<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('');select.value=operators.some(o=>o.id===current)?current:''}
-async function loadSession(){state.session=await api('/api/session');state.csrf=state.session.csrf;$('deviceId').textContent=state.session.device_id;state.hoursStatus=state.session.hours||{};statusBadges();if(!state.session.paired){visible('pairView');return}if(!state.session.operator){let operators=state.session.operators||[];/* A pessoa pode ser criada no painel depois do pareamento. Atualize periodicamente enquanto a tela de login estiver aberta. */if(Date.now()-state.lastOperatorsRefreshAt>10000){try{state.lastOperatorsRefreshAt=Date.now();await refreshOperators(true);state.session=await api('/api/session');state.csrf=state.session.csrf;state.hoursStatus=state.session.hours||{};statusBadges();operators=state.session.operators||[]}catch(e){if(e.status!==503&&e.status!==401)toast(e.message,true)}}$('operatorSelect').innerHTML=operators.length?operators.map(o=>`<option value="${esc(o.id)}">${esc(o.name)} · ${esc(roleNames[o.role]||o.role)}</option>`).join(''):'<option value="">Nenhum operador com PIN cadastrado</option>';$('operatorSelect').disabled=!operators.length;$('operatorEmptyHint').classList.toggle('hidden',!!operators.length);visible('loginView');return}visible('appView');applyRoleUi();renderSellers();renderPaymentMethods();renderCustomers().catch(()=>{});if(Date.now()-state.lastOperatorsRefreshAt>15000){try{state.lastOperatorsRefreshAt=Date.now();await refreshOperators(true);state.session=await api('/api/session');state.csrf=state.session.csrf;state.hoursStatus=state.session.hours||{};statusBadges()}catch(e){if(e.status!==503&&e.status!==401)toast(e.message,true)}}await loadProducts();renderCart();setTab(canSell(state.session.operator.role)?state.tab:(state.tab==='sales'?'sales':'sales'));focusScannerInput()}
-async function loadProducts(){const query=$('productSearch').value.trim();let result=await api('/api/products?q='+encodeURIComponent(query)+(state.category?'&category='+encodeURIComponent(state.category):''));if(!query&&!result.products.length&&state.session?.paired){try{await refreshOperators(true);result=await api('/api/products')}catch{}}state.products=result.products;state.categories=result.categories;renderProducts()}
-async function loadStock(){const result=await api('/api/products?q='+encodeURIComponent($('stockSearch').value.trim()));state.stockProducts=result.products;renderStock()}
-function renderProducts(){const available=state.products.filter(p=>p.stock_controlled===false||Number(p.stock_milli)>0);const availableCategories=[...new Set(available.map(p=>p.category).filter(Boolean))];const cats=$('categories');cats.innerHTML=['<button class="category '+(!state.category?'active':'')+'" data-category="">Todos</button>',...availableCategories.map(c=>`<button class="category ${state.category===c?'active':''}" data-category="${esc(c)}">${esc(c)}</button>`)].join('');cats.querySelectorAll('button').forEach(button=>button.onclick=()=>{state.category=button.dataset.category;loadProducts().catch(e=>toast(e.message,true))});const visible=state.category?available.filter(p=>p.category===state.category):available;const groups={};const singles=[];for(const p of visible){if(p.group_id)(groups[p.group_id]||=[]).push(p);else singles.push(p)}const shown=[...singles,...Object.values(groups).map(list=>list.length===1?list[0]:({...list[0],__group:list}))].sort((a,b)=>String(a.__group?a.group_name:a.name).localeCompare(String(b.__group?b.group_name:b.name),'pt-BR'));$('productsGrid').innerHTML=shown.length?shown.map(p=>p.__group?groupCard(p):`<button class="product" data-id="${esc(p.id)}"><img class="product-image" src="${esc(productImageUrl(p))}" alt="" loading="lazy" onerror="this.src='/static/product-images/generic.svg'"><span><span class="name">${esc(p.name)}</span><span class="meta">${esc(productCodeMeta(p))}</span></span><span><span class="price">${money(p.price_cents)}/${esc(p.unit)}</span><span class="stock">${p.stock_controlled===false?'Produção própria · venda liberada':`${qtyText(p.stock_milli,p.unit)} ${esc(p.unit)} em estoque`}</span></span></button>`).join(''):'<div class="empty-state" style="min-height:170px;grid-column:1/-1">Nenhum produto disponível neste terminal. Clique em “Atualizar catálogo” ou registre uma entrada no painel da empresa.</div>';$('productsGrid').querySelectorAll('.product').forEach(b=>b.onclick=()=>(b.dataset.group?variantPicker(b.dataset.group):addProduct(b.dataset.id)).catch(e=>toast(e.message,true)))}
-function groupCard(p){const list=p.__group;const prices=list.map(x=>Number(x.price_cents));const low=Math.min(...prices),high=Math.max(...prices);const stock=list.reduce((sum,x)=>sum+Number(x.stock_milli||0),0);return `<button class="product product-group" data-group="${esc(p.group_id)}"><img class="product-image" src="${esc(productImageUrl(p))}" alt="" loading="lazy" onerror="this.src='/static/product-images/generic.svg'"><span><span class="name">${esc(p.group_name||p.name)}</span><span class="meta">${list.length} variações disponíveis · toque para escolher</span></span><span><span class="price">${low===high?money(low):money(low)+' a '+money(high)}</span><span class="stock">${qtyText(stock,p.unit)} ${esc(p.unit)} na grade</span></span></button>`}
-async function variantPicker(groupId){
-  const variants=state.products.filter(p=>p.group_id===groupId).sort((a,b)=>String(a.variant||a.name).localeCompare(String(b.variant||b.name),'pt-BR',{numeric:true}));
-  if(!variants.length)return;
-  const backdrop=document.createElement('div');backdrop.className='confirm-backdrop';
-  const dialog=document.createElement('section');dialog.className='confirm-dialog variant-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
-  dialog.innerHTML=`<div class="confirm-copy"><span class="confirm-eyebrow">Escolha a variação</span><h2>${esc(variants[0].group_name||variants[0].name)}</h2></div><div class="variant-grid">${variants.map(v=>{const out=v.stock_controlled!==false&&Number(v.stock_milli)<=0;return `<button type="button" class="variant-option${out?' out':''}" data-variant="${esc(v.id)}" ${out?'disabled':''}><strong>${esc(v.variant||v.name)}</strong><small>${money(v.price_cents)} · ${out?'sem estoque':qtyText(v.stock_milli,v.unit)+' '+esc(v.unit)}</small></button>`}).join('')}</div><div class="confirm-actions"><button type="button" class="secondary" data-close>Fechar</button></div>`;
-  backdrop.append(dialog);document.body.append(backdrop);
-  const close=()=>{backdrop.remove();document.removeEventListener('keydown',onKey)};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);
-  dialog.querySelector('[data-close]').onclick=close;
-  dialog.querySelectorAll('[data-variant]').forEach(b=>b.onclick=async()=>{close();try{await addProduct(b.dataset.variant)}catch(e){toast(e.message,true)}});
-  dialog.querySelector('[data-variant]:not([disabled])')?.focus();
+function confirmDialog(title, text, acceptLabel = 'Confirmar', {danger = false, cancelLabel = 'Cancelar'} = {}) {
+  const modal = openModal({title, text, eyebrow: 'Confirmação necessária'});
+  modal.action(cancelLabel, '', () => modal.close(false));
+  modal.action(acceptLabel, danger ? 'danger primary' : 'primary', () => modal.close(true)).focus();
+  return modal.promise.then(Boolean);
 }
-async function addProduct(id,quantityOverride=null){const p=state.products.find(x=>x.id===id);if(!p)return;if(p.stock_controlled!==false&&Number(p.stock_milli)<=0){toast('Produto sem estoque disponível neste terminal',true);return}let quantity=quantityOverride;if(p.unit==='KG'&&quantity===null){if(state.scale.port){const existing=state.cart.find(x=>x.id===id);if(existing)existing.quantity_milli=0;else state.cart.push({...p,quantity_milli:0});state.scale.targetId=id;state.saleRequest=null;state.discountApproval=null;renderCart();scaleStatus(`Aguardando peso de ${p.name} · coloque o produto na balança`,'active');toast('Coloque o produto na balança para capturar o peso');return}const raw=await textDialog('Informar peso do produto','Este produto é vendido por quilo. Digite o peso ou conecte uma balança serial.','Ex.: 0,350','text',{eyebrow:'Venda por peso',fieldLabel:'Peso (kg)',acceptLabel:'Adicionar peso',icon:'⚖',validate:async value=>{const parsed=parseQty(value);if(parsed<=0)throw Error('Informe um peso maior que zero');if(parsed>1000000)throw Error('Peso acima do limite permitido')}});if(!raw)return;quantity=parseQty(raw)}if(quantity===null)quantity=1000;if(!Number.isSafeInteger(quantity)||quantity<=0)throw Error('Peso inválido');const existing=state.cart.find(x=>x.id===id);const stockError=stockLimitError(p,(existing?.quantity_milli||0)+quantity);if(stockError)throw Error(stockError);if(existing)existing.quantity_milli+=quantity;else state.cart.push({...p,quantity_milli:quantity});state.scale.targetId=id;state.saleRequest=null;state.discountApproval=null;renderCart();$('productSearch').focus()}
-function stockLimitError(item,quantity){const current=state.products.find(x=>x.id===item.id)||item;if(current.stock_controlled===false)return'';const available=Math.max(0,Number(current.stock_milli)||0);if(quantity<=available)return'';return`Estoque insuficiente: ${current.name} tem ${qtyText(available,current.unit)} ${current.unit} disponíveis`}
-function cartGross(){return state.cart.reduce((sum,p)=>sum+Math.round(p.price_cents*p.quantity_milli/1000),0)}
-function requestedDiscount(){try{return parsePercent($('discountInput').value)}catch{return 0}}
-function discountAmount(percent){const base=cartGross()-cartPromo();return Math.min(base,Math.round(base*percent/100))}
-function appliedDiscount(){const requested=requestedDiscount();return state.discountApproval?.percent===requested?state.discountApproval.amountCents:0}
-function renderDiscountState(){const requested=requestedDiscount(),approved=appliedDiscount(),approvedPercent=state.discountApproval?.percent||0,status=$('discountStatus'),button=$('applyDiscountBtn');if(!status||!button)return;if(approved){status.textContent=`Desconto de ${approvedPercent.toLocaleString('pt-BR',{maximumFractionDigits:2})}% (${money(approved)}) autorizado pelo gerente.`;status.className='discount-status approved';button.textContent='Alterar desconto'}else if(requested){status.textContent='Clique em “Aplicar desconto” para solicitar a autorização do gerente.';status.className='discount-status pending';button.textContent='Aplicar desconto'}else{status.textContent='Digite o percentual e clique em Aplicar desconto.';status.className='discount-status';button.textContent='Aplicar desconto'}}
-async function applyDiscount(){const requested=requestedDiscount(),requestedCents=discountAmount(requested);if(!requested){state.discountApproval={percent:0,amountCents:0,managerPin:''};renderDiscountState();renderCart();toast('Desconto removido');return}if(!state.cart.length)throw Error('Adicione um produto antes de aplicar desconto');if(!requestedCents)throw Error('O percentual informado é menor que o mínimo aplicável nesta venda');if(requestedCents>=cartGross())throw Error('O desconto deve ser menor que o total da venda');const pin=await textDialog('Autorizar desconto','Digite o PIN e confirme. A validação acontece agora, respeitando o limite definido pela administração.','Digite o PIN numérico','password',{eyebrow:'Autorização do gerente',fieldLabel:'PIN do gerente',acceptLabel:'Validar e aplicar',icon:'✓',validate:async value=>{await api('/api/discount/authorize','POST',{pin:value,gross_cents:cartGross(),discount_cents:requestedCents})}});if(!pin)return;state.discountApproval={percent:requested,amountCents:requestedCents,managerPin:pin};renderDiscountState();renderCart();toast('Desconto validado e autorizado para esta venda')}
-function cartPromo(){return state.quote?.key===quoteKey()?state.quote.promo:0}
-function cartTotal(){return Math.max(0,cartGross()-cartPromo()-appliedDiscount())}
-function quoteKey(){return JSON.stringify(state.cart.map(p=>[p.id,p.quantity_milli]))}
-let quoteTimer=null;
-async function refreshQuote(now=false){
-  const key=quoteKey();
-  if(!state.cart.length){state.quote={key,promo:0,lines:{}};return}
-  if(state.quote?.key===key)return;
-  const run=async()=>{
-    try{
-      const data=await api('/api/cart/quote','POST',{items:state.cart.filter(p=>p.quantity_milli>0).map(p=>({product_id:p.id,quantity_milli:p.quantity_milli}))});
-      if(key!==quoteKey())return;
-      state.quote={key,promo:data.promo_discount_cents,lines:Object.fromEntries(data.lines.map(l=>[l.product_id,l]))};
-      renderCart();
-    }catch{/* keep list prices on screen; the sale itself prices authoritatively */}
+function textDialog(title, text, {eyebrow = 'Informação necessária', fieldLabel = 'Informação', placeholder = '', type = 'text', inputMode = '', acceptLabel = 'Confirmar', multiline = false, minLength = 1, maxLength = 120, value = '', validate = null} = {}) {
+  const modal = openModal({title, text, eyebrow});
+  const field = el('label', 'field');
+  const input = document.createElement(multiline ? 'textarea' : 'input');
+  if (!multiline) input.type = type;
+  if (inputMode) input.inputMode = inputMode;
+  input.maxLength = maxLength;
+  input.placeholder = placeholder;
+  input.autocomplete = 'off';
+  input.value = value;
+  field.append(Object.assign(el('span'), {textContent: fieldLabel}), input);
+  modal.body.append(field);
+  modal.action('Cancelar', '', () => modal.close(null));
+  modal.action(acceptLabel, 'primary', async () => {
+    const typed = input.value.trim();
+    if (typed.length < minLength) { input.focus(); throw Error(minLength > 1 ? `Informe ao menos ${minLength} caracteres` : 'Preencha o campo para continuar'); }
+    try { if (validate) await validate(typed); } catch (failure) { input.focus(); input.select?.(); throw failure; }
+    modal.close(typed);
+  });
+  input.focus();
+  input.select?.();
+  return modal.promise;
+}
+function pinDialog(title, text, {acceptLabel = 'Autorizar', validate = null} = {}) {
+  return textDialog(title, text, {eyebrow: 'Autorização do gerente', fieldLabel: 'PIN do gerente', placeholder: 'Digite o PIN', type: 'password', inputMode: 'numeric', acceptLabel, maxLength: 12, validate});
+}
+// Removing or reducing what was already rung up needs a supervisor: PIN for the cashier, audit for everyone.
+async function authorizeRemoval(title, text) {
+  if (role() === 'cashier') {
+    const pin = await pinDialog(title, text, {validate: value => api('/api/cart/items/authorize-remove', 'POST', {manager_pin: value})});
+    return pin !== null;
+  }
+  if (!(await confirmDialog(title.replace(/^Autorizar /, 'Confirmar '), text, 'Confirmar', {danger: true, cancelLabel: 'Manter'}))) return false;
+  await api('/api/cart/items/authorize-remove', 'POST', {manager_pin: ''});
+  return true;
+}
+
+/* ---------- views, status bar ---------- */
+function showView(view) { for (const id of ['pairView', 'loginView', 'appView']) $(id).classList.toggle('hidden', id !== view); }
+// shortText is what narrow monitors show while the state is the normal one.
+function setChip(id, chipState, text, title = '', shortText = '') {
+  const chip = $(id), label = chip.lastElementChild;
+  chip.dataset.state = chipState;
+  label.textContent = text;
+  if (shortText) label.dataset.short = shortText; else delete label.dataset.short;
+  chip.title = title;
+  chip.setAttribute('aria-label', text);
+}
+function connectionLabel(connection) {
+  if (!connection?.paired) return 'Empresa não vinculada';
+  return [connection.tenant_name || 'Empresa', connection.shop_name || 'Loja', connection.terminal_name || 'Caixa'].join(' · ');
+}
+function renderStatus() {
+  const session = state.session;
+  if (!session) return;
+  const connection = session.connection || {}, license = session.license || {}, operator = session.operator, now = Date.now();
+  const indicator = state.indicator = C.syncIndicator(session.sync, now);
+  if (indicator.pending > 0) state.pendingSince ||= now; else state.pendingSince = 0;
+  $('identityPlace').textContent = [connection.shop_name || connection.tenant_name || 'Loja', connection.terminal_name || 'Caixa'].join(' · ');
+  $('identityOperator').textContent = '· ' + (operator ? operator.name : 'Sem operador');
+  $('identityText').title = [connection.tenant_name, connection.shop_name, connection.terminal_name, operator ? `${operator.name} (${roleNames[operator.role] || operator.role})` : ''].filter(Boolean).join(' · ');
+  setChip('netChip', indicator.state === 'online' ? 'ok' : indicator.state === 'offline' ? 'warn' : 'muted', indicator.label, indicator.detail);
+  setChip('queueChip', !indicator.pending ? 'ok' : (indicator.syncProblem || indicator.state === 'offline') ? 'warn' : 'muted', indicator.queueLabel,
+    indicator.pending ? `${indicator.pending} registro(s) aguardando envio ao servidor da empresa.` : 'Nada aguardando envio.');
+  $('reviewChip').classList.toggle('hidden', !indicator.review);
+  setChip('reviewChip', 'warn', indicator.reviewLabel, 'Registros que o servidor separou para revisão do gestor. As vendas seguintes continuam sendo enviadas.');
+  const leaseText = {active: 'Licença ativa', expired: 'Licença vencida', clock_rollback: 'Relógio incorreto', invalid: 'Licença inválida'}[license.state] || 'Licença pendente';
+  setChip('leaseChip', license.can_sell ? 'ok' : 'danger', leaseText, license.reason || '', license.can_sell ? 'Licença' : '');
+  setChip('cashChip', !operator ? 'muted' : session.cash ? 'ok' : 'danger', session.cash ? 'Caixa aberto' : 'Caixa fechado',
+    session.cash ? `Aberto às ${timeText(session.cash.opened_at)} com ${money(session.cash.opening_cents)}` : 'Abra o caixa (F12) para vender.', session.cash ? 'Caixa' : '');
+  const hours = session.hours || {};
+  $('hoursChip').classList.toggle('hidden', !hours.configured || hours.open);
+  setChip('hoursChip', 'warn', 'Fora do horário', 'Fora do horário de funcionamento da empresa. Um caixa já aberto continua ativo.');
+  const release = session.sync?.release;
+  $('releaseChip').classList.toggle('hidden', !release);
+  setChip('releaseChip', 'warn', release ? `Versão ${release.version} disponível` : '', 'Há uma atualização do terminal. Veja em Sistema.');
+  renderPrinterChip();
+  renderScaleChip();
+  $('statusBar').dataset.tone = C.statusTone({loggedIn: !!operator, sells: canSell(operator?.role), canSell: !!license.can_sell,
+    cashOpen: !!session.cash, indicator, pendingForMs: state.pendingSince ? now - state.pendingSince : 0});
+  const label = connectionLabel(connection);
+  $('connectionIdentity').innerHTML = connection.paired
+    ? `<strong>${esc(label)}</strong><small>${esc(indicator.label)} · ${esc(indicator.queueLabel)} · ${esc(leaseText)} · licença •••• ${esc(connection.license_hint || '—')}</small>`
+    : '<strong>Este terminal ainda não está conectado</strong><small>Informe a chave da licença e o código criado no painel da empresa.</small>';
+  const count = session.operators?.length || 0, at = session.sync?.bootstrap_at;
+  $('operatorSyncStatus').textContent = session.paired ? `${count} ${count === 1 ? 'operador disponível' : 'operadores disponíveis'} neste caixa${at ? ' · atualizado em ' + dateTimeText(at) : ''}. Os logins já baixados funcionam sem internet.` : '';
+}
+function renderPrinterChip() {
+  const printer = state.printer;
+  if (!printer) return setChip('printerChip', 'muted', 'Impressora…', 'Consultando a impressora de recibos.');
+  if (!printer.configured) return setChip('printerChip', 'muted', 'Sem impressora', 'Nenhuma impressora de recibos configurada. O comprovante pode ser impresso pelo sistema (F9).');
+  if (printer.uncertain) return setChip('printerChip', 'warn', 'Impressora: verificar', 'A última impressão não foi confirmada. Verifique papel e conexão.');
+  setChip('printerChip', 'ok', 'Impressora ok', `Recibos em ${printer.target}${printer.queued ? ` · ${printer.queued} na fila` : ''}`, 'Impressora');
+}
+function renderScaleChip() {
+  const scale = state.scale;
+  if (scale.awaitingId) return setChip('scaleChip', 'warn', 'Aguardando peso', 'Coloque o produto na balança ou informe o peso com F3.');
+  if (scale.port) return setChip('scaleChip', 'ok', 'Balança ligada', `Balança serial conectada a ${scale.baudRate} bps.`);
+  setChip('scaleChip', 'muted', 'Balança manual', 'Peso digitado ou etiqueta de balança. Toque para conectar uma balança serial.', 'Balança');
+}
+function tickClock() { $('clock').textContent = new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'}); }
+async function loadPrinterStatus() { applyPrinterData(await api('/api/print/settings')); }
+function applyPrinterData(data) {
+  const receipt = (data.settings || []).find(setting => setting.kind === 'receipt');
+  const jobs = (data.jobs || []).filter(job => job.kind === 'receipt');
+  state.printer = {configured: !!receipt, target: receipt?.target || '', uncertain: jobs[0]?.status === 'uncertain', queued: jobs.filter(job => job.status === 'queued').length};
+  renderPrinterChip();
+}
+
+/* ---------- session ---------- */
+async function refreshOperators(silent = false) {
+  if (state.bootstrapRefreshInFlight) return;
+  state.bootstrapRefreshInFlight = true;
+  try {
+    await api('/api/bootstrap', 'POST', {});
+    if (!silent) toast('Operadores e catálogo atualizados');
+  } finally { state.bootstrapRefreshInFlight = false; }
+}
+function renderOperatorSelect() {
+  const select = $('operatorSelect'), operators = state.session.operators || [];
+  const signature = JSON.stringify(operators.map(operator => [operator.id, operator.name, operator.role]));
+  // Rebuild only when the list changed, and never move the name already chosen.
+  if (select.dataset.signature !== signature) {
+    const previous = select.value;
+    select.innerHTML = operators.length ? operators.map(operator => `<option value="${esc(operator.id)}">${esc(operator.name)} · ${esc(roleNames[operator.role] || operator.role)}</option>`).join('') : '<option value="">Nenhum operador com PIN cadastrado</option>';
+    select.value = C.keepSelection(previous, operators.map(operator => operator.id), prefs.get('operator', ''));
+    select.dataset.signature = signature;
+  }
+  select.disabled = !operators.length;
+  $('operatorEmptyHint').classList.toggle('hidden', !!operators.length);
+  $('loginTitle').textContent = state.session.cash ? 'Caixa bloqueado' : 'Pronto para vender';
+}
+// Session answers are applied in the order they were asked for, so a slow poll cannot bring back an older state.
+let sessionAsked = 0, sessionApplied = 0;
+async function fetchSession() {
+  const ticket = ++sessionAsked;
+  const session = await api('/api/session');
+  if (ticket < sessionApplied) return null;
+  sessionApplied = ticket;
+  return session;
+}
+function applySession(session) {
+  state.session = session;
+  state.csrf = session.csrf;
+  $('deviceId').textContent = session.device_id;
+  renderStatus();
+}
+async function loadSession() {
+  const fresh = await fetchSession();
+  if (!fresh) return;
+  applySession(fresh);
+  const session = state.session;
+  if (!session.paired) { showView('pairView'); return; }
+  if (!session.operator) {
+    renderOperatorSelect();
+    const first = $('loginView').classList.contains('hidden');
+    showView('loginView');
+    if (first) (session.operators?.length ? $('operatorPin') : $('refreshBootstrap')).focus();
+    // People can be added in the panel after pairing, but a full bootstrap every poll is wasteful.
+    if (Date.now() - state.lastOperatorsRefreshAt > 300000) {
+      state.lastOperatorsRefreshAt = Date.now();
+      refreshOperators(true).then(async () => { const updated = await fetchSession(); if (!updated) return; applySession(updated); if (!updated.operator) renderOperatorSelect(); }).catch(() => {});
+    }
+    return;
+  }
+  showView('appView');
+  applyRoleUi();
+  renderPaymentMethods();
+  loadCustomers().catch(() => {});
+  loadPrinterStatus().catch(() => {});
+  loadSuspendedCount().catch(() => {});
+  await restoreCart();
+  renderSale();
+  setTab(allowedTab(state.tab));
+  focusHome();
+}
+async function poll() {
+  if (state.session?.operator) {
+    const previousBootstrap = state.session.sync?.bootstrap_at;
+    const session = await fetchSession();
+    if (!session) return;
+    if (!session.operator) { await loadSession(); return; }
+    applySession(session);
+    renderPaymentMethods();
+    renderPanels();
+    renderKeybar();
+    if (session.sync?.bootstrap_at && session.sync.bootstrap_at !== previousBootstrap) {
+      loadCustomers().catch(() => {});
+      await refreshCartProducts();
+    }
+  } else if (state.session?.paired) await loadSession();
+}
+function applyRoleUi() {
+  const current = role(), manager = canManage(current);
+  document.body.dataset.canSell = String(canSell(current));
+  document.querySelector('[data-tab="checkout"]').classList.toggle('hidden', !canSell(current));
+  document.querySelector('[data-tab="stock"]').classList.toggle('hidden', !canAdjustStock(current));
+  document.querySelectorAll('.admin-only').forEach(node => node.classList.toggle('hidden', !manager));
+  $('stockAdjustRow').classList.toggle('hidden', !canAdjustStock(current));
+  $('printerForm').classList.toggle('hidden', !manager);
+  $('flushPrintBtn').classList.toggle('hidden', !canSell(current));
+  $('syncNowBtn').classList.toggle('hidden', !manager);
+  $('exportLink').classList.toggle('hidden', !manager);
+  $('backupBtn').classList.toggle('hidden', !manager);
+}
+function allowedTab(tab) {
+  const current = role();
+  const allowed = {checkout: canSell(current), sales: true, stock: canAdjustStock(current), printers: canManage(current), system: canManage(current)};
+  if (allowed[tab]) return tab;
+  return canSell(current) ? 'checkout' : canAdjustStock(current) ? 'stock' : 'sales';
+}
+function setTab(tab) {
+  if (document.body.classList.contains('focus-mode') && canSell(role())) tab = 'checkout';
+  state.tab = tab;
+  document.body.dataset.tab = tab;
+  document.querySelectorAll('.tab').forEach(button => button.classList.toggle('active', button.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.add('hidden'));
+  $(tab + 'Tab').classList.remove('hidden');
+  const loader = {sales: loadSales, stock: loadStock, printers: loadPrinters, system: async () => { await loadSystem(); await loadBackups(); }}[tab];
+  if (loader) loader().catch(error => toast(error.message, true));
+  renderKeybar();
+  if (tab === 'checkout') focusHome();
+}
+function focusScan() {
+  if (modalStack.length || state.tab !== 'checkout' || !canSell(role())) return;
+  $('productSearch').focus({preventScroll: true});
+}
+function focusPay() {
+  const method = state.pay.method;
+  if (method === 'cash') $('payCash').focus();
+  else if (method === 'split') focusables($('paySplitBox'))[0]?.focus();
+  else $('paymentMethods').focus();
+}
+function focusHome() {
+  if (modalStack.length || $('appView').classList.contains('hidden')) return;
+  if (state.tab === 'checkout' && state.pay.active) focusPay(); else focusScan();
+}
+
+/* ---------- cart ---------- */
+const quoteKey = () => JSON.stringify(state.cart.map(item => [item.id, item.quantity_milli]));
+const quoteValid = () => state.quote?.key === quoteKey();
+const quoteLine = item => (quoteValid() ? state.quote.lines[item.id] : null);
+const lineGross = item => quoteLine(item)?.gross_cents ?? Math.round(item.price_cents * item.quantity_milli / 1000);
+const lineNet = item => lineGross(item) - (quoteLine(item)?.promo_discount_cents || 0);
+const cartGross = () => state.cart.reduce((sum, item) => sum + lineGross(item), 0);
+const cartPromo = () => (quoteValid() ? state.quote.promo : 0);
+const cartBase = () => cartGross() - cartPromo();
+const cartDiscount = () => C.discountCents(state.discount, cartBase());
+const cartTotal = () => Math.max(0, cartBase() - cartDiscount());
+const isOut = product => product.stock_controlled !== false && Number(product.stock_milli) <= 0;
+function stockLimitError(product, quantity) {
+  if (product.stock_controlled === false) return '';
+  const available = Math.max(0, Number(product.stock_milli) || 0);
+  return quantity <= available ? '' : `Estoque insuficiente: ${product.name} tem ${qtyText(available, product.unit)} ${product.unit} disponíveis`;
+}
+let quoteTimer = null;
+async function refreshQuote(force = false) {
+  const key = quoteKey();
+  if (!state.cart.some(item => item.quantity_milli > 0)) { state.quote = {key, promo: 0, lines: {}}; return; }
+  if (!force && state.quote?.key === key) return;
+  const run = async () => {
+    try {
+      const data = await api('/api/cart/quote', 'POST', {items: state.cart.filter(item => item.quantity_milli > 0).map(item => ({product_id: item.id, quantity_milli: item.quantity_milli}))});
+      if (key !== quoteKey()) return;
+      state.quote = {key, promo: data.promo_discount_cents, lines: Object.fromEntries(data.lines.map(line => [line.product_id, line]))};
+      renderSale();
+    } catch { /* list prices stay on screen; the sale itself is priced by the terminal backend */ }
   };
   clearTimeout(quoteTimer);
-  if(now)return run();
-  quoteTimer=setTimeout(run,120);
+  if (force) return run();
+  quoteTimer = setTimeout(run, 100);
 }
-function setPaymentValue(id,cents){const input=$(id);if(input)input.value=Number(cents)>0?(Number(cents)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):''}
-function clearPaymentValues(){for(const id of ['payCash','payPix','payCredit','payDebit','payAccount','payStoreCredit','payOther','paySplitCash','paySplitPix','paySplitCredit','paySplitDebit']){const input=$(id);if(input)input.value=''}}
-function syncSplitValues(){if(state.paymentMethod!=='split')return;for(const [source,target] of [['paySplitCash','payCash'],['paySplitPix','payPix'],['paySplitCredit','payCredit'],['paySplitDebit','payDebit']]){const input=$(source);const targetInput=$(target);if(input&&targetInput)targetInput.value=input.value}}
-function paymentMethodLabel(){if(state.paymentMethod==='cash')return 'Dinheiro';if(state.paymentMethod==='pix')return 'Pix';if(state.paymentMethod==='card_credit')return 'Cartão · Crédito';if(state.paymentMethod==='card_debit')return 'Cartão · Débito';if(state.paymentMethod==='split')return 'Pagamento dividido';if(state.paymentMethod==='other')return state.otherMethod?.name||'Outra forma';if(state.paymentMethod==='credit_account')return 'A prazo (fiado)';if(state.paymentMethod==='store_credit')return 'Crédito na loja';return ''}
-function renderPaymentUI(){const method=state.paymentMethod;const cardMethod=state.cardMethod;document.querySelectorAll('[data-payment-method]').forEach(button=>button.classList.toggle('selected',button.dataset.paymentMethod===(method==='card_credit'||method==='card_debit'?'card':method)&&(method!=='other'||button.dataset.paymentId===state.otherMethod?.id)));document.querySelectorAll('[data-card-method]').forEach(button=>button.classList.toggle('selected',button.dataset.cardMethod===cardMethod));$('cashPaymentPanel')?.classList.toggle('hidden',method!=='cash');$('cardPaymentPanel')?.classList.toggle('hidden',method!=='card'&&method!=='card_credit'&&method!=='card_debit');$('advancedPaymentPanel')?.classList.toggle('hidden',method!=='split');const advanced=$('splitPaymentToggle');if(advanced){advanced.classList.toggle('active',method==='split');advanced.setAttribute('aria-expanded',String(method==='split'));advanced.textContent=method==='split'?'Voltar ao pagamento simples':'Dividir pagamento'}const summary=$('paymentSelectionSummary');if(summary){if(method==='cash'){summary.textContent='Dinheiro selecionado · informe o valor recebido para calcular o troco.';summary.className='payment-selection-summary selected'}else if(method==='pix'){summary.textContent=`Pix selecionado · confirmar ${money(cartTotal())} no aplicativo do cliente.`;summary.className='payment-selection-summary selected'}else if(method==='card'){summary.textContent='Escolha Crédito ou Débito para confirmar a venda.';summary.className='payment-selection-summary pending'}else if(method==='card_credit'||method==='card_debit'){summary.textContent=`${paymentMethodLabel()} selecionado · confirmar ${money(cartTotal())} na maquininha.`;summary.className='payment-selection-summary selected'}else if(method==='other'){summary.textContent=`${state.otherMethod?.name||'Outra forma'} selecionado · ${money(cartTotal())}.`;summary.className='payment-selection-summary selected'}else if(method==='credit_account'||method==='store_credit'){const c=selectedCustomer();summary.textContent=c?(method==='credit_account'?`A prazo para ${c.name} · disponível ${money(c.available_credit_cents)}${cartTotal()>c.available_credit_cents?' · acima do limite exige PIN de gerente':''}`:`Crédito na loja de ${c.name} · saldo ${money(c.store_credit_cents)}`):'Escolha o cliente cadastrado acima.';summary.className='payment-selection-summary '+(c?'selected':'pending')}else if(method==='split'){summary.textContent='Informe os valores combinados. O total precisa fechar a venda.';summary.className='payment-selection-summary pending'}else{summary.textContent='Selecione uma forma de pagamento.';summary.className='payment-selection-summary'}}if(method==='pix')setPaymentValue('payPix',cartTotal());if(method==='credit_account')setPaymentValue('payAccount',cartTotal());if(method==='store_credit')setPaymentValue('payStoreCredit',cartTotal());if(method==='other')setPaymentValue('payOther',cartTotal());if(method==='card_credit'){setPaymentValue('payCredit',cartTotal());setPaymentValue('payDebit',0)}if(method==='card_debit'){setPaymentValue('payDebit',cartTotal());setPaymentValue('payCredit',0)}if(method!=='cash'&&method!=='split')setPaymentValue('payCash',0);renderChange()}
-function selectPaymentMethod(method,other=null){clearPaymentValues();state.cardMethod=null;state.paymentMethod=method;state.otherMethod=method==='other'?other:null;if(method==='other')setPaymentValue('payOther',cartTotal());if(method==='pix')setPaymentValue('payPix',cartTotal());if(method==='credit_account')setPaymentValue('payAccount',cartTotal());if(method==='store_credit')setPaymentValue('payStoreCredit',cartTotal());if(method==='cash'){setPaymentValue('payCash',0);setTimeout(()=>$('payCash')?.focus(),0)}renderPaymentUI()}
-function selectCardMethod(method){clearPaymentValues();state.paymentMethod=method;state.cardMethod=method;setPaymentValue(method==='card_credit'?'payCredit':'payDebit',cartTotal());renderPaymentUI()}
-function toggleSplitPayment(){if(state.paymentMethod==='split'){state.paymentMethod=null;state.cardMethod=null;clearPaymentValues();renderPaymentUI();return}clearPaymentValues();state.paymentMethod='split';state.cardMethod=null;renderPaymentUI();$('paySplitCash')?.focus()}
-function renderCart(){const area=$('cartItems');$('cartCount').textContent=`${state.cart.length} ${state.cart.length===1?'produto':'produtos'}`;area.classList.toggle('empty-state',!state.cart.length);area.innerHTML=state.cart.length?state.cart.map(p=>`<div class="cart-row"><span><strong>${esc(p.name)}</strong><small>${money(p.price_cents)}/${esc(p.unit)}</small>${promoLine(p)}</span><input aria-label="${p.unit==='KG'?'Peso em kg':'Quantidade'} de ${esc(p.name)}" data-qty="${esc(p.id)}" value="${p.quantity_milli?qtyText(p.quantity_milli,p.unit):'0,000'}" placeholder="Peso"><span class="row-total">${money(Math.round(p.price_cents*p.quantity_milli/1000)-(state.quote?.key===quoteKey()?(state.quote.lines[p.id]?.promo_discount_cents||0):0))}</span><button class="remove" title="Remover item" data-remove="${esc(p.id)}">×</button></div>`).join(''):'Adicione produtos para iniciar a venda.';area.querySelectorAll('[data-qty]').forEach(input=>input.onchange=()=>{try{const p=state.cart.find(x=>x.id===input.dataset.qty);const qty=parseQty(input.value);if(qty<=0||(p.unit==='UN'&&qty%1000))throw Error(p.unit==='KG'?'Informe um peso maior que zero':'Quantidade inválida para este produto');const stockError=stockLimitError(p,qty);if(stockError)throw Error(stockError);p.quantity_milli=qty;state.scale.targetId=p.id;state.saleRequest=null;state.discountApproval=null;renderCart()}catch(e){toast(e.message,true);renderCart()}});area.querySelectorAll('[data-remove]').forEach(b=>b.onclick=async()=>{try{let managerPin='';if(state.session?.operator?.role==='cashier'){managerPin=await textDialog('Autorizar remoção do item','A remoção de um item do pedido exige o PIN de um gerente.','Digite o PIN numérico','password',{eyebrow:'Autorização do gerente',fieldLabel:'PIN do gerente',acceptLabel:'Autorizar remoção',icon:'✓'});if(!managerPin)return}await api('/api/cart/items/authorize-remove','POST',{manager_pin:managerPin});state.cart=state.cart.filter(x=>x.id!==b.dataset.remove);if(state.scale.targetId===b.dataset.remove)state.scale.targetId=null;state.saleRequest=null;state.discountApproval=null;renderCart()}catch(e){toast(e.message,true)}});$('cartTotal').textContent=money(cartTotal());const promoTotal=$('cartPromoTotal');if(promoTotal){promoTotal.textContent=cartPromo()?`Promoções: −${money(cartPromo())}`:'';promoTotal.hidden=!cartPromo()}renderDiscountState();renderPaymentUI();refreshQuote()}
-function promoLine(p){const line=state.quote?.key===quoteKey()?state.quote.lines[p.id]:null;return line?.promo_discount_cents?`<small class="promo-tag">🏷 ${esc(line.promotion_label||line.promotion_name)} · −${money(line.promo_discount_cents)}</small>`:''}
-function renderChange(){let paid=0;try{if(state.paymentMethod==='split')syncSplitValues();paid=parseMoney($('payCash').value)+parseMoney($('payPix').value)+parseMoney($('payCredit').value)+parseMoney($('payDebit').value)+parseMoney($('payAccount').value||'')+parseMoney($('payStoreCredit').value||'')+parseMoney($('payOther').value||'')}catch{}const total=cartTotal(),difference=paid-total,change=$('changeText');if(!change)return;if(difference>0){change.textContent='Troco: '+money(difference);change.className='change-positive'}else if(difference<0&&paid>0){change.textContent='Falta: '+money(Math.abs(difference));change.className='change-negative'}else{change.textContent='Troco: '+money(0);change.className=''} }
-function resetCart(){state.cart=[];state.scale.targetId=null;state.saleRequest=null;state.discountApproval=null;state.paymentMethod=null;state.cardMethod=null;for(const id of ['customerName','customerDocument','sellerSelect','customerSelect','payAccount','payStoreCredit','payOther','payCash','payPix','payCredit','payDebit','paySplitCash','paySplitPix','paySplitCredit','paySplitDebit']){const input=$(id);if(input)input.value=''}$('discountInput').value='0';renderCart()}
-async function startNewSale(){if(!state.cart.length){$('productSearch').focus();return}if(!(await confirmDialog('Começar uma nova venda?','Os itens e pagamentos digitados no pedido atual serão removidos.','Nova venda')))return;resetCart();$('productSearch').focus();toast('Nova venda iniciada')}
-function salePayments(){
-  if(state.paymentMethod==='card')throw Error('Escolha Crédito ou Débito');
-  if(state.paymentMethod==='split')syncSplitValues();
-  const payments=[];
-  for(const [id,method] of [['payCash','cash'],['payPix','pix'],['payCredit','card_credit'],['payDebit','card_debit'],['payAccount','credit_account'],['payStoreCredit','store_credit']]){
-    const amount=parseMoney($(id)?.value||'');
-    if(amount)payments.push({method,amount_cents:amount});
+function touch(id) {
+  state.lastItemId = id;
+  state.selectedId = id;
+  state.flashId = id;
+  state.flashAt = Date.now();
+}
+function cartChanged() {
+  state.saleRequest = null;
+  renderSale();
+}
+function persistCart() {
+  try {
+    if (!state.session?.operator) return;
+    if (!state.cart.length) { sessionStorage.removeItem('pdv2.cart'); return; }
+    sessionStorage.setItem('pdv2.cart', JSON.stringify({operator: state.session.operator.id,
+      items: state.cart.map(item => ({id: item.id, quantity_milli: item.quantity_milli})), discount: state.discount, customer: state.customer}));
+  } catch { /* storage unavailable */ }
+}
+// A reload (or a lost session) must not be a way to throw a sale away.
+async function restoreCart() {
+  if (state.cartRestored) return;
+  state.cartRestored = true;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('pdv2.cart') || 'null');
+    if (!saved || saved.operator !== state.session.operator.id || !saved.items?.length || state.cart.length) return;
+    await loadCartSnapshot(saved);
+    toast('Venda em andamento recuperada');
+  } catch { /* nothing to restore */ }
+}
+function normalizeDiscount(discount) {
+  if (discount && typeof discount === 'object' && ['percent', 'value'].includes(discount.mode) && Number(discount.value) > 0) return {mode: discount.mode, value: Number(discount.value)};
+  if (typeof discount === 'string' && discount.trim()) {
+    try { const percent = parsePercent(discount); return percent > 0 ? {mode: 'percent', value: percent} : null; } catch { return null; }
   }
-  const other=parseMoney($('payOther')?.value||'');
-  if(other&&state.otherMethod)payments.push({method:'other',payment_method_id:state.otherMethod.id,amount_cents:other});
-  if(!payments.length)throw Error('Escolha uma forma de pagamento e informe o valor quando necessário');
-  return payments;
+  return null;
 }
-async function submitSale(){
-  await refreshQuote(true);
-  const discount=appliedDiscount();
-  const payments=salePayments();
-  state.saleRequest??=crypto.randomUUID();
-  const request={request_id:state.saleRequest,items:state.cart.map(p=>({product_id:p.id,quantity_milli:p.quantity_milli})),discount_cents:discount,customer_name:$('customerName').value.trim(),customer_document:$('customerDocument').value.trim(),customer_id:$('customerSelect').value||null,seller_id:$('sellerSelect').value||null,payments,manager_pin:state.discountApproval?.managerPin||''};
-  let sale;
-  try{sale=await api('/api/sales','POST',request)}
-  catch(error){
-    if(error.status!==403||!/Limite de fiado/.test(error.message))throw error;
-    const pin=await textDialog('Autorizar venda acima do limite',error.message,'Digite o PIN numérico','password',{eyebrow:'Autorização do gerente',fieldLabel:'PIN do gerente',acceptLabel:'Autorizar',icon:'✓'});
-    if(!pin)throw error;
-    sale=await api('/api/sales','POST',{...request,manager_pin:pin});
+async function fetchProductsByIds(ids) {
+  const found = new Map();
+  for (let start = 0; start < ids.length; start += 60) {
+    const data = await api('/api/products/batch?ids=' + encodeURIComponent(ids.slice(start, start + 60).join(',')));
+    for (const product of data.products || []) found.set(product.id, product);
   }
-  const printPlan=await autoPrintReceipt(sale);
-  toast(`Venda concluída: ${money(sale.total_cents)} · Troco ${money(sale.change_cents)}`);
-  resetCart();
-  await loadSession();
-  return {sale,printPlan};
+  return found;
 }
-function checkoutConfirmDialog(){
-  if(activeConfirm)activeConfirm(false);
-  return new Promise(resolve=>{
-    const previous=document.activeElement;
-    const home=$('checkoutDetailsHome');
-    const backdrop=document.createElement('div');backdrop.className='confirm-backdrop checkout-confirm-backdrop';
-    const dialog=document.createElement('section');dialog.className='confirm-dialog checkout-confirm-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');
-    const headingBlock=document.createElement('div');headingBlock.className='checkout-confirm-heading';
-    const icon=document.createElement('div');icon.className='confirm-icon checkout-confirm-icon';icon.setAttribute('aria-hidden','true');icon.textContent='✓';
-    const copy=document.createElement('div');copy.className='confirm-copy';
-    const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent='Conferência da venda';
-    const heading=document.createElement('h2');heading.textContent='Confira antes de confirmar';
-    const message=document.createElement('p');message.textContent='Revise o cliente, o documento e a forma de pagamento. A venda só será registrada depois da confirmação.';
-    copy.append(eyebrow,heading,message);headingBlock.append(icon,copy);
-    const total=document.createElement('div');total.className='checkout-confirm-total';total.innerHTML=`<span>Total da venda</span><strong>${money(cartTotal())}</strong>`;
-    const body=document.createElement('div');body.className='checkout-modal-body';
-    const error=document.createElement('small');error.className='confirm-error';error.setAttribute('role','alert');
-    const actions=document.createElement('div');actions.className='confirm-actions checkout-confirm-actions';
-    const cancel=document.createElement('button');cancel.type='button';cancel.className='secondary';cancel.textContent='Voltar e editar';
-    const accept=document.createElement('button');accept.type='button';accept.className='primary confirm-accept';accept.textContent='Confirmar venda';
-    actions.append(cancel,accept);dialog.append(headingBlock,total,body,error,actions);backdrop.append(dialog);document.body.append(backdrop);
-    if(home)while(home.firstChild)body.append(home.firstChild);
-    let settled=false,submitting=false;
-    const moveBack=()=>{if(home)while(body.firstChild)home.append(body.firstChild)};
-    const finish=value=>{if(settled)return;settled=true;document.removeEventListener('keydown',onKey);moveBack();backdrop.remove();activeConfirm=null;previous?.focus?.();resolve(value)};
-    const onKey=event=>{
-      if(event.key==='Escape'){event.preventDefault();if(!submitting)finish(null);return}
-      if(event.key!=='Tab')return;
-      const focusables=[...dialog.querySelectorAll('button,input,textarea,select')].filter(node=>!node.disabled&&!node.hidden&&node.offsetParent!==null);
-      if(!focusables.length)return;
-      if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}
-      else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}
-    };
-    const submit=async()=>{
-      if(submitting)return;
-      submitting=true;accept.disabled=true;cancel.disabled=true;
-      error.textContent='';error.classList.remove('show');
-      try{const result=await submitSale();finish(result)}catch(errorValue){submitting=false;accept.disabled=false;cancel.disabled=false;error.textContent=errorValue?.message||'Não foi possível concluir a venda';error.classList.add('show');const first=dialog.querySelector('[data-payment-method],#payCash');first?.focus()}
-    };
-    activeConfirm=finish;document.addEventListener('keydown',onKey);backdrop.addEventListener('click',event=>{if(event.target===backdrop&&!submitting)finish(null)});cancel.addEventListener('click',()=>finish(null));accept.addEventListener('click',submit);
-    dialog.querySelector('[data-payment-method]')?.focus();
+async function loadCartSnapshot(snapshot) {
+  const wanted = (snapshot.items || []).map(item => ({id: String(item.id || item.product_id || ''), quantity_milli: Number(item.quantity_milli)})).filter(item => item.id && item.quantity_milli > 0);
+  const fresh = await fetchProductsByIds(wanted.map(item => item.id));
+  const cart = wanted.filter(item => fresh.has(item.id)).map(item => ({...fresh.get(item.id), quantity_milli: item.quantity_milli}));
+  state.cart = cart;
+  state.discount = normalizeDiscount(snapshot.discount);
+  state.customer = {...emptyCustomer(), ...(snapshot.customer && typeof snapshot.customer === 'object' ? snapshot.customer : {name: String(snapshot.customer || '')})};
+  state.lastItemId = state.selectedId = cart.at(-1)?.id || null;
+  state.quote = null;
+  state.done = null;
+  cartChanged();
+  if (cart.length < wanted.length) toast(`${wanted.length - cart.length} item(ns) saíram do catálogo e foram retirados da venda`, true);
+}
+// Prices and stock on screen follow the catalog after each bootstrap instead of the copy taken at scan time.
+async function refreshCartProducts() {
+  if (!state.cart.length) return;
+  try {
+    const fresh = await fetchProductsByIds(state.cart.map(item => item.id));
+    for (const item of state.cart) if (fresh.has(item.id)) Object.assign(item, fresh.get(item.id), {quantity_milli: item.quantity_milli});
+    state.quote = null;
+    renderSale();
+  } catch { /* keep what is on screen */ }
+}
+async function addProduct(product, quantity = null) {
+  if (isOut(product)) throw Error(`${product.name} está sem estoque neste terminal`);
+  if (state.done) state.done = null;
+  if (state.pay.active) cancelPayment();
+  if (quantity === null && state.pendingQty) quantity = state.pendingQty;
+  state.pendingQty = null;
+  renderPendingQty();
+  const existing = state.cart.find(item => item.id === product.id);
+  if (product.unit === 'KG' && quantity === null) {
+    if (state.scale.port) {
+      // The line waits for the scale; nothing else can receive that weight.
+      if (existing) Object.assign(existing, product, {quantity_milli: existing.quantity_milli}); else state.cart.push({...product, quantity_milli: 0});
+      state.scale.awaitingId = product.id;
+      state.scale.gate.reset();
+      touch(product.id);
+      cartChanged();
+      scanStatus('', `Aguardando peso de ${product.name} · coloque o produto na balança`);
+      return;
+    }
+    const raw = await textDialog('Informar peso do produto', `${product.name} é vendido por quilo. Digite o peso mostrado na balança.`, {eyebrow: 'Venda por peso', fieldLabel: 'Peso (kg)', placeholder: 'Ex.: 0,350', inputMode: 'decimal', acceptLabel: 'Lançar',
+      validate: async value => { const parsed = parseQty(value); if (parsed <= 0) throw Error('Informe um peso maior que zero'); if (parsed > 1000000) throw Error('Peso acima do limite permitido'); }});
+    if (raw === null) return;
+    quantity = parseQty(raw);
+  }
+  if (quantity === null) quantity = 1000;
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) throw Error('Quantidade inválida');
+  if (product.unit === 'UN' && quantity % 1000) throw Error(`${product.name} é vendido por unidade; use quantidade inteira`);
+  const total = (existing?.quantity_milli || 0) + quantity;
+  const stockError = stockLimitError(product, total);
+  if (stockError) throw Error(stockError);
+  if (existing) Object.assign(existing, product, {quantity_milli: total}); else state.cart.push({...product, quantity_milli: quantity});
+  if (state.scale.awaitingId === product.id) state.scale.awaitingId = null;
+  touch(product.id);
+  cartChanged();
+  beep('ok');
+  focusScan();
+}
+function moveSelection(step) {
+  if (!state.cart.length) return;
+  const index = state.cart.findIndex(item => item.id === state.selectedId);
+  const next = Math.max(0, Math.min(state.cart.length - 1, (index < 0 ? state.cart.length - 1 : index) + step));
+  state.selectedId = state.cart[next].id;
+  renderCart();
+}
+async function changeQuantity(id = state.selectedId || state.lastItemId) {
+  const item = state.cart.find(row => row.id === id);
+  if (!item) return;
+  const byWeight = item.unit === 'KG';
+  const raw = await textDialog(byWeight ? 'Peso do item' : 'Quantidade do item', item.name, {eyebrow: 'Quantidade · F3', fieldLabel: byWeight ? 'Peso (kg)' : `Quantidade (${item.unit})`,
+    placeholder: byWeight ? 'Ex.: 0,350' : 'Ex.: 3', inputMode: 'decimal', acceptLabel: 'Aplicar', value: item.quantity_milli ? qtyText(item.quantity_milli, item.unit) : '',
+    validate: async value => {
+      const parsed = parseQty(value);
+      if (parsed <= 0) throw Error(byWeight ? 'Informe um peso maior que zero' : 'Informe uma quantidade maior que zero. Para retirar o item, use F8.');
+      if (item.unit === 'UN' && parsed % 1000) throw Error('Este produto aceita somente quantidade inteira');
+      const stockError = stockLimitError(item, parsed);
+      if (stockError) throw Error(stockError);
+    }});
+  if (raw === null) return;
+  const quantity = parseQty(raw);
+  if (quantity < item.quantity_milli && !(await authorizeRemoval('Autorizar redução de quantidade', `${item.name}: de ${qtyText(item.quantity_milli, item.unit)} para ${qtyText(quantity, item.unit)} ${item.unit}.`))) return;
+  item.quantity_milli = quantity;
+  if (state.scale.awaitingId === item.id) state.scale.awaitingId = null;
+  touch(item.id);
+  cartChanged();
+  focusHome();
+}
+async function removeItem(id = state.selectedId || state.lastItemId) {
+  const item = state.cart.find(row => row.id === id);
+  if (!item) return;
+  if (item.quantity_milli > 0 && !(await authorizeRemoval('Autorizar cancelamento do item', `${item.name} · ${qtyText(item.quantity_milli, item.unit)} ${item.unit} · ${money(lineNet(item))} sai da venda.`))) return;
+  const index = state.cart.indexOf(item);
+  state.cart.splice(index, 1);
+  if (state.scale.awaitingId === item.id) state.scale.awaitingId = null;
+  state.selectedId = state.cart[Math.min(index, state.cart.length - 1)]?.id || null;
+  if (state.lastItemId === item.id) state.lastItemId = state.cart.at(-1)?.id || null;
+  if (state.pay.active && !state.cart.length) cancelPayment();
+  cartChanged();
+  focusHome();
+}
+function clearLocalSale() {
+  state.cart = [];
+  state.selectedId = state.lastItemId = null;
+  state.discount = null;
+  state.customer = emptyCustomer();
+  state.pay = {active: false, method: null, other: null};
+  state.pendingQty = null;
+  state.scale.awaitingId = null;
+  state.saleRequest = null;
+  state.quote = null;
+  for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit', 'productSearch']) $(id).value = '';
+  payError('');
+  renderPendingQty();
+}
+function resetSale({keepDone = false} = {}) {
+  clearLocalSale();
+  if (!keepDone) state.done = null;
+  renderSale();
+  focusScan();
+}
+async function discardSale() {
+  if (!state.cart.length) { resetSale(); return; }
+  if (!(await authorizeRemoval('Autorizar cancelamento da venda', `A venda atual, com ${state.cart.length} item(ns) e total de ${money(cartTotal())}, será descartada.`))) return;
+  resetSale();
+  toast('Venda cancelada');
+}
+
+/* ---------- sale rendering ---------- */
+function promoTag(item) {
+  const line = quoteLine(item);
+  return line?.promo_discount_cents ? `<span class="promo-tag">${ico('tag')}${esc(line.promotion_label || line.promotion_name)} · −${money(line.promo_discount_cents)}</span>` : '';
+}
+function renderCart() {
+  const list = $('cartItems');
+  if (!state.cart.length) {
+    list.innerHTML = `<div class="items-empty">${state.done ? 'Venda concluída. Leia o primeiro item da próxima venda.' : 'Nenhum item lançado. Leia o código de barras ou tecle F2 para buscar no catálogo.'}</div>`;
+  } else {
+    const flashAge = Date.now() - state.flashAt;
+    list.innerHTML = state.cart.map((item, index) => {
+      const selected = item.id === state.selectedId, waiting = item.quantity_milli <= 0;
+      const flash = item.id === state.flashId && flashAge < 1500 ? ` flash" style="animation-delay:-${flashAge}ms` : '';
+      const code = item.barcode || item.sku || '';
+      return `<div class="item-row${selected ? ' selected' : ''}${waiting ? ' waiting' : ''}${flash}" role="option" aria-selected="${selected}" data-id="${esc(item.id)}">
+        <span class="ir-n">${index + 1}</span>
+        <span class="ir-name"><strong>${esc(item.name)}</strong><small>${money(item.price_cents)}/${esc(item.unit)}${code ? ' · ' + esc(code) : ''} ${promoTag(item)}</small></span>
+        <button type="button" class="ir-qty" data-qty="${esc(item.id)}" title="Alterar quantidade (F3)">${waiting ? 'Aguardando peso' : `${qtyText(item.quantity_milli, item.unit)} ${esc(item.unit)}`}</button>
+        <span class="ir-total">${money(lineNet(item))}</span>
+        <button type="button" class="ir-remove" data-remove="${esc(item.id)}" title="Cancelar item (F8)" aria-label="Cancelar item ${esc(item.name)}">${ico('x')}</button>
+      </div>`;
+    }).join('');
+    list.querySelector('.item-row.selected')?.scrollIntoView({block: 'nearest'});
+  }
+  const last = state.cart.find(item => item.id === state.lastItemId), box = $('lastItem');
+  if (!last) {
+    box.className = 'last-item empty';
+    box.innerHTML = `<span class="li-kicker">Último item</span><span class="li-name">${state.done ? 'Aguardando a próxima venda' : 'Aguardando leitura'}</span><span class="li-qty">Dica: digite 3*código para lançar 3 unidades de uma vez.</span>`;
+  } else {
+    box.className = 'last-item';
+    box.innerHTML = `<span class="li-kicker">Último item</span><span class="li-name">${esc(last.name)}</span>
+      <div class="li-row"><span class="li-qty">${last.quantity_milli > 0 ? `${qtyText(last.quantity_milli, last.unit)} ${esc(last.unit)} × ${money(last.price_cents)}` : 'Aguardando peso da balança'} ${promoTag(last)}</span><strong class="li-total">${money(lineNet(last))}</strong></div>`;
+  }
+}
+function discountLabel() {
+  const discount = state.discount;
+  if (!discount) return '';
+  return discount.mode === 'percent' ? discount.value.toLocaleString('pt-BR', {maximumFractionDigits: 2}) + '%' : 'em valor';
+}
+function customerSummary() {
+  const customer = state.customer, registered = state.customers.find(row => row.id === customer.id);
+  const seller = (state.session?.operators || []).find(operator => operator.id === customer.sellerId);
+  return [registered ? registered.name : customer.name, customer.document ? 'CPF/CNPJ ' + documentText(customer.document) : '', seller ? 'Vendedor ' + seller.name : ''].filter(Boolean).join(' · ');
+}
+function renderTotals() {
+  const total = cartTotal(), text = moneyPlain(total), node = $('cartTotal');
+  node.innerHTML = `<span class="cur">R$</span>${text}`;
+  node.dataset.len = text.length >= 9 ? 'long' : '';
+  const count = state.cart.length;
+  $('cartCount').textContent = count ? `${count} ${count === 1 ? 'item' : 'itens'}` : 'Nenhum item';
+  const promo = cartPromo(), discount = cartDiscount(), parts = [];
+  if (promo || discount) parts.push(`<span>Subtotal ${money(cartGross())}</span>`);
+  if (promo) parts.push(`<span class="saving">${ico('tag')} Economia nas promoções −${money(promo)}</span>`);
+  if (discount) parts.push(`<span class="saving">Desconto ${esc(discountLabel())} −${money(discount)}${C.discountNeedsPin(role(), discount, cartBase()) ? ' ' + ico('lock') : ''}</span>`);
+  const customer = customerSummary();
+  if (customer) parts.push(`<span class="customer">${ico('user')} ${esc(customer)}</span>`);
+  $('totalsMeta').innerHTML = parts.join('');
+}
+function payBlockReason() {
+  const session = state.session;
+  if (!canSell(role())) return 'Seu perfil não realiza vendas';
+  if (!session.license?.can_sell) return session.license?.reason || 'Licença indisponível';
+  if (!session.cash) return 'Abra o caixa antes de vender (F12)';
+  if (!state.cart.length) return 'Nenhum item na venda';
+  const waiting = state.cart.find(item => item.quantity_milli <= 0);
+  return waiting ? `Informe o peso de ${waiting.name} (F3)` : '';
+}
+function renderPaymentMethods() {
+  const options = C.paymentOptions(state.session?.payment_methods), signature = JSON.stringify(options);
+  if (signature !== state.payOptionsSig) {
+    state.payOptionsSig = signature;
+    state.payOptions = options;
+    $('paymentMethods').innerHTML = options.map((option, index) => `<button type="button" class="pay-method" data-pay="${index}" title="${esc(option.label)}">${option.key ? `<kbd>${option.key}</kbd>` : ''}<span>${esc(option.short || option.label)}</span></button>`).join('')
+      + '<button type="button" class="pay-method" data-pay="split" title="Dividir o pagamento em mais de uma forma"><kbd>0</kbd><span>Dividir</span></button>';
+    const enabled = method => options.some(option => option.method === method);
+    for (const [id, method] of [['paySplitCash', 'cash'], ['paySplitPix', 'pix'], ['paySplitDebit', 'card_debit'], ['paySplitCredit', 'card_credit']]) $(id).closest('.field').classList.toggle('hidden', !enabled(method));
+  }
+  const {method, other} = state.pay;
+  if (method && method !== 'split' && !options.some(option => option.method === method && (method !== 'other' || option.id === other?.id))) state.pay = {active: state.pay.active, method: null, other: null};
+}
+function paymentState() {
+  const total = cartTotal(), method = state.pay.method;
+  try {
+    if (method === 'cash') {
+      const raw = $('payCash').value.trim();
+      return raw ? {paid: parseMoney(raw), change: parseMoney(raw) - total} : {paid: total, change: 0};
+    }
+    if (method === 'split') {
+      const parts = [['paySplitCash', 'cash'], ['paySplitPix', 'pix'], ['paySplitDebit', 'card_debit'], ['paySplitCredit', 'card_credit']]
+        .map(([id, kind]) => ({method: kind, amount_cents: parseMoney($(id).value)})).filter(part => part.amount_cents > 0);
+      const paid = parts.reduce((sum, part) => sum + part.amount_cents, 0);
+      return {paid, change: paid - total, parts, cash: parts.find(part => part.method === 'cash')?.amount_cents || 0};
+    }
+  } catch (error) { return {paid: 0, change: 0, error: error.message}; }
+  return {paid: method ? total : 0, change: 0};
+}
+function buildPayments() {
+  const total = cartTotal(), method = state.pay.method, current = paymentState();
+  if (!method) throw Error('Escolha a forma de pagamento');
+  if (current.error) throw Error(current.error);
+  if (method === 'cash') {
+    if (current.change < 0) throw Error(`Falta ${money(-current.change)} para fechar a venda`);
+    return [{method: 'cash', amount_cents: current.paid}];
+  }
+  if (method === 'split') {
+    if (!current.parts.length) throw Error('Informe os valores do pagamento dividido');
+    if (current.change < 0) throw Error(`Falta ${money(-current.change)} para fechar a venda`);
+    if (current.change > current.cash) throw Error('O troco só pode sair do valor em dinheiro');
+    return current.parts;
+  }
+  if (method === 'other') return [{method: 'other', payment_method_id: state.pay.other.id, amount_cents: total}];
+  return [{method, amount_cents: total}];
+}
+function payError(message) {
+  const box = $('payError');
+  box.textContent = message || '';
+  box.classList.toggle('show', !!message);
+  if (message) beep('error');
+}
+function renderPay() {
+  const {active, method, other} = state.pay, total = cartTotal(), options = state.payOptions;
+  $('paymentMethods').querySelectorAll('[data-pay]').forEach(button => {
+    const option = button.dataset.pay === 'split' ? {method: 'split'} : options[Number(button.dataset.pay)];
+    button.classList.toggle('selected', active && !!method && option?.method === method && (method !== 'other' || option.id === other?.id));
+  });
+  $('payHint').textContent = !active ? 'F10 para pagar' : method ? 'Enter confirma · Esc volta' : 'Escolha a forma pelo número';
+  $('payCashBox').classList.toggle('hidden', !(active && method === 'cash'));
+  $('paySplitBox').classList.toggle('hidden', !(active && method === 'split'));
+  const info = $('payInfo'), customer = state.customers.find(row => row.id === state.customer.id);
+  let text, kind = 'ready';
+  if (!active) { text = state.cart.length ? 'Tecle F10 ou toque na forma de pagamento.' : 'Lance os itens e tecle F10 para receber.'; kind = ''; }
+  else if (!method) { text = 'Escolha a forma de pagamento.'; kind = 'pending'; }
+  else if (method === 'cash') text = '';
+  else if (method === 'pix') text = `Confira o recebimento de ${money(total)} no Pix e tecle Enter.`;
+  else if (method === 'card_debit' || method === 'card_credit') text = `Passe ${money(total)} na maquininha (${method === 'card_debit' ? 'débito' : 'crédito'}) e tecle Enter.`;
+  else if (method === 'other') text = `${other?.name || 'Outra forma'}: ${money(total)}. Tecle Enter para confirmar.`;
+  else if (method === 'split') text = '';
+  else if (!customer) { text = 'Escolha o cliente cadastrado (F4) para esta forma.'; kind = 'pending'; }
+  else if (method === 'credit_account') { const over = total > customer.available_credit_cents; text = `A prazo para ${customer.name} · disponível ${money(customer.available_credit_cents)}${over ? ' · acima do limite: pede o PIN do gerente' : ''}`; if (over) kind = 'pending'; }
+  else { const short = total > customer.store_credit_cents; text = `Crédito na loja de ${customer.name} · saldo ${money(customer.store_credit_cents)}${short ? ' · saldo insuficiente' : ''}`; if (short) kind = 'pending'; }
+  info.textContent = text;
+  info.className = 'pay-info ' + kind + (text ? '' : ' hidden');
+  const current = paymentState(), change = $('changeBlock');
+  const shown = active && (method === 'cash' || method === 'split') ? current.change : 0;
+  $('changeLabel').textContent = shown < 0 ? 'Falta' : 'Troco';
+  $('changeValue').textContent = money(Math.abs(shown));
+  change.className = 'change-block' + (shown > 0 ? ' positive' : shown < 0 ? ' negative' : '');
+  const button = $('sellBtn'), blocked = payBlockReason();
+  const label = state.submitting ? 'Registrando a venda…' : active ? (method ? 'Confirmar venda <kbd>Enter</kbd>' : 'Escolha a forma de pagamento') : 'Pagar <kbd>F10</kbd>';
+  if (button.dataset.label !== label) { button.innerHTML = label; button.dataset.label = label; }
+  button.disabled = state.submitting || (active ? !method : !!blocked);
+  button.title = !active && blocked ? blocked : '';
+}
+function renderDone() {
+  const done = state.done;
+  if (state.doneRendered === done.stamp) return;
+  state.doneRendered = done.stamp;
+  $('donePanel').innerHTML = `<span class="done-mark">${ico('check')}</span><h2>Venda concluída</h2>
+    <span class="done-label">Troco</span><strong class="done-change">${money(done.sale.change_cents)}</strong>
+    <span class="done-meta">Total ${money(done.sale.total_cents)} · ${esc(done.paymentsText)}</span>
+    <span class="done-print">${esc(done.printStatus)}</span>
+    <div class="done-actions"><button type="button" class="btn" data-action="reprint">Comprovante <kbd>F9</kbd></button><button type="button" class="btn primary" data-done-dismiss>Nova venda <kbd>Enter</kbd></button></div>`;
+}
+function renderPanels() {
+  const session = state.session;
+  if (!session?.operator) return;
+  let blocked = null;
+  if (!session.license?.can_sell) blocked = {title: 'Vendas bloqueadas', text: session.license?.reason || 'Licença indisponível. Conecte o terminal à internet para renovar.'};
+  else if (!session.cash && canSell(role())) blocked = {title: 'Caixa fechado', text: 'Informe o dinheiro em espécie da gaveta para abrir o caixa e começar a vender.', open: true};
+  const signature = JSON.stringify(blocked);
+  const panel = $('blockedPanel');
+  panel.classList.toggle('hidden', !blocked);
+  if (blocked && panel.dataset.signature !== signature) {
+    panel.dataset.signature = signature;
+    panel.innerHTML = `<h2>${esc(blocked.title)}</h2><p>${esc(blocked.text)}</p>${blocked.open ? '<button type="button" class="btn primary big" data-action="closeCash">Abrir caixa <kbd>F12</kbd></button>' : ''}`;
+  }
+  const done = !blocked && state.done;
+  $('donePanel').classList.toggle('hidden', !done);
+  if (done) renderDone(); else state.doneRendered = null;
+  $('payPanel').classList.toggle('hidden', !!blocked || !!done);
+  renderPay();
+}
+function renderPendingQty() {
+  const badge = $('pendingQtyBadge');
+  badge.classList.toggle('hidden', !state.pendingQty);
+  badge.textContent = state.pendingQty ? `${qtyText(state.pendingQty)} ×` : '';
+}
+function renderSale() {
+  renderCart();
+  renderTotals();
+  renderPanels();
+  renderKeybar();
+  renderScaleChip();
+  persistCart();
+  refreshQuote();
+}
+
+/* ---------- reading products ---------- */
+function scanStatus(kind, text) {
+  const box = $('scanStatus');
+  box.dataset.kind = kind;
+  box.lastElementChild.textContent = text;
+}
+function scanError(message) {
+  scanStatus('error', message);
+  beep('error');
+  const input = $('productSearch');
+  if (document.activeElement === input) input.select();
+}
+async function lookupCode(code) {
+  const result = await api('/api/products?q=' + encodeURIComponent(code));
+  const wanted = code.toLowerCase();
+  const exact = (result.products || []).find(product => [product.barcode, product.sku, product.id].some(value => value != null && String(value).toLowerCase() === wanted));
+  if (exact) return {product: exact, matches: []};
+  const label = C.scaleLabel(code);
+  if (label) {
+    // Resolved by the terminal backend over the whole catalog, not over the first page of products.
+    try {
+      const found = await api('/api/products/scale/' + label.scaleCode);
+      const quantity = C.scaleLabelQuantity(label, found.product, state.scale.barcodeMode);
+      if (quantity) return {product: found.product, quantity, label: true, matches: []};
+    } catch (error) { if (error.status !== 404) throw error; }
+  }
+  return {product: null, matches: /^\d{8,14}$/.test(code) ? [] : result.products || []};
+}
+async function processScan() {
+  const input = $('productSearch'), raw = input.value.trim();
+  if (!raw) { if (state.done) dismissDone(); return; }
+  if (state.scanBusy) return;
+  state.scanBusy = true;
+  try {
+    const parsed = C.parseScanInput(raw);
+    if (parsed.quantityMilli !== null && !parsed.code) {
+      state.pendingQty = parsed.quantityMilli;
+      input.value = '';
+      renderPendingQty();
+      scanStatus('', `Próxima leitura entra com quantidade ${qtyText(parsed.quantityMilli)}`);
+      return;
+    }
+    const found = await lookupCode(parsed.code);
+    if (found.product) {
+      input.value = '';
+      await addProduct(found.product, parsed.quantityMilli ?? found.quantity ?? null);
+      scanStatus('ok', found.label ? `${found.product.name} · etiqueta da balança lida` : `${found.product.name} lançado`);
+    } else if (found.matches.length) {
+      input.value = '';
+      scanStatus('', `Vários produtos para “${parsed.code}” · escolha no catálogo`);
+      await openSearch(parsed.code, parsed.quantityMilli);
+    } else scanError(`Código não encontrado: ${parsed.code}`);
+  } catch (error) { scanError(error.message); } finally { state.scanBusy = false; }
+}
+function groupProducts(products) {
+  const groups = {}, singles = [];
+  for (const product of products) { if (product.group_id) (groups[product.group_id] ||= []).push(product); else singles.push(product); }
+  return [...singles, ...Object.values(groups).map(list => (list.length === 1 ? list[0] : {...list[0], __group: list}))]
+    .sort((a, b) => String(a.__group ? a.group_name : a.name).localeCompare(String(b.__group ? b.group_name : b.name), 'pt-BR'));
+}
+function productImageUrl(product) {
+  const source = String(product?.image_url || '');
+  if (!source) return '/static/product-images/generic.svg';
+  return source.startsWith('/assets/product-images/') ? source.replace('/assets/product-images/', '/static/product-images/') : source;
+}
+function productCard(product, index, active) {
+  const image = `<img class="product-image" src="${esc(productImageUrl(product))}" alt="" loading="lazy" onerror="this.onerror=null;this.src='/static/product-images/generic.svg'">`;
+  if (product.__group) {
+    const prices = product.__group.map(variant => Number(variant.price_cents)), low = Math.min(...prices), high = Math.max(...prices);
+    return `<button type="button" class="product${active ? ' active' : ''}" role="option" aria-selected="${active}" data-index="${index}">${image}<span><span class="p-name">${esc(product.group_name || product.name)}</span><span class="p-meta">${product.__group.length} variações · escolha a grade</span><span class="p-price">${low === high ? money(low) : `${money(low)} a ${money(high)}`}</span></span></button>`;
+  }
+  const out = isOut(product), code = product.barcode ? `EAN ${product.barcode}` : product.sku || '';
+  const stock = out ? 'Sem estoque' : product.stock_controlled === false ? 'Venda liberada' : `${qtyText(product.stock_milli, product.unit)} ${product.unit} em estoque`;
+  return `<button type="button" class="product${active ? ' active' : ''}${out ? ' out' : ''}" role="option" aria-selected="${active}" data-index="${index}">${image}<span><span class="p-name">${esc(product.name)}</span><span class="p-meta">${esc(code || stock)}</span><span class="p-price">${money(product.price_cents)}/${esc(product.unit)}${code ? ` <small>· ${esc(stock)}</small>` : ''}</span></span></button>`;
+}
+// Catalog overlay: typing filters, arrows choose, Enter adds and closes; a tap adds and keeps it open.
+async function openSearch(query = '', quantity = null) {
+  const modal = openModal({title: 'Catálogo de produtos', eyebrow: 'Buscar · F2', className: 'xl catalog', onKey: (event, self) => {
+    if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp'].includes(event.key)) {
+      event.preventDefault();
+      const step = {ArrowDown: 1, ArrowUp: -1, PageDown: 6, PageUp: -6}[event.key];
+      setActive(Math.max(0, Math.min(items.length - 1, active + step)));
+      return true;
+    }
+    if (event.key === 'Enter' && (event.target === input || event.target.classList?.contains('product'))) {
+      event.preventDefault();
+      self.run(() => pick(active, false));
+      return true;
+    }
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey && !event.target.matches?.('input')) input.focus();
+    return false;
+  }});
+  const tools = el('div', 'catalog-tools', `<label class="search-field">${ico('search')}<input placeholder="Digite nome, SKU ou código de barras" autocomplete="off" spellcheck="false" aria-label="Buscar produto"></label><div class="chips-row" role="group" aria-label="Categorias"></div>`);
+  const input = tools.querySelector('input'), chips = tools.querySelector('.chips-row'), note = el('p', 'hint'), grid = el('div', 'products-grid');
+  grid.setAttribute('role', 'listbox');
+  modal.body.append(tools, note, grid);
+  modal.action('Fechar <kbd>Esc</kbd>', '', () => modal.close());
+  let items = [], active = 0, category = '', sequence = 0, timer = null;
+  input.value = query;
+  const setActive = index => {
+    active = index;
+    grid.querySelectorAll('.product').forEach((card, position) => { card.classList.toggle('active', position === active); card.setAttribute('aria-selected', position === active); });
+    grid.querySelector('.product.active')?.scrollIntoView({block: 'nearest'});
+  };
+  const render = () => {
+    chips.innerHTML = ['', ...state.categories].map(name => `<button type="button" class="cat-chip${name === category ? ' active' : ''}" data-category="${esc(name)}">${esc(name || 'Todos')}</button>`).join('');
+    const term = input.value.trim();
+    grid.innerHTML = items.length ? items.map((product, index) => productCard(product, index, index === active)).join('')
+      : `<div class="pick-empty">${term ? `Nada encontrado para “${esc(term)}”. Confira o nome ou o código.` : 'Nenhum produto neste terminal. Use Menu › Atualizar catálogo.'}</div>`;
+  };
+  const load = async () => {
+    const mine = ++sequence;
+    const data = await api('/api/products?q=' + encodeURIComponent(input.value.trim()) + (category ? '&category=' + encodeURIComponent(category) : ''));
+    if (mine !== sequence) return;
+    state.categories = data.categories || [];
+    items = groupProducts(data.products || []);
+    active = 0;
+    note.textContent = (data.products || []).length >= 150 ? 'Mostrando os 150 primeiros. Digite parte do nome ou do código para refinar.' : items.length ? 'Setas escolhem · Enter lança e fecha · toque lança e mantém aberto' : '';
+    render();
+  };
+  const pick = async (index, keepOpen) => {
+    const chosen = items[index];
+    if (!chosen) return;
+    const product = chosen.__group ? await variantPicker(chosen.__group) : chosen;
+    if (!product) return;
+    if (isOut(product)) throw Error(`${product.name} está sem estoque neste terminal`);
+    if (!keepOpen) modal.close();
+    try {
+      await addProduct(product, quantity);
+      quantity = null;
+      if (keepOpen) note.textContent = `${product.name} lançado · ${state.cart.length} item(ns) na venda`;
+      else scanStatus('ok', `${product.name} lançado`);
+    } catch (error) { if (keepOpen) throw error; scanError(error.message); }
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => load().catch(error => modal.error(error.message)), 150); });
+  chips.addEventListener('click', event => { const chip = event.target.closest('[data-category]'); if (!chip) return; category = chip.dataset.category; load().catch(error => modal.error(error.message)); input.focus(); });
+  grid.addEventListener('click', event => { const card = event.target.closest('.product'); if (!card) return; setActive(Number(card.dataset.index)); modal.run(() => pick(active, true)); });
+  input.focus();
+  input.select();
+  await load().catch(error => modal.error(error.message));
+  await modal.promise;
+  focusHome();
+}
+function variantPicker(variants) {
+  const sorted = [...variants].sort((a, b) => String(a.variant || a.name).localeCompare(String(b.variant || b.name), 'pt-BR', {numeric: true}));
+  const modal = openModal({title: sorted[0].group_name || sorted[0].name, eyebrow: 'Escolha a variação', className: 'wide', onKey: arrowNav('.variant-option')});
+  const grid = el('div', 'variant-grid', sorted.map((variant, index) => `<button type="button" class="variant-option" data-index="${index}" ${isOut(variant) ? 'disabled' : ''}><strong>${esc(variant.variant || variant.name)}</strong><small>${money(variant.price_cents)} · ${isOut(variant) ? 'sem estoque' : `${qtyText(variant.stock_milli, variant.unit)} ${esc(variant.unit)}`}</small></button>`).join(''));
+  modal.body.append(grid);
+  modal.action('Voltar', '', () => modal.close(null));
+  grid.addEventListener('click', event => { const button = event.target.closest('.variant-option'); if (button) modal.close(sorted[Number(button.dataset.index)]); });
+  (grid.querySelector('.variant-option:not([disabled])') || modal.actions.firstElementChild).focus();
+  return modal.promise;
+}
+
+/* ---------- payment on the sale screen ---------- */
+function cancelPayment() {
+  state.pay = {active: false, method: null, other: null};
+  for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit']) $(id).value = '';
+  payError('');
+}
+function startPayment() {
+  const reason = payBlockReason();
+  if (reason) throw Error(reason);
+  state.pay = {active: true, method: null, other: null};
+  state.done = null;
+  payError('');
+  renderSale();
+  $('paymentMethods').focus();
+}
+async function selectPayMethod(option) {
+  const reason = payBlockReason();
+  if (reason) { toast(reason, true); beep('error'); return; }
+  cancelPayment();
+  state.done = null;
+  state.pay = option === 'split' ? {active: true, method: 'split', other: null}
+    : {active: true, method: option.method, other: option.method === 'other' ? {id: option.id, name: option.label} : null};
+  renderSale();
+  if (['credit_account', 'store_credit'].includes(state.pay.method) && !state.customer.id) await customerDialog('customer');
+  renderSale();
+  focusPay();
+}
+let payDigitTimer = null, payBurstUntil = 0;
+// Digits pick the payment form, but a barcode read while paying must not pick forms by accident.
+function queuePayDigit(key) {
+  const times = typing.times, now = performance.now();
+  const gap = times.length >= 2 ? times[times.length - 1] - times[times.length - 2] : Infinity;
+  clearTimeout(payDigitTimer);
+  if (gap < 60 || now < payBurstUntil) { payBurstUntil = now + 300; return; }
+  payDigitTimer = setTimeout(() => {
+    if (!state.pay.active) return;
+    const option = key === '0' ? 'split' : state.payOptions.find(row => row.key === key);
+    if (option) selectPayMethod(option); else beep('error');
+  }, 70);
+}
+function paymentName(method, configuredId, names) {
+  if (method === 'other') return (names || {})[configuredId] || (state.session?.payment_methods || []).find(row => row.id === configuredId)?.name || 'Outra forma';
+  return ({cash: 'Dinheiro', pix: 'Pix', card: 'Cartão', card_credit: 'Crédito', card_debit: 'Débito', credit_account: 'A prazo (fiado)', store_credit: 'Crédito na loja'})[method] || method || 'Pagamento';
+}
+async function confirmSale() {
+  if (state.submitting) return;
+  payError('');
+  let payments;
+  try {
+    const reason = payBlockReason();
+    if (reason) throw Error(reason);
+    if (['credit_account', 'store_credit'].includes(state.pay.method) && !state.customer.id) throw Error('Escolha o cliente cadastrado (F4) para esta forma de pagamento');
+    payments = buildPayments();
+  } catch (error) { payError(error.message); return; }
+  state.submitting = true;
+  renderPay();
+  try {
+    // Always requote: prices and promotions may have changed since the items were read.
+    const shown = cartTotal();
+    await refreshQuote(true);
+    if (cartTotal() !== shown) throw Error(`O total foi atualizado para ${money(cartTotal())}. Confira e confirme novamente.`);
+    const base = cartBase(), discount = cartDiscount();
+    let pin = '';
+    if (C.discountNeedsPin(role(), discount, base)) {
+      pin = await pinDialog('Autorizar desconto', `Desconto de ${money(discount)} sobre ${money(base)} está acima do limite deste operador.`,
+        {validate: value => api('/api/discount/authorize', 'POST', {pin: value, gross_cents: base, discount_cents: discount})});
+      if (!pin) throw Error('Venda não registrada: o desconto precisa da autorização do gerente.');
+    }
+    state.saleRequest ||= uuid();
+    const request = {request_id: state.saleRequest, items: state.cart.map(item => ({product_id: item.id, quantity_milli: item.quantity_milli})), discount_cents: discount,
+      customer_name: state.customer.name.trim(), customer_document: state.customer.document.trim(), customer_id: state.customer.id || null, seller_id: state.customer.sellerId || null, payments};
+    let sale;
+    try { sale = await api('/api/sales', 'POST', {...request, manager_pin: pin}); } catch (error) {
+      if (error.status !== 403 || pin || !/PIN de gerente/.test(error.message)) throw error;
+      pin = await pinDialog('Autorização do gerente', error.message);
+      if (!pin) throw Error('Venda não registrada: a autorização do gerente foi cancelada.');
+      sale = await api('/api/sales', 'POST', {...request, manager_pin: pin});
+    }
+    pin = '';
+    finishSale(sale);
+  } catch (error) { payError(error.message); } finally {
+    state.submitting = false;
+    renderPay();
+    if (state.pay.active) focusPay();
+  }
+}
+function finishSale(sale) {
+  state.lastSale = sale;
+  state.done = {sale, stamp: sale.id + ':0', printStatus: 'Enviando o comprovante…', paymentsText: (sale.payments || []).map(payment => paymentName(payment.method, payment.payment_method_id, sale.payment_names)).join(' + ')};
+  resetSale({keepDone: true});
+  scanStatus('', 'Leitor pronto');
+  beep('ok');
+  poll().catch(() => {});
+  loadCustomers().catch(() => {});
+  printAfterSale().then(plan => {
+    if (state.done?.sale === sale) { state.done.printStatus = plan.status; state.done.stamp = sale.id + ':1'; renderPanels(); }
+    if (plan.preview) receiptDialog(sale, plan.status, {autoPrint: plan.autoPrint}).catch(() => {});
   });
 }
-async function checkout(){
-  if(!state.cart.length)throw Error('Adicione um produto');
-  if(state.cart.some(item=>item.quantity_milli<=0))throw Error('Aguarde ou informe o peso dos produtos em KG');
-  if(!state.session.cash)throw Error('Informe o saldo inicial e abra o caixa antes da primeira venda');
-  const requestedPercent=requestedDiscount(),discount=appliedDiscount();
-  if((requestedPercent>0&&!discount)||(requestedPercent===0&&discount))throw Error('Clique em “Aplicar desconto” e autorize com o PIN do gerente');
-  const result=await checkoutConfirmDialog();
-  if(result)await receiptDialog(result.sale,result.printPlan.status,result.printPlan);
+// Background printing. The system print dialog is never opened behind the operator's back when a
+// thermal printer is configured, so a CUPS queue cannot print the same receipt twice.
+async function printAfterSale() {
+  const preview = prefs.get('receiptPreview', 'off') === 'on';
+  try {
+    const data = await api('/api/print/settings');
+    applyPrinterData(data);
+    const receipt = (data.settings || []).find(setting => setting.kind === 'receipt');
+    if (!receipt) return {status: 'Sem impressora de recibos configurada. F9 abre o comprovante para imprimir pelo sistema.', preview, autoPrint: preview};
+    const result = await api('/api/print/flush', 'POST', {});
+    loadPrinterStatus().catch(() => {});
+    if (result.status === 'uncertain') return {status: 'A impressora não confirmou o comprovante. Verifique o equipamento; F9 reimprime.', preview};
+    return {status: `Comprovante enviado para ${receipt.target || 'a impressora térmica'}.`, preview};
+  } catch { return {status: 'Venda gravada. Não foi possível consultar a impressora; F9 abre o comprovante.', preview}; }
 }
-function cashSummaryMarkup(summary,result=null){const c=summary.categories||{};const difference=result?.difference_cents??null;const differenceClass=difference===null?'':difference===0?'exact':difference>0?'positive':'negative';const differenceLabel=difference===null?'Dinheiro esperado':difference===0?'Fechamento exato':difference>0?'Sobra no caixa':'Falta no caixa';const differenceValue=difference===null?summary.expected_cents:difference;const signed=difference===null?money(differenceValue):(difference>0?'+ ':'− ')+money(Math.abs(differenceValue));return `<div class="cash-summary-grid"><div class="cash-summary-item"><span>Saldo inicial</span><strong>${money(summary.opening_cents)}</strong></div><div class="cash-summary-item emphasis"><span>${differenceLabel}</span><strong>${signed}</strong></div><div class="cash-summary-item"><span>Dinheiro das vendas</span><strong>${money(c.cash_sales_net_cents||0)}</strong></div><div class="cash-summary-item"><span>PIX</span><strong>${money(c.pix_cents||0)}</strong></div><div class="cash-summary-item"><span>Crédito</span><strong>${money(c.card_credit_cents||0)}</strong></div><div class="cash-summary-item"><span>Débito</span><strong>${money(c.card_debit_cents||0)}</strong></div><div class="cash-summary-item"><span>Suprimentos</span><strong>${money(c.supplied_cents||0)}</strong></div><div class="cash-summary-item"><span>Sangrias</span><strong>− ${money(c.withdrawn_cents||0)}</strong></div><div class="cash-summary-total"><span>Total geral das vendas</span><strong>${money(summary.total_channels_cents||summary.sales_total_cents||0)}</strong></div>${result?`<div class="cash-difference ${differenceClass}"><span>Valor contado: ${money(result.counted_cents)} · Esperado: ${money(result.expected_cents)}</span><strong>${difference===0?'Conferido':difference>0?'Caixa positivo':'Caixa negativo'}</strong></div>`:''}</div>`}
-async function cashCloseDialog(){const summary=await api('/api/cash/summary');return new Promise(resolve=>{if(activeConfirm)activeConfirm(false);const previous=document.activeElement;const backdrop=document.createElement('div');backdrop.className='confirm-backdrop';const dialog=document.createElement('section');dialog.className='confirm-dialog cash-close-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');const icon=document.createElement('div');icon.className='confirm-icon cash-icon';icon.textContent='▣';const copy=document.createElement('div');copy.className='confirm-copy';const eyebrow=document.createElement('span');eyebrow.className='confirm-eyebrow';eyebrow.textContent='Conferência obrigatória';const heading=document.createElement('h2');heading.textContent='Fechar caixa';const message=document.createElement('p');message.textContent=`Confira os recebimentos do turno (${summary.sales_count||0} venda(s)) e conte somente o dinheiro físico.`;const report=document.createElement('div');report.className='cash-report';report.innerHTML=cashSummaryMarkup(summary);const field=document.createElement('label');field.className='cash-count-field';field.innerHTML='<span>Dinheiro contado no caixa (R$)</span>';const input=document.createElement('input');input.className='confirm-input';input.inputMode='decimal';input.placeholder='Informe o valor contado';input.value=(summary.expected_cents/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});field.append(input);const managerField=document.createElement('label');managerField.className='cash-count-field';managerField.innerHTML='<span>PIN do superior</span>';const managerPin=document.createElement('input');managerPin.className='confirm-input';managerPin.type='password';managerPin.inputMode='numeric';managerPin.autocomplete='off';managerPin.placeholder='Digite o PIN do gerente';managerField.append(managerPin);const error=document.createElement('small');error.className='confirm-error';error.setAttribute('role','alert');copy.append(eyebrow,heading,message,report,field,managerField,error);const actions=document.createElement('div');actions.className='confirm-actions';const cancel=document.createElement('button');cancel.type='button';cancel.className='secondary';cancel.textContent='Cancelar';const accept=document.createElement('button');accept.type='button';accept.className='primary confirm-accept';accept.textContent='Fechar caixa';actions.append(cancel,accept);dialog.append(icon,copy,actions);backdrop.append(dialog);document.body.append(backdrop);let settled=false,completed=false,result=null;const finish=value=>{if(settled)return;settled=true;document.removeEventListener('keydown',onKey);backdrop.remove();activeConfirm=null;previous?.focus?.();resolve(value)};const onKey=event=>{if(event.key==='Escape'){event.preventDefault();finish(completed?result:null);return}if(event.key==='Enter'&&(document.activeElement===input||document.activeElement===managerPin)&&!accept.disabled){event.preventDefault();submit();return}if(event.key!=='Tab')return;const focusables=[input,managerPin,cancel,accept].filter(node=>!node.disabled&&!node.classList.contains('hidden'));if(event.shiftKey&&document.activeElement===focusables[0]){event.preventDefault();focusables.at(-1).focus()}else if(!event.shiftKey&&document.activeElement===focusables.at(-1)){event.preventDefault();focusables[0].focus()}};const submit=async()=>{if(completed){finish(result);return}error.textContent='';error.classList.remove('show');let counted;try{if(!input.value.trim())throw Error('Informe o dinheiro contado');counted=parseMoney(input.value);if(!managerPin.value.trim())throw Error('Informe o PIN do superior')}catch(errorValue){error.textContent=errorValue.message;error.classList.add('show');if(errorValue.message.toLowerCase().includes('pin'))managerPin.focus();else input.focus();return}accept.disabled=true;input.disabled=true;managerPin.disabled=true;try{result=await api('/api/cash/close','POST',{counted_cents:counted,manager_pin:managerPin.value.trim()});completed=true;heading.textContent='Caixa fechado';message.textContent=result.difference_cents===0?'Fechamento exato. O valor contado confere com o esperado.':result.difference_cents>0?'Caixa positivo: existe uma sobra no valor contado.':'Caixa negativo: existe uma falta no valor contado.';report.innerHTML=cashSummaryMarkup(summary,result);field.classList.add('hidden');managerField.classList.add('hidden');cancel.textContent='Concluir';accept.disabled=false;accept.textContent='Concluir fechamento'}catch(errorValue){input.disabled=false;managerPin.disabled=false;accept.disabled=false;error.textContent=errorValue.message;error.classList.add('show');if(errorValue.message.toLowerCase().includes('pin'))managerPin.focus();else input.focus()}};activeConfirm=finish;document.addEventListener('keydown',onKey);backdrop.addEventListener('click',event=>{if(event.target===backdrop)finish(completed?result:null)});cancel.addEventListener('click',()=>finish(completed?result:null));accept.addEventListener('click',submit);input.focus()})}
-async function cashOpenDialog(){const raw=await textDialog('Abrir caixa','Informe quanto existe em dinheiro físico antes da primeira venda. Use 0,00 se o caixa começar sem espécie.','Ex.: 150,00','text',{eyebrow:'Início do turno',fieldLabel:'Dinheiro inicial (R$)',acceptLabel:'Abrir caixa',icon:'▣',validate:async value=>{const amount=parseMoney(value);if(amount<0)throw Error('Informe um valor igual ou maior que zero')}});if(!raw)return null;return parseMoney(raw)}
-async function cashAction(kind){if(kind==='close'){const result=await cashCloseDialog();if(result){toast(`Caixa fechado · ${result.difference_cents===0?'fechamento exato':result.difference_cents>0?'sobra de '+money(result.difference_cents):'falta de '+money(Math.abs(result.difference_cents))}`);await loadSession()}return}if(kind==='open'){const amount=await cashOpenDialog();if(amount===null)return;await api('/api/cash/open','POST',{opening_cents:amount});toast(`Caixa aberto com ${money(amount)}`);await loadSession();return}if(kind==='supplied'||kind==='withdrawn'){const raw=await textDialog(kind==='supplied'?'Registrar suprimento':'Registrar sangria','Informe o valor do movimento e registre o motivo para a auditoria.','Ex.: 50,00','text',{eyebrow:'Movimento de caixa',fieldLabel:'Valor (R$)',acceptLabel:'Continuar',icon:'＋',validate:async value=>{if(parseMoney(value)<=0)throw Error('Informe um valor maior que zero')}});if(!raw)return;const reason=await textDialog('Motivo do movimento','Descreva o motivo deste movimento.','Ex.: troco inicial','text',{eyebrow:'Auditoria de caixa',fieldLabel:'Motivo',acceptLabel:'Registrar',icon:'✎',minLength:3});if(!reason)return;await api('/api/cash/movement','POST',{kind,amount_cents:parseMoney(raw),reason});toast('Movimento registrado');await loadSession()}}
-async function loadSuspended(){const data=await api('/api/carts/suspended');$('suspendedList').innerHTML=data.carts.length?data.carts.map(c=>`<div class="mini-row"><span>${esc(c.label)} <small class="muted">· ${new Date(c.created_at).toLocaleString('pt-BR')}</small></span><button class="secondary small" data-resume="${esc(c.id)}">Retomar</button></div>`).join(''):'Nenhuma venda suspensa.';$('suspendedList').querySelectorAll('[data-resume]').forEach(b=>b.onclick=async()=>{try{if(state.cart.length&&!(await confirmDialog('Substituir a venda atual?','A venda suspensa substituirá os itens que estão no caixa agora.','Retomar venda')))return;const response=await api('/api/carts/suspended/'+encodeURIComponent(b.dataset.resume)+'/resume','POST',{});const c=response.cart;state.cart=c.items||[];$('discountInput').value=c.discount||'0';$('customerName').value=c.customer||'';state.saleRequest=null;state.discountApproval=null;renderCart();await loadSuspended();toast('Venda retomada')}catch(e){toast(e.message,true)}})}
-async function suspend(){if(!state.cart.length)throw Error('Carrinho vazio');const label=await textDialog('Nome para identificar a venda suspensa','Use um nome curto para localizar esta venda depois, como o nome do cliente ou uma mesa.','Ex.: Cliente ou mesa 4');if(!label)return;await api('/api/carts/suspended','POST',{label,cart:{items:state.cart,discount:$('discountInput').value,customer:$('customerName').value}});resetCart();await loadSuspended();toast('Venda suspensa')}
-async function loadSales(){const data=await api('/api/sales');$('salesList').innerHTML=data.sales.length?data.sales.map(s=>`<div class="list-row"><span><strong>${money(s.total_cents)} <small>· ${esc(s.status)}</small></strong><small>${new Date(s.created_at).toLocaleString('pt-BR')} · ${esc(s.customer_name||'Sem cliente')} · ${esc(s.id.slice(0,8))}</small></span><button class="secondary small" data-detail="${esc(s.id)}">Detalhes</button><span class="list-actions"><button class="secondary small" data-reprint="${esc(s.id)}">Reimprimir</button>${s.status==='completed'?`<button class="secondary small" data-return="${esc(s.id)}">Devolver</button><button class="secondary small danger" data-void="${esc(s.id)}">Cancelar</button>`:''}</span></div>`).join(''):'Nenhuma venda neste terminal.';$('salesList').querySelectorAll('[data-detail]').forEach(b=>b.onclick=async()=>{try{const d=await api('/api/sales/'+encodeURIComponent(b.dataset.detail));await receiptDialog(d.sale,'Comprovante pronto para visualização.')}catch(e){toast(e.message,true)}});$('salesList').querySelectorAll('[data-reprint]').forEach(b=>b.onclick=async()=>{try{await api('/api/sales/'+encodeURIComponent(b.dataset.reprint)+'/reprint','POST',{});toast('Recibo colocado na fila');await loadPrinters()}catch(e){if(e.status===409){try{const d=await api('/api/sales/'+encodeURIComponent(b.dataset.reprint));await receiptDialog(d.sale,e.message)}catch(error){toast(error.message,true)}}else toast(e.message,true)}});$('salesList').querySelectorAll('[data-return]').forEach(b=>b.onclick=()=>returnDialog(b.dataset.return).catch(e=>toast(e.message,true)));$('salesList').querySelectorAll('[data-void]').forEach(b=>b.onclick=async()=>{const reason=await textDialog('Motivo do cancelamento','Descreva o motivo para registrar na auditoria da venda.','Ex.: produto lançado incorretamente','text',{eyebrow:'Cancelamento de venda',fieldLabel:'Motivo do cancelamento',acceptLabel:'Continuar',icon:'! ',multiline:true,minLength:3,maxLength:240});if(!reason)return;let manager_pin='';if(state.session.operator.role==='cashier'){manager_pin=await textDialog('Autorizar cancelamento','Esta operação exige o PIN de um gerente.','Digite o PIN numérico','password',{eyebrow:'Autorização do gerente',fieldLabel:'PIN do gerente',acceptLabel:'Autorizar',icon:'✓'});if(!manager_pin)return}if(!(await confirmDialog('Confirmar cancelamento','A venda será cancelada, o estoque será devolvido e a operação ficará registrada na auditoria.','Cancelar venda')))return;try{await api('/api/sales/'+b.dataset.void+'/void','POST',{reason,manager_pin});toast('Venda cancelada. Confira a devolução do pagamento externamente.');await Promise.all([loadSales(),loadProducts()])}catch(e){toast(e.message,true)}})}
-function renderStock(){const products=state.stockProducts;$('stockProduct').innerHTML=products.map(p=>`<option value="${esc(p.id)}">${esc(p.name)} (${esc(p.unit)})</option>`).join('');$('stockList').innerHTML=products.length?products.map(p=>`<div class="list-row"><span><strong>${esc(p.name)}</strong><small>${esc(p.sku||p.barcode||p.id)}${p.barcode?' · EAN '+esc(p.barcode):''}</small></span><strong>${qtyText(p.stock_milli,p.unit)} ${esc(p.unit)}</strong></div>`).join(''):'Nenhum produto.'}
-async function loadPrinters(){const data=await api('/api/print/settings');const settings=(data.settings||[]).filter(s=>s.kind==='receipt');const jobs=(data.jobs||[]).filter(j=>j.kind==='receipt');$('printerSettings').innerHTML=settings.length?settings.map(s=>`<div class="list-row"><span><strong>Recibo térmico</strong><small>${esc(s.driver)} · ${esc(s.format)}</small></span><span>${esc(s.target)}</span></div>`).join(''):'Nenhuma impressora de recibos configurada.';$('printJobs').innerHTML=jobs.length?jobs.map(j=>`<div class="list-row"><span><strong>Recibo · ${esc(j.status)}</strong><small>${new Date(j.created_at).toLocaleString('pt-BR')} · ${esc(j.error||'')}</small></span><span>${esc(j.driver)}</span>${['uncertain','printed'].includes(j.status)?`<button class="secondary small" data-retry="${esc(j.id)}">Reenviar</button>`:'<span></span>'}</div>`).join(''):'Fila de recibos vazia.';$('printJobs').querySelectorAll('[data-retry]').forEach(b=>b.onclick=async()=>{if(!(await confirmDialog('Reenviar impressão?','A impressora pode já ter concluído este trabalho. O reenvio pode produzir um recibo duplicado.','Reenviar')))return;try{await api('/api/print/jobs/'+b.dataset.retry+'/retry','POST',{confirm_duplicate:true});toast('Reenvio colocado na fila');await loadPrinters()}catch(e){toast(e.message,true)}})}
-async function loadSystem(){const result=await api('/api/sync');const s=result.sync,l=result.license;if($('currentVersion'))$('currentVersion').textContent=`Versão instalada: ${result.version||'—'}`;$('systemPending').textContent=s.pending;$('systemConflicts').textContent=s.conflicts??0;$('systemLastSync').textContent=s.last_sync_at?new Date(Number(s.last_sync_at)).toLocaleString('pt-BR'):'Ainda não ocorreu';$('systemLease').textContent=l.expires_at?new Date(l.expires_at*1000).toLocaleString('pt-BR'):l.reason;$('systemError').textContent=s.last_sync_error||s.last_heartbeat_error||'Sem erro de sincronização registrado.';$('identityInfo').textContent=JSON.stringify({connection:state.session.connection,device_id:state.session.device_id,paired:state.session.paired,license:l.state,heartbeat_at:s.last_heartbeat_at},null,2);$('releaseInfo').textContent=s.release?`Versão ${s.release.version} · ${s.release.notes||'Manifesto assinado verificado'}`:(s.release_error||'Nenhuma versão estável publicada.');const link=$('releaseLink');link.classList.toggle('hidden',!s.release);if(s.release)link.href=s.release.url;else link.removeAttribute('href');if(!canManage(state.session?.operator?.role)){$('auditList').textContent='Auditoria disponível para gerentes e administradores.';$('conflictList').textContent='Conflitos disponíveis para gerentes e administradores.';return}try{const [audit,conflicts]=await Promise.all([api('/api/audit'),api('/api/sync/conflicts')]);$('auditList').innerHTML=audit.events.map(e=>`<div class="mini-row"><span>${esc(e.action)} · ${esc(e.subject_id||'')}</span><small>${new Date(e.created_at).toLocaleString('pt-BR')}</small></div>`).join('')||'Sem eventos.';$('conflictList').innerHTML=(conflicts.conflicts||[]).map(c=>`<div class="mini-row"><span>${esc(c.reason)} · ${esc(c.aggregate_id)}</span><small>${esc(c.status)}</small></div>`).join('')||'Sem conflitos locais.'}catch{$('auditList').textContent='Não foi possível carregar a auditoria.';$('conflictList').textContent='Não foi possível carregar conflitos.'}}
-async function loadBackups(){if(!canManage(state.session?.operator?.role)){$('backupInfo').textContent='Backup local disponível para gerentes e administradores.';$('backupBtn').disabled=true;return}try{const data=await api('/api/backups');$('backupInfo').textContent=data.copies.length?`${data.copies.length} cópia(s) em ${data.directory}. Mais recente: ${data.copies[0].name}`:`Nenhuma cópia criada. Destino: ${data.directory}`;$('backupBtn').disabled=false}catch{$('backupInfo').textContent='Não foi possível carregar os backups locais.';$('backupBtn').disabled=true}}
-async function createNewProfile(){
-  if(!(await confirmDialog('Criar perfil para outra empresa?','O banco atual será preservado em um backup e o próximo pareamento começará em um diretório separado.','Criar perfil')))return;
-  const result=await api('/api/new-profile','POST',{confirm:true});
-  state.session=null;state.cart=[];state.lastOperatorsRefreshAt=0;
+function dismissDone() {
+  state.done = null;
+  renderSale();
+  focusScan();
+}
+
+/* ---------- receipt ---------- */
+function legacyReceiptMarkup(sale) {
+  const connection = state.session?.connection || {}, issuer = connection.issuer || {};
+  const company = issuer.trade_name || issuer.legal_name || connection.tenant_name || 'PDV2';
+  const legalName = issuer.trade_name && issuer.legal_name && issuer.trade_name !== issuer.legal_name ? issuer.legal_name : '';
+  const date = sale.created_at ? dateTimeText(sale.created_at) : new Date().toLocaleString('pt-BR');
+  const address = issuer.address || {};
+  const addressText = [address.line, address.number, address.complement, address.neighborhood, address.city, address.state].filter(Boolean).join(', ');
+  const fiscal = sale.fiscal || {}, authorized = Boolean(fiscal.authorized && fiscal.access_key);
+  const items = (sale.items || []).map(item => `<div class="receipt-line"><div><strong>${esc(item.name)}</strong><small>${item.sku ? `Cód. ${esc(item.sku)} · ` : ''}${qtyText(item.quantity_milli, item.unit || 'UN')} ${esc(item.unit || 'UN')} × ${money(item.unit_price_cents)}</small></div><strong>${money(item.line_total_cents ?? item.gross_cents)}</strong></div>`).join('') || '<p>Nenhum item registrado.</p>';
+  const payments = (sale.payments || []).map(payment => `<div class="receipt-summary-row"><span>${esc(paymentName(payment.method, payment.payment_method_id, sale.payment_names))}</span><strong>${money(payment.amount_cents)}</strong></div>`).join('');
+  const fiscalBlock = authorized ? `<section class="receipt-fiscal"><strong>DANFE NFC-e autorizada</strong><span>Número ${esc(fiscal.number || '—')} · Série ${esc(fiscal.series || '—')}</span><span>Chave de acesso: ${esc(fiscal.access_key)}</span>${fiscal.protocol ? `<span>Protocolo: ${esc(fiscal.protocol)}</span>` : ''}</section>` : '<section class="receipt-fiscal"><strong>NFC-e não emitida</strong><span>Comprovante de venda sem valor fiscal.</span></section>';
+  return `<div class="receipt-paper"><header class="receipt-header"><strong>${esc(company)}</strong>${legalName ? `<span>${esc(legalName)}</span>` : ''}${issuer.document ? `<span>CNPJ/CPF: ${esc(documentText(issuer.document))}</span>` : ''}${addressText ? `<span>${esc(addressText)}</span>` : ''}${connection.shop_name ? `<span>${esc(connection.shop_name)}</span>` : ''}<small>${authorized ? 'DANFE NFC-e' : 'Comprovante de venda · não fiscal'}</small></header><div class="receipt-meta"><span>${esc(date)}</span><span>${connection.terminal_name ? `Caixa ${esc(connection.terminal_name)}` : ''}</span></div><div class="receipt-items">${items}</div><div class="receipt-totals"><div class="receipt-summary-row"><span>Subtotal</span><strong>${money(sale.gross_cents)}</strong></div>${Number(sale.discount_cents) > 0 ? `<div class="receipt-summary-row"><span>Desconto</span><strong>− ${money(sale.discount_cents)}</strong></div>` : ''}<div class="receipt-summary-row receipt-total"><span>Total</span><strong>${money(sale.total_cents)}</strong></div>${payments}${Number(sale.change_cents) > 0 ? `<div class="receipt-summary-row"><span>Troco</span><strong>${money(sale.change_cents)}</strong></div>` : ''}</div>${sale.customer_name || sale.customer_document ? `<div class="receipt-customer">${sale.customer_name ? `Cliente: ${esc(sale.customer_name)}<br>` : ''}${sale.customer_document ? `CPF/CNPJ: ${esc(documentText(sale.customer_document))}` : ''}</div>` : ''}${fiscalBlock}<footer>Obrigado pela preferência!<small>PDV2 - crowntech.com.br</small></footer></div>`;
+}
+function receiptMarkup(sale) {
+  const model = sale.receipt;
+  if (!model || !Array.isArray(model.blocks)) return legacyReceiptMarkup(sale);
+  const size = C.receiptDimensions(sale);
+  return `<article class="receipt-paper receipt-paper-canonical" aria-label="Comprovante em bobina de ${size.width} milímetros" style="--receipt-paper-mm:${size.width}mm;--receipt-printable-mm:${size.printable}mm;--receipt-columns:${size.columns};--receipt-feed-mm:${size.feed}mm;--receipt-screen-inset:${(size.width - size.printable) * 50 / size.width}%;--receipt-feed-ratio:${size.feed / size.printable}"><div class="receipt-content">${C.receiptBlocksMarkup(model, size)}</div><div class="receipt-bottom-feed" aria-hidden="true"></div></article>`;
+}
+async function receiptDialog(sale, printStatus = '', options = {}) {
+  if (!sale.receipt && sale.id) {
+    try { sale = (await api('/api/sales/' + encodeURIComponent(sale.id))).sale || sale; } catch { /* show what we have */ }
+  }
+  const size = C.receiptDimensions(sale);
+  const modal = openModal({title: options.title || 'Comprovante da venda', eyebrow: sale.status === 'voided' ? 'Venda cancelada' : options.eyebrow || 'Venda registrada', text: 'Confira a via do cliente antes de entregar.', className: 'receipt-dialog', backdropClass: 'receipt-backdrop'});
+  modal.dialog.style.setProperty('--receipt-paper-mm', size.width + 'mm');
+  const stage = el('div', 'receipt-preview-stage', `<div class="receipt-preview-label"><span>Prévia de impressão</span><span>Bobina ${size.width} mm</span></div><div class="receipt-preview-paper">${receiptMarkup(sale)}</div>`);
+  stage.tabIndex = 0;
+  stage.setAttribute('role', 'region');
+  stage.setAttribute('aria-label', 'Prévia do comprovante. Role para conferir todos os itens.');
+  modal.body.append(stage);
+  const status = el('p', 'receipt-print-status');
+  status.setAttribute('role', 'status');
+  const setStatus = (text, warning = false) => { status.textContent = text; status.className = 'receipt-print-status ' + (warning ? 'warning' : 'success'); };
+  setStatus(printStatus || 'O comprovante está pronto para impressão.', /configur|não|incert|falha/i.test(printStatus));
+  modal.dialog.insertBefore(status, modal.actions);
+  const pageStyle = document.createElement('style');
+  let printTimer;
+  const prepare = () => {
+    const paper = stage.querySelector('.receipt-paper'), content = paper?.querySelector('.receipt-content') || paper;
+    const heightMm = Math.ceil((content?.scrollHeight || 900) * size.printable / (content?.offsetWidth || 396) + size.feed + 4);
+    pageStyle.textContent = `@media print{@page{size:${size.width}mm ${Math.max(100, heightMm + 5)}mm;margin:0;}}`;
+    if (!pageStyle.isConnected) document.head.append(pageStyle);
+  };
+  const systemPrint = () => { setStatus('Abrindo a impressão do sistema…'); prepare(); printTimer = window.setTimeout(() => window.print(), 120); };
+  window.addEventListener('beforeprint', prepare);
+  modal.action('Fechar', '', () => modal.close());
+  const system = modal.action('Imprimir no sistema', '', systemPrint);
+  const thermal = sale.id ? modal.action('Reimprimir na térmica', 'primary', async () => {
+    try {
+      await api('/api/sales/' + encodeURIComponent(sale.id) + '/reprint', 'POST', {});
+      setStatus('Comprovante colocado na fila da impressora térmica.');
+      api('/api/print/flush', 'POST', {}).then(loadPrinterStatus).catch(() => {});
+    } catch (error) { setStatus(error.status === 409 ? 'Configure uma impressora de recibos antes de reenviar para a fila.' : error.message, true); }
+  }) : null;
+  (thermal && state.printer?.configured ? thermal : system).focus();
+  if (options.autoPrint) printTimer = window.setTimeout(systemPrint, 180);
+  await modal.promise;
+  window.clearTimeout(printTimer);
+  window.removeEventListener('beforeprint', prepare);
+  pageStyle.remove();
+}
+async function salePicker({title, text, eyebrow, onlyCompleted = false}) {
+  const data = await api('/api/sales');
+  const sales = (data.sales || []).filter(sale => !onlyCompleted || sale.status === 'completed');
+  if (!sales.length) { toast(onlyCompleted ? 'Nenhuma venda concluída neste terminal' : 'Nenhuma venda neste terminal', true); return null; }
+  const modal = openModal({title, text, eyebrow, className: 'wide', onKey: arrowNav('.pick-row')});
+  const list = el('div', 'pick-list', sales.map(sale => `<button type="button" class="pick-row" data-id="${esc(sale.id)}"><span><strong>${money(sale.total_cents)} · ${esc(sale.customer_name || 'Consumidor não identificado')}</strong><small>${dateTimeText(sale.created_at)} · venda ${esc(sale.id.slice(0, 8))} · ${esc((saleStatusNames[sale.status] || [sale.status])[0])}</small></span><span class="pick-side">Abrir</span></button>`).join(''));
+  modal.body.append(list);
+  modal.action('Cancelar', '', () => modal.close(null));
+  list.addEventListener('click', event => { const row = event.target.closest('.pick-row'); if (row) modal.close(row.dataset.id); });
+  list.firstElementChild.focus();
+  return modal.promise;
+}
+async function reprint() {
+  if (state.done?.sale) { await receiptDialog(state.done.sale, state.done.printStatus); return; }
+  const id = await salePicker({title: 'Reimprimir comprovante', text: 'Escolha a venda. A mais recente vem primeiro.', eyebrow: 'Reimprimir · F9'});
+  if (!id) return;
+  const detail = await api('/api/sales/' + encodeURIComponent(id));
+  await receiptDialog(detail.sale, 'Comprovante pronto para reimpressão.');
+}
+
+/* ---------- customer, discount, hold, cash ---------- */
+async function loadCustomers(query = '') {
+  const data = await api('/api/customers' + (query ? '?q=' + encodeURIComponent(query) : ''));
+  if (!query) state.customers = data.customers || [];
+  return data.customers || [];
+}
+const customerOptionText = customer => `${customer.name}${customer.credit_limit_cents ? ' · fiado disp. ' + money(customer.available_credit_cents) : ''}${customer.store_credit_cents > 0 ? ' · crédito ' + money(customer.store_credit_cents) : ''}`;
+async function customerDialog(focusField = 'document') {
+  await loadCustomers().catch(() => {});
+  const modal = openModal({title: 'Cliente e CPF na nota', eyebrow: 'Cliente · F4', text: 'Opcional. Informe somente o que o cliente pedir.', className: 'wide'});
+  modal.body.innerHTML = `<label class="field"><span>CPF/CNPJ na nota</span><input data-field="document" inputmode="numeric" maxlength="30" autocomplete="off" placeholder="Somente números"></label>
+    <label class="field"><span>Nome para identificação (opcional)</span><input data-field="name" maxlength="160" autocomplete="off"></label>
+    <label class="field"><span>Buscar cliente cadastrado</span><input data-field="find" autocomplete="off" placeholder="Nome ou documento"></label>
+    <label class="field"><span>Cliente cadastrado (fiado e crédito na loja)</span><select data-field="customer"></select></label>
+    <label class="field"><span>Vendedor</span><select data-field="seller"></select></label>`;
+  const field = name => modal.body.querySelector(`[data-field="${name}"]`);
+  const fill = rows => {
+    const chosen = field('customer').value || state.customer.id;
+    const current = state.customers.find(row => row.id === chosen);
+    const list = current && !rows.some(row => row.id === current.id) ? [current, ...rows] : rows;
+    field('customer').innerHTML = '<option value="">Consumidor não identificado</option>' + list.map(row => `<option value="${esc(row.id)}">${esc(customerOptionText(row))}</option>`).join('');
+    field('customer').value = list.some(row => row.id === chosen) ? chosen : '';
+  };
+  fill(state.customers);
+  const operators = state.session?.operators || [];
+  field('seller').innerHTML = '<option value="">Sem vendedor</option>' + operators.map(operator => `<option value="${esc(operator.id)}">${esc(operator.name)}</option>`).join('');
+  field('seller').value = operators.some(operator => operator.id === state.customer.sellerId) ? state.customer.sellerId : '';
+  field('document').value = state.customer.document;
+  field('name').value = state.customer.name;
+  let timer = null;
+  field('find').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(async () => { try { fill(await loadCustomers(field('find').value.trim())); } catch { /* keep list */ } }, 180); });
+  modal.action('Receber fiado', 'spacer', async () => { modal.close(false); await receiveCreditDialog(); });
+  modal.action('Limpar', '', () => { state.customer = emptyCustomer(); modal.close(true); });
+  modal.action('Cancelar', '', () => modal.close(false));
+  modal.action('Salvar', 'primary', async () => {
+    const id = field('customer').value;
+    if (id && !state.customers.some(row => row.id === id)) state.customers.push(...(await loadCustomers(field('find').value.trim())).filter(row => row.id === id));
+    state.customer = {document: field('document').value.trim(), name: field('name').value.trim(), id, sellerId: field('seller').value};
+    modal.close(true);
+  });
+  field(focusField).focus();
+  const saved = await modal.promise;
+  if (saved) state.saleRequest = null;
+  renderSale();
+  focusHome();
+  return saved;
+}
+async function discountDialog() {
+  const base = cartBase();
+  let mode = state.discount?.mode || 'percent';
+  const modal = openModal({title: 'Desconto na venda', eyebrow: 'Desconto · F5', text: `Aplicado sobre ${money(base)}${cartPromo() ? ' (já com as promoções)' : ''}.`});
+  modal.body.innerHTML = `<div class="segmented" role="group" aria-label="Tipo de desconto"><button type="button" data-mode="percent">Percentual (%)</button><button type="button" data-mode="value">Valor (R$)</button></div>
+    <label class="field"><span data-label></span><input data-field="value" class="money-input" inputmode="decimal" autocomplete="off"></label><p class="hint" data-preview></p>`;
+  const input = modal.body.querySelector('[data-field="value"]'), preview = modal.body.querySelector('[data-preview]');
+  const read = () => {
+    if (!input.value.trim()) return null;
+    const value = mode === 'percent' ? parsePercent(input.value) : parseMoney(input.value);
+    return value > 0 ? {mode, value} : null;
+  };
+  const refresh = () => {
+    modal.body.querySelectorAll('[data-mode]').forEach(button => button.setAttribute('aria-pressed', button.dataset.mode === mode));
+    modal.body.querySelector('[data-label]').textContent = mode === 'percent' ? 'Percentual de desconto' : 'Valor do desconto (R$)';
+    input.placeholder = mode === 'percent' ? 'Ex.: 5' : 'Ex.: 2,50';
+    try {
+      const cents = C.discountCents(read(), base);
+      preview.textContent = cents ? `Desconto de ${money(cents)} · novo total ${money(base - cents)}${C.discountNeedsPin(role(), cents, base) ? ' · acima do limite deste operador: o PIN do gerente será pedido ao confirmar a venda.' : ''}` : 'Informe o desconto e tecle Enter.';
+    } catch (error) { preview.textContent = error.message; }
+  };
+  if (state.discount) input.value = state.discount.mode === 'percent' ? state.discount.value.toLocaleString('pt-BR', {maximumFractionDigits: 2}) : moneyPlain(state.discount.value);
+  modal.body.querySelector('.segmented').addEventListener('click', event => { const button = event.target.closest('[data-mode]'); if (!button) return; mode = button.dataset.mode; input.value = ''; refresh(); input.focus(); });
+  input.addEventListener('input', refresh);
+  if (state.discount) modal.action('Remover desconto', 'spacer', () => { state.discount = null; modal.close(true); });
+  modal.action('Cancelar', '', () => modal.close(false));
+  modal.action('Aplicar', 'primary', () => {
+    const discount = read();
+    if (!discount) throw Error('Informe um desconto maior que zero');
+    if (discount.mode === 'percent' ? discount.value >= 100 : discount.value >= base) throw Error('O desconto deve ser menor que o total da venda');
+    if (!C.discountCents(discount, base)) throw Error('O desconto informado é menor que um centavo nesta venda');
+    state.discount = discount;
+    modal.close(true);
+  });
+  refresh();
+  input.focus();
+  input.select();
+  if (await modal.promise) cartChanged();
+  focusHome();
+}
+async function loadSuspendedCount() {
+  if (!canSell(role())) return;
+  state.suspendedCount = ((await api('/api/carts/suspended')).carts || []).length;
+  renderKeybar();
+}
+async function holdDialog() {
+  const carts = (await api('/api/carts/suspended')).carts || [];
+  state.suspendedCount = carts.length;
+  const busy = state.cart.length > 0;
+  const modal = openModal({title: 'Vendas em espera', eyebrow: 'Em espera · F6', className: 'wide', onKey: arrowNav('.pick-row'),
+    text: busy ? 'Guarde a venda atual para atender o próximo cliente. Para retomar outra, guarde ou finalize esta primeiro.' : 'Escolha a venda guardada para retomar.'});
+  let label = null;
+  if (busy) {
+    const field = el('label', 'field', '<span>Identificação da venda atual</span>');
+    label = Object.assign(document.createElement('input'), {maxLength: 80, autocomplete: 'off', placeholder: 'Ex.: nome do cliente', value: customerSummary().split(' · ')[0] || `Venda das ${timeText(Date.now())}`});
+    field.append(label);
+    modal.body.append(field);
+  }
+  const list = el('div', 'pick-list', carts.length ? carts.map(cart => `<button type="button" class="pick-row" data-id="${esc(cart.id)}" ${busy ? 'disabled' : ''}><span><strong>${esc(cart.label)}</strong><small>Guardada em ${dateTimeText(cart.created_at)} · ${(cart.cart?.items || []).length} item(ns)</small></span><span class="pick-side">Retomar</span></button>`).join('') : '<p class="pick-empty">Nenhuma venda em espera.</p>');
+  modal.body.append(list);
+  modal.action('Fechar', '', () => modal.close(false));
+  if (busy) modal.action('Colocar em espera', 'primary', async () => {
+    const name = label.value.trim();
+    if (!name) throw Error('Informe um nome para localizar a venda depois');
+    await api('/api/carts/suspended', 'POST', {label: name, cart: {items: state.cart.map(item => ({id: item.id, name: item.name, unit: item.unit, quantity_milli: item.quantity_milli})), discount: state.discount, customer: state.customer}});
+    modal.close(true);
+    resetSale();
+    toast(`Venda “${name}” colocada em espera`);
+  });
+  list.addEventListener('click', event => {
+    const row = event.target.closest('.pick-row');
+    if (!row) return;
+    modal.run(async () => {
+      const response = await api('/api/carts/suspended/' + encodeURIComponent(row.dataset.id) + '/resume', 'POST', {});
+      modal.close(true);
+      await loadCartSnapshot(response.cart);
+      toast('Venda retomada');
+    });
+  });
+  if (busy) { label.focus(); label.select(); } else (list.querySelector('.pick-row') || modal.actions.firstElementChild).focus();
+  await modal.promise;
+  loadSuspendedCount().catch(() => {});
+  focusHome();
+}
+async function cashMoveDialog() {
+  let kind = 'withdrawn';
+  const modal = openModal({title: 'Sangria ou suprimento', eyebrow: 'Movimento de caixa · F7', text: 'Registre toda retirada ou entrada de dinheiro da gaveta. O motivo fica na auditoria.'});
+  modal.body.innerHTML = `<div class="segmented" role="group" aria-label="Tipo de movimento"><button type="button" data-kind="withdrawn">Sangria (retirada)</button><button type="button" data-kind="supplied">Suprimento (entrada)</button></div>
+    <label class="field"><span>Valor (R$)</span><input data-field="amount" class="money-input" inputmode="decimal" autocomplete="off" placeholder="Ex.: 200,00"></label>
+    <label class="field"><span>Motivo</span><input data-field="reason" maxlength="240" autocomplete="off" placeholder="Ex.: recolhimento para o cofre"></label>`;
+  const amount = modal.body.querySelector('[data-field="amount"]'), reason = modal.body.querySelector('[data-field="reason"]');
+  const refresh = () => modal.body.querySelectorAll('[data-kind]').forEach(button => button.setAttribute('aria-pressed', button.dataset.kind === kind));
+  modal.body.querySelector('.segmented').addEventListener('click', event => { const button = event.target.closest('[data-kind]'); if (!button) return; kind = button.dataset.kind; refresh(); amount.focus(); });
+  modal.action('Cancelar', '', () => modal.close(false));
+  modal.action('Registrar', 'primary', async () => {
+    const cents = parseMoney(amount.value);
+    if (cents <= 0) { amount.focus(); throw Error('Informe um valor maior que zero'); }
+    if (reason.value.trim().length < 3) { reason.focus(); throw Error('Descreva o motivo do movimento'); }
+    await api('/api/cash/movement', 'POST', {kind, amount_cents: cents, reason: reason.value.trim()});
+    modal.close(true);
+    toast(kind === 'withdrawn' ? `Sangria de ${money(cents)} registrada` : `Suprimento de ${money(cents)} registrado`);
+  });
+  refresh();
+  amount.focus();
+  if (await modal.promise) poll().catch(() => {});
+  focusHome();
+}
+async function openCash() {
+  const raw = await textDialog('Abrir caixa', 'Informe quanto existe em dinheiro na gaveta antes da primeira venda. Use 0,00 se o caixa começar sem espécie.', {eyebrow: 'Início do turno · F12', fieldLabel: 'Dinheiro inicial (R$)', placeholder: 'Ex.: 150,00', inputMode: 'decimal', acceptLabel: 'Abrir caixa',
+    validate: async value => { await api('/api/cash/open', 'POST', {opening_cents: parseMoney(value)}); }});
+  if (raw === null) return;
+  toast(`Caixa aberto com ${money(parseMoney(raw))}`);
+  await poll();
+  renderSale();
+  focusHome();
+}
+function cashSummaryMarkup(summary, result) {
+  const c = summary.categories || {};
+  const rows = [['Saldo inicial', money(summary.opening_cents)], ['Vendas do turno', `${summary.sales_count || 0} · ${money(summary.sales_total_cents || 0)}`], ['Pix', money(c.pix_cents || 0)], ['Débito', money(c.card_debit_cents || 0)], ['Crédito', money(c.card_credit_cents || 0)],
+    ['Suprimentos', money(c.supplied_cents || 0)], ['Sangrias', '− ' + money(c.withdrawn_cents || 0)], ['Devoluções em dinheiro', '− ' + money(c.cash_refunds_cents || 0)],
+    ['Fiado recebido em dinheiro', money(c.credit_received_cash_cents || 0)], ['Fiado recebido em outras formas', money(c.credit_received_other_cents || 0)]];
+  if (result) rows.splice(2, 0, ['Dinheiro das vendas', money(c.cash_sales_net_cents || 0)]);
+  let head = '';
+  if (result) {
+    const difference = result.difference_cents;
+    head = `<div class="summary-item emphasis ${difference === 0 ? '' : difference > 0 ? 'positive' : 'negative'}"><span>${difference === 0 ? 'Fechamento exato' : difference > 0 ? 'Sobra no caixa' : 'Falta no caixa'}</span><strong>${difference === 0 ? 'Conferido' : (difference > 0 ? '+ ' : '− ') + money(Math.abs(difference))}</strong></div>
+      <div class="summary-item"><span>Dinheiro contado</span><strong>${money(result.counted_cents)}</strong></div><div class="summary-item"><span>Dinheiro esperado</span><strong>${money(result.expected_cents)}</strong></div>`;
+  }
+  return `<div class="summary-grid">${head}${rows.map(([label, value]) => `<div class="summary-item"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div>`;
+}
+// Blind count: the expected cash only appears after the counted amount is recorded.
+async function closeCash() {
+  if (state.cart.length) throw Error('Finalize, cancele ou coloque a venda atual em espera (F6) antes de fechar o caixa');
+  const summary = await api('/api/cash/summary');
+  const modal = openModal({title: 'Fechar caixa', eyebrow: 'Conferência do turno · F12', className: 'wide', text: 'Conte o dinheiro da gaveta e informe o valor. O esperado e a diferença aparecem depois do fechamento.'});
+  const report = el('div', '', cashSummaryMarkup(summary, null));
+  const fields = el('div', 'form-stack', `<label class="field"><span>Dinheiro contado na gaveta (R$)</span><input data-field="counted" class="money-input" inputmode="decimal" autocomplete="off" placeholder="Informe o valor contado"></label>
+    <label class="field"><span>PIN do gerente ou superior</span><input data-field="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="Digite o PIN"></label>`);
+  modal.body.append(fields, report);
+  const counted = fields.querySelector('[data-field="counted"]'), pin = fields.querySelector('[data-field="pin"]');
+  modal.action('Cancelar', '', () => modal.close(null));
+  const accept = modal.action('Fechar caixa', 'primary', async () => {
+    if (!counted.value.trim()) { counted.focus(); throw Error('Informe o dinheiro contado na gaveta'); }
+    const cents = parseMoney(counted.value);
+    if (!pin.value.trim()) { pin.focus(); throw Error('Informe o PIN do gerente ou superior'); }
+    let result;
+    try { result = await api('/api/cash/close', 'POST', {counted_cents: cents, manager_pin: pin.value.trim()}); } catch (error) { pin.value = ''; pin.focus(); throw error; }
+    modal.heading.textContent = 'Caixa fechado';
+    modal.lead.textContent = result.difference_cents === 0 ? 'O valor contado confere com o esperado.' : result.difference_cents > 0 ? 'Há sobra no valor contado.' : 'Há falta no valor contado.';
+    fields.remove();
+    report.innerHTML = cashSummaryMarkup(summary, result);
+    modal.actions.innerHTML = '';
+    modal.action('Concluir', 'primary', () => modal.close(result)).focus();
+  });
+  counted.focus();
+  const result = await modal.promise;
+  if (result === null && accept.isConnected) return;
+  await poll();
+  renderSale();
+  focusHome();
+}
+async function receiveCreditDialog() {
+  await loadCustomers();
+  const debtors = state.customers.filter(customer => customer.open_credit_cents > 0);
+  if (!debtors.length) { toast('Nenhum cliente com fiado em aberto neste caixa', true); return; }
+  const modal = openModal({title: 'Receber pagamento de fiado', eyebrow: 'Fiado', text: 'O valor quita primeiro as compras mais antigas. Em dinheiro, entra no caixa e na conferência.'});
+  modal.body.innerHTML = `<label class="field"><span>Cliente</span><select data-field="customer">${debtors.map(customer => `<option value="${esc(customer.id)}" ${customer.id === state.customer.id ? 'selected' : ''}>${esc(customer.name)} · em aberto ${money(customer.open_credit_cents)}</option>`).join('')}</select></label>
+    <label class="field"><span>Valor recebido (R$)</span><input data-field="amount" class="money-input" inputmode="decimal" autocomplete="off"></label>
+    <label class="field"><span>Forma</span><select data-field="method"><option value="cash">Dinheiro</option><option value="pix">Pix</option><option value="card_debit">Débito</option><option value="card_credit">Crédito</option></select></label>`;
+  const field = name => modal.body.querySelector(`[data-field="${name}"]`);
+  const customer = () => debtors.find(row => row.id === field('customer').value);
+  const fill = () => { field('amount').value = moneyPlain(customer().open_credit_cents); };
+  field('customer').addEventListener('change', fill);
+  fill();
+  const receiptId = uuid();
+  modal.action('Cancelar', '', () => modal.close(null));
+  modal.action('Confirmar recebimento', 'primary', async () => {
+    const amount = parseMoney(field('amount').value);
+    if (!amount) { field('amount').focus(); throw Error('Informe o valor recebido'); }
+    modal.close(await api('/api/customers/receive', 'POST', {receipt_id: receiptId, customer_id: customer().id, amount_cents: amount, method: field('method').value}));
+  });
+  field('amount').focus();
+  field('amount').select();
+  const result = await modal.promise;
+  if (!result) return;
+  toast(`Fiado recebido: ${money(result.amount_cents)}${result.open_credit_cents != null ? ' · em aberto ' + money(result.open_credit_cents) : ''}`);
+  await Promise.all([loadCustomers(), poll()]).catch(() => {});
+  if (result.receipt) await receiptDialog({receipt: result.receipt}, result.print_job_id ? 'Recibo enviado à impressora.' : 'Recibo pronto para visualização.', {title: 'Recibo de fiado', eyebrow: 'Recebimento registrado'});
+}
+async function returnDialog(saleId) {
+  const info = await api('/api/sales/' + encodeURIComponent(saleId) + '/returnable');
+  const lines = info.items.filter(item => item.available_milli > 0);
+  if (!lines.length) { toast('Todos os itens desta venda já foram devolvidos', true); return; }
+  await loadCustomers().catch(() => {});
+  const refunds = [['cash', 'Dinheiro (sai do caixa)'], ['store_credit', 'Crédito na loja (troca)']];
+  if (info.on_account) refunds.push(['account', 'Abater do fiado']);
+  const modal = openModal({title: 'Quais itens voltaram?', eyebrow: `Devolução da venda ${saleId.slice(0, 8)}`, text: 'Informe a quantidade devolvida de cada item. O estoque volta automaticamente.', className: 'wide'});
+  modal.body.innerHTML = `<div class="return-lines">${lines.map((item, index) => `<label class="return-line"><span><strong>${esc(item.name)}</strong><small>Disponível para devolução: ${qtyText(item.available_milli, item.unit)} ${esc(item.unit)}</small></span><input data-return-index="${index}" inputmode="decimal" value="0" autocomplete="off" aria-label="Quantidade devolvida de ${esc(item.name)}"></label>`).join('')}</div>
+    <label class="field"><span>Como devolver o valor</span><select data-field="refund">${refunds.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
+    <label class="field hidden" data-wrap="customer"><span>Cliente que recebe o crédito</span><select data-field="customer"><option value="">Escolha o cliente</option>${state.customers.map(customer => `<option value="${esc(customer.id)}" ${customer.id === info.customer_id ? 'selected' : ''}>${esc(customer.name)}</option>`).join('')}</select></label>
+    <label class="field"><span>Motivo</span><input data-field="reason" maxlength="240" autocomplete="off" placeholder="Ex.: produto com defeito, troca de tamanho"></label>
+    ${role() === 'cashier' ? '<label class="field"><span>PIN do gerente</span><input data-field="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="12"></label>' : ''}
+    <p class="hint" data-total>Total a devolver: R$ 0,00</p>`;
+  const field = name => modal.body.querySelector(`[data-field="${name}"]`);
+  const quantities = () => lines.map((item, index) => {
+    const milli = Math.round(Number(modal.body.querySelector(`[data-return-index="${index}"]`).value.replace(',', '.')) * 1000);
+    return {item, milli: Number.isFinite(milli) ? milli : NaN};
+  });
+  const refresh = () => {
+    let total = 0;
+    for (const {item, milli} of quantities()) if (milli > 0) total += Math.round(item.line_total_cents * Math.min(milli, item.available_milli) / item.quantity_milli);
+    modal.body.querySelector('[data-total]').textContent = 'Total a devolver: ' + money(total);
+    modal.body.querySelector('[data-wrap="customer"]').classList.toggle('hidden', field('refund').value !== 'store_credit' || !!info.customer_id);
+  };
+  modal.body.addEventListener('input', refresh);
+  modal.body.addEventListener('change', refresh);
+  refresh();
+  const returnId = uuid();
+  modal.action('Cancelar', '', () => modal.close(null));
+  modal.action('Registrar devolução', 'primary', async () => {
+    const items = [];
+    for (const {item, milli} of quantities()) {
+      if (Number.isNaN(milli) || milli < 0 || milli > item.available_milli) throw Error(`Quantidade inválida para ${item.name}`);
+      if (item.unit === 'UN' && milli % 1000) throw Error(`${item.name} aceita somente quantidade inteira`);
+      if (milli) items.push({product_id: item.product_id, quantity_milli: milli});
+    }
+    if (!items.length) throw Error('Informe ao menos um item devolvido');
+    const reason = field('reason').value.trim();
+    if (reason.length < 3) { field('reason').focus(); throw Error('Informe o motivo da devolução'); }
+    const refund = field('refund').value;
+    const request = {return_id: returnId, refund_method: refund, reason, items, manager_pin: field('pin')?.value.trim() || undefined};
+    if (refund === 'store_credit' && !info.customer_id) {
+      request.customer_id = field('customer').value;
+      if (!request.customer_id) throw Error('Escolha o cliente que recebe o crédito');
+    }
+    const result = await api('/api/sales/' + encodeURIComponent(saleId) + '/return', 'POST', request);
+    modal.close({...result, refund});
+  });
+  modal.body.querySelector('[data-return-index]').focus();
+  modal.body.querySelector('[data-return-index]').select();
+  const result = await modal.promise;
+  if (!result) return;
+  toast(`Devolução registrada: ${money(result.total_cents)} · ${result.refund === 'cash' ? 'entregue em dinheiro' : result.refund === 'store_credit' ? 'em crédito na loja' : 'abatido do fiado'}`);
+  await Promise.all([state.tab === 'sales' ? loadSales() : null, loadCustomers(), poll()]).catch(() => {});
+  if (result.receipt) await receiptDialog({receipt: result.receipt}, result.print_job_id ? 'Comprovante de devolução enviado à impressora.' : 'Comprovante de devolução pronto para visualização.', {title: 'Comprovante de devolução', eyebrow: 'Devolução registrada'});
+}
+async function returnFlow() {
+  const id = await salePicker({title: 'Devolução ou troca', text: 'Escolha a venda de origem. A mais recente vem primeiro.', eyebrow: 'Devolução', onlyCompleted: true});
+  if (id) await returnDialog(id);
+}
+
+/* ---------- scale ---------- */
+function captureWeight(milli) {
+  const item = C.scaleTarget(state.cart, state.scale.awaitingId);
+  if (!item) return;
+  const total = item.quantity_milli + milli;
+  const stockError = stockLimitError(item, total);
+  if (stockError) { scanError(stockError); return; }
+  item.quantity_milli = total;
+  // Locked: later readings (same bag left on the plate, another object) cannot change this line.
+  state.scale.awaitingId = null;
+  state.scale.gate.reset();
+  touch(item.id);
+  cartChanged();
+  beep('ok');
+  scanStatus('ok', `${item.name} · peso capturado ${qtyText(milli, 'KG')} kg`);
+}
+function onScaleReading(milli) {
+  if (modalStack.length || !C.scaleTarget(state.cart, state.scale.awaitingId)) return;
+  clearTimeout(state.scale.settleTimer);
+  const stable = state.scale.gate.push(milli);
+  if (stable !== null) { captureWeight(stable); return; }
+  scanStatus('', `Balança: ${qtyText(milli, 'KG')} kg · estabilizando…`);
+  state.scale.settleTimer = setTimeout(() => { const settled = state.scale.gate.settle(); if (settled) captureWeight(settled); }, 700);
+}
+async function readScale(port, reader) {
+  const decoder = new TextDecoder();
+  try {
+    while (state.scale.port === port && port.readable) {
+      const result = await reader.read();
+      if (result.done) break;
+      if (!result.value) continue;
+      state.scale.buffer += decoder.decode(result.value, {stream: true});
+      const lines = state.scale.buffer.split(/[\r\n]+/);
+      state.scale.buffer = lines.pop() || '';
+      for (const line of lines) { const milli = C.scaleReading(line); if (milli) onScaleReading(milli); }
+    }
+  } catch (error) {
+    if (state.scale.port === port) toast('A conexão com a balança foi encerrada', true);
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+    if (state.scale.port === port) { state.scale.port = null; state.scale.reader = null; state.scale.buffer = ''; renderScaleChip(); }
+  }
+}
+async function disconnectScale() {
+  const {port, reader} = state.scale;
+  state.scale.port = null;
+  state.scale.reader = null;
+  if (reader) { try { await reader.cancel(); } catch { /* ignore */ } try { reader.releaseLock(); } catch { /* ignore */ } }
+  if (port) { try { await port.close(); } catch { /* ignore */ } }
+  state.scale.buffer = '';
+  renderScaleChip();
+}
+async function connectScale() {
+  if (!navigator.serial) throw Error('Este navegador não oferece Web Serial. Use Chrome ou Edge no computador do caixa.');
+  const port = await navigator.serial.requestPort();
+  await port.open({baudRate: Number(state.scale.baudRate) || 9600, dataBits: 8, stopBits: 1, parity: 'none'});
+  state.scale.port = port;
+  state.scale.buffer = '';
+  state.scale.gate.reset();
+  const reader = port.readable.getReader();
+  state.scale.reader = reader;
+  readScale(port, reader);
+  renderScaleChip();
+}
+async function scaleDialog() {
+  const modal = openModal({title: 'Balança e etiquetas', eyebrow: 'Equipamentos', text: 'Com a balança conectada, escolha o produto por quilo e coloque-o no prato: o peso entra somente nesse item e fica travado.'});
+  modal.body.innerHTML = `<p class="hint" data-status></p>
+    <label class="field"><span>Etiqueta de balança (EAN iniciado em 2)</span><select data-field="mode"><option value="weight">Traz o peso em gramas</option><option value="price">Traz o preço total</option></select></label>
+    <label class="field"><span>Velocidade da porta serial</span><select data-field="baud"><option value="9600">9600 bps</option><option value="4800">4800 bps</option><option value="19200">19200 bps</option></select></label>`;
+  const mode = modal.body.querySelector('[data-field="mode"]'), baud = modal.body.querySelector('[data-field="baud"]'), status = modal.body.querySelector('[data-status]');
+  mode.value = state.scale.barcodeMode;
+  baud.value = state.scale.baudRate;
+  mode.addEventListener('change', () => { state.scale.barcodeMode = mode.value; prefs.set('scale.barcodeMode', mode.value); });
+  baud.addEventListener('change', () => { state.scale.baudRate = baud.value; prefs.set('scale.baudRate', baud.value); if (state.scale.port) status.textContent = 'Desconecte e conecte a balança para aplicar a nova velocidade.'; });
+  modal.action('Fechar', '', () => modal.close());
+  const toggle = modal.action('', 'primary', async () => { if (state.scale.port) await disconnectScale(); else await connectScale(); refresh(); });
+  const refresh = () => {
+    status.textContent = state.scale.port ? `Balança serial conectada a ${state.scale.baudRate} bps.` : 'Balança manual: o peso é digitado ou lido da etiqueta.';
+    toggle.textContent = state.scale.port ? 'Desconectar balança' : 'Conectar balança';
+  };
+  refresh();
+  toggle.focus();
+  await modal.promise;
+  focusHome();
+}
+
+/* ---------- actions, key ruler, help, palette ---------- */
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  prefs.set('theme', theme);
+}
+async function toggleFocus() {
+  const enabled = !document.body.classList.contains('focus-mode');
+  document.body.classList.toggle('focus-mode', enabled);
+  prefs.set('focus', enabled ? 'on' : 'off');
+  try {
+    if (enabled && !document.fullscreenElement) await document.documentElement.requestFullscreen();
+    else if (!enabled && document.fullscreenElement) await document.exitFullscreen();
+  } catch { /* fullscreen may be denied; the focus layout still applies */ }
+  if (enabled && canSell(role())) setTab('checkout');
+  renderKeybar();
+  focusHome();
+}
+async function lockTerminal() {
+  if (state.cart.length) throw Error('Finalize, cancele ou coloque a venda em espera (F6) antes de trocar de operador');
+  await api('/api/logout', 'POST', {});
+  clearLocalSale();
+  state.done = null;
+  state.cartRestored = false;
+  try { sessionStorage.removeItem('pdv2.cart'); } catch { /* storage unavailable */ }
+  toast('Caixa bloqueado. O próximo operador entra com o próprio PIN.');
+  await loadSession();
+}
+async function logout() {
+  if (state.session?.cash) throw Error('Feche o caixa (F12) antes de sair, ou use “Trocar operador”.');
+  await lockTerminal();
+}
+function goBack() {
+  const input = $('productSearch');
+  if (state.tab !== 'checkout') { if (canSell(role())) setTab('checkout'); return; }
+  if (state.pay.active) {
+    if (state.pay.method) { cancelPayment(); state.pay.active = true; renderSale(); $('paymentMethods').focus(); return; }
+    cancelPayment();
+  } else if (state.scale.awaitingId) {
+    const waiting = state.cart.find(item => item.id === state.scale.awaitingId);
+    state.scale.awaitingId = null;
+    if (waiting && waiting.quantity_milli <= 0) state.cart.splice(state.cart.indexOf(waiting), 1);
+    state.lastItemId = state.selectedId = state.cart.at(-1)?.id || null;
+  } else if (input.value) input.value = '';
+  else if (state.pendingQty) { state.pendingQty = null; renderPendingQty(); }
+  else if (state.done) state.done = null;
+  scanStatus('', 'Leitor pronto');
+  renderSale();
+  focusScan();
+}
+const needsCart = () => (state.cart.length ? '' : 'Nenhum item na venda');
+// label/words feed the palette; sale = belongs to the sale screen; why() returns the reason it is unavailable.
+const ACTIONS = {
+  help: {label: 'Ajuda e atalhos', words: 'teclas atalhos', run: openHelp},
+  search: {label: 'Buscar produto no catálogo', words: 'catalogo produto nome grade categoria', sale: true, run: () => openSearch('')},
+  quantity: {label: 'Alterar quantidade ou peso do item', words: 'qtd peso multiplicar', sale: true, why: needsCart, run: () => changeQuantity()},
+  customer: {label: 'Cliente e CPF na nota', words: 'cpf cnpj cliente vendedor documento', sale: true, run: () => customerDialog('document')},
+  discount: {label: 'Desconto na venda', words: 'abatimento percentual', sale: true, why: needsCart, pin: () => role() === 'cashier', run: discountDialog},
+  hold: {label: 'Vendas em espera: guardar ou retomar', words: 'suspender espera retomar pausar', sale: true, run: holdDialog},
+  cashMove: {label: 'Sangria ou suprimento', words: 'retirada entrada dinheiro cofre troco', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: cashMoveDialog},
+  removeItem: {label: 'Cancelar item selecionado', words: 'remover excluir tirar', sale: true, why: needsCart, pin: () => role() === 'cashier', run: () => removeItem()},
+  reprint: {label: 'Reimprimir comprovante', words: 'recibo cupom segunda via imprimir', sell: true, run: reprint},
+  pay: {label: 'Pagar a venda', words: 'receber finalizar fechar venda', sale: true, why: payBlockReason, run: startPayment},
+  focus: {label: 'Modo foco (tela cheia)', words: 'fullscreen tela cheia abas', run: toggleFocus},
+  closeCash: {label: 'Abrir ou fechar caixa', words: 'abertura fechamento conferencia turno', sell: true, pin: () => !!state.session?.cash, run: () => (state.session?.cash ? closeCash() : openCash())},
+  back: {label: 'Voltar', words: 'esc sair cancelar', run: goBack},
+  palette: {label: 'Paleta de comandos', hidden: true, run: openPalette},
+  receiveCredit: {label: 'Receber fiado de cliente', words: 'fiado a prazo pagamento divida', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: receiveCreditDialog},
+  returnSale: {label: 'Devolução ou troca', words: 'devolver trocar estorno', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: returnFlow},
+  discardSale: {label: 'Cancelar a venda atual', words: 'descartar limpar nova venda', sale: true, why: needsCart, pin: () => role() === 'cashier', run: discardSale},
+  scale: {label: 'Balança e etiquetas', words: 'peso serial conectar', sell: true, run: scaleDialog},
+  refreshCatalog: {label: 'Atualizar catálogo e operadores', words: 'sincronizar produtos precos', run: async () => { await refreshOperators(); await poll(); await refreshCartProducts(); }},
+  lock: {label: 'Trocar operador (bloquear caixa)', words: 'bloquear sair trocar', run: lockTerminal},
+  logout: {label: 'Sair', words: 'logout encerrar', why: () => (state.session?.cash ? 'Feche o caixa antes de sair' : ''), run: logout},
+  themeLight: {label: 'Tema claro', words: 'aparencia cor', run: () => setTheme('light')},
+  themeDark: {label: 'Tema escuro', words: 'aparencia cor noite', run: () => setTheme('dark')},
+  themeContrast: {label: 'Tema de alto contraste', words: 'aparencia acessibilidade', run: () => setTheme('contrast')},
+  tabCheckout: {label: 'Ir para o Caixa', words: 'aba venda', sell: true, run: () => setTab('checkout')},
+  tabSales: {label: 'Ir para Vendas', words: 'aba historico', run: () => setTab('sales')},
+  tabStock: {label: 'Ir para Estoque', words: 'aba ajuste', why: () => (canAdjustStock(role()) ? '' : 'Seu perfil não acessa o estoque'), run: () => setTab('stock')},
+  tabPrinters: {label: 'Ir para Impressoras', words: 'aba termica fila', why: () => (canManage(role()) ? '' : 'Disponível para gerentes'), run: () => setTab('printers')},
+  tabSystem: {label: 'Ir para Sistema', words: 'aba diagnostico backup sincronizacao sobre', why: () => (canManage(role()) ? '' : 'Disponível para gerentes'), run: () => setTab('system')},
+};
+function actionBlocked(name) {
+  const action = ACTIONS[name];
+  if ((action.sale || action.sell) && !canSell(role())) return 'Seu perfil não realiza vendas';
+  return action.why ? action.why() : '';
+}
+async function runAction(name) {
+  const action = ACTIONS[name];
+  if (!action) return;
+  const reason = actionBlocked(name);
+  if (reason) { toast(reason, true); beep('error'); return; }
+  if (action.sale && state.tab !== 'checkout') setTab('checkout');
+  try { await action.run(); } catch (error) { toast(error.message, true); beep('error'); }
+}
+const PAY_CONTEXT_ACTIONS = ['help', 'customer', 'discount', 'focus', 'back', 'palette'];
+let keybarMarkup = '';
+function renderKeybar() {
+  if (!state.session?.operator) return;
+  const keyButton = ({cap, label, short, action, pay, title = '', dim = false, accent = false, on = false, lock = false, count = 0}) =>
+    `<button type="button" class="key${dim ? ' dim' : ''}${accent ? ' accent' : ''}${on ? ' on' : ''}" ${action ? `data-action="${action}"` : ''} ${pay != null ? `data-paykey="${pay}"` : ''} ${short ? 'data-short' : ''} title="${esc(title)}" aria-disabled="${dim}">
+      ${count ? `<span class="key-count">${count}</span>` : ''}${lock ? ico('lock', 'key-lock') : ''}<kbd>${esc(cap)}</kbd><span class="kl"><span class="kl-full">${label}</span>${short ? `<span class="kl-short">${esc(short)}</span>` : ''}</span></button>`;
+  let keys;
+  if (state.pay.active && state.tab === 'checkout') {
+    const {method, other} = state.pay;
+    keys = state.payOptions.filter(option => option.key).map(option => keyButton({cap: option.key, label: esc(option.short || option.label), pay: option.key, title: option.label,
+      on: option.method === method && (method !== 'other' || option.id === other?.id)}));
+    keys.push(keyButton({cap: '0', label: 'Dividir', pay: '0', title: 'Dividir o pagamento em mais de uma forma', on: method === 'split'}));
+    keys.push(keyButton({cap: 'F4', label: 'Cliente/<wbr>CPF', action: 'customer'}), keyButton({cap: 'F5', label: 'Desconto', action: 'discount', lock: role() === 'cashier'}));
+    keys.push(keyButton({cap: 'Enter', label: 'Confirmar', action: 'confirm', accent: true, dim: !method, title: method ? 'Confirmar a venda' : 'Escolha a forma de pagamento'}));
+    keys.push(keyButton({cap: 'Esc', label: 'Voltar', action: 'back'}));
+  } else {
+    keys = C.SHORTCUTS.map(shortcut => {
+      const action = ACTIONS[shortcut.action], reason = actionBlocked(shortcut.action);
+      let label = shortcut.label.replace('/', '/<wbr>');
+      if (shortcut.action === 'closeCash' && !state.session.cash) label = 'Abrir caixa';
+      return keyButton({cap: shortcut.cap || shortcut.key, label, short: shortcut.short, action: shortcut.action, title: reason || shortcut.hint || action.label, dim: !!reason,
+        accent: shortcut.action === 'pay' && !reason, on: shortcut.action === 'focus' && document.body.classList.contains('focus-mode'),
+        lock: !reason && !!action.pin?.(), count: shortcut.action === 'hold' ? state.suspendedCount : 0});
+    });
+  }
+  const markup = keys.join('');
+  if (markup !== keybarMarkup) { keybarMarkup = markup; $('keyBar').innerHTML = markup; }
+}
+function openHelp() {
+  const modal = openModal({title: 'Atalhos do caixa', eyebrow: 'Ajuda · F1', text: 'Tudo o que está na régua de teclas também pode ser tocado. Ctrl+K abre a busca de comandos por nome.', className: 'wide', onKey: arrowNav('.help-item')});
+  const item = (cap, label, action = '') => `<button type="button" class="help-item" ${action ? `data-action="${action}"` : 'tabindex="-1"'}><kbd>${esc(cap)}</kbd><span>${esc(label)}</span></button>`;
+  const sections = [
+    ['Venda', C.SHORTCUTS.map(shortcut => item(shortcut.cap || shortcut.key, shortcut.action === 'closeCash' ? 'Abrir ou fechar caixa' : shortcut.hint || shortcut.label, shortcut.action)).join('')],
+    ['Leitura e lista', [item('Enter', 'Lança o código digitado ou lido'), item('3*cód', 'Lança 3 unidades do código'), item('↑ ↓', 'Seleciona o item da lista'), item('Delete', 'Cancela o item selecionado'), item('Ctrl+K', 'Busca de comandos por nome', 'palette')].join('')],
+    ['Pagamento (depois do F10)', [...C.PAY_KEYS.map(option => item(option.key, option.label)), item('7 a 9', 'Formas próprias da empresa'), item('0', 'Dividir o pagamento'), item('Enter', 'Confirma a venda'), item('Esc', 'Volta um passo')].join('')],
+    ['Outras ações', ['receiveCredit', 'returnSale', 'discardSale', 'scale', 'refreshCatalog', 'lock'].map(name => item('•', ACTIONS[name].label, name)).join('')],
+  ];
+  modal.body.innerHTML = sections.map(([title, items]) => `<div class="menu-label">${title}</div><div class="help-grid">${items}</div>`).join('');
+  modal.action('Fechar <kbd>Esc</kbd>', 'primary', () => modal.close()).focus();
+  modal.body.addEventListener('click', event => { const button = event.target.closest('[data-action]'); if (!button) return; modal.close(); runAction(button.dataset.action); });
+  return modal.promise;
+}
+function openPalette() {
+  const modal = openModal({title: 'O que você quer fazer?', eyebrow: 'Comandos · Ctrl+K', className: 'wide', onKey: (event, self) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(active + (event.key === 'ArrowDown' ? 1 : -1)); return true; }
+    if (event.key === 'Enter') { event.preventDefault(); const row = list.children[active]; if (row?.dataset.action) { self.close(); runAction(row.dataset.action); } return true; }
+    return false;
+  }});
+  const field = el('label', 'search-field', `${ico('search')}<input placeholder="Digite: sangria, cpf, reimprimir, tema…" autocomplete="off" spellcheck="false" aria-label="Buscar comando">`);
+  const input = field.querySelector('input'), list = el('div', 'menu-list');
+  modal.body.append(field, list);
+  let active = 0;
+  const setActive = index => {
+    const rows = [...list.children];
+    if (!rows.length) return;
+    active = (index + rows.length) % rows.length;
+    rows.forEach((row, position) => row.classList.toggle('active', position === active));
+    rows[active].scrollIntoView({block: 'nearest'});
+  };
+  const render = () => {
+    const term = fold(input.value.trim());
+    const rows = Object.entries(ACTIONS).filter(([, action]) => !action.hidden).map(([name, action]) => ({name, action, key: C.SHORTCUTS.find(shortcut => shortcut.action === name), reason: actionBlocked(name)}))
+      .filter(row => !term || fold(row.action.label + ' ' + (row.action.words || '')).includes(term));
+    list.innerHTML = rows.length ? rows.map(row => `<button type="button" class="menu-item" data-action="${row.name}" tabindex="-1"><span>${esc(row.action.label)}${row.reason ? ` <small>· ${esc(row.reason)}</small>` : ''}</span>${row.key ? `<kbd>${esc(row.key.cap || row.key.key)}</kbd>` : ''}</button>`).join('') : '<p class="pick-empty">Nenhum comando com esse nome.</p>';
+    setActive(0);
+  };
+  input.addEventListener('input', render);
+  list.addEventListener('click', event => { const row = event.target.closest('[data-action]'); if (!row) return; modal.close(); runAction(row.dataset.action); });
+  render();
+  input.focus();
+  return modal.promise;
+}
+function openMenu() {
+  const operator = state.session.operator, cashOpen = !!state.session.cash;
+  const modal = openModal({title: operator.name, eyebrow: roleNames[operator.role] || operator.role, className: 'menu', backdropClass: 'menu-backdrop', onKey: arrowNav('.menu-item')});
+  const item = (name, label = ACTIONS[name].label) => {
+    const shortcut = C.SHORTCUTS.find(row => row.action === name), reason = actionBlocked(name);
+    return `<button type="button" class="menu-item" data-action="${name}" ${reason ? 'disabled' : ''} title="${esc(reason)}"><span>${esc(label)}</span>${shortcut ? `<kbd>${esc(shortcut.cap || shortcut.key)}</kbd>` : ''}</button>`;
+  };
+  const sells = canSell(operator.role), theme = document.documentElement.dataset.theme || 'light';
+  const toggle = (key, label, value) => `<button type="button" class="menu-item" data-pref="${key}"><span>${label}</span><small>${value}</small></button>`;
+  modal.body.innerHTML = `<div class="menu-list">
+    ${sells ? `<div class="menu-label">Caixa</div>${item('closeCash', cashOpen ? 'Fechar caixa' : 'Abrir caixa')}${item('cashMove')}${item('hold', 'Vendas em espera')}${item('receiveCredit')}${item('returnSale')}${state.cart.length ? item('discardSale') : ''}<div class="menu-sep"></div>` : ''}
+    <div class="menu-label">Aparência</div>
+    <div class="segmented" role="group" aria-label="Tema"><button type="button" data-theme-choice="light" aria-pressed="${theme === 'light'}">Claro</button><button type="button" data-theme-choice="dark" aria-pressed="${theme === 'dark'}">Escuro</button><button type="button" data-theme-choice="contrast" aria-pressed="${theme === 'contrast'}">Alto contraste</button></div>
+    ${sells ? item('focus', document.body.classList.contains('focus-mode') ? 'Sair do modo foco' : 'Modo foco (tela cheia)') : ''}
+    ${toggle('sound', 'Som de leitura', prefs.get('sound', 'on') === 'on' ? 'Ligado' : 'Desligado')}
+    ${sells ? toggle('receiptPreview', 'Abrir comprovante após a venda', prefs.get('receiptPreview', 'off') === 'on' ? 'Sim' : 'Não') : ''}
+    <div class="menu-sep"></div><div class="menu-label">Equipamentos e ajuda</div>
+    ${sells ? item('scale') : ''}${item('refreshCatalog')}${item('help')}
+    <div class="menu-sep"></div><div class="menu-label">Sessão</div>
+    ${item('lock')}${cashOpen ? '' : item('logout')}</div>`;
+  modal.body.addEventListener('click', event => {
+    const themeButton = event.target.closest('[data-theme-choice]'), pref = event.target.closest('[data-pref]'), action = event.target.closest('[data-action]');
+    if (themeButton) {
+      setTheme(themeButton.dataset.themeChoice);
+      modal.body.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-pressed', button === themeButton));
+    } else if (pref) {
+      const key = pref.dataset.pref, fallback = key === 'sound' ? 'on' : 'off';
+      const next = prefs.get(key, fallback) === 'on' ? 'off' : 'on';
+      prefs.set(key, next);
+      pref.querySelector('small').textContent = key === 'sound' ? (next === 'on' ? 'Ligado' : 'Desligado') : (next === 'on' ? 'Sim' : 'Não');
+      if (key === 'sound') beep('ok');
+    } else if (action) { modal.close(); runAction(action.dataset.action); }
+  });
+  modal.action('Fechar', '', () => modal.close());
+  modal.body.querySelector('.menu-item:not([disabled])')?.focus();
+  return modal.promise;
+}
+
+/* ---------- pages: Vendas, Estoque, Impressoras, Sistema ---------- */
+const badge = ([label, kind] = ['—', '']) => `<span class="badge ${kind || ''}">${esc(label)}</span>`;
+async function loadSales() {
+  const data = await api('/api/sales'), sells = canSell(role());
+  $('salesList').innerHTML = data.sales.length ? data.sales.map(sale => `<div class="list-row"><span><strong>${money(sale.total_cents)} ${badge(saleStatusNames[sale.status] || [sale.status, ''])}</strong><small>${dateTimeText(sale.created_at)} · ${esc(sale.customer_name || 'Consumidor não identificado')} · venda ${esc(sale.id.slice(0, 8))}${sale.void_reason ? ' · ' + esc(sale.void_reason) : ''}</small></span>
+    <span class="list-actions"><button class="btn" data-detail="${esc(sale.id)}">Comprovante</button>${sells ? `<button class="btn" data-reprint="${esc(sale.id)}">Reimprimir</button>` : ''}${sells && sale.status === 'completed' ? `<button class="btn" data-return="${esc(sale.id)}">Devolver</button><button class="btn danger" data-void="${esc(sale.id)}">Cancelar</button>` : ''}</span></div>`).join('') : '<p class="list-empty">Nenhuma venda neste terminal.</p>';
+}
+async function voidSale(id) {
+  const reason = await textDialog('Motivo do cancelamento', 'Descreva o motivo para registrar na auditoria da venda.', {eyebrow: 'Cancelamento de venda', fieldLabel: 'Motivo', placeholder: 'Ex.: produto lançado incorretamente', acceptLabel: 'Continuar', multiline: true, minLength: 3, maxLength: 240});
+  if (!reason) return;
+  let pin = '';
+  if (role() === 'cashier') {
+    pin = await pinDialog('Autorizar cancelamento', 'Cancelar uma venda exige o PIN de um gerente.');
+    if (!pin) return;
+  }
+  if (!(await confirmDialog('Confirmar cancelamento', 'A venda será cancelada, o estoque volta e a operação fica registrada na auditoria.', 'Cancelar venda', {danger: true, cancelLabel: 'Manter venda'}))) return;
+  await api('/api/sales/' + encodeURIComponent(id) + '/void', 'POST', {reason, manager_pin: pin});
+  pin = '';
+  toast('Venda cancelada. Devolva o pagamento ao cliente pela mesma forma.');
+  await Promise.all([loadSales(), poll()]);
+}
+async function loadStock() {
+  state.stockProducts = (await api('/api/products?q=' + encodeURIComponent($('stockSearch').value.trim()))).products;
+  const products = state.stockProducts, select = $('stockProduct'), previous = select.value;
+  select.innerHTML = products.map(product => `<option value="${esc(product.id)}">${esc(product.name)} (${esc(product.unit)})</option>`).join('');
+  select.value = C.keepSelection(previous, products.map(product => product.id));
+  $('stockList').innerHTML = products.length ? products.map(product => `<div class="list-row"><span><strong>${esc(product.name)}</strong><small>${esc(product.sku || product.id)}${product.barcode ? ' · EAN ' + esc(product.barcode) : ''}</small></span><strong class="num">${product.stock_controlled === false ? 'Sem controle' : `${qtyText(product.stock_milli, product.unit)} ${esc(product.unit)}`}</strong></div>`).join('') : '<p class="list-empty">Nenhum produto encontrado.</p>';
+}
+async function loadPrinters() {
+  const data = await api('/api/print/settings');
+  applyPrinterData(data);
+  const settings = (data.settings || []).filter(setting => setting.kind === 'receipt'), jobs = (data.jobs || []).filter(job => job.kind === 'receipt');
+  $('printerSettings').innerHTML = settings.length ? settings.map(setting => `<div class="list-row"><span><strong>Recibo térmico</strong><small>${esc(driverNames[setting.driver] || setting.driver)} · ${esc(setting.format === 'escpos58' ? 'bobina 58 mm' : 'bobina 80 mm')}</small></span><span>${esc(setting.target)}</span></div>`).join('') : '<p class="list-empty">Nenhuma impressora de recibos configurada.</p>';
+  $('printJobs').innerHTML = jobs.length ? jobs.map(job => `<div class="list-row"><span><strong>Recibo ${badge(jobStatusNames[job.status] || [job.status, ''])}</strong><small>${dateTimeText(job.created_at)} · ${esc(driverNames[job.driver] || job.driver)}${job.error ? ' · ' + esc(job.error) : ''}</small></span><span class="list-actions">${['uncertain', 'printed'].includes(job.status) ? `<button class="btn" data-retry="${esc(job.id)}">Reenviar</button>` : ''}</span></div>`).join('') : '<p class="list-empty">Fila de recibos vazia.</p>';
+}
+async function loadSystem() {
+  const result = await api('/api/sync'), sync = result.sync, license = result.license, indicator = C.syncIndicator(sync, Date.now());
+  $('currentVersion').textContent = $('aboutVersion').textContent = `Versão instalada: ${result.version || '—'}`;
+  $('systemPending').textContent = sync.pending;
+  $('systemReview').textContent = indicator.review;
+  $('systemConflicts').textContent = sync.conflicts ?? 0;
+  $('systemLastSync').textContent = sync.last_sync_at ? dateTimeText(sync.last_sync_at) : 'Ainda não ocorreu';
+  $('systemLease').textContent = license.expires_at ? new Date(license.expires_at * 1000).toLocaleString('pt-BR') : license.reason;
+  $('systemError').textContent = indicator.detail;
+  $('identityInfo').textContent = JSON.stringify({connection: state.session.connection, device_id: state.session.device_id, paired: state.session.paired, license: license.state, heartbeat_at: sync.last_heartbeat_at}, null, 2);
+  $('releaseInfo').textContent = sync.release ? `Versão ${sync.release.version} · ${sync.release.notes || 'Manifesto assinado verificado'}` : (sync.release_error || 'Nenhuma versão estável publicada.');
+  const link = $('releaseLink');
+  link.classList.toggle('hidden', !sync.release);
+  if (sync.release) link.href = sync.release.url; else link.removeAttribute('href');
+  if (!canManage(role())) { $('auditList').textContent = 'Auditoria disponível para gerentes e administradores.'; $('conflictList').textContent = 'Conflitos disponíveis para gerentes e administradores.'; return; }
+  try {
+    const [audit, conflicts] = await Promise.all([api('/api/audit'), api('/api/sync/conflicts')]);
+    $('auditList').innerHTML = audit.events.map(event => `<div class="mini-row"><span>${esc(event.action)}${event.subject_id ? ' · ' + esc(String(event.subject_id).slice(0, 8)) : ''}</span><small>${dateTimeText(event.created_at)}</small></div>`).join('') || 'Sem eventos.';
+    $('conflictList').innerHTML = (conflicts.conflicts || []).map(conflict => `<div class="mini-row"><span>${esc(conflict.reason)} · ${esc(conflict.aggregate_id)}</span><small>${esc(conflict.status)}</small></div>`).join('') || 'Sem conflitos locais.';
+  } catch { $('auditList').textContent = 'Não foi possível carregar a auditoria.'; $('conflictList').textContent = 'Não foi possível carregar os conflitos.'; }
+}
+async function loadBackups() {
+  if (!canManage(role())) { $('backupInfo').textContent = 'Backup local disponível para gerentes e administradores.'; return; }
+  try {
+    const data = await api('/api/backups');
+    $('backupInfo').textContent = data.copies.length ? `${data.copies.length} cópia(s) em ${data.directory}. Mais recente: ${data.copies[0].name}` : `Nenhuma cópia criada. Destino: ${data.directory}`;
+  } catch { $('backupInfo').textContent = 'Não foi possível carregar os backups locais.'; }
+}
+async function createNewProfile() {
+  if (!(await confirmDialog('Criar perfil para outra empresa?', 'O banco atual será preservado em um backup e o próximo pareamento começará em um diretório separado.', 'Criar perfil'))) return;
+  const result = await api('/api/new-profile', 'POST', {confirm: true});
+  state.session = null;
+  clearLocalSale();
+  state.lastOperatorsRefreshAt = 0;
   toast(`Novo perfil criado: ${result.profile}. Informe a licença e o código da outra empresa.`);
   await loadSession();
 }
-function setTab(tab){state.tab=tab;document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.querySelectorAll('.tab-panel').forEach(panel=>panel.classList.add('hidden'));$(tab+'Tab').classList.remove('hidden');({checkout:()=>{},sales:loadSales,stock:loadStock,printers:loadPrinters,system:async()=>{await loadSystem();await loadBackups()}}[tab]||(()=>{}))()?.catch?.(e=>toast(e.message,true))}
-function on(id,event,fn){$(id).addEventListener(event,ev=>{if(event==='submit')ev.preventDefault();Promise.resolve().then(()=>fn(ev)).catch(e=>toast(e.message,true))})}
-on('pairForm','submit',async()=>{await api('/api/pair','POST',{cloud_url:$('cloudUrl').value,license_key:$('licenseKey').value.trim(),code:$('pairCode').value.trim()});$('licenseKey').value='';$('pairCode').value='';toast('Terminal vinculado à empresa. Entre com o PIN do operador.');await loadSession()});
-on('loginForm','submit',async()=>{if(state.loginLockedUntil>Date.now())throw Error(`Aguarde ${Math.ceil((state.loginLockedUntil-Date.now())/1000)} segundos para tentar novamente`);try{const result=await api('/api/login','POST',{operator_id:$('operatorSelect').value,pin:$('operatorPin').value});state.csrf=result.csrf;state.loginLockedUntil=0;$('operatorPin').value='';await loadSession()}catch(error){if(error.status===429){state.loginLockedUntil=Date.now()+300000;throw Error('Muitas tentativas; aguarde cinco minutos antes de tentar novamente')}throw error}});
-on('refreshBootstrap','click',async()=>{await refreshOperators();await loadSession()});
-on('refreshCatalogBtn','click',async()=>{const button=$('refreshCatalogBtn');button.disabled=true;try{await refreshOperators();await loadSession();toast('Catálogo atualizado')}finally{button.disabled=false}});
-on('changeConnection','click',async()=>{if(!(await confirmDialog('Corrigir pareamento de teste?','Use esta opção apenas quando não existem vendas, caixa ou movimentações. Para outra empresa, crie um perfil separado.','Corrigir pareamento')))return;await api('/api/unpair','POST',{confirm:true});state.session=null;state.cart=[];toast('Pareamento de teste removido. Informe a licença e o novo código.');await loadSession()});
-on('newProfileBtn','click',createNewProfile);
-on('newProfileLoginBtn','click',createNewProfile);
-async function closeCashAndRefresh(){const result=await cashCloseDialog();if(result){toast(`Caixa fechado · ${result.difference_cents===0?'fechamento exato':result.difference_cents>0?'sobra de '+money(result.difference_cents):'falta de '+money(Math.abs(result.difference_cents))}`);await loadSession()}}
-async function lockTerminal(){if(!state.session?.operator)return;await api('/api/logout','POST',{});state.cart=[];toast('Caixa bloqueado. O próximo operador pode entrar com o próprio PIN.');await loadSession()}
-async function logout(){if(state.session?.cash){await closeCashAndRefresh();return}await api('/api/logout','POST',{});state.cart=[];await loadSession()}
-on('logoutBtn','click',logout);
-on('lockBtn','click',lockTerminal);
-document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
-let searchTimer;on('productSearch','input',()=>{clearTimeout(searchTimer);$('scannerStatus').innerHTML='<span class="scanner-dot active"></span> Procurando no catálogo…';searchTimer=setTimeout(()=>loadProducts().then(()=>{$('scannerStatus').innerHTML='<span class="scanner-dot"></span> Leitor USB pronto · aponte para o código e aguarde Enter ou Tab'}).catch(e=>toast(e.message,true)),180)});
-let stockSearchTimer;on('stockSearch','input',()=>{clearTimeout(stockSearchTimer);stockSearchTimer=setTimeout(()=>loadStock().catch(e=>toast(e.message,true)),180)});
-async function processScannerInput(){const query=$('productSearch').value.trim();if(!query)return;$('scannerStatus').innerHTML='<span class="scanner-dot active"></span> Código lido · validando produto…';let result={products:state.products||[]};try{let product=(state.products||[]).find(p=>[p.barcode,p.sku,p.id].map(String).includes(query));if(!product){result=await api('/api/products?q='+encodeURIComponent(query));product=(result.products||[]).find(p=>[p.barcode,p.sku,p.id].map(String).includes(query));if(!product&&(result.products||[]).length===1)product=result.products[0]}let quantityOverride=null;if(!product&&/^2\d{12}$/.test(query)){const all=(await api('/api/products')).products||[];const decoded=decodeScaleBarcode(query,all);if(decoded){product=decoded.product;quantityOverride=decoded.milli;result.products=all}}if(!product){$('scannerStatus').innerHTML='<span class="scanner-dot error"></span> Código não encontrado · confira o cadastro';toast('Nenhum produto encontrado para este código',true);return}if(result.products?.length)state.products=result.products;await addProduct(product.id,quantityOverride);$('productSearch').value='';renderProducts();$('scannerStatus').innerHTML=quantityOverride?'<span class="scanner-dot success"></span> Etiqueta da balança lida · peso aplicado':'<span class="scanner-dot success"></span> Produto adicionado · leitor pronto para a próxima leitura'}catch(error){$('scannerStatus').innerHTML='<span class="scanner-dot error"></span> Não foi possível consultar o catálogo';throw error}}
-on('productSearch','keydown',ev=>{if(ev.key==='Enter'||ev.key==='Tab'){const value=$('productSearch').value.trim();if(value){ev.preventDefault();processScannerInput().catch(e=>toast(e.message,true))}}});
-on('focusScannerBtn','click',()=>{focusScannerInput(true);$('scannerStatus').innerHTML='<span class="scanner-dot active"></span> Leitor USB em foco · aguarde a leitura';});
-on('scaleConnectBtn','click',async()=>{await connectScale()});
-on('scaleBarcodeMode','change',()=>{state.scale.barcodeMode=$('scaleBarcodeMode').value;localStorage.setItem('pdv2.scale.barcodeMode',state.scale.barcodeMode);scaleStatus(state.scale.barcodeMode==='price'?'Etiqueta EAN configurada para preço total':'Etiqueta EAN configurada para peso em gramas','success')});
-on('scaleBaud','change',()=>{state.scale.baudRate=$('scaleBaud').value;localStorage.setItem('pdv2.scale.baudRate',state.scale.baudRate);if(state.scale.port)toast('Desconecte e conecte a balança novamente para aplicar a velocidade')});
-$('scaleBarcodeMode').value=state.scale.barcodeMode;
-$('scaleBaud').value=state.scale.baudRate;
-for(const id of ['payCash','payPix','payCredit','payDebit','paySplitCash','paySplitPix','paySplitCredit','paySplitDebit','cashOpeningAmount','cashAmount'])$(id)?.addEventListener('blur',()=>formatMoneyInput($(id)));$('discountInput').addEventListener('blur',()=>formatPercentInput($('discountInput')));
-on('applyDiscountBtn','click',applyDiscount);
-on('discountInput','input',()=>{state.discountApproval=null;state.saleRequest=null;renderDiscountState();$('cartTotal').textContent=money(cartTotal());renderPaymentUI()});
-for(const id of ['payCash','payPix','payCredit','payDebit'])$(id)?.addEventListener('input',()=>{renderChange()});for(const id of ['paySplitCash','paySplitPix','paySplitCredit','paySplitDebit'])$(id)?.addEventListener('input',()=>{syncSplitValues();renderChange()});document.querySelectorAll('[data-payment-method]').forEach(button=>button.addEventListener('click',()=>selectPaymentMethod(button.dataset.paymentMethod)));$('customerSelect')?.addEventListener('change',renderPaymentUI);$('receiveCreditBtn')?.addEventListener('click',()=>receiveCreditDialog().catch(e=>toast(e.message,true)));document.querySelectorAll('[data-card-method]').forEach(button=>button.addEventListener('click',()=>selectCardMethod(button.dataset.cardMethod)));on('splitPaymentToggle','click',toggleSplitPayment);
-on('sellBtn','click',checkout);
-on('newSaleBtn','click',startNewSale);
-on('cashOpenHeaderBtn','click',()=>cashAction('open'));on('closeCashHeaderBtn','click',()=>cashAction('close'));on('openCashBtn','click',()=>cashAction('open'));on('closeCashBtn','click',()=>cashAction('close'));on('supplyBtn','click',()=>cashAction('supplied'));on('withdrawBtn','click',()=>cashAction('withdrawn'));
-on('reloadSales','click',loadSales);on('adjustStockBtn','click',async()=>{const id=$('stockProduct').value;const delta=parseQty($('stockDelta').value,true);await api('/api/stock/adjust','POST',{product_id:id,delta_milli:delta,reason:$('stockReason').value});$('stockDelta').value='';$('stockReason').value='';toast('Estoque ajustado');await loadStock();await loadProducts()});
-function updatePrinterFormats(){$('printerFormat').innerHTML='<option value="escpos58">ESC/POS 58 mm</option><option value="escpos80">ESC/POS 80 mm</option>';updatePrinterDriverHint()}
-function updatePrinterDriverHint(){
-  const driver=$('printerDriver').value,target=$('printerTarget'),button=$('discoverPrintersBtn'),status=$('printerDiscoveryStatus');
-  button?.classList.toggle('hidden',driver!=='cups');
-  const hints={cups:'Use uma fila do macOS/Linux. No Docker, a ponte local de impressão precisa estar em execução.',tcp:'Informe o endereço da impressora de rede e a porta, por exemplo 192.168.1.50:9100.',windows_raw:'Use o nome da fila instalada no Windows. O terminal precisa rodar nesse computador.',file:'Modo arquivo gera um .bin para diagnóstico e testes.'};
-  target.placeholder={cups:'Fila CUPS, ex.: EPSON_TM_T20',tcp:'IP da impressora:9100',windows_raw:'Nome exato da fila no Windows',file:'Pasta para arquivos de diagnóstico'}[driver];
-  if(status)status.textContent=hints[driver]+' Etiquetas são geradas exclusivamente no painel da empresa, em Produtos → Imprimir etiquetas.';
+function formatMoneyInput(input) {
+  try { if (input.value.trim()) input.value = moneyPlain(parseMoney(input.value)); } catch { /* the error is shown when the value is used */ }
 }
-on('printerDriver','change',updatePrinterDriverHint);on('discoverPrintersBtn','click',async()=>{const status=$('printerDiscoveryStatus');if(status)status.textContent='Procurando filas CUPS neste computador…';const result=await api('/api/print/discover');if(result.queues?.length){$('printerTarget').value=result.queues[0];if(status)status.textContent=`Fila encontrada: ${result.queues.join(', ')}. A primeira foi preenchida no destino.`;toast('Fila CUPS encontrada')}else{if(status)status.textContent='Nenhuma fila CUPS foi encontrada. Adicione a Epson em Ajustes do Sistema › Impressoras e execute o terminal nativo.';throw Error('Nenhuma fila CUPS encontrada')}});on('printerForm','submit',async()=>{await api('/api/print/settings','POST',{kind:'receipt',driver:$('printerDriver').value,format:$('printerFormat').value,target:$('printerTarget').value});toast('Impressora de recibos salva');await loadPrinters()});
-updatePrinterFormats();
-on('flushPrintBtn','click',async()=>{const result=await api('/api/print/flush','POST',{});toast(result.status==='uncertain'?'Resultado de impressão incerto; verifique o equipamento':'Fila processada');await loadPrinters()});
-on('syncNowBtn','click',async()=>{const result=await api('/api/sync/now','POST',{});toast(`${result.sent} evento(s) enviados`);await loadSession();await loadSystem()});
-on('backupBtn','click',async()=>{const copy=await api('/api/backups','POST',{});toast(`Backup criado: ${copy.name}`);await loadBackups()});
-on('bootstrapBtn','click',async()=>{await api('/api/bootstrap','POST',{});toast('Catálogo e licença atualizados');await loadSession();await loadSystem()});
-const scannerCapture={buffer:'',lastAt:0};
-document.addEventListener('keydown',event=>{
-  if(activeConfirm)return;
-  if(event.key==='F2'){event.preventDefault();focusScannerInput(true);return}
-  if(!state.session?.operator||!canSell(state.session.operator.role))return;
-  const input=$('productSearch');
-  if(!input||event.target===input)return;
-  const targetIsEditable=event.target?.matches?.('input,textarea,select,[contenteditable="true"]');
-  const now=Date.now();
-  if(event.key==='Enter'||event.key==='Tab'){
-    const rapid=scannerCapture.buffer.length>=3&&now-scannerCapture.lastAt<=250;
-    if(rapid&&!targetIsEditable){
-      event.preventDefault();
-      input.value=scannerCapture.buffer;
-      input.dispatchEvent(new Event('input',{bubbles:true}));
-      processScannerInput().catch(e=>toast(e.message,true));
+function updatePrinterDriverHint() {
+  const driver = $('printerDriver').value;
+  $('discoverPrintersBtn').classList.toggle('hidden', driver !== 'cups');
+  $('printerTarget').placeholder = {cups: 'Fila CUPS, ex.: EPSON_TM_T20', tcp: 'IP da impressora:9100', windows_raw: 'Nome exato da fila no Windows', file: 'Pasta para arquivos de diagnóstico'}[driver];
+  $('printerDiscoveryStatus').textContent = {cups: 'Use uma fila do macOS/Linux. No Docker, a ponte local de impressão precisa estar em execução.', tcp: 'Informe o endereço da impressora de rede e a porta, por exemplo 192.168.1.50:9100.', windows_raw: 'Use o nome da fila instalada no Windows. O terminal precisa rodar nesse computador.', file: 'Modo arquivo gera um .bin para diagnóstico e testes.'}[driver];
+}
+
+/* ---------- wiring ---------- */
+// One handler at a time per control: a double tap must not repeat a stock adjustment or a pairing.
+function on(id, eventName, handler) {
+  const node = $(id);
+  let busy = false;
+  node.addEventListener(eventName, async event => {
+    if (eventName === 'submit') event.preventDefault();
+    if (busy) return;
+    busy = true;
+    try { await handler(event); } catch (error) { toast(error.message, true); } finally { busy = false; }
+  });
+}
+on('pairForm', 'submit', async () => {
+  await api('/api/pair', 'POST', {cloud_url: $('cloudUrl').value, license_key: $('licenseKey').value.trim(), code: $('pairCode').value.trim()});
+  $('licenseKey').value = '';
+  $('pairCode').value = '';
+  toast('Terminal vinculado à empresa. Entre com o PIN do operador.');
+  await loadSession();
+});
+on('loginForm', 'submit', async () => {
+  if (state.loginLockedUntil > Date.now()) throw Error(`Aguarde ${Math.ceil((state.loginLockedUntil - Date.now()) / 1000)} segundos para tentar novamente`);
+  try {
+    const result = await api('/api/login', 'POST', {operator_id: $('operatorSelect').value, pin: $('operatorPin').value});
+    state.csrf = result.csrf;
+    state.loginLockedUntil = 0;
+    prefs.set('operator', $('operatorSelect').value);
+    $('operatorPin').value = '';
+    await loadSession();
+  } catch (error) {
+    $('operatorPin').value = '';
+    $('operatorPin').focus();
+    beep('error');
+    if (error.status === 429) { state.loginLockedUntil = Date.now() + 300000; throw Error('Muitas tentativas; aguarde cinco minutos antes de tentar novamente'); }
+    throw error;
+  }
+});
+$('pinPad').addEventListener('click', event => {
+  const key = event.target.closest('[data-pin]')?.dataset.pin, input = $('operatorPin');
+  if (!key) return;
+  if (key === 'clear') input.value = ''; else if (key === 'back') input.value = input.value.slice(0, -1); else if (input.value.length < 12) input.value += key;
+  input.focus();
+});
+on('refreshBootstrap', 'click', async () => { state.lastOperatorsRefreshAt = Date.now(); await refreshOperators(); await loadSession(); });
+on('changeConnection', 'click', async () => {
+  if (!(await confirmDialog('Corrigir pareamento de teste?', 'Use esta opção apenas quando não existem vendas, caixa ou movimentações. Para outra empresa, crie um perfil separado.', 'Corrigir pareamento', {danger: true}))) return;
+  await api('/api/unpair', 'POST', {confirm: true});
+  state.session = null;
+  clearLocalSale();
+  toast('Pareamento removido. Informe a licença e o novo código.');
+  await loadSession();
+});
+on('newProfileBtn', 'click', createNewProfile);
+on('newProfileLoginBtn', 'click', createNewProfile);
+document.querySelectorAll('.tab').forEach(button => button.addEventListener('click', () => setTab(button.dataset.tab)));
+$('operatorMenuBtn').addEventListener('click', openMenu);
+$('netChip').addEventListener('click', () => toast(state.indicator?.detail || ''));
+$('queueChip').addEventListener('click', () => toast($('queueChip').title));
+$('reviewChip').addEventListener('click', () => toast($('reviewChip').title));
+$('printerChip').addEventListener('click', () => { if (canManage(role())) setTab('printers'); else toast($('printerChip').title); });
+$('scaleChip').addEventListener('click', () => runAction('scale'));
+$('openSearchBtn').addEventListener('click', () => runAction('search'));
+$('productSearch').addEventListener('input', () => {
+  if (state.done) { state.done = null; renderSale(); }
+  if ($('scanStatus').dataset.kind === 'error') scanStatus('', 'Leitor pronto');
+});
+$('cartItems').addEventListener('click', event => {
+  const quantity = event.target.closest('[data-qty]'), remove = event.target.closest('[data-remove]'), row = event.target.closest('.item-row');
+  if (!row) return;
+  state.selectedId = row.dataset.id;
+  renderCart();
+  if (quantity) changeQuantity(quantity.dataset.qty).catch(error => toast(error.message, true));
+  else if (remove) removeItem(remove.dataset.remove).catch(error => toast(error.message, true));
+  else focusHome();
+});
+$('paymentMethods').addEventListener('click', event => {
+  const button = event.target.closest('[data-pay]');
+  if (button) selectPayMethod(button.dataset.pay === 'split' ? 'split' : state.payOptions[Number(button.dataset.pay)]);
+});
+$('quickValues').addEventListener('click', event => {
+  const quick = event.target.closest('[data-quick]')?.dataset.quick;
+  if (!quick) return;
+  $('payCash').value = moneyPlain(quick === 'exact' ? cartTotal() : Number(quick));
+  payError('');
+  renderPay();
+  $('payCash').focus();
+});
+for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit']) {
+  $(id).addEventListener('input', () => { payError(''); renderPay(); });
+  $(id).addEventListener('blur', () => formatMoneyInput($(id)));
+}
+$('sellBtn').addEventListener('click', () => { if (state.pay.active && state.pay.method) confirmSale(); else runAction('pay'); });
+// Works for the ruler and for any button that names an action (blocked panel, done panel).
+document.addEventListener('click', event => {
+  if (event.target.closest('[data-done-dismiss]')) { dismissDone(); return; }
+  const key = event.target.closest('#keyBar .key');
+  if (key?.dataset.paykey != null) { const option = key.dataset.paykey === '0' ? 'split' : state.payOptions.find(row => row.key === key.dataset.paykey); if (option) selectPayMethod(option); return; }
+  const target = event.target.closest('#keyBar [data-action], #blockedPanel [data-action], #donePanel [data-action]');
+  if (!target || modalStack.length) return;
+  if (target.dataset.action === 'confirm') { confirmSale(); return; }
+  if (state.pay.active && key && !PAY_CONTEXT_ACTIONS.includes(target.dataset.action)) { toast('Tecle Esc para voltar à venda antes de usar esta função', true); return; }
+  runAction(target.dataset.action);
+});
+// Keep the focus where it is (scan field, cash field) when the ruler is tapped.
+$('keyBar').addEventListener('mousedown', event => event.preventDefault());
+on('reloadSales', 'click', loadSales);
+$('salesList').addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const run = async () => {
+    if (button.dataset.detail) await receiptDialog((await api('/api/sales/' + encodeURIComponent(button.dataset.detail))).sale, 'Comprovante pronto para visualização.');
+    else if (button.dataset.reprint) {
+      try { await api('/api/sales/' + encodeURIComponent(button.dataset.reprint) + '/reprint', 'POST', {}); toast('Comprovante colocado na fila da impressora'); api('/api/print/flush', 'POST', {}).then(loadPrinterStatus).catch(() => {}); }
+      catch (error) { if (error.status !== 409) throw error; await receiptDialog((await api('/api/sales/' + encodeURIComponent(button.dataset.reprint))).sale, error.message); }
+    } else if (button.dataset.return) await returnDialog(button.dataset.return);
+    else if (button.dataset.void) await voidSale(button.dataset.void);
+  };
+  run().catch(error => toast(error.message, true));
+});
+let stockSearchTimer;
+$('stockSearch').addEventListener('input', () => { clearTimeout(stockSearchTimer); stockSearchTimer = setTimeout(() => loadStock().catch(error => toast(error.message, true)), 180); });
+on('adjustStockBtn', 'click', async () => {
+  const delta = parseQty($('stockDelta').value, true);
+  await api('/api/stock/adjust', 'POST', {product_id: $('stockProduct').value, delta_milli: delta, reason: $('stockReason').value});
+  $('stockDelta').value = '';
+  $('stockReason').value = '';
+  toast('Estoque ajustado');
+  await loadStock();
+  await refreshCartProducts();
+});
+on('printerDriver', 'change', updatePrinterDriverHint);
+on('discoverPrintersBtn', 'click', async () => {
+  $('printerDiscoveryStatus').textContent = 'Procurando filas CUPS neste computador…';
+  const result = await api('/api/print/discover');
+  if (!result.queues?.length) { $('printerDiscoveryStatus').textContent = 'Nenhuma fila CUPS foi encontrada. Adicione a impressora no sistema operacional e tente de novo.'; throw Error('Nenhuma fila CUPS encontrada'); }
+  $('printerTarget').value = result.queues[0];
+  $('printerDiscoveryStatus').textContent = `Fila encontrada: ${result.queues.join(', ')}. A primeira foi preenchida no destino.`;
+});
+on('printerForm', 'submit', async () => {
+  await api('/api/print/settings', 'POST', {kind: 'receipt', driver: $('printerDriver').value, format: $('printerFormat').value, target: $('printerTarget').value});
+  toast('Impressora de recibos salva');
+  await loadPrinters();
+});
+on('flushPrintBtn', 'click', async () => {
+  const result = await api('/api/print/flush', 'POST', {});
+  toast(result.status === 'uncertain' ? 'Resultado de impressão incerto; verifique o equipamento' : 'Fila processada', result.status === 'uncertain');
+  await loadPrinters();
+});
+$('printJobs').addEventListener('click', event => {
+  const button = event.target.closest('[data-retry]');
+  if (!button) return;
+  (async () => {
+    if (!(await confirmDialog('Reenviar impressão?', 'A impressora pode já ter concluído este trabalho. O reenvio pode produzir um comprovante duplicado.', 'Reenviar'))) return;
+    await api('/api/print/jobs/' + encodeURIComponent(button.dataset.retry) + '/retry', 'POST', {confirm_duplicate: true});
+    toast('Reenvio colocado na fila');
+    await loadPrinters();
+  })().catch(error => toast(error.message, true));
+});
+on('syncNowBtn', 'click', async () => { const result = await api('/api/sync/now', 'POST', {}); toast(`${result.sent} registro(s) enviados`); await poll(); await loadSystem(); });
+on('backupBtn', 'click', async () => { const copy = await api('/api/backups', 'POST', {}); toast(`Backup criado: ${copy.name}`); await loadBackups(); });
+on('bootstrapBtn', 'click', async () => { await api('/api/bootstrap', 'POST', {}); toast('Catálogo e licença atualizados'); await poll(); await loadSystem(); });
+
+function handlePayKey(event, editable) {
+  const key = event.key, target = event.target;
+  if (key === 'Enter') {
+    if (target.matches?.('button') && !scannerBurst()) return;
+    event.preventDefault();
+    if (scannerBurst()) {
+      if (target.id === 'payCash' || target.id === 'productSearch') target.value = '';
+      payError('Leitura de código ignorada durante o pagamento. Tecle Esc para voltar à venda.');
+      renderPay();
+      return;
     }
-    scannerCapture.buffer='';
+    confirmSale();
     return;
   }
-  if(event.key.length!==1||event.ctrlKey||event.metaKey||event.altKey)return;
-  if(now-scannerCapture.lastAt>150)scannerCapture.buffer='';
-  scannerCapture.buffer+=event.key;
-  scannerCapture.lastAt=now;
-  if(!targetIsEditable)event.preventDefault();
-},true);
-loadSession().catch(e=>toast(e.message,true));setInterval(()=>{if(state.session?.operator){const previousBootstrap=state.session.sync?.bootstrap_at;api('/api/session').then(async s=>{state.session=s;state.csrf=s.csrf;state.hoursStatus=s.hours||{};statusBadges();if(s.sync?.bootstrap_at&&s.sync.bootstrap_at!==previousBootstrap)await loadProducts()}).catch(()=>{})}else if(state.session?.paired)loadSession().catch(()=>{})},15000);
+  if (editable) return;
+  if (/^[0-9]$/.test(key)) { event.preventDefault(); queuePayDigit(key); return; }
+  if (key.length === 1) event.preventDefault();
+}
+// Single keyboard entry point: dialogs first, then the shortcut map, then the sale screen.
+document.addEventListener('keydown', event => {
+  noteKey(event);
+  const key = event.key, functionKey = /^F([1-9]|1[0-2])$/.test(key);
+  const logged = !!state.session?.operator && !$('appView').classList.contains('hidden');
+  if (logged && functionKey) event.preventDefault();
+  if (modalStack.length) { modalStack.at(-1).handleKey(event); return; }
+  if (!logged) return;
+  if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === 'k') { event.preventDefault(); runAction('palette'); return; }
+  const shortcut = !event.ctrlKey && !event.metaKey && !event.altKey ? C.SHORTCUTS.find(row => row.key === key) : null;
+  if (shortcut) {
+    event.preventDefault();
+    if (event.repeat) return;
+    if (state.pay.active && state.tab === 'checkout' && !PAY_CONTEXT_ACTIONS.includes(shortcut.action)) { toast('Tecle Esc para voltar à venda antes de usar esta função', true); return; }
+    runAction(shortcut.action);
+    return;
+  }
+  if (state.tab !== 'checkout' || !canSell(role()) || event.ctrlKey || event.metaKey || event.altKey) return;
+  const target = event.target, scan = $('productSearch');
+  const editable = !!target.matches?.('input,textarea,select,[contenteditable="true"]');
+  if (state.pay.active) { handlePayKey(event, editable); return; }
+  if (key === 'Enter') {
+    if (target === scan) { event.preventDefault(); processScan(); }
+    else if (!editable && !target.matches?.('button,a,summary')) { event.preventDefault(); if (scan.value.trim()) processScan(); else if (state.done) dismissDone(); }
+    return;
+  }
+  if (key === 'Tab' && target === scan && scan.value.trim()) { event.preventDefault(); processScan(); return; }
+  if (key === 'ArrowDown' || key === 'ArrowUp') {
+    if (target.matches?.('select,textarea')) return;
+    event.preventDefault();
+    moveSelection(key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if (key === 'Delete') {
+    if ((target === scan && scan.value) || (editable && target !== scan)) return;
+    event.preventDefault();
+    runAction('removeItem');
+    return;
+  }
+  // Typing anywhere on the sale screen goes to the reading field instead of being lost.
+  if (key.length === 1 && !editable && !(key === ' ' && target.matches?.('button,a,summary'))) scan.focus();
+}, true);
+document.addEventListener('fullscreenchange', renderKeybar);
+
+if (prefs.get('focus', 'off') === 'on') document.body.classList.add('focus-mode');
+updatePrinterDriverHint();
+tickClock();
+setInterval(tickClock, 15000);
+loadSession().catch(error => toast(error.message, true));
+setInterval(() => poll().catch(() => {}), 15000);
