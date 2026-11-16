@@ -17,10 +17,11 @@
 | `C:\Program Files\PDV2\app-<versão>\` | O programa. Uma pasta por versão. |
 | `C:\Program Files\PDV2\bin\` | Cópia estável do programa: é daqui que rodam o serviço e os atalhos. Só o instalador completo troca esta pasta. |
 | `C:\Program Files\PDV2\current.txt` | A versão em uso (por exemplo `2.0.1`). |
-| `C:\ProgramData\PDV2\` | Dados: `terminal.sqlite3`, `backups\`, `logs\`, `updates\`. Só o serviço (SYSTEM) e administradores leem. **O desinstalador não apaga esta pasta.** |
+| `C:\ProgramData\PDV2\` | Dados: `terminal.sqlite3`, `backups\`, `logs\`, `updates\`, `mirror.json` (configuração da cópia em outro disco). Só o serviço (SYSTEM) e administradores leem. **O desinstalador não apaga esta pasta.** |
 | `%LOCALAPPDATA%\PDV2\browser-profile\` | Perfil do navegador usado só pelo PDV2 (um por usuário do Windows). |
 | Serviço `PDV2Service` | Início automático, reinício em falha (5 s, 5 s, depois a cada 30 s). Roda como sistema. |
 | Atalhos | Área de trabalho (opcional) e menu Iniciar, apontando para `bin\PDV2.exe`. |
+| `<outro disco>\PDV2-copia-de-seguranca\` | Só depois que o gerente escolhe um disco em **Sistema → Cópia de segurança em outro disco**. Cópia cifrada do banco e diário das vendas. O instalador e o desinstalador não tocam nesta pasta. |
 | Firewall | Nada por padrão. A opção "Este computador será o servidor da loja" (desmarcada) cria a regra `PDV2 - Servidor da loja` para TCP 8011 e UDP 8012, só para a rede local. A rede local entre caixas é a fase 3; hoje nada escuta nessas portas. |
 
 Passo a passo do instalador (`installer/pdv2.iss`):
@@ -179,6 +180,23 @@ Use um servidor HTTPS de teste e duas versões geradas pelo `build.ps1` (por exe
 - [ ] Desinstalar pelo Painel de Controle: serviço removido, `Program Files\PDV2` apagado, atalhos removidos, regra de firewall removida (se existia) e **`C:\ProgramData\PDV2` intacto**. Reinstalar e confirmar que os dados voltam.
 - [ ] Marcar "servidor da loja" na instalação: a regra `PDV2 - Servidor da loja` aparece no firewall, restrita à sub-rede local.
 
+### 7.8 Cópia de segurança em outro disco e troca de computador
+
+Formato e regras em [RECUPERACAO-E-REPLICA.md](RECUPERACAO-E-REPLICA.md). O caixa precisa ter falado com a nuvem ao menos uma vez nesta versão para receber a chave da cópia.
+
+- [ ] Espetar um pendrive, entrar como gerente, **Sistema → Cópia de segurança em outro disco → Escolher disco**: o pendrive aparece na lista com o espaço livre; ao escolher, surge `E:\PDV2-copia-de-seguranca\<terminal>\<computador>\` com `manifest.json` e um `snapshot-*.pdv2snap`, e a tela mostra "Cópia de segurança em dia".
+- [ ] Tentar escolher uma pasta no disco `C:`: é recusada com a mensagem de "mesmo disco do caixa".
+- [ ] Fazer uma venda: em poucos segundos o arquivo `journal-*.pdv2log` cresce. Abrir os arquivos no Bloco de Notas: nada legível além do cabeçalho.
+- [ ] Fechar o caixa: aparece um `snapshot-*` novo. Depois de 4 fechamentos existem só 3.
+- [ ] **Puxar o pendrive no meio do expediente** e vender: a venda conclui normalmente; a tela passa a avisar que o disco não foi encontrado. Recolocar: volta para "em dia" sem intervenção.
+- [ ] Puxar o pendrive **durante** "Copiar agora": nenhuma venda é afetada; ao recolocar, uma nova cópia completa é feita e não sobra arquivo `.tmp`.
+- [ ] Encher o pendrive: aviso de disco cheio; liberar espaço resolve sozinho.
+- [ ] Reiniciar o Windows com o pendrive espetado: o serviço volta a gravar sem login de usuário (o serviço roda como sistema).
+- [ ] Pendrive que muda de letra (espetar em outra porta): anotar o comportamento. A configuração guarda o caminho escolhido; se a letra mudar, é preciso escolher o disco de novo.
+- [ ] **Troca de computador:** desligar a internet do caixa antigo, fazer 3 vendas, desligar o computador. No painel, **Terminais → Trocar de computador**. Em outro Windows limpo: instalar, **Recuperar minha loja**, digitar chave e código, esperar a barra, escolher **Tenho uma cópia de segurança** com o pendrive do antigo. As 3 vendas aparecem no painel uma única vez e no histórico do caixa novo.
+- [ ] Religar o computador antigo com internet: mostra "Este caixa foi transferido", não vende, e a fila dele zera.
+- [ ] Repetir a recuperação puxando o cabo de rede no meio da barra: ao reconectar, continua de onde parou.
+
 ## 8. Limites conhecidos
 
 - **Impressora por usuário:** ver 7.4.
@@ -186,4 +204,5 @@ Use um servidor HTTPS de teste e duas versões geradas pelo `build.ps1` (por exe
 - **O bundle não é diferencial:** cada atualização baixa o programa inteiro (dezenas de MB).
 - **A volta de versão não desfaz mudanças de esquema do banco.** As migrações do terminal são aditivas; se uma versão futura fizer uma mudança incompatível, publique-a como `installer` e planeje a volta com restauração de backup.
 - **Um instalador mais antigo por cima de um mais novo** é aceito pelo Inno Setup; o banco pode ter sido migrado pela versão nova.
+- **Cópia em outro disco e conta de sistema:** o serviço roda como SYSTEM e não enxerga unidade de rede mapeada por um usuário; use pendrive, HD externo ou caminho UNC liberado para a conta do computador. Pendrive em FAT/exFAT não tem permissão por arquivo: o conteúdo é cifrado, mas `manifest.json` mostra o nome da empresa, da loja e do caixa.
 - **Token da nuvem cifrado com DPAPI** e a escuta de rede local (porta 8011) não fazem parte desta fase.
