@@ -44,6 +44,11 @@ def _return_amount(line_total_cents, line_quantity_milli, returned_milli):
 
 
 DISCOUNT_BPS = {"cashier": 1000, "manager": 5000, "admin": 10000, "owner": 10000}
+# Same limits the cloud enforces on a sale event (cloud/core/sale_logic.py).
+MAX_SALE_ITEMS = 200
+MAX_SALE_PAYMENTS = 20
+PRODUCT_NAME_MAX = 180
+MANAGER_OVERRIDE_KEY = "manager_override"
 BUSINESS_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
@@ -75,6 +80,13 @@ def _str(value, label, maximum=160):
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:
         raise TerminalError(f"{label} inválido")
     return value.strip()
+
+
+def _optional_text(value, maximum):
+    """Optional catalog text: anything unusable becomes None instead of an error."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()[:maximum]
 
 
 def _line_gross(price_cents, quantity_milli):
@@ -162,6 +174,7 @@ class Store:
                     id TEXT PRIMARY KEY,event_type TEXT NOT NULL,aggregate_id TEXT NOT NULL,
                     payload TEXT NOT NULL,created_at INTEGER NOT NULL,acked_at INTEGER);
                 CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(acked_at,created_at);
+                CREATE INDEX IF NOT EXISTS outbox_pending_order ON outbox(acked_at);
                 CREATE TABLE IF NOT EXISTS audit(
                     id TEXT PRIMARY KEY,operator_id TEXT,action TEXT NOT NULL,
                     subject_id TEXT,detail TEXT,created_at INTEGER NOT NULL);
@@ -169,8 +182,14 @@ class Store:
                     id TEXT PRIMARY KEY,event_id TEXT NOT NULL UNIQUE,event_type TEXT NOT NULL,
                     aggregate_id TEXT NOT NULL,reason TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'open',detail TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,resolved_at INTEGER);
+                    created_at INTEGER NOT NULL,resolved_at INTEGER,
+                    resolution TEXT NOT NULL DEFAULT '');
                 CREATE INDEX IF NOT EXISTS sync_conflicts_status ON sync_conflicts(status,created_at);
+                CREATE TABLE IF NOT EXISTS sync_quarantine(
+                    event_id TEXT PRIMARY KEY,event_type TEXT NOT NULL,aggregate_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,message TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at INTEGER NOT NULL,resolved_at INTEGER);
                 CREATE TABLE IF NOT EXISTS print_settings(
                     kind TEXT PRIMARY KEY,driver TEXT NOT NULL,target TEXT NOT NULL,format TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS print_jobs(
@@ -201,6 +220,9 @@ class Store:
             sales_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sales)")}
             if "customer_document" not in sales_columns:
                 conn.execute("ALTER TABLE sales ADD COLUMN customer_document TEXT")
+            conflict_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sync_conflicts)")}
+            if "resolution" not in conflict_columns:
+                conn.execute("ALTER TABLE sync_conflicts ADD COLUMN resolution TEXT NOT NULL DEFAULT ''")
             conn.commit()
         try:
             self.path.chmod(0o600)
@@ -283,13 +305,15 @@ class Store:
                 return True
         return conn.execute("""SELECT 1 FROM audit
             WHERE action NOT IN ('terminal.paired', 'terminal.bootstrap',
-                                 'terminal.unpaired') LIMIT 1""").fetchone() is not None
+                                 'terminal.unpaired', 'terminal.catalog_skipped',
+                                 'terminal.clock_corrected') LIMIT 1""").fetchone() is not None
 
     @staticmethod
     def _clear_company_cache(conn):
         # These are downloaded/setup data, not locally created business records.
         # Clearing them also makes exports after a new pairing tenant-isolated.
-        for table in ("products", "operators", "customers", "login_attempts", "audit", "print_settings", "sync_conflicts"):
+        for table in ("products", "operators", "customers", "login_attempts", "audit", "print_settings",
+                      "sync_conflicts", "sync_quarantine"):
             conn.execute(f"DELETE FROM {table}")
 
     @staticmethod
@@ -298,7 +322,7 @@ class Store:
                     "terminal_id", "terminal_name", "license_hint", "lease", "public_key", "cloud_url",
                     "discount_max_bps", "issuer_profile", "business_hours", "bootstrap_at", "last_seen", "last_sync_at", "last_sync_error",
                     "release_info", "release_error", "release_checked_at", "last_backup_at",
-                    "last_heartbeat_at", "last_heartbeat_error"):
+                    "last_heartbeat_at", "last_heartbeat_error", "bootstrap_summary", "catalog_skipped"):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
 
     def ensure_pairable(self):
@@ -343,7 +367,7 @@ class Store:
     def pending_events(self, limit=50):
         with self.connection() as conn:
             return [json.loads(row["payload"]) for row in conn.execute(
-                "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY created_at,rowid LIMIT ?", (limit,))]
+                "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid LIMIT ?", (limit,))]
 
     def ack_events(self, ids):
         with self.transaction() as conn:
@@ -355,6 +379,9 @@ class Store:
             release = self._meta(conn, "release_info")
             return {"pending": conn.execute("SELECT COUNT(*) FROM outbox WHERE acked_at IS NULL").fetchone()[0],
                     "conflicts": conn.execute("SELECT COUNT(*) FROM sync_conflicts WHERE status IN ('open','acknowledged')").fetchone()[0],
+                    # Events the cloud kept for review instead of applying.
+                    "quarantined": conn.execute("SELECT COUNT(*) FROM sync_quarantine WHERE status='open'").fetchone()[0],
+                    "catalog_skipped": len(self._catalog_skipped(conn)),
                     "last_sync_at": self._meta(conn, "last_sync_at"),
                     "last_sync_error": self._meta(conn, "last_sync_error"),
                     "last_heartbeat_at": self._meta(conn, "last_heartbeat_at"),
@@ -368,6 +395,18 @@ class Store:
             self._set_meta(conn, "last_sync_error", error or "")
             if error is None:
                 self._set_meta(conn, "last_sync_at", str(_now_ms()))
+
+    def clear_sync_error(self):
+        """A successful cloud contact proves the terminal is online again.
+
+        While events are still waiting, only their delivery clears the error.
+        """
+        with self.connection() as conn:
+            if not self._meta(conn, "last_sync_error"):
+                return
+        with self.transaction() as conn:
+            if not conn.execute("SELECT 1 FROM outbox WHERE acked_at IS NULL LIMIT 1").fetchone():
+                self._set_meta(conn, "last_sync_error", "")
 
     def set_heartbeat_result(self, error=None):
         with self.transaction() as conn:
@@ -396,6 +435,51 @@ class Store:
                      str(conflict.get("reason") or "unknown"), str(conflict.get("status") or "open"),
                      _json(conflict.get("detail") or {}), now, None))
 
+    def record_quarantined(self, entries, events):
+        """Keep track of events the cloud accepted for review instead of applying.
+
+        The cloud lists them in accepted_event_ids too, so the outbox moves on;
+        this local record is what tells the operator that something needs review.
+        """
+        if not isinstance(entries, list):
+            return []
+        sent = {event["event_id"]: event for event in events}
+        recorded, now = [], _now_ms()
+        with self.transaction() as conn:
+            for entry in entries:
+                event = sent.get(entry.get("event_id")) if isinstance(entry, dict) else None
+                if event is None:
+                    continue
+                reason = str(entry.get("reason") or "rejected_event")[:120]
+                message = str(entry.get("message") or "")[:500]
+                row = {"event_id": event["event_id"], "event_type": event["type"],
+                       "aggregate_id": event["aggregate_id"], "reason": reason, "message": message}
+                recorded.append(row)
+                inserted = conn.execute(
+                    "INSERT OR IGNORE INTO sync_quarantine VALUES (?,?,?,?,?,'open',?,NULL)",
+                    (row["event_id"], row["event_type"], row["aggregate_id"], reason, message, now)).rowcount
+                if not inserted:
+                    continue
+                # Also listed with the offline conflicts the manager already reviews.
+                conn.execute(
+                    """INSERT INTO sync_conflicts
+                       (id,event_id,event_type,aggregate_id,reason,status,detail,created_at,resolved_at)
+                       VALUES (?,?,?,?,'rejected_event','open',?,?,NULL)
+                       ON CONFLICT(event_id) DO NOTHING""",
+                    (_uuid(), row["event_id"], row["event_type"], row["aggregate_id"],
+                     _json({"reason": reason, "message": message}), now))
+                self._audit(conn, None, "sync.event_quarantined", row["aggregate_id"],
+                            f"{row['event_type']}; {reason}; {message}"[:300])
+        return recorded
+
+    def quarantined_events(self, status="open"):
+        if status not in (None, "open", "resolved"):
+            raise TerminalError("Estado de revisão inválido")
+        with self.connection() as conn:
+            query = "SELECT * FROM sync_quarantine" + (" WHERE status=?" if status else "")
+            return [dict(row) for row in conn.execute(query + " ORDER BY created_at DESC,rowid DESC LIMIT 200",
+                                                      (status,) if status else ())]
+
     def sync_conflicts(self, status=None):
         allowed = {"open", "acknowledged", "resolved", "ignored"}
         if status and status not in allowed:
@@ -423,11 +507,14 @@ class Store:
         if not isinstance(resolution, str) or len(resolution) > 1000:
             raise TerminalError("Resolução inválida")
         with self.transaction() as conn:
-            row = conn.execute("SELECT id FROM sync_conflicts WHERE id=?", (str(conflict_id),)).fetchone()
+            row = conn.execute("SELECT id,event_id FROM sync_conflicts WHERE id=?", (str(conflict_id),)).fetchone()
             if not row:
                 raise TerminalError("Conflito não encontrado", 404)
             conn.execute("UPDATE sync_conflicts SET status=?,resolution=?,resolved_at=? WHERE id=?",
                          (status, resolution.strip(), _now_ms(), str(conflict_id)))
+            if status in ("resolved", "ignored"):
+                conn.execute("UPDATE sync_quarantine SET status='resolved',resolved_at=? WHERE event_id=? AND status='open'",
+                             (_now_ms(), row["event_id"]))
         return self.sync_conflicts()
 
     def set_release_result(self, payload=None, error=None):
@@ -547,7 +634,7 @@ class Store:
         """Return local stock effects not yet reflected by the cloud balance."""
         deltas = defaultdict(int)
         events = [json.loads(row[0]) for row in conn.execute(
-            "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY created_at,rowid")]
+            "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid")]
         for event in events:
             event_type = event.get("type")
             data = event.get("data") or {}
@@ -567,8 +654,13 @@ class Store:
         return deltas
 
     def apply_bootstrap(self, response):
-        from shared.licensing import LicenseError, payload_digest, verify_lease
+        from shared.licensing import CLOCK_TOLERANCE_SECONDS, LicenseError, payload_digest, verify_lease
 
+        products = response.get("products")
+        operators = response.get("operators")
+        skipped = []
+        # The signed license and operators are committed on their own: a bad
+        # catalog row must never stop the offline lease from being renewed.
         with self.transaction() as conn:
             key = self._meta(conn, "public_key")
             if not key or response.get("public_key") != key:
@@ -580,12 +672,32 @@ class Store:
                 claims = verify_lease(lease, key, expected=expected)
             except (LicenseError, TypeError) as exc:
                 raise TerminalError("Licença do catálogo inválida", 403) from exc
-            products = response.get("products")
-            operators = response.get("operators")
-            if not isinstance(products, list) or not isinstance(operators, list):
+            if not isinstance(operators, list):
                 raise TerminalError("Catálogo ou operadores inválidos")
             if claims.get("operators_hash") != payload_digest(operators):
                 raise TerminalError("Lista de operadores não corresponde à licença assinada", 403)
+            max_discount = claims.get("max_discount_bps", 10000)
+            if type(max_discount) is not int or not 0 <= max_discount <= 10000:
+                raise TerminalError("Limite de desconto da licença inválido", 403)
+            self._apply_operators(conn, operators, skipped)
+            try:
+                previous_issued = int(json.loads(self._meta(conn, "lease") or "{}")["payload"]["issued_at"])
+            except (KeyError, TypeError, ValueError):
+                previous_issued = 0
+            now, last_seen = int(time.time()), int(self._meta(conn, "last_seen") or 0)
+            # The PC clock was ahead and has been corrected. A lease the cloud
+            # signed just now, newer than the stored one, proves the current
+            # time; without this the cashier stays blocked until the old mark passes.
+            if (last_seen > now + CLOCK_TOLERANCE_SECONDS and claims["issued_at"] > previous_issued
+                    and abs(now - claims["issued_at"]) <= CLOCK_TOLERANCE_SECONDS):
+                self._set_meta(conn, "last_seen", str(now))
+                self._audit(conn, None, "terminal.clock_corrected", None, f"last_seen={last_seen}")
+            self._set_meta(conn, "lease", _json(lease))
+            self._set_meta(conn, "discount_max_bps", str(max_discount))
+            self._set_meta(conn, "business_hours", _json(claims.get("business_hours") or {}))
+        if not isinstance(products, list):
+            raise TerminalError("Catálogo ou operadores inválidos")
+        with self.transaction() as conn:
             timestamp = _now_ms()
             pending_deltas = self._pending_stock_deltas(conn)
             # The cloud permits several products without barcodes and may move a
@@ -593,109 +705,169 @@ class Store:
             # Missing catalog entries remain on disk for sale history, inactive.
             conn.execute("UPDATE products SET barcode=NULL,active=0")
             for product in products:
-                product_id = _str(product.get("id"), "ID do produto")
-                unit = product.get("unit")
-                if unit not in ("UN", "KG", "L"):
-                    raise TerminalError("Unidade de produto inválida")
-                price = _positive_int(product.get("price_cents"), "Preço", zero=True)
-                stock = product.get("quantity_milli", 0)
-                if type(stock) is not int:
-                    raise TerminalError("Estoque recebido inválido")
-                # Cloud is authoritative for acknowledged movements. Preserve
-                # only effects still waiting in this terminal's outbox, so a
-                # purchase or adjustment made in the web panel reaches the
-                # cashier without overwriting an offline sale.
-                stock = max(0, stock + pending_deltas.get(product_id, 0))
-                category = product.get("category")
-                if isinstance(category, dict):
-                    category = category.get("name")
-                image_url = product.get("image_url") or ""
-                if not isinstance(image_url, str) or len(image_url) > 500:
-                    raise TerminalError("Imagem do produto inválida")
-                stock_controlled = product.get("stock_controlled", True)
-                if type(stock_controlled) is not bool:
-                    raise TerminalError("Configuração de estoque inválida")
-                conn.execute("""INSERT INTO products
-                    (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_controlled,stock_milli,active,updated_at,
-                     group_id,group_name,variant)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
-                    ncm=excluded.ncm,
-                    scale_code=excluded.scale_code,
-                    name=excluded.name,unit=excluded.unit,category=excluded.category,
-                    price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
-                    image_url=excluded.image_url,stock_controlled=excluded.stock_controlled,stock_milli=excluded.stock_milli,
-                    active=excluded.active,updated_at=excluded.updated_at,group_id=excluded.group_id,
-                    group_name=excluded.group_name,variant=excluded.variant""",
-                    (product_id, product.get("sku"), product.get("barcode") or None,
-                     product.get("ncm") or None, product.get("scale_code") or None,
-                     _str(product.get("name"), "Nome do produto"), unit, category or "Geral",
-                     price, _positive_int(product.get("cost_cents", 0), "Custo", zero=True),
-                     image_url,
-                     int(stock_controlled),
-                     stock,
-                     int(bool(product.get("active", True))), timestamp,
-                     product.get("group_id") or None, str(product.get("group_name") or "")[:140] or None,
-                     str(product.get("variant") or "")[:120] or None))
-            operator_ids = []
-            for operator in operators:
-                op_id = _str(operator.get("id"), "Operador")
-                pin_hash = _str(operator.get("pin_hash"), "Hash do PIN", 400)
-                operator_ids.append(op_id)
-                previous = conn.execute("SELECT pin_hash FROM operators WHERE id=?", (op_id,)).fetchone()
-                conn.execute("""INSERT INTO operators VALUES (?,?,?,?,1)
-                    ON CONFLICT(id) DO UPDATE SET name=excluded.name,role=excluded.role,
-                    pin_hash=excluded.pin_hash,active=1""",
-                    (op_id, _str(operator.get("name"), "Nome do operador"),
-                     _str(operator.get("role"), "Papel"), pin_hash))
-                # A new or changed PIN must be usable immediately, even when this
-                # device had accumulated failed attempts for the same operator.
-                if previous is None or previous["pin_hash"] != pin_hash:
-                    conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (op_id,))
-            if operator_ids:
-                conn.execute("UPDATE operators SET active=0 WHERE id NOT IN (" +
-                             ",".join("?" for _ in operator_ids) + ")", operator_ids)
-            else:
-                conn.execute("UPDATE operators SET active=0")
-            if operator_ids:
-                conn.execute("DELETE FROM login_attempts WHERE operator_id NOT IN (" +
-                             ",".join("?" for _ in operator_ids) + ")", operator_ids)
-            else:
-                conn.execute("DELETE FROM login_attempts")
+                try:
+                    row = self._catalog_row(product, pending_deltas, timestamp)
+                    try:
+                        self._upsert_product(conn, row)
+                    except sqlite3.IntegrityError:
+                        # Barcode still held by another row of this same load.
+                        self._upsert_product(conn, {**row, "barcode": None})
+                        skipped.append({"kind": "barcode", "id": row["id"],
+                                        "error": "Código de barras repetido no catálogo"})
+                except (TerminalError, sqlite3.IntegrityError) as exc:
+                    skipped.append(self._skipped("product", product, exc))
             customers = response.get("customers")
             if isinstance(customers, list):
-                self._apply_customers(conn, customers)
+                self._apply_customers(conn, customers, skipped)
             if isinstance(response.get("promotions"), list):
+                promotions = []
                 for rule in response["promotions"]:
-                    if not isinstance(rule, dict) or rule.get("kind") not in ("price", "wholesale", "buy_x_pay_y"):
-                        raise TerminalError("Promoção recebida inválida")
-                self._set_meta(conn, "promotions", _json(response["promotions"]))
+                    if (isinstance(rule, dict) and rule.get("kind") in ("price", "wholesale", "buy_x_pay_y")
+                            and isinstance(rule.get("id"), str) and isinstance(rule.get("name"), str)):
+                        promotions.append(rule)
+                    else:
+                        skipped.append(self._skipped("promotion", rule, "Promoção recebida inválida"))
+                self._set_meta(conn, "promotions", _json(promotions))
             if isinstance(response.get("payment_methods"), list):
-                self._set_meta(conn, "payment_methods", _json(self._validated_payment_methods(response["payment_methods"])))
+                self._set_meta(conn, "payment_methods",
+                               _json(self._validated_payment_methods(response["payment_methods"], skipped)))
             for key, parent in (("tenant_name", "tenant"), ("shop_name", "shop"), ("terminal_name", "terminal")):
                 value = response.get(parent, {}).get("name") if isinstance(response.get(parent), dict) else None
-                if value:
-                    self._set_meta(conn, key, _str(value, key))
-            if response.get("license_hint"):
-                self._set_meta(conn, "license_hint", _str(response["license_hint"], "Licença", 16))
+                if _optional_text(value, 160):
+                    self._set_meta(conn, key, _optional_text(value, 160))
+            if _optional_text(response.get("license_hint"), 16):
+                self._set_meta(conn, "license_hint", _optional_text(response["license_hint"], 16))
             if response.get("issuer"):
                 self._set_meta(conn, "issuer_profile", _json(response["issuer"]))
-            self._set_meta(conn, "lease", _json(lease))
-            max_discount = claims.get("max_discount_bps", 10000)
-            if type(max_discount) is not int or not 0 <= max_discount <= 10000:
-                raise TerminalError("Limite de desconto da licença inválido", 403)
-            self._set_meta(conn, "discount_max_bps", str(max_discount))
-            self._set_meta(conn, "business_hours", _json(claims.get("business_hours") or {}))
             self._set_meta(conn, "bootstrap_at", str(timestamp))
-            self._audit(conn, None, "terminal.bootstrap", None,
-                        f"{len(products)} produtos; {len(operators)} operadores")
-            return {"products": len(products), "operators": len(operators)}
+            # Bootstrap runs every 30 seconds: audit it only when something changed.
+            summary = f"{len(products)} produtos; {len(operators)} operadores"
+            if summary != self._meta(conn, "bootstrap_summary"):
+                self._set_meta(conn, "bootstrap_summary", summary)
+                self._audit(conn, None, "terminal.bootstrap", None, summary)
+            skipped_raw = _json(skipped[:50])
+            if skipped_raw != (self._meta(conn, "catalog_skipped") or "[]"):
+                self._set_meta(conn, "catalog_skipped", skipped_raw)
+                for item in skipped[:50]:
+                    self._audit(conn, None, "terminal.catalog_skipped", item["id"] or None,
+                                f"{item['kind']}: {item['error']}"[:300])
+            result = {"products": len(products), "operators": len(operators)}
+            if skipped:
+                result["skipped"] = len(skipped)
+            return result
+
+    @staticmethod
+    def _skipped(kind, item, error):
+        item_id = item.get("id") if isinstance(item, dict) else None
+        return {"kind": kind, "id": str(item_id)[:160] if item_id else "", "error": str(error)[:200]}
+
+    def _catalog_skipped(self, conn):
+        try:
+            value = json.loads(self._meta(conn, "catalog_skipped") or "[]")
+        except ValueError:
+            return []
+        return value if isinstance(value, list) else []
+
+    def catalog_skipped(self):
+        """Rows of the last bootstrap that this terminal could not use."""
+        with self.connection() as conn:
+            return self._catalog_skipped(conn)
+
+    @staticmethod
+    def _catalog_row(product, pending_deltas, timestamp):
+        if not isinstance(product, dict):
+            raise TerminalError("Produto recebido inválido")
+        product_id = _str(product.get("id"), "ID do produto")
+        unit = product.get("unit")
+        if unit not in ("UN", "KG", "L"):
+            raise TerminalError("Unidade de produto inválida")
+        name = product.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise TerminalError("Nome do produto inválido")
+        price = _positive_int(product.get("price_cents"), "Preço", zero=True)
+        stock = product.get("quantity_milli", 0)
+        if type(stock) is not int:
+            raise TerminalError("Estoque recebido inválido")
+        # Cloud is authoritative for acknowledged movements. Preserve
+        # only effects still waiting in this terminal's outbox, so a
+        # purchase or adjustment made in the web panel reaches the
+        # cashier without overwriting an offline sale.
+        stock = max(0, stock + pending_deltas.get(product_id, 0))
+        category = product.get("category")
+        if isinstance(category, dict):
+            category = category.get("name")
+        image_url = product.get("image_url") or ""
+        if not isinstance(image_url, str) or len(image_url) > 500:
+            image_url = ""  # cosmetic: never lose the product over its picture
+        stock_controlled = product.get("stock_controlled", True)
+        if type(stock_controlled) is not bool:
+            raise TerminalError("Configuração de estoque inválida")
+        return {"id": product_id, "sku": product.get("sku") if isinstance(product.get("sku"), str) else None,
+                "barcode": _optional_text(product.get("barcode"), 80),
+                "ncm": _optional_text(product.get("ncm"), 20),
+                "scale_code": _optional_text(product.get("scale_code"), 20),
+                # Same limit as the cloud; the sale event carries this name back.
+                "name": name.strip()[:PRODUCT_NAME_MAX], "unit": unit,
+                "category": _optional_text(category, 160) or "Geral", "price_cents": price,
+                "cost_cents": _positive_int(product.get("cost_cents", 0), "Custo", zero=True),
+                "image_url": image_url, "stock_controlled": int(stock_controlled), "stock_milli": stock,
+                "active": int(bool(product.get("active", True))), "updated_at": timestamp,
+                "group_id": _optional_text(product.get("group_id"), 160),
+                "group_name": _optional_text(product.get("group_name"), 140),
+                "variant": _optional_text(product.get("variant"), 120)}
+
+    @staticmethod
+    def _upsert_product(conn, row):
+        conn.execute("""INSERT INTO products
+            (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_controlled,stock_milli,active,updated_at,
+             group_id,group_name,variant)
+            VALUES (:id,:sku,:barcode,:ncm,:scale_code,:name,:unit,:category,:price_cents,:cost_cents,:image_url,
+                    :stock_controlled,:stock_milli,:active,:updated_at,:group_id,:group_name,:variant)
+            ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
+            ncm=excluded.ncm,
+            scale_code=excluded.scale_code,
+            name=excluded.name,unit=excluded.unit,category=excluded.category,
+            price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
+            image_url=excluded.image_url,stock_controlled=excluded.stock_controlled,stock_milli=excluded.stock_milli,
+            active=excluded.active,updated_at=excluded.updated_at,group_id=excluded.group_id,
+            group_name=excluded.group_name,variant=excluded.variant""", row)
+
+    def _apply_operators(self, conn, operators, skipped):
+        operator_ids = []
+        for operator in operators:
+            try:
+                if not isinstance(operator, dict):
+                    raise TerminalError("Operador inválido")
+                op_id = _str(operator.get("id"), "Operador")
+                pin_hash = _str(operator.get("pin_hash"), "Hash do PIN", 400)
+                name = _str(operator.get("name"), "Nome do operador")
+                role = _str(operator.get("role"), "Papel")
+            except TerminalError as exc:
+                skipped.append(self._skipped("operator", operator, exc))
+                continue
+            operator_ids.append(op_id)
+            previous = conn.execute("SELECT pin_hash FROM operators WHERE id=?", (op_id,)).fetchone()
+            conn.execute("""INSERT INTO operators VALUES (?,?,?,?,1)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name,role=excluded.role,
+                pin_hash=excluded.pin_hash,active=1""", (op_id, name, role, pin_hash))
+            # A new or changed PIN must be usable immediately, even when this
+            # device had accumulated failed attempts for the same operator.
+            if previous is None or previous["pin_hash"] != pin_hash:
+                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (op_id,))
+        marks = ",".join("?" for _ in operator_ids)
+        conn.execute("UPDATE operators SET active=0" + (f" WHERE id NOT IN ({marks})" if operator_ids else ""),
+                     operator_ids)
+        # The manager-PIN lockout is not tied to one operator: a bootstrap
+        # (every 30 seconds, or on demand) must never give back the attempts.
+        conn.execute("DELETE FROM login_attempts WHERE operator_id<>?" +
+                     (f" AND operator_id NOT IN ({marks})" if operator_ids else ""),
+                     [MANAGER_OVERRIDE_KEY, *operator_ids])
 
     @staticmethod
     def _pending_credit_effects(conn):
         """Fiado and store-credit effects of events the cloud has not acknowledged."""
         effects = defaultdict(lambda: [0, 0])  # customer_id -> [open fiado, store credit]
-        for (payload,) in conn.execute("SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY created_at,rowid"):
+        for (payload,) in conn.execute("SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid"):
             event = json.loads(payload)
             data = event.get("data") or {}
             kind = event.get("type")
@@ -722,34 +894,43 @@ class Store:
                     effects[data["customer_id"]][1] += int(data["total_cents"])
         return effects
 
-    def _apply_customers(self, conn, customers):
+    def _apply_customers(self, conn, customers, skipped):
         pending = self._pending_credit_effects(conn)
         ids = []
         for customer in customers:
-            customer_id = _str(customer.get("id"), "Cliente")
-            values = [customer.get(key, 0) for key in ("credit_limit_cents", "open_credit_cents", "store_credit_cents")]
-            if any(type(value) is not int for value in values) or values[0] < 0:
-                raise TerminalError("Saldo de cliente inválido")
+            try:
+                if not isinstance(customer, dict):
+                    raise TerminalError("Cliente recebido inválido")
+                customer_id = _str(customer.get("id"), "Cliente")
+                name = _str(customer.get("name"), "Nome do cliente", 180)
+                values = [customer.get(key, 0) for key in ("credit_limit_cents", "open_credit_cents", "store_credit_cents")]
+                if any(type(value) is not int for value in values) or values[0] < 0:
+                    raise TerminalError("Saldo de cliente inválido")
+            except TerminalError as exc:
+                skipped.append(self._skipped("customer", customer, exc))
+                continue
             open_credit = max(0, values[1] + pending[customer_id][0])
             store_credit = values[2] + pending[customer_id][1]
             conn.execute("""INSERT INTO customers VALUES (?,?,?,?,?,?,1)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,document=excluded.document,
                 credit_limit_cents=excluded.credit_limit_cents,open_credit_cents=excluded.open_credit_cents,
                 store_credit_cents=excluded.store_credit_cents,active=1""",
-                (customer_id, _str(customer.get("name"), "Nome do cliente", 180),
-                 str(customer.get("document") or "")[:30], values[0], open_credit, store_credit))
+                (customer_id, name, str(customer.get("document") or "")[:30], values[0], open_credit, store_credit))
             ids.append(customer_id)
         conn.execute("UPDATE customers SET active=0" + (" WHERE id NOT IN (" + ",".join("?" for _ in ids) + ")" if ids else ""), ids)
 
-    @staticmethod
-    def _validated_payment_methods(rows):
+    @classmethod
+    def _validated_payment_methods(cls, rows, skipped):
         result = []
         for row in rows:
-            if not isinstance(row, dict) or row.get("kind") not in BUILTIN_PAYMENTS + ("other",):
-                raise TerminalError("Forma de pagamento recebida inválida")
-            result.append({"id": _str(row.get("id"), "Forma de pagamento"), "kind": row["kind"],
-                           "name": _str(row.get("name"), "Nome da forma de pagamento", 60),
-                           "active": bool(row.get("active", True))})
+            try:
+                if not isinstance(row, dict) or row.get("kind") not in BUILTIN_PAYMENTS + ("other",):
+                    raise TerminalError("Forma de pagamento recebida inválida")
+                result.append({"id": _str(row.get("id"), "Forma de pagamento"), "kind": row["kind"],
+                               "name": _str(row.get("name"), "Nome da forma de pagamento", 60),
+                               "active": bool(row.get("active", True))})
+            except TerminalError as exc:
+                skipped.append(cls._skipped("payment_method", row, exc))
         return result
 
     def _payment_config(self, conn):
@@ -848,13 +1029,23 @@ class Store:
 
         operator_id = _str(operator_id, "Operador")
         now = int(time.time())
+        # PBKDF2 is slow on purpose: run it without holding the write lock,
+        # which the sale path and the background worker also need.
+        with self.connection() as conn:
+            attempts = conn.execute("SELECT locked_until FROM login_attempts WHERE operator_id=?",
+                                    (operator_id,)).fetchone()
+            if attempts and attempts["locked_until"] > now:
+                raise TerminalError("Muitas tentativas; aguarde cinco minutos", 429)
+            row = conn.execute("SELECT * FROM operators WHERE id=? AND active=1", (operator_id,)).fetchone()
+        valid = bool(row and isinstance(pin, str) and verify_pin(pin, row["pin_hash"]))
         with self.transaction() as conn:
             attempts = conn.execute("SELECT failures,locked_until FROM login_attempts WHERE operator_id=?",
                                     (operator_id,)).fetchone()
             if attempts and attempts["locked_until"] > now:
                 raise TerminalError("Muitas tentativas; aguarde cinco minutos", 429)
-            row = conn.execute("SELECT * FROM operators WHERE id=? AND active=1", (operator_id,)).fetchone()
-            valid = bool(row and isinstance(pin, str) and verify_pin(pin, row["pin_hash"]))
+            if valid:  # the PIN may have been rotated or the operator removed meanwhile
+                valid = conn.execute("SELECT 1 FROM operators WHERE id=? AND active=1 AND pin_hash=?",
+                                     (operator_id, row["pin_hash"])).fetchone() is not None
             if not valid:
                 failures = (attempts["failures"] if attempts else 0) + 1
                 conn.execute("""INSERT INTO login_attempts VALUES (?,?,?)
@@ -875,18 +1066,28 @@ class Store:
         if not isinstance(pin, str) or not pin:
             raise TerminalError("PIN de gerente necessário", 403)
         now = int(time.time())
-        with self.transaction() as conn:
-            attempts = conn.execute("SELECT failures,locked_until FROM login_attempts WHERE operator_id='manager_override'").fetchone()
+        lock_query = "SELECT failures,locked_until FROM login_attempts WHERE operator_id=?"
+        with self.connection() as conn:
+            attempts = conn.execute(lock_query, (MANAGER_OVERRIDE_KEY,)).fetchone()
             if attempts and attempts["locked_until"] > now:
                 raise TerminalError("Muitas tentativas de autorização; aguarde", 429)
-            for row in conn.execute("SELECT * FROM operators WHERE active=1 AND role IN ('owner','admin','manager')"):
-                if verify_pin(pin, row["pin_hash"]):
-                    conn.execute("DELETE FROM login_attempts WHERE operator_id='manager_override'")
-                    return row["id"]
+            managers = conn.execute(
+                "SELECT id,pin_hash FROM operators WHERE active=1 AND role IN ('owner','admin','manager')").fetchall()
+        # Same reason as in login(): no PBKDF2 while holding the write lock.
+        matched = next((row for row in managers if verify_pin(pin, row["pin_hash"])), None)
+        with self.transaction() as conn:
+            attempts = conn.execute(lock_query, (MANAGER_OVERRIDE_KEY,)).fetchone()
+            if attempts and attempts["locked_until"] > now:
+                raise TerminalError("Muitas tentativas de autorização; aguarde", 429)
+            if matched and conn.execute(
+                    "SELECT 1 FROM operators WHERE id=? AND active=1 AND pin_hash=? AND role IN ('owner','admin','manager')",
+                    (matched["id"], matched["pin_hash"])).fetchone():
+                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (MANAGER_OVERRIDE_KEY,))
+                return matched["id"]
             failures = (attempts["failures"] if attempts else 0) + 1
-            conn.execute("""INSERT INTO login_attempts VALUES ('manager_override',?,?)
+            conn.execute("""INSERT INTO login_attempts VALUES (?,?,?)
                 ON CONFLICT(operator_id) DO UPDATE SET failures=excluded.failures,locked_until=excluded.locked_until""",
-                (failures, now + 300 if failures >= 5 else 0))
+                (MANAGER_OVERRIDE_KEY, failures, now + 300 if failures >= 5 else 0))
         raise TerminalError("PIN de gerente inválido", 403)
 
     def authorize_discount(self, pin, gross_cents, discount_cents):
@@ -1110,6 +1311,11 @@ class Store:
         payments = request.get("payments")
         if not isinstance(item_requests, list) or not item_requests or not isinstance(payments, list) or not payments:
             raise TerminalError("Itens e pagamentos obrigatórios")
+        # The cloud refuses larger sales; stop here instead of selling what can never sync.
+        if len(item_requests) > MAX_SALE_ITEMS:
+            raise TerminalError(f"Uma venda aceita até {MAX_SALE_ITEMS} produtos diferentes; finalize esta e abra outra")
+        if len(payments) > MAX_SALE_PAYMENTS:
+            raise TerminalError(f"Uma venda aceita até {MAX_SALE_PAYMENTS} pagamentos")
         discount = _positive_int(request.get("discount_cents", 0), "Desconto", zero=True)
         customer_name = str(request.get("customer_name") or "").strip()[:160]
         customer_document = str(request.get("customer_document") or "").strip()[:30]
@@ -1543,7 +1749,19 @@ class Store:
                     "sales": sales,
                     "audit": [dict(row) for row in conn.execute("SELECT * FROM audit ORDER BY created_at")],
                     "pending_events": [json.loads(row["payload"]) for row in conn.execute(
-                        "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY created_at,rowid")]}
+                        "SELECT payload FROM outbox WHERE acked_at IS NULL ORDER BY rowid")],
+                    # Received by the cloud but not applied there: kept for manual review.
+                    "quarantined_events": [
+                        {"reason": row["reason"], "message": row["message"], "status": row["status"],
+                         "event": json.loads(row["payload"])} for row in conn.execute(
+                            """SELECT q.reason,q.message,q.status,o.payload FROM sync_quarantine q
+                               JOIN outbox o ON o.id=q.event_id ORDER BY o.rowid""")]}
+
+    def has_local_activity(self):
+        """True once this terminal created something worth an automatic backup."""
+        with self.connection() as conn:
+            return any(conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                       for table in ("sales", "cash_sessions", "cash_movements", "outbox"))
 
     def backup_status(self):
         directory = self.path.parent / "backups"
