@@ -252,14 +252,19 @@ final class AppState: ObservableObject {
     /// Não chama o servidor, não cria sessão, não grava token, Keychain nem preferências.
     func enterDemo(api demoAPI: DemoGestaoAPI = DemoGestaoAPI()) {
         guard !isDemo, phase != .home else { return }
+        // Um erro nos dados fictícios não pode derrubar o app: fica na entrada com aviso.
+        guard let me = try? demoAPI.demoMe() else {
+            loginMessage = "Não foi possível abrir a demonstração."
+            return
+        }
         isDemo = true
         session = nil
         api = demoAPI
-        let me = demoAPI.demoMe()
         self.me = me
         tenant = me.tenants.first
         shopID = nil
-        period = .today
+        // De madrugada "Hoje" ainda não tem vendas: a demonstração abre em "Ontem".
+        period = demoAPI.initialPeriod
         selectedTab = .summary
         morePath = []
         loginMessage = nil

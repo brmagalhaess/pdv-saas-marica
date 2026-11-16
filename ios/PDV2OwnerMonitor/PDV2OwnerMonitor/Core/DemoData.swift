@@ -9,6 +9,11 @@ import Foundation
 final class DemoGestaoAPI: GestaoAPI {
     private let now: () -> Date
 
+    /// Vendas de dias que já terminaram não mudam: ficam guardadas em memória enquanto a
+    /// demonstração está aberta, para a rolagem de "Mês" não refazer tudo a cada página.
+    private let cacheLock = NSLock()
+    private var pastMoments: [String: [Moment]] = [:]
+
     init(now: @escaping () -> Date = Date.init) { self.now = now }
 
     // MARK: Cadastro fictício
@@ -139,11 +144,10 @@ final class DemoGestaoAPI: GestaoAPI {
     /// Peso de cada hora no faturamento do dia (soma 100).
     static let hourWeights = [2, 4, 6, 7, 8, 9, 8, 6, 6, 7, 9, 11, 9, 6, 2]
 
-    /// Até que hora "hoje" já tem vendas. Fica entre 11h e 21h para a demonstração
-    /// nunca abrir vazia, mesmo de madrugada.
-    private func lastHourToday() -> Int {
-        let hour = calendar.component(.hour, from: now())
-        return min(max(hour, 11), 21)
+    /// Período em que a demonstração abre: "Hoje", ou "Ontem" antes das 9h (quando
+    /// "Hoje" ainda tem pouca ou nenhuma venda). Nunca há venda depois do relógio.
+    var initialPeriod: Period {
+        calendar.component(.hour, from: now()) < 9 ? .yesterday : .today
     }
 
     /// Dias (início do dia) do período.
@@ -163,11 +167,6 @@ final class DemoGestaoAPI: GestaoAPI {
     }
 
     private func isToday(_ day: Date) -> Bool { calendar.isDate(day, inSameDayAs: now()) }
-
-    /// Horas com venda num dia (hoje para na hora atual).
-    private func hours(of day: Date) -> [Int] {
-        isToday(day) ? Array(7...lastHourToday()) : Self.openingHours
-    }
 
     // MARK: Números
 
@@ -199,6 +198,69 @@ final class DemoGestaoAPI: GestaoAPI {
         return max(1, Int((base * Double(weight) / 100).rounded()))
     }
 
+    /// Uma venda fictícia. Vendas, Resumo e Caixa saem todos desta mesma lista.
+    struct Moment {
+        let shop: Shop
+        let date: Date
+        /// Minuto do dia (hora * 60 + minuto): identifica a venda na loja e no dia.
+        let seq: Int
+        let status: String
+        let terminalIndex: Int
+        /// Parte do faturamento da hora que cabe a esta venda (só nas concluídas).
+        let revenueCents: Int
+    }
+
+    /// Situação da venda, estável pelo identificador: ~1,8% canceladas e ~0,8% devolvidas.
+    private static func saleStatus(shopIndex: Int, dayKey: String, seq: Int) -> String {
+        var rng = SeededRandom("st|\(shopIndex)|\(dayKey)|\(seq)")
+        let roll = rng.next() % 1000
+        if roll < 18 { return "cancelled" }
+        if roll < 26 { return "refunded" }
+        return "completed"
+    }
+
+    /// Caixa da venda: o Caixa 3 do Centro só funciona de manhã (até 13h).
+    private static func terminalIndex(_ shop: Shop, seq: Int) -> Int {
+        let count = shop.terminals.count > 2 && seq >= 13 * 60 ? 2 : shop.terminals.count
+        return seq % count
+    }
+
+    /// Vendas de uma loja num dia, da mais antiga para a mais nova. Hoje para no relógio:
+    /// nenhuma venda fica no futuro.
+    private func moments(_ shop: Shop, _ day: Date) -> [Moment] {
+        let key = dayKey(day)
+        let finished = day < startOfDay(now())
+        let cacheKey = "\(shop.index)|\(key)"
+        if finished, let cached = cacheLock.withLock({ pastMoments[cacheKey] }) { return cached }
+        let result = buildMoments(shop, day, key: key)
+        if finished { cacheLock.withLock { pastMoments[cacheKey] = result } }
+        return result
+    }
+
+    private func buildMoments(_ shop: Shop, _ day: Date, key: String) -> [Moment] {
+        let limit = isToday(day) ? now() : nil
+        var result: [Moment] = []
+        for hour in Self.openingHours {
+            let count = min(hourCount(shop, day, hour), 60)
+            let revenue = hourRevenue(shop, day, hour)
+            var rng = SeededRandom("m|\(shop.id)|\(key)|\(hour)")
+            let spread = max(1, 60 / count)
+            for k in 0..<count {
+                let minute = k * 60 / count + Int(rng.next() % UInt64(spread))
+                let date = at(day, hour: hour, minute: minute)
+                if let limit, date > limit { return result }
+                let seq = hour * 60 + minute
+                let status = Self.saleStatus(shopIndex: shop.index, dayKey: key, seq: seq)
+                // Distribui o faturamento da hora pelas vendas concluídas, sem perder centavos.
+                let share = revenue * (k + 1) / count - revenue * k / count
+                result.append(Moment(shop: shop, date: date, seq: seq, status: status,
+                                     terminalIndex: Self.terminalIndex(shop, seq: seq),
+                                     revenueCents: status == "completed" ? share : 0))
+            }
+        }
+        return result
+    }
+
     private func shops(_ context: QueryContext) -> [Shop] {
         let all = Self.shops.filter { $0.tenantID == context.tenantID }
         guard let shopID = context.shopID else { return all }
@@ -228,7 +290,7 @@ final class DemoGestaoAPI: GestaoAPI {
     }
 
     private var meJSON: [String: Any] {
-        ["user": ["id": 1, "name": "Ana Exemplo", "email": "ana@mercadinhoexemplo.com.br"],
+        ["user": ["id": 1, "name": "Ana Exemplo", "email": "ana@example.com"],
          "device": deviceJSON,
          "platform": NSNull(),
          "tenants": [tenantJSON(Self.mainTenantID), tenantJSON(Self.secondTenantID)],
@@ -239,7 +301,7 @@ final class DemoGestaoAPI: GestaoAPI {
     }
 
     /// Sessão fictícia usada ao entrar na demonstração.
-    func demoMe() -> Me { decode(meJSON) }
+    func demoMe() throws -> Me { try decode(meJSON) }
 
     // MARK: Resumo
 
@@ -250,32 +312,37 @@ final class DemoGestaoAPI: GestaoAPI {
         var count = 0
         var points: [[String: Any]] = []
         let byHour = context.period == .today || context.period == .yesterday
+        var cancelledCount = 0
+        var cancelledCents = 0
+        // Como no servidor: "vendas" e faturamento contam só as concluídas; canceladas e
+        // devolvidas vão para "cancelamentos" (as mesmas que a aba Vendas mostra em "Canceladas").
         if byHour, let day = periodDays.first {
+            let all = scope.flatMap { moments($0, day) }
             for hour in Self.openingHours {
-                let has = hours(of: day).contains(hour)
-                let r = has ? scope.reduce(0) { $0 + hourRevenue($1, day, hour) } : 0
-                let c = has ? scope.reduce(0) { $0 + hourCount($1, day, hour) } : 0
+                let inHour = all.filter { $0.seq / 60 == hour && $0.status == "completed" }
+                let r = inHour.reduce(0) { $0 + $1.revenueCents }
                 revenue += r
-                count += c
+                count += inHour.count
                 points.append(["key": String(format: "%02d", hour), "label": String(format: "%02dh", hour),
-                               "count": c, "revenue_cents": r])
+                               "count": inHour.count, "revenue_cents": r])
             }
+            let reversed = all.filter { $0.status != "completed" }
+            cancelledCount += reversed.count
+            cancelledCents += reversed.reduce(0) { $0 + saleTotal($1) }
         } else {
             for day in periodDays {
-                var r = 0, c = 0
-                for shop in scope {
-                    for hour in hours(of: day) {
-                        r += hourRevenue(shop, day, hour)
-                        c += hourCount(shop, day, hour)
-                    }
-                }
+                let all = scope.flatMap { moments($0, day) }
+                let completed = all.filter { $0.status == "completed" }
+                let r = completed.reduce(0) { $0 + $1.revenueCents }
                 revenue += r
-                count += c
+                count += completed.count
+                let reversed = all.filter { $0.status != "completed" }
+                cancelledCount += reversed.count
+                cancelledCents += reversed.reduce(0) { $0 + saleTotal($1) }
                 points.append(["key": ymd(day), "label": Self.labelFormatter.string(from: day),
-                               "count": c, "revenue_cents": r])
+                               "count": completed.count, "revenue_cents": r])
             }
         }
-        let cancelledCount = max(scope.isEmpty ? 0 : 1, count / 45)
         let average = count > 0 ? revenue / count : 0
         let returns = revenue * 4 / 1000
         // Formas de pagamento: 2% fiado, 0,5% crédito da loja, o resto recebido na hora.
@@ -314,7 +381,7 @@ final class DemoGestaoAPI: GestaoAPI {
             "period": periodJSON,
             "permissions": AppPermission.allCases.map(\.rawValue),
             "sales": ["count": count, "revenue_cents": revenue, "average_ticket_cents": average,
-                      "cancelled_count": cancelledCount, "cancelled_cents": cancelledCount * average * 8 / 10,
+                      "cancelled_count": cancelledCount, "cancelled_cents": cancelledCents,
                       "returns_cents": returns, "net_revenue_cents": revenue - returns],
             "payments": ["cash_cents": cash, "pix_cents": pix, "card_credit_cents": cardCredit,
                          "card_debit_cents": cardDebit, "other_cents": other, "received_total_cents": received,
@@ -336,41 +403,26 @@ final class DemoGestaoAPI: GestaoAPI {
     // MARK: Vendas
 
     private static let pageSize = 25
-    private static let maxSales = 75
 
-    /// Momentos das vendas do período, da mais recente para a mais antiga.
-    private func saleMoments(_ context: QueryContext) -> [(shop: Shop, date: Date, seq: Int)] {
-        let scope = shops(context)
-        guard !scope.isEmpty else { return [] }
-        var result: [(Shop, Date, Int)] = []
-        var rng = SeededRandom("moments|\(context.tenantID)|\(context.shopID ?? "all")|\(context.period.rawValue)|\(dayKey(now()))")
+    /// Vendas do período, da mais recente para a mais antiga: todas as do Resumo, sem corte.
+    private func saleMoments(_ context: QueryContext) -> [Moment] {
+        var result: [Moment] = []
         for day in days(for: context.period).reversed() {
-            let lastHour = hours(of: day).last ?? 21
-            var cursor = at(day, hour: lastHour, minute: 48)
-            if isToday(day), calendar.component(.hour, from: now()) == lastHour {
-                cursor = min(cursor, now().addingTimeInterval(-90))
+            let sameDay = shops(context).flatMap { moments($0, day) }
+            result += sameDay.sorted { a, b in
+                a.date != b.date ? a.date > b.date : a.shop.index < b.shop.index
             }
-            let opening = at(day, hour: 7, minute: 2)
-            while cursor > opening && result.count < Self.maxSales {
-                let shop = scope[Int(rng.next() % UInt64(scope.count))]
-                let seq = calendar.component(.hour, from: cursor) * 60 + calendar.component(.minute, from: cursor)
-                result.append((shop, cursor, seq))
-                cursor = cursor.addingTimeInterval(-Double(150 + Int(rng.next() % 540)))
-            }
-            if result.count >= Self.maxSales { break }
         }
         return result
     }
 
-    private func saleID(_ shop: Shop, _ date: Date, _ seq: Int) -> String {
-        "demo-venda-\(shop.index)-\(dayKey(date))-\(seq)"
+    /// Total da venda (o mesmo do detalhe).
+    private func saleTotal(_ moment: Moment) -> Int {
+        (saleDetailJSON(id: saleID(moment.shop, moment.date, moment.seq))?["total_cents"] as? Int) ?? 0
     }
 
-    private func status(forSeq seq: Int, shop: Shop) -> String {
-        let mix = (seq * 7 + shop.index * 3) % 41
-        if mix == 5 { return "cancelled" }
-        if mix == 17 { return "refunded" }
-        return "completed"
+    private func saleID(_ shop: Shop, _ date: Date, _ seq: Int) -> String {
+        "demo-venda-\(shop.index)-\(dayKey(date))-\(seq)"
     }
 
     private func saleDetailJSON(id: String) -> [String: Any]? {
@@ -410,19 +462,19 @@ final class DemoGestaoAPI: GestaoAPI {
         let change = method.0 == "cash" ? (((total / 1000) + 1) * 1000 - total) % 1000 : 0
         let customer = method.0 == "credit_account"
             ? Self.creditCustomers[Int(rng.next() % UInt64(Self.creditCustomers.count))].name : ""
-        let status = status(forSeq: seq, shop: shop)
-        // Caixa 3 do Centro só funciona de manhã.
-        let terminalCount = shop.terminals.count > 2 && seq >= 13 * 60 ? 2 : shop.terminals.count
-        let terminal = shop.terminals[seq % terminalCount]
-        let operatorName = shop.operators[(seq % terminalCount) % shop.operators.count]
-        let later = iso(created.addingTimeInterval(25 * 60))
+        let status = Self.saleStatus(shopIndex: shop.index, dayKey: String(parts[3]), seq: seq)
+        let terminalIndex = Self.terminalIndex(shop, seq: seq)
+        let terminal = shop.terminals[terminalIndex]
+        let operatorName = shop.operators[terminalIndex % shop.operators.count]
+        // Devolução 25 min depois, mas nunca depois do relógio.
+        let later = iso(min(created.addingTimeInterval(25 * 60), max(created, now())))
         var returns: [[String: Any]] = []
         if status == "refunded" {
             returns.append(["id": "\(id)-devolucao", "created_at": later, "total_cents": total,
                             "refund_method": "cash", "refund_label": "Dinheiro", "reason": "Produto com defeito"])
         }
         return [
-            "id": id, "created_at": iso(created), "received_at": iso(created.addingTimeInterval(3)),
+            "id": id, "created_at": iso(created), "received_at": iso(min(created.addingTimeInterval(3), max(created, now()))),
             "status": status, "shop": shopRef(shop), "terminal_name": terminal, "station_name": "",
             "operator_name": operatorName, "seller_name": "", "customer_name": customer,
             "gross_cents": gross, "promo_discount_cents": promo, "discount_cents": 0, "total_cents": total,
@@ -453,12 +505,32 @@ final class DemoGestaoAPI: GestaoAPI {
 
     // MARK: Caixa
 
+    private func openedAt(_ day: Date, terminalIndex: Int) -> Date {
+        at(day, hour: 7, minute: 2 + terminalIndex * 9)
+    }
+
+    private func closedAt(_ shop: Shop, _ day: Date, terminalIndex: Int) -> Date {
+        at(day, hour: isMorningOnly(shop, terminalIndex) ? 13 : 21, minute: 12)
+    }
+
+    /// O Caixa 3 do Centro só abre de manhã.
+    private func isMorningOnly(_ shop: Shop, _ terminalIndex: Int) -> Bool {
+        shop.terminals.count > 2 && terminalIndex == 2
+    }
+
+    /// Caixas abertos agora: já abriram hoje e (o da manhã) ainda não fecharam. Os demais
+    /// ficam abertos até o fim do dia.
+    private func isOpenNow(_ shop: Shop, terminalIndex: Int) -> Bool {
+        let today = startOfDay(now())
+        guard openedAt(today, terminalIndex: terminalIndex) <= now() else { return false }
+        return !isMorningOnly(shop, terminalIndex) || closedAt(shop, today, terminalIndex: terminalIndex) > now()
+    }
+
     private func openCashSessions(_ context: QueryContext) -> [[String: Any]] {
         let today = startOfDay(now())
         return shops(context).flatMap { shop in
-            shop.terminals.enumerated().compactMap { offset, terminal -> [String: Any]? in
-                // O Caixa 3 do Centro só abre de manhã e já fechou.
-                if shop.terminals.count > 2 && offset == 2 { return nil }
+            shop.terminals.indices.compactMap { offset -> [String: Any]? in
+                guard isOpenNow(shop, terminalIndex: offset) else { return nil }
                 return cashSessionJSON(shop: shop, terminalIndex: offset, day: today, open: true)
             }
         }
@@ -469,9 +541,10 @@ final class DemoGestaoAPI: GestaoAPI {
         for day in days(for: context.period).reversed() {
             for shop in shops(context) {
                 for offset in shop.terminals.indices {
-                    let morningOnly = shop.terminals.count > 2 && offset == 2
-                    if isToday(day) && !morningOnly { continue }
-                    if isToday(day) && lastHourToday() < 13 { continue }
+                    // Hoje só aparece o que já fechou (o turno da manhã do Caixa 3, depois das 13h12).
+                    if isToday(day) && (!isMorningOnly(shop, offset) || closedAt(shop, day, terminalIndex: offset) > now()) {
+                        continue
+                    }
                     result.append(cashSessionJSON(shop: shop, terminalIndex: offset, day: day, open: false))
                 }
             }
@@ -479,31 +552,32 @@ final class DemoGestaoAPI: GestaoAPI {
         return result
     }
 
+    /// Sangria: no meio do turno, e só se já aconteceu.
+    private func withdrawal(_ shop: Shop, _ day: Date, terminalIndex: Int, cashNet: Int) -> (cents: Int, at: Date)? {
+        let time = at(day, hour: isMorningOnly(shop, terminalIndex) ? 11 : 14, minute: 30)
+        guard cashNet > 40_000, time <= now() else { return nil }
+        return (30_000, time)
+    }
+
     private func cashSessionJSON(shop: Shop, terminalIndex: Int, day: Date, open: Bool) -> [String: Any] {
-        let morningOnly = shop.terminals.count > 2 && terminalIndex == 2
-        let openedAt = at(day, hour: 7, minute: 2 + terminalIndex * 9)
-        let closingHour = morningOnly ? 13 : 21
-        let closedAt = at(day, hour: closingHour, minute: 12)
-        let hoursWorked = hours(of: day).filter { !morningOnly || $0 < closingHour }
-        // Cada caixa fica com uma parte diferente do movimento da loja.
-        let weights: [Double] = shop.terminals.count > 2 ? [0.46, 0.34, 0.20] : [1.0 / Double(max(1, shop.terminals.count))]
-        let share = weights[min(terminalIndex, weights.count - 1)]
-        let total = Int(Double(hoursWorked.reduce(0) { $0 + hourRevenue(shop, day, $1) }) * share)
-        let count = max(1, Int(Double(hoursWorked.reduce(0) { $0 + hourCount(shop, day, $1) }) * share))
+        // As vendas deste caixa são as mesmas da aba Vendas (mesmo caixa, só concluídas).
+        let sales = moments(shop, day).filter { $0.terminalIndex == terminalIndex && $0.status == "completed" }
+        let total = sales.reduce(0) { $0 + $1.revenueCents }
+        let count = sales.count
         let cashNet = total * 15 / 100
         let opening = 20_000
-        let withdrawn = cashNet > 40_000 ? 30_000 : 0
+        let withdrawn = withdrawal(shop, day, terminalIndex: terminalIndex, cashNet: cashNet)?.cents ?? 0
         let expected = opening + cashNet - withdrawn
         let key = "\(shop.index)-\(terminalIndex)-\(dayKey(day))"
         // Quebra de caixa: o turno da manhã do Caixa 3 sempre falta R$ 12,50; às vezes sobra R$ 3,00.
         let dayNumber = calendar.component(.day, from: day)
-        let difference = morningOnly ? -1250 : ((shop.index + terminalIndex + dayNumber) % 5 == 3 ? 300 : 0)
+        let difference = isMorningOnly(shop, terminalIndex) ? -1250 : ((shop.index + terminalIndex + dayNumber) % 5 == 3 ? 300 : 0)
         return [
             "id": "demo-caixa-\(key)-\(open ? "aberto" : "fechado")",
             "shop": shopRef(shop), "terminal_name": shop.terminals[terminalIndex], "station_name": "",
             "operator_name": shop.operators[terminalIndex % shop.operators.count],
-            "status": open ? "open" : "closed", "opened_at": iso(openedAt),
-            "closed_at": open ? NSNull() : iso(closedAt), "opening_cents": opening,
+            "status": open ? "open" : "closed", "opened_at": iso(openedAt(day, terminalIndex: terminalIndex)),
+            "closed_at": open ? NSNull() : iso(closedAt(shop, day, terminalIndex: terminalIndex)), "opening_cents": opening,
             "sales_count": count, "sales_total_cents": total, "cash_net_cents": cashNet,
             "supplied_cents": 0, "withdrawn_cents": withdrawn,
             "expected_cents": open ? NSNull() : expected,
@@ -537,11 +611,12 @@ final class DemoGestaoAPI: GestaoAPI {
             ["method": "card_debit", "label": "Cartão de débito", "amount_cents": debit],
             ["method": "cash", "label": "Dinheiro", "amount_cents": cashNet],
         ]
-        session["movements"] = withdrawn > 0 ? [[
+        let sangria = withdrawal(shop, day, terminalIndex: terminalIndex, cashNet: cashNet)
+        session["movements"] = sangria.map { sangria in [[
             "id": "\(id)-sangria", "kind": "withdrawn", "label": "Sangria", "amount_cents": withdrawn,
             "reason": "Depósito no banco", "operator_name": operatorName,
-            "created_at": iso(at(day, hour: 14, minute: 30)),
-        ]] : []
+            "created_at": iso(sangria.at),
+        ]] } ?? []
         return session
     }
 
@@ -592,11 +667,18 @@ final class DemoGestaoAPI: GestaoAPI {
     private func terminalItems(_ context: QueryContext) -> [[String: Any]] {
         shops(context).flatMap { shop in
             shop.terminals.enumerated().map { offset, name -> [String: Any] in
-                let offline = shop.terminals.count > 2 && offset == 2
-                let seen = offline ? at(startOfDay(now()), hour: 13, minute: 14) : now().addingTimeInterval(-Double(20 + offset * 35))
+                // Online enquanto o caixa está aberto; fora disso, visto pela última vez ao fechar.
+                let online = isOpenNow(shop, terminalIndex: offset)
+                let today = startOfDay(now())
+                let closedToday = closedAt(shop, today, terminalIndex: offset)
+                let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
+                let lastClose = closedToday <= now() ? closedToday : closedAt(shop, yesterday, terminalIndex: offset)
+                let seen = online ? now().addingTimeInterval(-Double(20 + offset * 35)) : lastClose.addingTimeInterval(120)
+                // O Caixa 3 desligou depois do turno com eventos ainda por enviar.
+                let pending = !online && isMorningOnly(shop, offset) && closedToday <= now() ? 3 : 0
                 return ["id": String(format: "de900000-0000-4000-8000-%06d%06d", shop.index + 1, offset + 1),
-                        "name": name, "shop": shopRef(shop), "status": offline ? "offline" : "online",
-                        "version": "2.1.0", "last_seen_at": iso(min(seen, now())), "pending_events": offline ? 3 : 0,
+                        "name": name, "shop": shopRef(shop), "status": online ? "online" : "offline",
+                        "version": "2.1.0", "last_seen_at": iso(min(seen, now())), "pending_events": pending,
                         "error": ""]
             }
         }
@@ -606,8 +688,10 @@ final class DemoGestaoAPI: GestaoAPI {
         guard let centro = shops(context).first(where: { $0.index == 0 }) else { return [] }
         let today = startOfDay(now())
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
+        // Estoque negativo às 10h15 de hoje; antes disso, o de ontem no mesmo horário.
+        let negativeStock = at(today, hour: 10, minute: 15) <= now() ? at(today, hour: 10, minute: 15) : at(yesterday, hour: 10, minute: 15)
         return [
-            ["id": "dea00000-0000-4000-8000-000000000001", "created_at": iso(at(today, hour: 10, minute: 15)),
+            ["id": "dea00000-0000-4000-8000-000000000001", "created_at": iso(negativeStock),
              "shop": shopRef(centro), "terminal_name": "Caixa 3", "reason": "negative_stock",
              "reason_text": "Estoque negativo", "status": "open", "status_text": "Em aberto"],
             ["id": "dea00000-0000-4000-8000-000000000002", "created_at": iso(at(yesterday, hour: 16, minute: 40)),
@@ -618,10 +702,16 @@ final class DemoGestaoAPI: GestaoAPI {
 
     // MARK: Decodificação
 
-    private func decode<T: Decodable>(_ object: Any) -> T {
-        // Os dicionários acima seguem o contrato; um erro aqui é bug do modo demonstração.
-        let data = try! JSONSerialization.data(withJSONObject: object)
-        return try! JSONDecoder().decode(T.self, from: data)
+    /// Os dicionários acima seguem o contrato. Se um modelo mudar e eles não, a tela mostra
+    /// o erro comum ("não foi possível carregar") em vez de derrubar o app.
+    private func decode<T: Decodable>(_ object: Any) throws -> T {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: object)
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw APIError.server(status: 500, code: "demo_data", message: "Não foi possível montar os dados da demonstração.",
+                                  retryAfter: nil)
+        }
     }
 
     private static let notInDemo = APIError.server(status: 403, code: "demo_mode",
@@ -629,69 +719,78 @@ final class DemoGestaoAPI: GestaoAPI {
 
     // MARK: GestaoAPI
 
-    func me() async throws -> Me { demoMe() }
+    func me() async throws -> Me { try demoMe() }
 
     func tenants(query: String?, cursor: String?) async throws -> Page<TenantAccess> {
-        decode(["results": [tenantJSON(Self.mainTenantID), tenantJSON(Self.secondTenantID)], "next_cursor": NSNull()])
+        try decode(["results": [tenantJSON(Self.mainTenantID), tenantJSON(Self.secondTenantID)], "next_cursor": NSNull()])
     }
 
-    func dashboard(_ context: QueryContext) async throws -> Dashboard { decode(dashboardJSON(context)) }
+    func dashboard(_ context: QueryContext) async throws -> Dashboard { try decode(dashboardJSON(context)) }
 
     func sales(_ context: QueryContext, status: String, cursor: String?) async throws -> Page<SaleListItem> {
-        let all = saleMoments(context)
-            .compactMap { saleDetailJSON(id: saleID($0.shop, $0.date, $0.seq)) }
-            .filter { status == "all" || ($0["status"] as? String) == status }
-            .map(saleListJSON)
-        return decode(page(all, cursor: cursor))
+        // "Canceladas" inclui as devolvidas, como no servidor. Só a página pedida vira detalhe.
+        let matching = saleMoments(context).filter { moment in
+            switch status {
+            case "all": return true
+            case "cancelled": return moment.status != "completed"
+            default: return moment.status == status
+            }
+        }
+        let start = Int(cursor ?? "") ?? 0
+        let end = min(matching.count, start + Self.pageSize)
+        let slice = start < end ? Array(matching[start..<end]) : []
+        let results = slice.compactMap { saleDetailJSON(id: saleID($0.shop, $0.date, $0.seq)) }.map(saleListJSON)
+        let next: Any = end < matching.count ? String(end) : NSNull()
+        return try decode(["results": results, "next_cursor": next])
     }
 
     func sale(id: String, tenantID: String) async throws -> SaleDetail {
         guard let json = saleDetailJSON(id: id) else { throw Self.notInDemo }
-        return decode(json)
+        return try decode(json)
     }
 
     func cashSessions(_ context: QueryContext, status: String, cursor: String?) async throws -> Page<CashSession> {
         let all = status == "closed" ? closedCashSessions(context) : openCashSessions(context)
-        return decode(page(all, cursor: cursor))
+        return try decode(page(all, cursor: cursor))
     }
 
     func cashSession(id: String, tenantID: String) async throws -> CashSessionDetail {
         guard let json = cashDetailJSON(id: id) else { throw Self.notInDemo }
-        return decode(json)
+        return try decode(json)
     }
 
     func stockAlerts(_ context: QueryContext, status: String, cursor: String?) async throws -> StockAlertsPage {
         let all = stockItems(context)
         let filtered = all.filter { status == "all" || ($0["status"] as? String) == status }
-        return decode(["counts": ["zeroed": all.filter { ($0["status"] as? String) == "zeroed" }.count,
+        return try decode(["counts": ["zeroed": all.filter { ($0["status"] as? String) == "zeroed" }.count,
                                   "below_minimum": all.filter { ($0["status"] as? String) == "below_minimum" }.count],
                        "results": filtered, "next_cursor": NSNull()])
     }
 
     func credit(_ context: QueryContext, status: String, cursor: String?) async throws -> CreditPage {
         let totals = creditTotals()
-        return decode(["totals": ["open_cents": totals.open, "overdue_cents": totals.overdue,
+        return try decode(["totals": ["open_cents": totals.open, "overdue_cents": totals.overdue,
                                   "customers": totals.customers, "overdue_customers": totals.overdueCustomers],
                        "results": creditItems(status: status), "next_cursor": NSNull()])
     }
 
     func terminals(_ context: QueryContext) async throws -> TerminalsPage {
-        decode(["online_window_seconds": 300, "results": terminalItems(context), "next_cursor": NSNull()])
+        try decode(["online_window_seconds": 300, "results": terminalItems(context), "next_cursor": NSNull()])
     }
 
     func conflicts(_ context: QueryContext, status: String, cursor: String?) async throws -> Page<SyncConflict> {
         let all = conflictItems(context).filter { status == "all" || ($0["status"] as? String) == status }
-        return decode(["results": all, "next_cursor": NSNull()])
+        return try decode(["results": all, "next_cursor": NSNull()])
     }
 
     func devices() async throws -> Page<AppDeviceInfo> {
-        decode(["results": [deviceJSON], "next_cursor": NSNull()])
+        try decode(["results": [deviceJSON], "next_cursor": NSNull()])
     }
 
     func revokeDevice(id: String) async throws {}
 
     func requestAccountDeletion(note: String?) async throws -> DeletionResponse {
-        decode(["status": "received",
+        try decode(["status": "received",
                 "message": "Isto é só uma demonstração: nenhum pedido foi enviado. Com uma conta de verdade, o pedido de exclusão é feito por aqui mesmo."])
     }
 

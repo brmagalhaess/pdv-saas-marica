@@ -18,17 +18,22 @@ struct PDV2GestaoApp: App {
         // "Ver demonstração"); `-PDV2DemoPlatform` usa as fixtures do contrato com o
         // perfil da equipe. Os argumentos abaixo escolhem a tela, para gerar capturas:
         //   -PDV2Tab resumo|vendas|caixa|estoque|mais   -PDV2More fiado|terminais|conflitos|conta
-        //   -PDV2Period hoje|ontem|7d|mes
+        //   -PDV2Period hoje|ontem|7d|mes   -PDV2DemoNow 2026-11-13T18:30:00-03:00 (relógio fixo)
+        // Testes de interface: `-PDV2CleanLaunch` usa sessão só em memória (ignora o Keychain do
+        // simulador) e preferências próprias; `-PDV2ResetDefaults` apaga essas preferências antes.
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("-PDV2DemoPlatform") { return .preview(platform: true) }
+        let state = arguments.contains("-PDV2CleanLaunch")
+            ? DebugLaunch.cleanState(reset: arguments.contains("-PDV2ResetDefaults"))
+            : AppState()
         if arguments.contains("-PDV2Demo") {
-            let state = AppState()
-            state.enterDemo()
+            state.enterDemo(api: DemoGestaoAPI(now: DebugLaunch.demoClock(arguments)))
             DebugLaunch.apply(arguments, to: state)
-            return state
         }
-        #endif
+        return state
+        #else
         return AppState()
+        #endif
     }
 }
 
@@ -36,8 +41,27 @@ struct PDV2GestaoApp: App {
 /// Leitura dos argumentos de lançamento usados só nas capturas de tela.
 enum DebugLaunch {
     static func value(_ name: String, in arguments: [String]) -> String? {
+        rawValue(name, in: arguments)?.lowercased()
+    }
+
+    static func rawValue(_ name: String, in arguments: [String]) -> String? {
         guard let index = arguments.firstIndex(of: name), arguments.indices.contains(index + 1) else { return nil }
-        return arguments[index + 1].lowercased()
+        return arguments[index + 1]
+    }
+
+    /// Relógio da demonstração: fixo com `-PDV2DemoNow` (capturas), senão o do aparelho.
+    static func demoClock(_ arguments: [String]) -> () -> Date {
+        guard let text = rawValue("-PDV2DemoNow", in: arguments),
+              let fixed = ISO8601DateFormatter().date(from: text) else { return Date.init }
+        return { fixed }
+    }
+
+    /// Estado sem o Keychain do simulador e com preferências separadas, para os testes de interface.
+    @MainActor
+    static func cleanState(reset: Bool) -> AppState {
+        let suite = "pdv2.uitests"
+        if reset { UserDefaults().removePersistentDomain(forName: suite) }
+        return AppState(defaults: UserDefaults(suiteName: suite) ?? .standard, store: InMemorySessionStore())
     }
 
     @MainActor

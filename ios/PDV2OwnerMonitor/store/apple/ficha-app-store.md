@@ -56,8 +56,12 @@ Aplicativo gratuito e somente leitura para empresas clientes do PDV2. As empresa
 
 - Ícone 1024×1024 opaco: `PDV2OwnerMonitor/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png`.
 - Capturas 6,9" (1320×2868, PNG sem transparência) em `store/apple/capturas/`, geradas no modo demonstração
-  (iPhone 17 Pro Max, barra de status 9:41 e bateria cheia): `01-resumo`, `02-vendas`, `03-caixa`,
-  `04-estoque`, `05-fiado`. O app é só iPhone (`TARGETED_DEVICE_FAMILY = 1`): sem capturas de iPad.
+  (iPhone 17 Pro Max, relógio da demonstração e barra de status às 18:30, bateria cheia): `01-resumo`,
+  `02-vendas`, `03-caixa`, `04-estoque`, `05-fiado`. O app é só iPhone (`TARGETED_DEVICE_FAMILY = 1`):
+  sem capturas de iPad.
+- Capturas de 6,3" (1206×2622) deixaram de ser geradas: a App Store Connect exige só o tamanho de 6,9"
+  e reduz essas imagens para os iPhones menores. Se quiser imagens próprias de 6,3", gere no iPhone 17 Pro
+  com os mesmos argumentos.
   Em Debug, `-PDV2Demo` com `-PDV2Tab`/`-PDV2More`/`-PDV2Period` abre direto em cada tela.
 
 ## Pendências do dono
