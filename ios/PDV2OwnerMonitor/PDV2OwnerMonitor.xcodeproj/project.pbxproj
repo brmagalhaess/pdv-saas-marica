@@ -36,6 +36,7 @@
 				A74BCBAECC9ECE2434FB0EE4 /* AppState.swift */,
 				90C37FAE325BB7C62169765A /* BiometricLock.swift */,
 				BBA01BCD5A8215F1BF73EC71 /* Components.swift */,
+				AC0823397FD05765B484D3D4 /* DemoData.swift */,
 				2322EDBA2DBE5FF99A94E2E4 /* DesignSystem.swift */,
 				E006D6494850E6918FF7E6EC /* Format.swift */,
 				42F2B39F586B1069203048BC /* GestaoAPI.swift */,
@@ -50,18 +51,40 @@
 		};
 		0D2EBB4AC46F7E8AF81A348E = {isa = PBXFileReference; lastKnownFileType = text.json; path = "sales.json"; sourceTree = "<group>"; };
 		0D6551D5970CDE80A99C241C = {isa = PBXFileReference; lastKnownFileType = text.json; path = "ok.json"; sourceTree = "<group>"; };
+		0DA9DB32BDA02E4316FA7B4F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoModeTests.swift"; sourceTree = "<group>"; };
 		0F3E568917624AC08126E95A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "APIClient.swift"; sourceTree = "<group>"; };
 		0F5400A426AAED9D60C48A51 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RootView.swift"; sourceTree = "<group>"; };
 		0FFF5207A715334C1CD8FE2C = {isa = PBXBuildFile; fileRef = 48A19966E9B4D43B36C0B47F /* AppStateTests.swift */; };
-		A1C0FFEE0000000000000001 = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* ReviewFixesTests.swift */; };
 		104488AA29DAFFDB4C481ABA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AccessGrantView.swift"; sourceTree = "<group>"; };
 		10A32882F2262AAC4341BFCF = {isa = PBXBuildFile; fileRef = 7CBE2E62ABC0407E41DD5CDB /* CashDetailView.swift */; };
+		1127595FE56D7E0BE7159602 = {
+			isa = PBXGroup;
+			children = (
+				50D3295222E5491ADDB0E7E0 /* DemoModeUITests.swift */,
+			);
+			path = "PDV2GestaoUITests";
+			sourceTree = "<group>";
+		};
 		11459632215A0F14668B5694 = {isa = PBXFileReference; lastKnownFileType = text.json; path = "sale_detail_refunded.json"; sourceTree = "<group>"; };
 		11B40454D523F417F51BF8A8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CreditView.swift"; sourceTree = "<group>"; };
 		12495C0988A2E57C19BFB0CD = {isa = PBXBuildFile; fileRef = 668EDD378A2797C5851EE88D /* access.json */; };
 		1466809D69F1A6F50A8852EB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppConfig.swift"; sourceTree = "<group>"; };
 		164DAE27BCC75DDF6A4723DD = {isa = PBXFileReference; lastKnownFileType = text.json; path = "stock_alerts.json"; sourceTree = "<group>"; };
 		166FD980436ABFBE67976135 = {isa = PBXBuildFile; fileRef = A74BCBAECC9ECE2434FB0EE4 /* AppState.swift */; };
+		178026E9736C0D93D84E964D = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = br.com.crowntech.pdv2gestao.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = PDV2Gestao;
+			};
+			name = Debug;
+		};
 		17BD3C3C07797BACB8D173A8 = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -72,6 +95,7 @@
 				166FD980436ABFBE67976135 /* AppState.swift in Sources */,
 				EEB0CBDC1F1F10D8939CEEE8 /* BiometricLock.swift in Sources */,
 				35523AD872DC4F6702B2C119 /* Components.swift in Sources */,
+				DE9258468CC50E7707DCC2CC /* DemoData.swift in Sources */,
 				0749429D3380F33123A50C40 /* DesignSystem.swift in Sources */,
 				0410722BCEE7D234C8570392 /* Format.swift in Sources */,
 				4EB567F74CC7C3497C02EDB7 /* GestaoAPI.swift in Sources */,
@@ -115,10 +139,11 @@
 			children = (
 				350E7294E9D477E53DD0B844 /* Fixtures */,
 				48A19966E9B4D43B36C0B47F /* AppStateTests.swift */,
-				A1C0FFEE0000000000000002 /* ReviewFixesTests.swift */,
 				2EB74D4101D991A77A2BBC00 /* ContractDecodingTests.swift */,
+				0DA9DB32BDA02E4316FA7B4F /* DemoModeTests.swift */,
 				722A0D1A104FB9EFF04A5840 /* ErrorAndConfigTests.swift */,
 				D59AA41A2F214AD44DDF8CD1 /* FormatTests.swift */,
+				9BDF37CA8DFB2A5894E8B734 /* ReviewFixesTests.swift */,
 				AD4AF89D9D227C1F06EB7997 /* SessionManagerTests.swift */,
 				FF48AE4D0BAD87B25FC3D4E2 /* TestSupport.swift */,
 			);
@@ -193,6 +218,14 @@
 		2B88DED05D2ACD556EB3B17B = {isa = PBXFileReference; lastKnownFileType = text.json; path = "access_options.json"; sourceTree = "<group>"; };
 		2E2B7362D4ECE2B65214D431 = {isa = PBXBuildFile; fileRef = FA9319DDFFF065BC648CD1DE /* TokenStore.swift */; };
 		2EB74D4101D991A77A2BBC00 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContractDecodingTests.swift"; sourceTree = "<group>"; };
+		2FA8C3E7E590FB953BDA8C9A = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				56982B821ECE7576E0E600FE /* DemoModeUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		2FCC0FF70E406CD99B87DA64 = {isa = PBXBuildFile; fileRef = 05659B3348A584E56CE7EC02 /* MFAView.swift */; };
 		3043DED0A15FB1B94800035C = {isa = PBXBuildFile; fileRef = 949E9BEDDAAB19B5AFFF152A /* PrivacyInfo.xcprivacy */; };
 		33B1406BA2A16CE9ABF07A6C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlatformView.swift"; sourceTree = "<group>"; };
@@ -240,6 +273,24 @@
 		};
 		35523AD872DC4F6702B2C119 = {isa = PBXBuildFile; fileRef = BBA01BCD5A8215F1BF73EC71 /* Components.swift */; };
 		35A9C2C91B2DDF55FF806E82 = {isa = PBXFileReference; lastKnownFileType = text.json; path = "refresh.json"; sourceTree = "<group>"; };
+		36BE65CB34B47EAE598E4903 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FDF32E1FC64018E1EB0C8CB5;
+			buildPhases = (
+				2FA8C3E7E590FB953BDA8C9A /* Sources */,
+				F69BBA08E5E09342BAFD4D39 /* Frameworks */,
+				805B4AC6E3D82A14B1C5D06E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				89DDC0A9EBCF48CF33ED3E1D /* PBXTargetDependency */,
+			);
+			name = PDV2GestaoUITests;
+			productName = PDV2GestaoUITests;
+			productReference = C4373B46C248192788FA3463 /* PDV2GestaoUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		37430288966CBD28462ECE88 = {
 			isa = PBXGroup;
 			children = (
@@ -261,6 +312,7 @@
 			children = (
 				F86AA07B80B179F27F254E11 /* PDV2Gestao.app */,
 				BCF1C609D4D09C39F1F493BE /* PDV2GestaoTests.xctest */,
+				C4373B46C248192788FA3463 /* PDV2GestaoUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -269,9 +321,22 @@
 		4608CF9077BEC39BFA33B20A = {isa = PBXBuildFile; fileRef = F68F9C5D65C10D69C9986B52 /* platform_devices.json */; };
 		46114776FD0494426FD31C2F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AccountView.swift"; sourceTree = "<group>"; };
 		4661211ECADEEB9C1AF546BB = {isa = PBXBuildFile; fileRef = E24980BF312BF479EF608A9E /* platform_access.json */; };
+		46C5767D7BC58F6108E4FFB9 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = br.com.crowntech.pdv2gestao.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = PDV2Gestao;
+			};
+			name = Release;
+		};
 		46C91C46C8D8652D755DCA2B = {isa = PBXBuildFile; fileRef = 19AD6090C0C935E3A9879222 /* mfa_ok.json */; };
 		48A19966E9B4D43B36C0B47F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppStateTests.swift"; sourceTree = "<group>"; };
-		A1C0FFEE0000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReviewFixesTests.swift"; sourceTree = "<group>"; };
 		48C6EC11F32FB244EDB0A22D = {isa = PBXBuildFile; fileRef = E48BEECD09BD3C8C1C695B6A /* StockView.swift */; };
 		48F7C43B45EA8A3B0BDD5EAF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SaleDetailView.swift"; sourceTree = "<group>"; };
 		4A1CAAE8432E2F538496468F = {isa = PBXFileReference; lastKnownFileType = text.json; path = "dashboard_restricted.json"; sourceTree = "<group>"; };
@@ -289,6 +354,7 @@
 		};
 		4E61C4C13C25321A4FC70FCA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CashView.swift"; sourceTree = "<group>"; };
 		4EB567F74CC7C3497C02EDB7 = {isa = PBXBuildFile; fileRef = 42F2B39F586B1069203048BC /* GestaoAPI.swift */; };
+		50D3295222E5491ADDB0E7E0 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoModeUITests.swift"; sourceTree = "<group>"; };
 		51798A81B588A57B13E8E650 = {isa = PBXBuildFile; fileRef = 4E61C4C13C25321A4FC70FCA /* CashView.swift */; };
 		5332BB0929A793199BF42F3C = {isa = PBXBuildFile; fileRef = C0BBABA8C441108A8A5411B4 /* cash_sessions.json */; };
 		55270AF1A3D8A66714452E90 = {
@@ -313,6 +379,7 @@
 			path = "PDV2OwnerMonitor";
 			sourceTree = "<group>";
 		};
+		56982B821ECE7576E0E600FE = {isa = PBXBuildFile; fileRef = 50D3295222E5491ADDB0E7E0 /* DemoModeUITests.swift */; };
 		56C70B636BE11C80BB17FBA3 = {
 			isa = PBXGroup;
 			children = (
@@ -371,6 +438,7 @@
 			children = (
 				566A603C216F79C2DFB5C0C8 /* PDV2OwnerMonitor */,
 				1F9FC43C0BF712427169B639 /* PDV2GestaoTests */,
+				1127595FE56D7E0BE7159602 /* PDV2GestaoUITests */,
 				74366BEDC01ABEB6E383D470 /* Config */,
 				43327175E3C0E96DAA29407D /* Products */,
 			);
@@ -384,10 +452,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				0FFF5207A715334C1CD8FE2C /* AppStateTests.swift in Sources */,
-				A1C0FFEE0000000000000001 /* ReviewFixesTests.swift in Sources */,
 				C457A2C681F8F23FD9B227EB /* ContractDecodingTests.swift in Sources */,
+				F4C86731CBAEB1D5FF9EEDFA /* DemoModeTests.swift in Sources */,
 				02CA304D24C1042CBA64E6BD /* ErrorAndConfigTests.swift in Sources */,
 				407CE4B74CA46AEEAA60ADDA /* FormatTests.swift in Sources */,
+				E6869BDCAC0B15DD4316C501 /* ReviewFixesTests.swift in Sources */,
 				91A6872588B6C00B14EDA3BC /* SessionManagerTests.swift in Sources */,
 				F323ACEAFE891F05B77CA352 /* TestSupport.swift in Sources */,
 			);
@@ -481,6 +550,14 @@
 			sourceTree = "<group>";
 		};
 		80136DE5FF61E56DB9F32557 = {isa = PBXFileReference; lastKnownFileType = text.json; path = "me.json"; sourceTree = "<group>"; };
+		805B4AC6E3D82A14B1C5D06E = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		806AFF13BE7C791B6EC4A49E = {isa = PBXBuildFile; fileRef = 5E5F7C62528C875F5D3D95F4 /* access_grant_request_platform.json */; };
 		82A71A0EDD16D57723269AB0 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlatformDevicesView.swift"; sourceTree = "<group>"; };
 		82E0F8C6F507C7DC8F6A5C3C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PDV2GestaoApp.swift"; sourceTree = "<group>"; };
@@ -501,6 +578,11 @@
 			path = "Login";
 			sourceTree = "<group>";
 		};
+		89DDC0A9EBCF48CF33ED3E1D = {
+			isa = PBXTargetDependency;
+			target = D10FED93F7A23028AFC50B96 /* PDV2Gestao */;
+			targetProxy = C946666E1560BABE72AC8E9B /* PBXContainerItemProxy */;
+		};
 		8BE3B5660137A7BA38559C9C = {isa = PBXBuildFile; fileRef = 67F30A61EB22708AF5E2F630 /* cash_session_detail.json */; };
 		8CF3C6922C1C11988311337C = {isa = PBXBuildFile; fileRef = C06ABB3C6BEDE5844F666C1F /* conflicts.json */; };
 		90C37FAE325BB7C62169765A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BiometricLock.swift"; sourceTree = "<group>"; };
@@ -518,6 +600,7 @@
 				TargetAttributes = {
 					D10FED93F7A23028AFC50B96 = { CreatedOnToolsVersion = 27.0; };
 					B9879E2E5BBC137B5C0E9B58 = { CreatedOnToolsVersion = 27.0; TestTargetID = D10FED93F7A23028AFC50B96; };
+					36BE65CB34B47EAE598E4903 = { CreatedOnToolsVersion = 27.0; TestTargetID = D10FED93F7A23028AFC50B96; };
 				};
 			};
 			buildConfigurationList = BFEC26E428B1CE6CDD0DDA4F;
@@ -535,9 +618,11 @@
 			targets = (
 				D10FED93F7A23028AFC50B96 /* PDV2Gestao */,
 				B9879E2E5BBC137B5C0E9B58 /* PDV2GestaoTests */,
+				36BE65CB34B47EAE598E4903 /* PDV2GestaoUITests */,
 			);
 		};
 		9BC91F99D56A67C39C80A29A = {isa = PBXBuildFile; fileRef = 33B1406BA2A16CE9ABF07A6C /* PlatformView.swift */; };
+		9BDF37CA8DFB2A5894E8B734 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReviewFixesTests.swift"; sourceTree = "<group>"; };
 		9E1C5FE2807039BF87C7A0F9 = {
 			isa = PBXGroup;
 			children = (
@@ -593,6 +678,7 @@
 			remoteGlobalIDString = D10FED93F7A23028AFC50B96;
 			remoteInfo = PDV2Gestao;
 		};
+		AC0823397FD05765B484D3D4 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoData.swift"; sourceTree = "<group>"; };
 		AD4AF89D9D227C1F06EB7997 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SessionManagerTests.swift"; sourceTree = "<group>"; };
 		AE4E4B9098B79FE40D6E500D = {isa = PBXFileReference; lastKnownFileType = text.json; path = "access_options_platform.json"; sourceTree = "<group>"; };
 		B02DB22C22499DEF489D9F9D = {isa = PBXFileReference; lastKnownFileType = text.json; path = "platform_device.json"; sourceTree = "<group>"; };
@@ -653,6 +739,7 @@
 		C0BBABA8C441108A8A5411B4 = {isa = PBXFileReference; lastKnownFileType = text.json; path = "cash_sessions.json"; sourceTree = "<group>"; };
 		C1380C47938B03E16E4582AB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DeleteAccountView.swift"; sourceTree = "<group>"; };
 		C3E20DD93982F4F2E1204088 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlatformAccessView.swift"; sourceTree = "<group>"; };
+		C4373B46C248192788FA3463 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PDV2GestaoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C457A2C681F8F23FD9B227EB = {isa = PBXBuildFile; fileRef = 2EB74D4101D991A77A2BBC00 /* ContractDecodingTests.swift */; };
 		C7B85598C5D654C3D0F95713 = {isa = PBXBuildFile; fileRef = 0D6551D5970CDE80A99C241C /* ok.json */; };
 		C7BCF9F134051829EB468A27 = {
@@ -662,6 +749,13 @@
 			);
 			path = "Terminals";
 			sourceTree = "<group>";
+		};
+		C946666E1560BABE72AC8E9B = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D10FED93F7A23028AFC50B96;
+			remoteInfo = PDV2Gestao;
 		};
 		CA2D1913F4FC71CBC8ACE71A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SummaryView.swift"; sourceTree = "<group>"; };
 		CBBB90B1613106E12032D803 = {isa = PBXBuildFile; fileRef = CA2D1913F4FC71CBC8ACE71A /* SummaryView.swift */; };
@@ -701,6 +795,7 @@
 		D73BB36AA561213EA3940AB9 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info.plist"; sourceTree = "<group>"; };
 		DB84A6A07FEB54A49CDB289B = {isa = PBXFileReference; lastKnownFileType = text.json; path = "error_access_exists.json"; sourceTree = "<group>"; };
 		DDEFCE0B3FEC243EE72608C8 = {isa = PBXBuildFile; fileRef = 1CFA559E5581A9CE384446F1 /* error_token_expired.json */; };
+		DE9258468CC50E7707DCC2CC = {isa = PBXBuildFile; fileRef = AC0823397FD05765B484D3D4 /* DemoData.swift */; };
 		E006D6494850E6918FF7E6EC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Format.swift"; sourceTree = "<group>"; };
 		E027FE40D831C7EA66DAA43E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlatformTenantsView.swift"; sourceTree = "<group>"; };
 		E1E7C1A452D5F06776EB07C9 = {isa = PBXBuildFile; fileRef = 25046D9E8D3A28DCF423265C /* Loaders.swift */; };
@@ -709,6 +804,7 @@
 		E48BEECD09BD3C8C1C695B6A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StockView.swift"; sourceTree = "<group>"; };
 		E52C4E4F4A7F296A9AE1E963 = {isa = PBXBuildFile; fileRef = 2B88DED05D2ACD556EB3B17B /* access_options.json */; };
 		E64D48F184B1F2A090AE02A4 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SalesView.swift"; sourceTree = "<group>"; };
+		E6869BDCAC0B15DD4316C501 = {isa = PBXBuildFile; fileRef = 9BDF37CA8DFB2A5894E8B734 /* ReviewFixesTests.swift */; };
 		E8782341E81924BECE7287D9 = {
 			isa = PBXGroup;
 			children = (
@@ -750,6 +846,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F4C86731CBAEB1D5FF9EEDFA = {isa = PBXBuildFile; fileRef = 0DA9DB32BDA02E4316FA7B4F /* DemoModeTests.swift */; };
 		F4E50DDCB706A84C26C201C1 = {
 			isa = PBXGroup;
 			children = (
@@ -763,6 +860,14 @@
 		};
 		F668B4A99E5FF48B75C3C41D = {isa = PBXBuildFile; fileRef = DB84A6A07FEB54A49CDB289B /* error_access_exists.json */; };
 		F68F9C5D65C10D69C9986B52 = {isa = PBXFileReference; lastKnownFileType = text.json; path = "platform_devices.json"; sourceTree = "<group>"; };
+		F69BBA08E5E09342BAFD4D39 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F752EEDB7DEE35DB27241928 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HomeView.swift"; sourceTree = "<group>"; };
 		F86AA07B80B179F27F254E11 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PDV2Gestao.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F873C26988D14F4A3D7E680F = {isa = PBXFileReference; lastKnownFileType = text.json; path = "login_mfa.json"; sourceTree = "<group>"; };
@@ -798,6 +903,15 @@
 			buildConfigurations = (
 				E8D1ABBBE199FA25F7DE4290,
 				274B0D4650310A4443BD53F6,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FDF32E1FC64018E1EB0C8CB5 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				178026E9736C0D93D84E964D,
+				46C5767D7BC58F6108E4FFB9,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

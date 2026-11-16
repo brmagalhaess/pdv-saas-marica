@@ -21,6 +21,7 @@ struct LoginView: View {
                 header
                 if app.canRetryRestore { retryCard }
                 form
+                demo
                 if app.config.allowServerOverride { serverField }
                 footer
             }
@@ -143,6 +144,27 @@ struct LoginView: View {
                 .background(PDVTheme.field, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             Text("Vazio usa \(app.config.defaultBaseURL). Só aparece em versões de teste.")
                 .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var demo: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                focus = nil
+                app.enterDemo()
+            } label: {
+                Label("Ver demonstração", systemImage: "play.circle")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(app.isBusy)
+            .accessibilityIdentifier("verDemonstracao")
+            Text("Conheça o app com dados fictícios, sem precisar de conta.")
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         }
     }

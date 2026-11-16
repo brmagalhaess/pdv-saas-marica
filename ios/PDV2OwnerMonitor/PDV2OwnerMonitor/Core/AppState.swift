@@ -38,15 +38,20 @@ final class AppState: ObservableObject {
     @Published private(set) var canRetryRestore = false
     @Published private(set) var me: Me?
     @Published private(set) var tenant: TenantAccess?
-    @Published var shopID: String? { didSet { defaults.set(shopID, forKey: Keys.shop) } }
-    @Published var period: Period { didSet { defaults.set(period.rawValue, forKey: Keys.period) } }
+    // Na demonstração nada é gravado no aparelho (nem empresa, loja ou período).
+    @Published var shopID: String? { didSet { if !isDemo { defaults.set(shopID, forKey: Keys.shop) } } }
+    @Published var period: Period { didSet { if !isDemo { defaults.set(period.rawValue, forKey: Keys.period) } } }
     @Published var selectedTab: Tab = .summary
     @Published var morePath: [MoreRoute] = []
     @Published var showTenantPicker = false
     @Published var showBiometricOffer = false
     @Published private(set) var isLocked = false
     @Published private(set) var isBusy = false
-    @Published var biometricLockEnabled: Bool { didSet { defaults.set(biometricLockEnabled, forKey: Keys.biometricLock) } }
+    /// Modo demonstração: dados fictícios, sem rede, sem token e sem gravar nada.
+    @Published private(set) var isDemo = false
+    @Published var biometricLockEnabled: Bool {
+        didSet { if !isDemo { defaults.set(biometricLockEnabled, forKey: Keys.biometricLock) } }
+    }
     @Published var serverOverride: String { didSet { defaults.set(serverOverride, forKey: Keys.server) } }
 
     let config: AppConfig
@@ -73,9 +78,7 @@ final class AppState: ObservableObject {
         self.shopID = defaults.string(forKey: Keys.shop)
         self.biometricLockEnabled = defaults.bool(forKey: Keys.biometricLock)
         self.serverOverride = config.allowServerOverride ? (defaults.string(forKey: Keys.server) ?? "") : ""
-        if let data = defaults.data(forKey: Keys.tenant) {
-            self.tenant = try? JSONDecoder().decode(TenantAccess.self, from: data)
-        }
+        self.tenant = Self.storedTenant(in: defaults)
         self.api = api ?? PreviewGestaoAPI(failWith: .offline)
         if api == nil { rebuildSession() }
     }
@@ -117,9 +120,13 @@ final class AppState: ObservableObject {
         }
     }
 
+    private static func storedTenant(in defaults: UserDefaults) -> TenantAccess? {
+        defaults.data(forKey: Keys.tenant).flatMap { try? JSONDecoder().decode(TenantAccess.self, from: $0) }
+    }
+
     /// S0: abertura do app.
     func start() async {
-        guard phase == .launching else { return }
+        guard phase == .launching, !isDemo else { return }
         guard let session, await session.hasStoredSession else {
             phase = .login
             return
@@ -239,8 +246,59 @@ final class AppState: ObservableObject {
         phase = .login
     }
 
+    // MARK: Demonstração
+
+    /// "Ver demonstração": abre o app inteiro com os dados fictícios do Mercadinho Exemplo.
+    /// Não chama o servidor, não cria sessão, não grava token, Keychain nem preferências.
+    func enterDemo(api demoAPI: DemoGestaoAPI = DemoGestaoAPI()) {
+        guard !isDemo, phase != .home else { return }
+        // Um erro nos dados fictícios não pode derrubar o app: fica na entrada com aviso.
+        guard let me = try? demoAPI.demoMe() else {
+            loginMessage = "Não foi possível abrir a demonstração."
+            return
+        }
+        isDemo = true
+        session = nil
+        api = demoAPI
+        self.me = me
+        tenant = me.tenants.first
+        shopID = nil
+        // De madrugada "Hoje" ainda não tem vendas: a demonstração abre em "Ontem".
+        period = demoAPI.initialPeriod
+        selectedTab = .summary
+        morePath = []
+        loginMessage = nil
+        mfaMessage = nil
+        showTenantPicker = false
+        showBiometricOffer = false
+        isLocked = false
+        phase = .home
+    }
+
+    /// "Sair da demonstração": volta à tela de entrada como estava antes, sem deixar nada.
+    func exitDemo() {
+        guard isDemo else { return }
+        me = nil
+        // Volta ao contexto guardado antes da demonstração (que ela não alterou).
+        tenant = Self.storedTenant(in: defaults)
+        shopID = defaults.string(forKey: Keys.shop)
+        period = Period(rawValue: defaults.string(forKey: Keys.period) ?? "") ?? .today
+        biometricLockEnabled = defaults.bool(forKey: Keys.biometricLock)
+        morePath = []
+        selectedTab = .summary
+        showTenantPicker = false
+        showBiometricOffer = false
+        isLocked = false
+        isDemo = false
+        api = PreviewGestaoAPI(failWith: .offline)
+        loginMessage = nil
+        rebuildSession()
+        phase = .login
+    }
+
     /// Sair: avisa o servidor, apaga tokens e contexto, volta ao login.
     func signOut(message: String? = nil) async {
+        if isDemo { exitDemo(); return }
         await session?.logout()
         resetLocalState()
         loginMessage = message
@@ -249,6 +307,7 @@ final class AppState: ObservableObject {
 
     /// Sessão terminou do lado do servidor (revogado, refresh inválido…).
     func forceLogin(message: String) async {
+        if isDemo { exitDemo(); return }
         await session?.clearLocal()
         resetLocalState()
         loginMessage = message
@@ -309,6 +368,7 @@ final class AppState: ObservableObject {
 
     private func setTenant(_ value: TenantAccess?) {
         tenant = value
+        guard !isDemo else { return }
         if let value, let data = try? JSONEncoder().encode(value) {
             defaults.set(data, forKey: Keys.tenant)
         } else {
@@ -375,6 +435,7 @@ final class AppState: ObservableObject {
             Task { await forceLogin(message: message) }
             return ScreenError(kind: .signedOut, message: message)
         case .accessDenied:
+            if isDemo { exitDemo(); return nil }
             Task {
                 await session?.clearLocal()
                 resetLocalState()
@@ -418,6 +479,7 @@ final class AppState: ObservableObject {
 
     /// Liga/desliga a trava pela tela Conta (pede a biometria para ligar).
     func setBiometricLock(_ enabled: Bool) async {
+        guard !isDemo else { return }
         if enabled {
             guard biometrics.canAuthenticate else { biometricLockEnabled = false; return }
             biometricLockEnabled = await biometrics.authenticate(reason: "Confirme para ligar o desbloqueio do app")
@@ -431,7 +493,7 @@ final class AppState: ObservableObject {
         case .background:
             backgroundedAt = Date()
         case .active:
-            let shouldLock = phase == .home && biometrics.canAuthenticate &&
+            let shouldLock = phase == .home && !isDemo && biometrics.canAuthenticate &&
                 BiometricLockPolicy.shouldLock(enabled: biometricLockEnabled, backgroundedAt: backgroundedAt, now: Date())
             backgroundedAt = nil
             if shouldLock && !isLocked {

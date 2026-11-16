@@ -33,9 +33,11 @@ pdv,vendas,caixa,estoque,loja,gestão,faturamento,fiado,comércio,varejo
 | Exclusão de conta | https://pdv2.crowntech.com.br/excluir-conta/ |
 | Marketing | https://pdv2.crowntech.com.br/ |
 
-## Notas para a revisão (rascunho — credenciais o dono preenche)
+## Notas para a revisão
 
-Aplicativo gratuito e somente leitura para empresas clientes do PDV2. As empresas se cadastram no site; o administrador libera o uso do app. Conta de demonstração: e-mail [PREENCHER], senha [PREENCHER], sem verificação em duas etapas. Não há compras nem conteúdo pago.
+Aplicativo gratuito e somente leitura para empresas clientes do PDV2. As empresas se cadastram no site; o administrador do PDV2 libera o uso do app, por isso não há cadastro dentro do app. Para revisar sem conta, toque em **"Ver demonstração"** na tela de entrada: o app abre inteiro com dados fictícios da empresa "Mercadinho Exemplo" (sem senha, sem conexão com o servidor). Uma faixa no alto indica "Demonstração · dados fictícios" e o botão "Sair da demonstração" volta à tela de entrada. Não há compras nem conteúdo pago.
+
+(Em inglês, para o campo "Notes": This is a free, read-only companion app for business customers of PDV2; access is granted by the PDV2 administrator, so there is no in-app sign-up. To review without an account, tap "Ver demonstração" (View demo) on the sign-in screen: the whole app opens with sample data for a fictional store, "Mercadinho Exemplo", with no password and no server connection. A banner at the top reads "Demonstração · dados fictícios" (Demo · sample data), and "Sair da demonstração" returns to the sign-in screen. No purchases or paid content.)
 
 ## Privacidade (App Privacy)
 
@@ -53,11 +55,17 @@ Aplicativo gratuito e somente leitura para empresas clientes do PDV2. As empresa
 ## Artes
 
 - Ícone 1024×1024 opaco: `PDV2OwnerMonitor/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png`.
-- Capturas exigidas: 1320×2868 (6,9") e 1206×2622 (6,3"), mostrando o **Resumo com dados** (não o login).
-  Em Debug, abrir o app com `-PDV2Demo` mostra dados fictícios para as capturas.
+- Capturas 6,9" (1320×2868, PNG sem transparência) em `store/apple/capturas/`, geradas no modo demonstração
+  (iPhone 17 Pro Max, relógio da demonstração e barra de status às 18:30, bateria cheia): `01-resumo`,
+  `02-vendas`, `03-caixa`, `04-estoque`, `05-fiado`. O app é só iPhone (`TARGETED_DEVICE_FAMILY = 1`):
+  sem capturas de iPad.
+- Capturas de 6,3" (1206×2622) deixaram de ser geradas: a App Store Connect exige só o tamanho de 6,9"
+  e reduz essas imagens para os iPhones menores. Se quiser imagens próprias de 6,3", gere no iPhone 17 Pro
+  com os mesmos argumentos.
+  Em Debug, `-PDV2Demo` com `-PDV2Tab`/`-PDV2More`/`-PDV2Period` abre direto em cada tela.
 
 ## Pendências do dono
 
 - Team ID da conta Apple Developer (Organização) no Xcode.
-- Conta de demonstração real (empresa demo sem MFA) e backend em produção durante a revisão.
+- Backend em produção durante a revisão (o modo "Ver demonstração" não depende dele).
 - Aprovar política de privacidade e e-mail de suporte publicados no site.
