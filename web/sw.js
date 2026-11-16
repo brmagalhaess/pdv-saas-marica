@@ -1,5 +1,5 @@
 // Bump VERSION on every release: the old cache is dropped when the new worker activates.
-const VERSION = "2.0.0-painel.1";
+const VERSION = "2.0.0-painel.2";
 const CACHE = "pdv2-shell-" + VERSION;
 const PAGES = ["/", "/login/", "/app/", "/platform/", "/offline/"];
 const SHELL = [
@@ -7,6 +7,9 @@ const SHELL = [
   "/assets/ui.css", "/assets/landing.css", "/assets/core.js",
   "/assets/landing.js", "/assets/auth.js", "/assets/app.js",
   "/assets/pwa.js", "/assets/icon-192.png", "/assets/icon-512.png",
+  "/assets/icon-maskable-192.png", "/assets/icon-maskable-512.png",
+  "/assets/pdv2-simbolo.svg", "/assets/pdv2-por-crowntech.svg",
+  "/assets/pdv2-por-crowntech-negativo.svg", "/assets/pdv2-por-crowntech-empilhado.svg",
   "/manifest.webmanifest"
 ];
 self.addEventListener("install", event => {

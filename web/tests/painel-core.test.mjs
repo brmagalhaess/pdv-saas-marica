@@ -1,13 +1,14 @@
 // Run with: node --test web/tests/painel-core.test.mjs
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 const read = path => readFile(new URL(path, import.meta.url), "utf8");
 // Loaded through a data: URL so the browser module runs as ESM on any Node version.
 const core = await import("data:text/javascript;base64," + Buffer.from(await read("../assets/core.js")).toString("base64"));
 const { formPayload, quantity, validCpf, validCnpj, validTaxId, taxIdValue, conflictReasonText,
-  listPath, sortByLabel, parseImportDecimal, scaledInteger, parseMoneyInput } = core;
+  listPath, sortByLabel, parseImportDecimal, scaledInteger, parseMoneyInput, conflictView, customerFormFields,
+  productSaveErrorText, displayVersion } = core;
 
 function fakeForm(values) {
   const inputs = Object.fromEntries(Object.entries(values).map(([key, value]) =>
@@ -115,19 +116,152 @@ test("CPF e CNPJ são validados pelos dígitos verificadores", () => {
 
 test("conflitos offline têm rótulo em português e caem no texto do detalhe quando desconhecidos", () => {
   const labels = {
-    rejected_event: "Evento recusado (em revisão)",
+    rejected_event: "Evento recusado pela nuvem (em revisão)",
     discount_over_limit: "Desconto acima do limite atual",
-    unit_changed: "Unidade do produto mudou",
-    fiscal_cancel_required: "Cancelar a NFC-e na SEFAZ",
-    sale_already_reversed: "Venda já cancelada no painel",
-    return_on_reversed_sale: "Devolução de venda cancelada",
+    unit_changed: "Unidade do produto alterada",
+    stock_control_changed: "Controle de estoque alterado",
+    product_inactive: "Produto desativado",
+    payment_method_inactive: "Forma de pagamento desativada",
+    promotion_changed: "Promoção alterada ou encerrada",
+    cash_expected_negative: "Caixa fechado com esperado negativo",
+    void_already_reversed: "Cancelamento no caixa de venda já revertida no painel",
+    void_after_return: "Cancelamento no caixa após devolução",
+    fiscal_cancel_required: "Cancelar a NFC-e da venda estornada no caixa",
+    return_on_reversed_sale: "Devolução no caixa de venda já revertida no painel",
+    customer_inactive: "Fiado recebido de cliente desativado",
     negative_stock: "Estoque negativo",
-    return_exceeds_sold: "Devolução no caixa acima do disponível"
+    return_exceeds_sold: "Devolução acima do vendido"
   };
+  assert.deepEqual(Object.keys(core.conflictReasons).sort(), Object.keys(labels).sort());
   for (const [reason, label] of Object.entries(labels)) assert.equal(conflictReasonText({ reason, detail: { message: "x" } }), label);
   assert.equal(conflictReasonText({ reason: "motivo_novo", detail: { message: "Texto vindo do servidor" } }), "Texto vindo do servidor");
   assert.equal(conflictReasonText({ reason: "motivo_novo", detail: {} }), "motivo_novo");
   assert.equal(conflictReasonText({}), "—");
+});
+
+test("conflitos offline: saldo central só no estoque; demais motivos mostram a mensagem", () => {
+  const stock = conflictView({ reason: "negative_stock", detail: { message: "Venda deixou o saldo negativo.",
+    items: [{ product_id: "p1", product_name: "Queijo", requested_milli: 500, central_balance_milli: -350 },
+      { product_id: "p2", product_name: "Arroz", central_balance_milli: -2000 }] } });
+  assert.equal(stock.summary, "Queijo: saldo central -0,35 · Arroz: saldo central -2");
+  assert.deepEqual(stock.lines, ["Queijo: saldo central -0,35", "Arroz: saldo central -2"]);
+  assert.equal(stock.payload, "");
+
+  const discount = conflictView({ reason: "discount_over_limit", detail: { message: "Desconto de 15% acima do limite de 10%.", sale_id: "s1" } });
+  assert.equal(discount.summary, "Desconto de 15% acima do limite de 10%.");
+  assert.deepEqual(discount.lines, []);
+
+  // Items without a central balance never render as "(0)".
+  const inactive = conflictView({ reason: "product_inactive", detail: { message: "Ajuste para produto desativado.",
+    items: [{ product_id: "p1", product_name: "Pão", delta_milli: -1500 }] } });
+  assert.equal(inactive.summary, "Ajuste para produto desativado.");
+  assert.deepEqual(inactive.lines, ["Pão: -1,5"]);
+  const reversed = conflictView({ reason: "return_on_reversed_sale", detail: { message: "Devolução de venda já revertida.",
+    items: [{ product_id: "abcdef123456", quantity_milli: 1000, amount_cents: 500 }] } });
+  assert.deepEqual(reversed.lines, ["Produto abcdef12: 1"]);
+
+  assert.equal(conflictView({ reason: "cash_expected_negative", detail: {} }).summary, "Ver detalhes");
+  assert.equal(conflictView({}).summary, "Ver detalhes");
+  assert.equal(conflictView({ reason: "x", detail: { items: "quebrado", message: 7 } }).summary, "Ver detalhes");
+});
+
+test("conflitos offline: evento recusado mostra erro, tipo e payload formatado", () => {
+  const payload = { event_id: "e1", payload: { total_cents: 1250 } };
+  const view = conflictView({ reason: "rejected_event", event_type: "sale.completed", detail: {
+    message: "Evento do caixa recusado pela nuvem: Produto não encontrado", type: "sale.completed",
+    error: "Produto não encontrado", status: 404, payload } });
+  assert.equal(view.summary, "Produto não encontrado");
+  assert.equal(view.error, "Produto não encontrado");
+  assert.equal(view.type, "sale.completed");
+  assert.equal(view.payload, JSON.stringify(payload, null, 2));
+  assert.ok(view.payload.split("\n").length > 3);
+  // Payload the database refused is stored as escaped JSON text.
+  const escaped = conflictView({ reason: "rejected_event", event_type: "cash.closed",
+    detail: { error: "Texto inválido", payload: { unserializable: JSON.stringify({ a: 1 }) } } });
+  assert.equal(escaped.payload, JSON.stringify({ a: 1 }, null, 2));
+  assert.equal(escaped.type, "cash.closed");
+  assert.equal(conflictView({ reason: "rejected_event", detail: { payload: { unserializable: "não é json" } } }).payload, "não é json");
+  // Error, type and payload belong to rejected events only.
+  const other = conflictView({ reason: "unit_changed", detail: { message: "m", error: "e", type: "t", payload: { a: 1 } } });
+  assert.deepEqual([other.error, other.type, other.payload], ["", "", ""]);
+});
+
+test("clientes: caixa não vê limite nem desativação; financeiro edita só o limite", () => {
+  const fields = [{ key: "name" }, { key: "document" }, { key: "email" }, { key: "phone" },
+    { key: "credit_limit_cents", type: "money", default: 0 }, { key: "active", type: "checkbox" }];
+  const keys = (role, editing) => customerFormFields(fields, role, editing).map(field => field.key);
+  assert.deepEqual(keys("cashier", false), ["name", "document", "email", "phone"]);
+  assert.deepEqual(keys("cashier", true), ["name", "document", "email", "phone"]);
+  assert.deepEqual(keys("finance", true), ["credit_limit_cents"]);
+  assert.deepEqual(keys("finance", false), []);
+  for (const role of ["owner", "admin", "manager"]) assert.equal(keys(role, true).length, fields.length);
+  // What the form posts for each role stays inside what the API accepts.
+  const form = fakeForm({ name: "Ana", document: "", email: "", phone: "", credit_limit_cents: "150,00", active: true });
+  assert.deepEqual(formPayload(form, customerFormFields(fields, "finance", true), { editing: true }), { credit_limit_cents: 15000 });
+  const cashier = formPayload(form, customerFormFields(fields, "cashier", true), { editing: true });
+  assert.ok(!("credit_limit_cents" in cashier) && !("active" in cashier));
+});
+
+test("produto: código de barras e custo editáveis; 409 de unidade tem mensagem clara", async () => {
+  const app = await read("../assets/app.js");
+  const barcode = app.split("\n").find(line => line.includes('{ key: "barcode",'));
+  assert.ok(!barcode.includes("generated"));
+  assert.ok(!/bloquead/.test(barcode));
+  assert.match(barcode, /Deixe vazio para o sistema gerar/);
+  const pattern = new RegExp("^(?:" + barcode.match(/pattern: "([^"]+)"/)[1] + ")$");
+  for (const code of ["78912345", "789123456789", "7891234567895", "17891234567892"]) assert.ok(pattern.test(code), code);
+  for (const code of ["1234567", "123456789", "7891234567895A", "178912345678921"]) assert.ok(!pattern.test(code), code);
+  assert.ok(app.includes('{ key: "cost_cents", label: "Custo (R$)", type: "money"'));
+  // Empty barcode is sent on edit so the server can generate the internal code; empty cost falls back to zero.
+  const fields = [{ key: "name", required: true }, { key: "barcode", max: 14 }, { key: "cost_cents", type: "money", default: 0 }];
+  assert.deepEqual(formPayload(fakeForm({ name: "Arroz", barcode: "", cost_cents: "" }), fields), { name: "Arroz" });
+  assert.deepEqual(formPayload(fakeForm({ name: "Arroz", barcode: "", cost_cents: "" }), fields, { editing: true }),
+    { name: "Arroz", barcode: "", cost_cents: 0 });
+  assert.deepEqual(formPayload(fakeForm({ name: "Arroz", barcode: " 7891234567895 ", cost_cents: "3,20" }), fields),
+    { name: "Arroz", barcode: "7891234567895", cost_cents: 320 });
+
+  const unit = new core.ApiError("Produto com vendas ou movimentações não pode trocar de unidade; cadastre um novo produto", 409);
+  assert.match(productSaveErrorText(unit), /unidade não pode ser trocada\. Cadastre um novo produto/);
+  const cost = new core.ApiError("Produto com entrada de mercadoria tem o custo calculado pelas entradas", 409);
+  assert.match(productSaveErrorText(cost), /custo médio é calculado pelas entradas/);
+  const clash = new core.ApiError("Código de barras já cadastrado em outro produto", 409);
+  assert.equal(productSaveErrorText(clash), "Código de barras já cadastrado em outro produto");
+  assert.ok(app.includes("saveErrorText: productSaveErrorText"));
+});
+
+test("versão exibida vem do servidor quando /auth/me a envia", () => {
+  assert.equal(displayVersion({ version: "2.1.0" }), "2.1.0");
+  assert.equal(displayVersion({ version: " v2.1.0+abc123 " }), "2.1.0+abc123");
+  for (const session of [{}, null, { version: "" }, { version: "   " }, { version: 3 }, { version: "x".repeat(41) }]) {
+    assert.equal(displayVersion(session), core.APP_VERSION);
+  }
+});
+
+test("estoque: nomes vêm da API e a busca extra só roda para linhas sem eles", async () => {
+  const app = await read("../assets/app.js");
+  assert.ok(app.includes('movements.filter(row => !row.product_name).map(row => stockName("/products", row.product_id))'));
+  assert.ok(app.includes('filter(row => !row.supplier_name).map(row => stockName("/suppliers", row.supplier_id))'));
+  assert.ok(app.includes("row.product_name || productOf(row).name"));
+  assert.ok(app.includes("quantity(row.delta_milli, row.unit || productOf(row).unit"));
+});
+
+test("service worker guarda os ativos de marca e o painel não é indexado", async () => {
+  const [html, sw, manifest] = await Promise.all([read("../app.html"), read("../sw.js"), read("../manifest.webmanifest")]);
+  const shell = sw.slice(sw.indexOf("const SHELL"), sw.indexOf("];", sw.indexOf("const SHELL")));
+  const assets = [...shell.matchAll(/"(\/assets\/[^"]+)"/g)].map(match => match[1]);
+  for (const name of ["pdv2-simbolo.svg", "pdv2-por-crowntech.svg", "pdv2-por-crowntech-negativo.svg",
+    "pdv2-por-crowntech-empilhado.svg", "icon-maskable-192.png", "icon-maskable-512.png"]) {
+    assert.ok(assets.includes("/assets/" + name), name);
+  }
+  // cache.addAll rejects the whole install if a single file is missing.
+  for (const asset of assets) await assert.doesNotReject(access(new URL("../" + asset.slice(1), import.meta.url)), asset);
+  for (const icon of JSON.parse(manifest).icons) assert.ok(assets.includes(icon.src), icon.src);
+  assert.equal(new Set(assets).size, assets.length);
+  assert.ok(!sw.includes('"2.0.0-painel.1"'));
+  assert.ok(html.includes('<link rel="icon" type="image/svg+xml" href="/assets/pdv2-simbolo.svg">'));
+  assert.ok(html.includes('<meta name="robots" content="noindex">'));
+  assert.ok(html.includes("<title>Painel · PDV2 por CrownTech</title>"));
+  assert.ok(html.includes("<small>" + core.VENDOR.signature + "</small>"));
 });
 
 test("listas pedem inativos e busca no servidor; seletores ordenam por nome", () => {
