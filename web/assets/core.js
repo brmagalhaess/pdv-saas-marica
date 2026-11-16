@@ -1,4 +1,12 @@
 const API_ROOT = "/api/v1";
+export const APP_VERSION = "2.0.0";
+export const VENDOR = {
+  name: "CrownTech",
+  site: "crowntech.com.br",
+  url: "https://crowntech.com.br",
+  signature: "PDV2 · um produto CrownTech",
+  footer: "PDV2 · um produto CrownTech · crowntech.com.br"
+};
 let csrfToken = "";
 let activeTenant = "";
 
@@ -119,7 +127,9 @@ export function dateOnly(value) {
 export function quantity(milli, unit = "UN") {
   const n = Number(milli);
   if (!Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: unit === "UN" ? 0 : 3 }).format(n / 1000) + " " + unit;
+  // Never round to whole units: 0.350 kg must not read as "0".
+  const text = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 }).format(n / 1000);
+  return unit ? text + " " + unit : text;
 }
 
 export function el(tag, className = "", text = "") {
@@ -131,4 +141,143 @@ export function el(tag, className = "", text = "") {
 
 export function errorText(error) {
   return error instanceof Error ? error.message : "Ocorreu uma falha inesperada.";
+}
+
+export function editableMoney(cents) {
+  const value = Number(cents);
+  return Number.isFinite(value) ? (value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+}
+
+export function parseMoneyInput(raw) {
+  let value = String(raw ?? "").trim().replace(/R\$|\s/g, "");
+  if (!value) return NaN;
+  if (value.includes(",")) value = value.replace(/\./g, "").replace(",", ".");
+  else if (!/^\d+\.\d{1,2}$/.test(value)) value = value.replace(/\./g, "");
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) : NaN;
+}
+
+// Spreadsheet and ERP exports: a comma means Brazilian format; a single dot is
+// the decimal separator whatever the number of places ("2.3456" is 2,3456).
+export function parseImportDecimal(raw) {
+  let value = String(raw ?? "").trim().replace(/R\$|\s/g, "");
+  if (value.includes(",")) value = value.replace(/\./g, "").replace(",", ".");
+  else if ((value.match(/\./g) || []).length > 1) value = value.replace(/\./g, "");
+  return /^\d+(\.\d+)?$/.test(value) ? Number(value) : NaN;
+}
+
+export function scaledInteger(value, factor) {
+  return Number.isFinite(value) ? Math.round(Number((value * factor).toFixed(4))) : NaN;
+}
+
+const NUMERIC_FIELDS = ["money", "milli", "percent"];
+
+function clearedValue(field) {
+  if (NUMERIC_FIELDS.includes(field.type) || field.type === "number") return field.default ?? null;
+  return field.type === "source" || field.type === "select" ? null : "";
+}
+
+// With `editing`, an emptied optional field is sent explicitly (""/null/default):
+// dropping the key would make it impossible to clear a value through PATCH.
+export function formPayload(form, fields, { editing = false } = {}) {
+  const payload = {};
+  for (const field of fields) {
+    if (field.generated) continue;
+    const input = form.elements.namedItem(field.key);
+    if (!input) continue;
+    const raw = field.type === "checkbox" ? "" : String(input.value ?? "").trim();
+    const numeric = NUMERIC_FIELDS.includes(field.type);
+    let value;
+    if (field.type === "checkbox") value = input.checked;
+    else if (numeric && raw === "") value = "";
+    else if (field.type === "money") value = parseMoneyInput(raw);
+    else if (field.type === "milli") value = Math.round(Number(raw.replace(",", ".")) * 1000);
+    else if (field.type === "percent") value = Math.round(Number(raw.replace(",", ".")) * 100);
+    else if (field.type === "json") {
+      try { value = JSON.parse(raw || "{}"); }
+      catch { throw new Error(field.label + ": JSON inválido."); }
+    } else value = raw;
+    if (value === "" || value === null) {
+      if (!field.required) {
+        if (editing) payload[field.key] = clearedValue(field);
+        continue;
+      }
+      if (numeric) throw new Error(field.label + ": informe um número válido.");
+    }
+    if (field.type === "percent" && (!Number.isSafeInteger(value) || value < 0 || value > 10000)) {
+      throw new Error(field.label + ": informe um percentual entre 0 e 100.");
+    }
+    if ((field.type === "money" || field.type === "milli") && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(field.label + ": informe um número válido.");
+    }
+    payload[field.key] = value;
+  }
+  return payload;
+}
+
+export function listPath(endpoint, params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === "" || value === null || value === undefined || value === false) continue;
+    query.set(key, value === true ? "1" : String(value));
+  }
+  const text = query.toString();
+  return text ? endpoint + (endpoint.includes("?") ? "&" : "?") + text : endpoint;
+}
+
+export function sortByLabel(rows, labelOf = row => row.name) {
+  return [...rows].sort((a, b) => String(labelOf(a) ?? "").localeCompare(String(labelOf(b) ?? ""), "pt-BR", { sensitivity: "base" }));
+}
+
+export function taxIdValue(raw) {
+  return String(raw ?? "").toUpperCase().replace(/[.\-/\s]/g, "");
+}
+
+export function validCpf(value) {
+  const digits = String(value ?? "");
+  if (!/^\d{11}$/.test(digits) || /^(\d)\1+$/.test(digits)) return false;
+  const check = length => {
+    let sum = 0;
+    for (let index = 0; index < length; index++) sum += Number(digits[index]) * (length + 1 - index);
+    return (sum * 10) % 11 % 10;
+  };
+  return check(9) === Number(digits[9]) && check(10) === Number(digits[10]);
+}
+
+// Also accepts the alphanumeric CNPJ (12 letters/digits + 2 check digits):
+// each character is worth its ASCII code minus 48, as defined by the Receita Federal.
+export function validCnpj(value) {
+  const code = String(value ?? "").toUpperCase();
+  if (!/^[0-9A-Z]{12}\d{2}$/.test(code) || /^(.)\1+$/.test(code)) return false;
+  const check = length => {
+    let sum = 0, weight = length - 7;
+    for (let index = 0; index < length; index++) {
+      sum += (code.charCodeAt(index) - 48) * weight;
+      weight = weight === 2 ? 9 : weight - 1;
+    }
+    const rest = sum % 11;
+    return rest < 2 ? 0 : 11 - rest;
+  };
+  return check(12) === Number(code[12]) && check(13) === Number(code[13]);
+}
+
+export function validTaxId(raw) {
+  const value = taxIdValue(raw);
+  return validCpf(value) || validCnpj(value);
+}
+
+export const conflictReasons = {
+  negative_stock: "Estoque negativo",
+  return_exceeds_sold: "Devolução no caixa acima do disponível",
+  rejected_event: "Evento recusado (em revisão)",
+  discount_over_limit: "Desconto acima do limite atual",
+  unit_changed: "Unidade do produto mudou",
+  fiscal_cancel_required: "Cancelar a NFC-e na SEFAZ",
+  sale_already_reversed: "Venda já cancelada no painel",
+  return_on_reversed_sale: "Devolução de venda cancelada"
+};
+
+export function conflictReasonText(row) {
+  const message = row?.detail?.message;
+  return conflictReasons[row?.reason] || (typeof message === "string" && message.trim()) || row?.reason || "—";
 }
