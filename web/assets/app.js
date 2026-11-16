@@ -1,4 +1,6 @@
-import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, el, errorText } from "./core.js";
+import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, el, errorText,
+  APP_VERSION, VENDOR, editableMoney, parseMoneyInput, parseImportDecimal, scaledInteger, formPayload,
+  listPath, sortByLabel, taxIdValue, validTaxId, conflictReasonText } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -16,19 +18,7 @@ const platformSuperuser = () => !!state.user?.is_superuser;
 const tenantOption = platform ? { tenant: false } : {};
 const roleNames = { owner: "Proprietário", admin: "Administrador", manager: "Gerente", cashier: "Operador de caixa", inventory: "Estoque", finance: "Financeiro", viewer: "Consulta" };
 const cancellationAccess = role => ["owner","admin","manager"].includes(role) ? "Autorizado" : role==="cashier" ? "Com PIN de gerente" : "Sem permissão";
-const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", failed:"Falha", passed:"Aprovada", healthy:"Saudável", stale:"Atrasado", error:"Falha", unknown:"Aguardando", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
-function editableMoney(cents) {
-  const value = Number(cents);
-  return Number.isFinite(value) ? (value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
-}
-function parseMoneyInput(raw) {
-  let value = String(raw ?? "").trim().replace(/R\$|\s/g, "");
-  if (!value) return NaN;
-  if (value.includes(",")) value = value.replace(/\./g, "").replace(",", ".");
-  else if (!/^\d+\.\d{1,2}$/.test(value)) value = value.replace(/\./g, "");
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.round(parsed * 100) : NaN;
-}
+const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", done:"Concluída", failed:"Falha", passed:"Aprovada", healthy:"Saudável", stale:"Atrasado", error:"Falha", unknown:"Aguardando", authorized:"Autorizada", rejected:"Rejeitada", denied:"Denegada", pending:"Pendente", processing:"Em processamento", overdue:"Vencida", disputed:"Em disputa", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
 
 const tenantNav = [
   { group: "Acompanhar", id: "reports", label: "Relatórios", icon: "▧", feature:"reports", roles: ["owner","admin","manager","finance","viewer"] },
@@ -81,15 +71,16 @@ function handleError(error, target) {
     location.assign("/login/?next=" + encodeURIComponent(location.pathname + location.hash));
     return;
   }
-  if (error?.status === 0 || error?.status >= 500) {
-    toast("Sem conexão com a nuvem. Para continuar as vendas, abra o terminal local em http://127.0.0.1:8010/.", "error");
-  }
+  // Only a network failure in the store panel points to the local terminal; a 5xx is a server fault.
+  const offline = error?.status === 0 && !platform;
+  const offlineHint = "Sem conexão com a nuvem. Para continuar as vendas, abra o terminal local em http://127.0.0.1:8010/.";
   if (target) {
     target.textContent = errorText(error);
     target.className = "feedback error";
     target.hidden = false;
     target.setAttribute("role", "alert");
-  } else toast(errorText(error), "error");
+    if (offline) toast(offlineHint, "error");
+  } else toast(offline ? offlineHint : errorText(error), "error");
 }
 function loadingSurface(label = "Carregando dados…") {
   const surface = el("div", "surface pad");
@@ -183,9 +174,9 @@ function productStatus(row) {
 }
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
-  const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
-    : ["trial","past_due","pending","open","acknowledged","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
-    : ["active","settled","completed","succeeded","paid","resolved","ignored","passed","healthy","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
+  const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","rejected","denied","overdue","error","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
+    : ["trial","past_due","pending","processing","disputed","stale","open","acknowledged","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
+    : ["active","settled","completed","succeeded","done","authorized","paid","resolved","ignored","passed","healthy","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
   return el("span", "badge " + tone, statusNames[normalized] || value || "—");
 }
 function table(columns, rows, actionsFor) {
@@ -222,11 +213,12 @@ function table(columns, rows, actionsFor) {
   wrap.append(node);
   return wrap;
 }
-function pagedContent(response, path, columns, actionsFor, emptyNode, options={}) {
+function pagedContent(response, path, columns, actionsFor, emptyNode, options={}, onDraw=null) {
   const host=el("div");
   const rows=[...records(response)];
   let next=response?.next_cursor||null;
   function draw() {
+    onDraw?.(rows,!!next);
     host.replaceChildren(rows.length?table(columns,rows,actionsFor):emptyNode);
     if(!next)return;
     const footer=el("div","table-footer");
@@ -348,8 +340,13 @@ function openDialog(title, subtitle, content) {
   panel.append(head, body);
   overlay.append(panel);
   $("#dialog-root").append(overlay);
+  // Escape or a click on the backdrop must not silently discard a filled form.
+  let dirty = false, pressedBackdrop = false;
+  panel.addEventListener("input", () => { dirty = true; });
+  panel.addEventListener("change", () => { dirty = true; });
+  const dismiss = () => { if (!dirty || window.confirm("Fechar a janela e descartar o que foi preenchido?")) closeDialog(); };
   const keydown = event => {
-    if (event.key === "Escape") closeDialog();
+    if (event.key === "Escape") dismiss();
     if (event.key !== "Tab") return;
     const focusables = [...panel.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]')].filter(node => !node.hidden);
     if (!focusables.length) return;
@@ -357,10 +354,12 @@ function openDialog(title, subtitle, content) {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
-  overlay.addEventListener("click", event => { if (event.target === overlay) closeDialog(); });
+  // A drag that starts inside the panel and ends on the backdrop also fires "click" on the backdrop.
+  overlay.addEventListener("mousedown", event => { pressedBackdrop = event.target === overlay; });
+  overlay.addEventListener("click", event => { if (event.target === overlay && pressedBackdrop) dismiss(); pressedBackdrop = false; });
   document.addEventListener("keydown", keydown);
   dialogCleanup = () => { document.removeEventListener("keydown", keydown); previous?.focus?.(); };
-  const initial = panel.querySelector("input,select,textarea,button");
+  const initial = body.querySelector('input:not([type="hidden"]):not(:disabled),select,textarea,button');
   (initial || close).focus();
   return body;
 }
@@ -469,7 +468,7 @@ const resourceSpecs = {
   },
   categories: {
     title: "Categorias", description: "Mantenha o catálogo organizado para encontrar produtos mais rápido.",
-    endpoint: "/categories", singular: "categoria", create: canCatalog, edit: canCatalog, remove: false,
+    endpoint: "/categories", singular: "categoria", create: canCatalog, edit: canCatalog, remove: false, search: "Buscar por nome",
     fields: [
       { key: "name", label: "Nome da categoria", required: true, max: 120 },
       { key: "commission_bps", label: "Comissão da categoria (%) — opcional", type: "percent", help: "Se preenchida, substitui a comissão do vendedor nos itens desta categoria." },
@@ -483,7 +482,7 @@ const resourceSpecs = {
   },
   products: {
     title: "Produtos", description: "Preços, unidades, variações e dados básicos de cada item.",
-    endpoint: "/products", singular: "produto", create: canCatalog, edit: canCatalog, remove: true, search: true,
+    endpoint: "/products", singular: "produto", create: canCatalog, edit: canCatalog, remove: true, search: "Buscar por nome, SKU ou código de barras",
     fields: [
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
       { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
@@ -511,7 +510,7 @@ const resourceSpecs = {
   },
   customers: {
     title: "Clientes", description: "Cadastro, limite de fiado, crédito na loja e extrato de cada cliente.",
-    endpoint: "/customers", singular: "cliente", create: () => can("owner","admin","manager","cashier"), edit: () => can("owner","admin","manager","cashier"), remove: false,
+    endpoint: "/customers", singular: "cliente", create: () => can("owner","admin","manager","cashier"), edit: () => can("owner","admin","manager","cashier"), remove: false, search: "Buscar por nome",
     fields: [
       { key: "name", label: "Nome", required: true, max: 160, full: true },
       { key: "document", label: "CPF ou CNPJ", max: 18 },
@@ -531,7 +530,7 @@ const resourceSpecs = {
   },
   suppliers: {
     title: "Fornecedores", description: "Dados de contato para compras e entrada de mercadorias.",
-    endpoint: "/suppliers", singular: "fornecedor", create: () => can("owner","admin","manager","inventory"), edit: () => can("owner","admin","manager","inventory"), remove: false,
+    endpoint: "/suppliers", singular: "fornecedor", create: () => can("owner","admin","manager","inventory"), edit: () => can("owner","admin","manager","inventory"), remove: false, search: "Buscar por nome",
     fields: [
       { key: "name", label: "Nome", required: true, max: 160, full: true },
       { key: "document", label: "CPF ou CNPJ", max: 18 },
@@ -658,18 +657,120 @@ async function productLabelDialog(product) {
   openDialog("Imprimir etiquetas", product.name, form);
 }
 
+const productLabel = row => row.name + (row.sku ? " · " + row.sku : "");
+const lookupLabels = { "/products": productLabel };
+// Combobox with server-side search (?q=). A plain <select> only reached the first
+// API page (50 rows in UUID order), hiding the rest of the catalog.
+function lookupControl({ id, name = "", source, labelOf = lookupLabels[source] || (row => row.name), placeholder = "Digite para buscar", required = false, filter = null }) {
+  const wrap = el("div", "combo");
+  const search = el("input"), hidden = el("input"), list = el("ul", "combo-list");
+  search.id = id; search.type = "search"; search.autocomplete = "off"; search.placeholder = placeholder; search.maxLength = 120;
+  search.setAttribute("role", "combobox"); search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-expanded", "false");
+  list.id = id + "-list"; list.setAttribute("role", "listbox"); list.hidden = true;
+  search.setAttribute("aria-controls", list.id);
+  hidden.type = "hidden"; if (name) hidden.name = name;
+  wrap.append(search, hidden, list);
+  let selected = null, picks = [], active = -1, serial = 0, timer;
+  const validity = () => search.setCustomValidity(required && !hidden.value ? "Escolha um item da lista." : "");
+  function close() {
+    list.hidden = true; active = -1;
+    search.setAttribute("aria-expanded", "false"); search.removeAttribute("aria-activedescendant");
+  }
+  function set(row) {
+    selected = row || null;
+    hidden.value = row ? String(row.id) : "";
+    search.value = row ? labelOf(row) : "";
+    validity();
+  }
+  function choose(row) { set(row); close(); }
+  function draw(rows, truncated) {
+    list.replaceChildren(); picks = [];
+    const add = (text, pick, extra = "") => {
+      const item = el("li", "combo-option" + extra, text);
+      item.setAttribute("role", "option"); item.id = `${id}-option-${picks.length}`;
+      item.addEventListener("mousedown", event => { event.preventDefault(); pick(); });
+      picks.push(pick); list.append(item);
+    };
+    if (!required && hidden.value) add("Limpar seleção", () => choose(null), " combo-clear");
+    rows.forEach(row => add(labelOf(row), () => choose(row)));
+    if (!rows.length) list.append(el("li", "combo-note", "Nenhum resultado. Tente outro termo."));
+    else if (truncated) list.append(el("li", "combo-note", "Há mais resultados. Continue digitando para refinar a busca."));
+    list.hidden = false; active = -1; search.setAttribute("aria-expanded", "true");
+  }
+  async function load() {
+    const token = ++serial;
+    try {
+      const typed = search.value.trim();
+      const result = await api.get(listPath(source, { q: selected && typed === labelOf(selected) ? "" : typed, limit: 100 }));
+      if (token !== serial) return;
+      const rows = sortByLabel(records(result).filter(row => row.active !== false && (!filter || filter(row))), labelOf);
+      draw(rows, !!result?.next_cursor);
+    } catch (error) {
+      if (token !== serial) return;
+      list.replaceChildren(el("li", "combo-note", errorText(error))); picks = [];
+      list.hidden = false; search.setAttribute("aria-expanded", "true");
+    }
+  }
+  search.addEventListener("input", () => {
+    // Emptying the text clears the choice right away, even if the form is submitted without leaving the field.
+    if (!search.value.trim() && hidden.value) { selected = null; hidden.value = ""; validity(); }
+    clearTimeout(timer); timer = setTimeout(load, 230);
+  });
+  search.addEventListener("click", () => { if (list.hidden) load(); });
+  search.addEventListener("focus", () => search.select());
+  search.addEventListener("keydown", event => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (list.hidden) { load(); return; }
+      if (!picks.length) return;
+      active = active < 0 ? (event.key === "ArrowDown" ? 0 : picks.length - 1)
+        : (active + (event.key === "ArrowDown" ? 1 : picks.length - 1)) % picks.length;
+      const items = [...list.querySelectorAll('[role="option"]')];
+      items.forEach((item, index) => item.classList.toggle("active", index === active));
+      search.setAttribute("aria-activedescendant", items[active].id);
+      items[active].scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Enter" && !list.hidden) {
+      // Enter picks an option; it must not submit the form while the list is open.
+      event.preventDefault();
+      const pick = picks[active] || (picks.length === 1 ? picks[0] : null);
+      if (pick) pick();
+    } else if (event.key === "Escape" && !list.hidden) {
+      event.stopPropagation();
+      close();
+    }
+  });
+  // Keep the focus (and the list) when the pointer lands on the list scrollbar or a note.
+  list.addEventListener("mousedown", event => event.preventDefault());
+  search.addEventListener("blur", () => {
+    clearTimeout(timer); serial++;
+    // Text that was typed but not picked is discarded: the field always shows the real choice.
+    search.value = selected ? labelOf(selected) : "";
+    close();
+  });
+  validity();
+  return { wrap, search, hidden, set, get selected() { return selected; } };
+}
+async function lookupRecord(source, id) {
+  try { return await api.get(source + "/" + encodeURIComponent(id)); }
+  catch { return { id, name: "Registro atual (não foi possível carregar o nome)" }; }
+}
 async function fieldNode(field, value, creating = false) {
   const wrap = el("div", "field" + (field.full ? " full" : ""));
   const id = "field-" + field.key;
   const label = el("label", "", field.label);
   label.htmlFor = id;
   wrap.append(label);
+  if (field.type === "source") {
+    const combo = lookupControl({ id, name: field.key, source: field.source, required: !!field.required, placeholder: field.placeholder });
+    if (value) combo.set(await lookupRecord(field.source, value));
+    wrap.append(combo.wrap);
+    wrap.append(el("small", "", field.help || (field.required ? "Digite para buscar pelo nome." : "Digite para buscar pelo nome. Deixe vazio se não quiser vincular.")));
+    return wrap;
+  }
   let input;
-  if (field.type === "select" || field.type === "source") {
+  if (field.type === "select") {
     input = el("select");
-    const choices = field.type === "source"
-      ? records(await api.get(field.source)).map(row => [row[field.valueKey], row[field.labelKey]])
-      : field.choices;
+    const choices = field.choices;
     if (!field.required) {
       const blank = el("option", "", "Selecione, se desejar");
       blank.value = "";
@@ -724,32 +825,6 @@ async function formFor(fields, values = {}, creating = false) {
   for (const field of fields) form.append(await fieldNode(field, values[field.key], creating));
   return form;
 }
-function formPayload(form, fields) {
-  const payload = {};
-  for (const field of fields) {
-    if (field.generated) continue;
-    const input = form.elements.namedItem(field.key);
-    if (!input) continue;
-    let value;
-    if (field.type === "checkbox") value = input.checked;
-    else if (field.type === "money") value = parseMoneyInput(input.value);
-    else if (field.type === "milli") value = Math.round(Number(input.value) * 1000);
-    else if (field.type === "percent") value = input.value.trim() === "" ? "" : Math.round(Number(input.value.replace(",", ".")) * 100);
-    else if (field.type === "json") {
-      try { value = JSON.parse(input.value || "{}"); }
-      catch { throw new Error(field.label + ": JSON inválido."); }
-    } else value = input.value.trim();
-    if ((value === "" || value === null) && !field.required) continue;
-    if (field.type === "percent" && (!Number.isSafeInteger(value) || value < 0 || value > 10000)) {
-      throw new Error(field.label + ": informe um percentual entre 0 e 100.");
-    }
-    if ((field.type === "money" || field.type === "milli") && (!Number.isSafeInteger(value) || value < 0)) {
-      throw new Error(field.label + ": informe um número válido.");
-    }
-    payload[field.key] = value;
-  }
-  return payload;
-}
 async function resourceForm(spec, record) {
   const editing = !!record;
   const fields = editing ? (spec.editFields || spec.fields) : spec.fields;
@@ -768,7 +843,7 @@ async function resourceForm(spec, record) {
     event.preventDefault();
     if (!form.reportValidity()) return;
     let payload;
-    try { payload = formPayload(form, fields); }
+    try { payload = formPayload(form, fields, { editing }); }
     catch (error) { handleError(error, message); return; }
     if (spec.endpoint === "/shops" && typeof payload.address === "string") payload.address = { text: payload.address };
     save.disabled = true;
@@ -809,88 +884,85 @@ async function resourcePage(key) {
   if (key === "products") box.classList.add("products-surface");
   view.outer.append(box);
   const toolbar = el("div", "toolbar");
+  let query = "", showInactive = false, requests = 0, timer;
   if (spec.search) {
     const field = el("div", "field");
-    const label = el("label", "", "Buscar por nome, SKU ou código de barras");
+    const label = el("label", "", spec.search);
     label.htmlFor = "resource-search";
     const input = el("input");
-    input.id = "resource-search"; input.type = "search"; input.placeholder = "Digite para buscar produtos"; input.maxLength = 120;
+    input.id = "resource-search"; input.type = "search"; input.placeholder = "Digite para buscar"; input.maxLength = 120;
     field.append(label, input); toolbar.append(field);
-    let timer;
-    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => load(input.value.trim()), 250); });
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { query = input.value.trim(); load(); }, 250); });
   } else toolbar.append(el("span", "toolbar-meta", "Dados cadastrados nesta empresa"));
+  // The API never returns inactive rows to cashier/viewer, so the filter would be a no-op for them.
+  if (spec.edit() && !can("cashier", "viewer")) {
+    const line = el("label", "checkbox-line"), toggle = el("input");
+    toggle.type = "checkbox"; toggle.id = "resource-inactive";
+    line.append(toggle, el("span", "", "Mostrar inativos"));
+    toggle.addEventListener("change", () => { showInactive = toggle.checked; load(); });
+    toolbar.append(line);
+  }
   box.append(toolbar);
   const content = el("div", key === "products" ? "products-content" : "");
   box.append(content);
-  async function load(query = "") {
-    const token = ++state.renderId;
+  async function reactivate(row) {
+    try {
+      await api.patch(spec.endpoint + "/" + row.id, { active: true });
+      toast("Registro reativado.");
+      load();
+    } catch (error) { handleError(error); }
+  }
+  async function load() {
+    // A debounced search may fire after the user left; it must not touch the next page.
+    const stale = token => token !== requests || current !== state.renderId;
+    if (current !== state.renderId) return;
+    const token = ++requests;
     content.replaceChildren(loadingSurface());
     try {
-      const suffix = query ? "?q=" + encodeURIComponent(query) : "";
-      const result = await api.get(spec.endpoint + suffix);
-      if (token !== state.renderId) return;
-      const rows = records(result);
-      content.replaceChildren();
-      if (productOverview) {
-        const active = rows.filter(row => row.active !== false).length;
-        const weighted = rows.filter(row => row.unit === "KG").length;
-        const withCost = rows.filter(row => Number(row.cost_cents) > 0).length;
-        productOverview.replaceChildren(
-          metric("Produtos encontrados", String(rows.length), query ? "Resultado da busca atual" : "Catálogo da empresa"),
-          metric("Produtos ativos", String(active), "Disponíveis para operação"),
-          metric("Vendidos por peso", String(weighted), "Unidade KG"),
-          metric("Com custo médio", String(withCost), "Prontos para margem e lucro")
-        );
-      }
-      if (!rows.length) {
-        content.append(empty(query ? "Nenhum resultado" : "Nada cadastrado ainda", query ? "Tente outro termo de busca." : "Use o botão acima para adicionar o primeiro registro."));
-        return;
-      }
-      if (key === "customers") {
+      const path = listPath(spec.endpoint, { q: query, include_inactive: showInactive });
+      const result = await api.get(path);
+      if (stale(token)) return;
+      if (key === "customers" && records(result).length) {
         try { state.creditByCustomer = Object.fromEntries(records(await api.get("/customers/credit-summary")).map(r => [r.customer_id, r])); }
         catch { state.creditByCustomer = {}; }
-        if (token !== state.renderId) return;
+        if (stale(token)) return;
       }
-      const actionsFor = spec.edit() || (spec.remove && spec.edit()) ? row => {
+      const editable = spec.edit();
+      // The statement is open to every role that can read customer credit, including Financeiro.
+      const statement = key === "customers" && can("owner", "admin", "manager", "finance", "cashier");
+      const actionsFor = editable || statement ? row => {
         const actions = [];
-        if (key === "customers") actions.push({ label: "Extrato", onClick: () => customerStatement(row).catch(handleError) });
-        if (spec.edit()) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
-        if (key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row).catch(handleError) });
-        if (spec.remove && spec.edit()) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria.", async () => {
+        if (statement) actions.push({ label: "Extrato", onClick: () => customerStatement(row).catch(handleError) });
+        if (editable) actions.push({ label: "Editar", onClick: () => resourceForm(spec, row).catch(handleError) });
+        if (editable && key === "products" && row.barcode) actions.push({ label: "Imprimir etiquetas", onClick: () => productLabelDialog(row).catch(handleError) });
+        if (editable && row.active === false) actions.push({ label: "Reativar", onClick: () => reactivate(row) });
+        else if (spec.remove && editable) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar " + spec.singular, "O registro será desativado. O histórico permanece disponível para auditoria e ele pode ser reativado em Mostrar inativos.", async () => {
           await api.delete(spec.endpoint + "/" + row.id);
           toast("Registro desativado.");
-          renderRoute();
+          load();
         }, "Desativar") });
         return actions;
       } : null;
-      const draw = list => table(spec.columns, list, actionsFor);
-      content.append(draw(rows));
-      if (result?.next_cursor) {
-        const footer = el("div", "table-footer");
-        footer.append(el("span", "", "Mais registros disponíveis."));
-        const more = button("Carregar mais", async () => {
-          more.disabled = true;
-          try {
-            const next = await api.get(spec.endpoint + "?cursor=" + encodeURIComponent(result.next_cursor) + (query ? "&q=" + encodeURIComponent(query) : ""));
-            if (token !== state.renderId) return;
-            rows.push(...records(next));
-            content.replaceChildren(draw(rows));
-            if (next.next_cursor) {
-              result.next_cursor = next.next_cursor;
-              content.append(footer);
-            }
-          } catch (error) { handleError(error); more.disabled = false; }
-        }, "ghost", "small");
-        footer.append(more);
-        content.append(footer);
-      }
+      const overview = productOverview ? (rows, more) => {
+        const scope = more ? "Entre os itens carregados" : "";
+        productOverview.replaceChildren(
+          metric(more ? "Produtos carregados" : "Produtos encontrados", String(rows.length), more ? "Há mais itens: use Carregar mais ou a busca" : query ? "Resultado da busca atual" : "Catálogo da empresa"),
+          metric("Produtos ativos", String(rows.filter(row => row.active !== false).length), scope || "Disponíveis para operação"),
+          metric("Vendidos por peso", String(rows.filter(row => row.unit === "KG").length), scope || "Unidade KG"),
+          metric("Com custo médio", String(rows.filter(row => Number(row.cost_cents) > 0).length), scope || "Prontos para margem e lucro")
+        );
+      } : null;
+      // pagedContent builds a fresh "Carregar mais" button for every page.
+      content.replaceChildren(pagedContent(result, path, spec.columns, actionsFor,
+        empty(query ? "Nenhum resultado" : "Nada cadastrado ainda", query ? "Tente outro termo de busca." : showInactive ? "Não há registros ativos nem inativos." : "Use o botão acima para adicionar o primeiro registro."),
+        {}, overview));
     } catch (error) {
-      if (token !== state.renderId) return;
+      if (stale(token)) return;
       content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!"));
       handleError(error);
     }
   }
-  if (current === state.renderId) load();
+  load();
 }
 
 async function loadShops() {
@@ -954,7 +1026,8 @@ async function dashboardPage() {
     if (fromInput.value) params.set("from", fromInput.value);
     if (toInput.value) params.set("to", toInput.value);
     try {
-      const data = await api.get("/dashboard" + (params.size ? "?" + params : ""));
+      const filters = params.toString();
+      const data = await api.get("/dashboard" + (filters ? "?" + filters : ""));
       if (thisRequest !== state.renderId) return;
       results.replaceChildren();
       const metrics = el("div", "metric-grid");
@@ -1020,24 +1093,28 @@ async function saleDetail(id) {
     payTitle.style.marginTop = "23px";
     content.append(payTitle);
     content.append(payments.length
-      ? table([{ label: "Forma", render: row => paymentNames[row.method] || row.method }, { label: "Valor", render: row => money(row.amount_cents) }], payments)
+      ? table([{ label: "Forma", render: row => row.name || paymentNames[row.method] || paymentKindNames[row.method] || row.method }, { label: "Valor", render: row => money(row.amount_cents) }], payments)
       : empty("Sem pagamentos disponíveis", "Não há detalhes de pagamento nesta resposta."));
     const returns = response.returns || sale.returns || [];
     if (returns.length) {
       const returnTitle = el("h3", "", "Devoluções");
       returnTitle.style.marginTop = "23px";
+      // Return lines carry no unit; take it from the sale item so weights are not shown as whole units.
+      const unitOf = Object.fromEntries(items.map(item => [item.product_id, item.unit]));
       content.append(returnTitle, table([
         { label: "Data", render: r => dateTime(r.created_at) },
-        { label: "Itens", render: r => r.items.map(i => `${i.name} × ${quantity(i.quantity_milli)}`).join(", ") },
+        { label: "Itens", render: r => r.items.map(i => `${i.name} × ${quantity(i.quantity_milli, i.unit || unitOf[i.product_id] || "")}`).join(", ") },
         { label: "Valor", render: r => money(r.total_cents) },
         { label: "Devolvido em", render: r => refundNames[r.refund_method] || r.refund_method },
         { label: "Motivo", render: r => r.reason }
       ], returns));
     }
-    if (canSales() && sale.status === "completed") {
+    // Returns are open to Financeiro as well; cancelling stays with owner/admin/manager.
+    const canReturn = can("owner", "admin", "manager", "finance"), canCancel = canSales() && !returns.length;
+    if (sale.status === "completed" && (canReturn || canCancel)) {
       const actions = el("div", "form-actions");
-      if (can("owner", "admin", "manager", "finance")) actions.append(button("Registrar devolução", () => panelReturn(sale, items, payments, returns).catch(handleError), "ghost"));
-      if (!returns.length) actions.append(button("Cancelar venda comercial", () => cancelSale(sale), "danger"));
+      if (canReturn) actions.append(button("Registrar devolução", () => panelReturn(sale, items, payments, returns).catch(handleError), "ghost"));
+      if (canCancel) actions.append(button("Cancelar venda comercial", () => cancelSale(sale), "danger"));
       content.append(actions);
     }
     loading.replaceChildren(content);
@@ -1054,8 +1131,9 @@ async function panelReturn(sale, items, payments, returns) {
   const onAccount = payments.some(p => p.method === "credit_account");
   const body = el("div");
   body.append(info("Use para devoluções que não passaram pelo caixa. O estoque volta para a loja da venda e a comissão é ajustada."));
-  const rows = lines.map(line => {
+  const rows = lines.map((line, index) => {
     const field = el("div", "field"), label = el("label", "", `${line.name} (disponível ${quantity(line.available, line.unit)})`), input = el("input");
+    input.id = "panel-return-quantity-" + index; label.htmlFor = input.id;
     input.inputMode = "decimal"; input.value = "0"; field.append(label, input); body.append(field);
     return { line, input };
   });
@@ -1063,13 +1141,10 @@ async function panelReturn(sale, items, payments, returns) {
   refund.id = "panel-refund"; refundLabel.htmlFor = refund.id;
   refund.innerHTML = `<option value="external">Devolvido fora do PDV (Pix ou estorno no cartão)</option><option value="store_credit">Crédito na loja</option>${onAccount ? '<option value="account">Abater do fiado</option>' : ""}`;
   refundField.append(refundLabel, refund);
-  const customerField = el("div", "field"), customerLabel = el("label", "", "Cliente que recebe o crédito"), customer = el("select");
-  customer.id = "panel-return-customer"; customerLabel.htmlFor = customer.id;
-  customerField.append(customerLabel, customer); customerField.hidden = true;
-  if (!sale.customer_id) {
-    const list = records(await api.get("/customers?limit=100"));
-    customer.innerHTML = '<option value="">Escolha o cliente</option>' + list.map(c => `<option value="${c.id}">${c.name.replace(/</g, "&lt;")}</option>`).join("");
-  }
+  const customerField = el("div", "field"), customerLabel = el("label", "", "Cliente que recebe o crédito");
+  const customer = lookupControl({ id: "panel-return-customer", source: "/customers", placeholder: "Digite o nome do cliente" });
+  customerLabel.htmlFor = "panel-return-customer";
+  customerField.append(customerLabel, customer.wrap); customerField.hidden = true;
   refund.addEventListener("change", () => { customerField.hidden = refund.value !== "store_credit" || !!sale.customer_id; });
   const reasonField = el("div", "field"), reasonLabel = el("label", "", "Motivo"), reason = el("input");
   reason.id = "panel-return-reason"; reason.maxLength = 240; reasonLabel.htmlFor = reason.id; reasonField.append(reasonLabel, reason);
@@ -1085,7 +1160,7 @@ async function panelReturn(sale, items, payments, returns) {
       for (const r of chosen) if (!Number.isSafeInteger(r.qty) || r.qty < 0 || r.qty > r.line.available) throw new Error(`${r.line.name}: quantidade inválida.`);
       if (reason.value.trim().length < 3) throw new Error("Informe o motivo da devolução.");
       const data = { refund_method: refund.value, reason: reason.value.trim(), items: chosen.map(r => ({ product_id: r.line.product_id, quantity_milli: r.qty })) };
-      if (refund.value === "store_credit" && !sale.customer_id) { if (!customer.value) throw new Error("Escolha o cliente que recebe o crédito."); data.customer_id = customer.value; }
+      if (refund.value === "store_credit" && !sale.customer_id) { if (!customer.hidden.value) throw new Error("Escolha o cliente que recebe o crédito."); data.customer_id = customer.hidden.value; }
       submit.disabled = true;
       const result = await api.post(`/sales/${sale.id}/return`, data);
       closeDialog(); toast(`Devolução registrada: ${money(result.total_cents)}.`); renderRoute();
@@ -1254,6 +1329,9 @@ async function customerStatement(customer) {
 }
 function percentText(bps) { return (Number(bps) / 100).toLocaleString("pt-BR", { maximumFractionDigits: 2 }) + "%"; }
 const paymentNames = { cash: "Dinheiro (líquido de troco)", pix: "Pix", card_credit: "Crédito", card_debit: "Débito", card: "Cartão", credit_account: "A prazo (fiado)", store_credit: "Crédito na loja" };
+function cashMethodName(method) {
+  return method === "other" ? "Formas próprias" : paymentNames[method] || paymentKindNames[method] || method;
+}
 function differenceBadge(cents) {
   if (cents == null) return statusBadge("open");
   const value = Number(cents);
@@ -1274,6 +1352,7 @@ async function cashDetail(id) {
       ["Fechamento", row.closed_at ? dateTime(row.closed_at) : "Caixa aberto"],
       ["Fechado por", [row.closed_by_name, row.supervisor_name && "autorizado por " + row.supervisor_name].filter(Boolean).join(" · ") || "—"],
       ["Vendas", `${row.sales_count} · ${money(row.sales_total_cents)}`],
+      ...(row.cash_refunds_cents ? [["Devoluções em dinheiro", "− " + money(row.cash_refunds_cents)]] : []),
       ["Esperado em dinheiro", row.expected_cents == null ? "—" : money(row.expected_cents)],
       ["Contado", row.counted_cents == null ? "—" : money(row.counted_cents)],
       ["Diferença", differenceBadge(row.difference_cents)]
@@ -1282,8 +1361,14 @@ async function cashDetail(id) {
     const payTitle = el("h3", "", "Recebido por forma de pagamento");
     payTitle.style.marginTop = "23px";
     content.append(payTitle, methods.length
-      ? table([{ label: "Forma", render: r => paymentNames[r[0]] || r[0] }, { label: "Valor", render: r => money(r[1]) }], methods)
+      ? table([{ label: "Forma", render: r => cashMethodName(r[0]) }, { label: "Valor", render: r => money(r[1]) }], methods)
       : empty("Sem vendas neste caixa", "Nenhuma venda concluída foi sincronizada para este turno."));
+    const creditReceived = Object.entries(row.credit_received || {});
+    if (creditReceived.length) {
+      const creditTitle = el("h3", "", "Fiado recebido no caixa");
+      creditTitle.style.marginTop = "23px";
+      content.append(creditTitle, table([{ label: "Forma", render: r => cashMethodName(r[0]) }, { label: "Valor", render: r => money(r[1]) }], creditReceived));
+    }
     const moveTitle = el("h3", "", "Sangrias e suprimentos");
     moveTitle.style.marginTop = "23px";
     content.append(moveTitle, row.movements.length
@@ -1493,7 +1578,7 @@ async function paymentMethodsPage() {
     { key: "settlement_days", label: "Prazo de recebimento (dias)", type: "number", default: 0 },
     { key: "active", label: "Ativa no caixa", type: "checkbox", default: true }
   ];
-  const payloadOf = form => { const data = formPayload(form, fields); if (data.settlement_days !== undefined) data.settlement_days = Number(data.settlement_days); return data; };
+  const payloadOf = (form, editing) => { const data = formPayload(form, fields, { editing }); if (data.settlement_days !== undefined) data.settlement_days = Number(data.settlement_days); return data; };
   async function edit(row) {
     const form = await formFor(fields, row);
     const message = formMessage(form), submit = formButtons(form, row ? "Salvar" : "Criar forma");
@@ -1501,8 +1586,8 @@ async function paymentMethodsPage() {
       event.preventDefault(); if (!form.reportValidity()) return;
       submit.disabled = true;
       try {
-        if (row) await api.patch("/payment-methods/" + row.id, payloadOf(form));
-        else await api.post("/payment-methods", payloadOf(form));
+        if (row) await api.patch("/payment-methods/" + row.id, payloadOf(form, true));
+        else await api.post("/payment-methods", payloadOf(form, false));
         closeDialog(); toast("Forma de pagamento salva."); renderRoute();
       } catch (error) { handleError(error, message); submit.disabled = false; }
     });
@@ -1528,13 +1613,13 @@ async function productGroupsDialog() {
   const loading = el("div");
   loading.append(loadingSurface("Carregando grades…"));
   openDialog("Grades de variações", "Produtos com cor, tamanho ou sabor. Cada combinação tem SKU, código de barras e estoque próprios.", loading);
-  const rows = records(await api.get("/product-groups?limit=100"));
-  loading.replaceChildren(rows.length ? table([
+  const response = await api.get("/product-groups?limit=100");
+  loading.replaceChildren(pagedContent(response, "/product-groups?limit=100", [
     { label: "Grade", render: r => r.name },
     { label: "Atributos", render: r => r.attributes.map(a => `${a.name}: ${a.values.join(", ")}`).join(" · ") },
     { label: "Variações ativas", render: r => String(r.variants_count) }
-  ], rows, r => [{ label: "Editar", onClick: () => productGroupForm(r).catch(handleError) }])
-    : empty("Nenhuma grade", "Use “+ Nova grade” para cadastrar um produto com variações."));
+  ], r => [{ label: "Editar", onClick: () => productGroupForm(r).catch(handleError) }],
+    empty("Nenhuma grade", "Use “+ Nova grade” para cadastrar um produto com variações.")));
 }
 async function productGroupForm(group) {
   const detail = group ? await api.get("/product-groups/" + group.id) : null;
@@ -1571,9 +1656,10 @@ async function productGroupForm(group) {
     event.preventDefault(); if (!form.reportValidity()) return;
     submit.disabled = true;
     try {
-      const data = formPayload(form, fields.filter(f => !f.key.startsWith("attr")));
+      const data = formPayload(form, fields.filter(f => !f.key.startsWith("attr")), { editing: !!detail });
       data.attributes = attributesOf();
-      if (detail) { if (data.price_cents === undefined) delete data.apply_price_to_all; await api.patch("/product-groups/" + detail.id, data); }
+      // On edit the price is optional: without it the variations keep their own prices.
+      if (detail) { if (data.price_cents == null) { delete data.price_cents; delete data.apply_price_to_all; } await api.patch("/product-groups/" + detail.id, data); }
       else await api.post("/product-groups", data);
       closeDialog(); toast(detail ? "Grade atualizada." : "Variações geradas com SKU e código de barras."); renderRoute();
     } catch (error) { handleError(error, message); submit.disabled = false; }
@@ -1620,7 +1706,7 @@ async function nfeImport(shopId) {
     ]));
     nfe.warnings.forEach(text => area.append(info(text, true)));
     if (nfe.already_imported) { area.append(info("Esta NF-e já foi importada. Nada será lançado de novo.", true)); return; }
-    const options = products.map(p => `<option value="${p.id}">${p.name.replace(/</g, "&lt;")}${p.variant ? "" : ""} · ${p.sku}</option>`).join("");
+    const options = products.map(p => `<option value="${labelHtmlEscape(p.id)}">${labelHtmlEscape(p.name)} · ${labelHtmlEscape(p.sku)}</option>`).join("");
     const rows = nfe.items.map(item => {
       const wrap = el("div", "nfe-line");
       const s = item.suggestion;
@@ -1629,7 +1715,7 @@ async function nfeImport(shopId) {
           <label>Destino<select data-k="action"><option value="map">Vincular a produto</option><option value="new">Criar produto novo</option><option value="skip">Ignorar (não entra no estoque)</option></select></label>
           <label data-show="map">Produto<select data-k="product"><option value="">Escolha…</option>${options}</select></label>
           <label data-show="new">Preço de venda (R$)<input data-k="price" inputmode="decimal" placeholder="0,00"></label>
-          <label data-show="map new">Unidades por ${item.unit || "unidade"} da nota<input data-k="factor" type="number" min="0.001" step="0.001" value="${(s.factor_milli || 1000) / 1000}"></label>
+          <label data-show="map new">Unidades por ${labelHtmlEscape(item.unit || "unidade")} da nota<input data-k="factor" type="number" min="0.001" step="0.001" value="${Number(s.factor_milli || 1000) / 1000}"></label>
         </div><small class="nfe-hint"></small>`;
       wrap.querySelector("strong").textContent = item.name;
       wrap.querySelector(".nfe-line-head small").textContent = `Cód. ${item.code}${item.ean ? " · EAN " + item.ean : ""} · ${item.quantity} ${item.unit} · custo ${money(item.total_cost_cents)}`;
@@ -1687,25 +1773,40 @@ async function inventoryPage() {
   const content = el("div");
   box.append(content);
   view.outer.append(box);
+  let requests = 0;
   async function load() {
+    // Each load owns a token: a slow answer for a previous shop must never be drawn under the current one.
+    const token = ++requests;
+    const stale = () => token !== requests || current !== state.renderId;
+    const shopId = encodeURIComponent(shop.select.value);
     stopInventoryCamera();
     content.replaceChildren(loadingSurface());
     try {
-      const open = records(await api.get(`/inventories?status=open&shop_id=${shop.select.value}`))[0];
-      if (current !== state.renderId) return;
+      const open = records(await api.get(`/inventories?status=open&shop_id=${shopId}`))[0];
+      if (stale()) return;
+      if (!open) {
+        const history = records(await api.get(`/inventories?shop_id=${shopId}&limit=10`)).filter(r => r.status !== "open");
+        if (stale()) return;
+        content.replaceChildren();
+        renderIdle(history);
+        return;
+      }
+      const count = await api.get("/inventories/" + open.id);
+      if (stale()) return;
       content.replaceChildren();
-      if (!open) return renderIdle();
-      renderCounting(await api.get("/inventories/" + open.id));
-    } catch (error) { content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
+      renderCounting(count);
+    } catch (error) {
+      if (stale()) return;
+      content.replaceChildren(empty("Não foi possível carregar", errorText(error), "!")); handleError(error);
+    }
   }
-  async function renderIdle() {
+  function renderIdle(history) {
     content.append(empty("Nenhum inventário aberto nesta loja", opener ? "Abra um inventário para começar a contar." : "Peça ao gerente para abrir o inventário."));
     if (opener) {
       const actions = el("div", "form-actions inventory-actions");
       actions.append(button("Abrir inventário", () => openForm().catch(handleError)));
       content.append(actions);
     }
-    const history = records(await api.get(`/inventories?shop_id=${shop.select.value}&limit=10`)).filter(r => r.status !== "open");
     if (history.length) {
       const title = el("h3", "", "Inventários anteriores"); title.style.marginTop = "23px";
       content.append(title, table([
@@ -1730,7 +1831,11 @@ async function inventoryPage() {
     openDialog("Abrir inventário", "Vendas continuam normalmente: cada item guarda o saldo do momento em que foi contado.", form);
   }
   function renderCounting(count) {
-    content.append(info(`${count.category_name || "Todos os produtos"} · ${count.counted_items} de ${count.scope_items} itens contados${count.blind ? " · contagem cega" : ""}`));
+    const counted = new Set(count.items.map(item => item.product_id));
+    const progress = info("");
+    const showProgress = () => { progress.lastChild.textContent = `${count.category_name || "Todos os produtos"} · ${Math.max(counted.size, count.counted_items || 0)} de ${count.scope_items} itens contados${count.blind ? " · contagem cega" : ""}`; };
+    showProgress();
+    content.append(progress);
     const scanner = el("form", "inventory-scanner");
     scanner.innerHTML = `<label>Código de barras ou SKU<input name="code" inputmode="numeric" autocomplete="off" autofocus placeholder="Bipe ou digite e tecle Enter"></label>
       <label>Quantidade<input name="qty" inputmode="decimal" value="1"></label>
@@ -1748,6 +1853,7 @@ async function inventoryPage() {
         feedback.textContent = `✓ ${item.name}: ${quantity(item.counted_milli, item.unit)} contados`;
         navigator.vibrate?.(40);
         prepend(item);
+        counted.add(item.product_id); showProgress();
       } catch (error) { feedback.className = "inventory-feedback error"; feedback.textContent = errorText(error); navigator.vibrate?.([60, 40, 60]); }
       code.value = ""; code.focus();
     }
@@ -1761,13 +1867,16 @@ async function inventoryPage() {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
         const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
         video.srcObject = stream; video.hidden = false; await video.play(); camera.textContent = "Desligar câmera";
-        let last = "", lastAt = 0, running = true;
+        let last = "", misses = 0, running = true;
         inventoryCamera = { stop() { running = false; stream.getTracks().forEach(t => t.stop()); } };
         (async function loop() {
           while (running) {
             try {
               const [hit] = await detector.detect(video);
-              if (hit && (hit.rawValue !== last || Date.now() - lastAt > 1500)) { last = hit.rawValue; lastAt = Date.now(); await submitCode(hit.rawValue); }
+              // The same code counts again only after it has left the frame; holding the
+              // phone on a product must not keep adding to the count.
+              if (!hit) { if (++misses >= 2) last = ""; }
+              else { misses = 0; if (hit.rawValue !== last) { last = hit.rawValue; await submitCode(hit.rawValue); } }
             } catch { /* frame not ready */ }
             await new Promise(r => setTimeout(r, 250));
           }
@@ -1796,11 +1905,13 @@ async function inventoryPage() {
       const actions = el("div", "form-actions inventory-actions");
       actions.append(button("Cancelar inventário", () => confirmAction("Cancelar inventário", "As contagens serão descartadas e nenhum ajuste será feito.", async () => {
         await api.post(`/inventories/${count.id}/cancel`, {}); toast("Inventário cancelado."); load(); }, "Cancelar inventário"), "ghost"));
-      actions.append(button("Encerrar e ajustar estoque", () => closeForm(count)));
+      actions.append(button("Encerrar e ajustar estoque", () => closeForm(count.id).catch(handleError)));
       content.append(actions);
     }
   }
-  function closeForm(count) {
+  async function closeForm(id) {
+    // Read the count again: the page object predates everything counted in this session.
+    const count = await api.get("/inventories/" + id);
     const body = el("div");
     body.append(detailList([["Itens contados", `${count.counted_items} de ${count.scope_items}`],
       ["Sobras", money(count.totals?.gain_cents || 0)], ["Faltas", money(Math.abs(count.totals?.loss_cents || 0))]]));
@@ -1824,7 +1935,6 @@ async function inventoryPage() {
 }
 
 async function transferForm(fromShopId) {
-  const products = (await allProducts()).filter(p => p.active !== false && p.stock_controlled !== false);
   const targets = state.shops.filter(s => s.active !== false && String(s.id) !== String(fromShopId));
   const body = el("div");
   body.append(info(`Origem: ${shopName(fromShopId)}. O estoque sai da origem agora e entra no destino quando o recebimento for confirmado.`));
@@ -1832,11 +1942,21 @@ async function transferForm(fromShopId) {
   head.innerHTML = `<div class="field"><label for="transfer-to">Loja de destino</label><select id="transfer-to">${targets.map(s => `<option value="${s.id}">${s.name.replace(/</g, "&lt;")}</option>`).join("")}</select></div>
     <div class="field"><label for="transfer-note">Observação</label><input id="transfer-note" maxlength="240"></div>`;
   const lines = el("div", "transfer-lines");
-  const options = products.map(p => `<option value="${p.id}">${p.name.replace(/</g, "&lt;")} · ${p.sku}</option>`).join("");
+  let lineNumber = 0;
   const addLine = () => {
     const row = el("div", "transfer-line");
-    row.innerHTML = `<select data-k="product"><option value="">Produto…</option>${options}</select><input data-k="qty" inputmode="decimal" placeholder="Quantidade"><button type="button" class="button ghost small" data-k="remove">Remover</button>`;
-    row.querySelector('[data-k="remove"]').onclick = () => row.remove();
+    const product = lookupControl({ id: "transfer-product-" + (++lineNumber), source: "/products", placeholder: "Buscar produto por nome, SKU ou código", required: true, filter: item => item.stock_controlled !== false });
+    product.search.setAttribute("aria-label", "Produto");
+    const qty = el("input");
+    qty.inputMode = "decimal"; qty.placeholder = "Quantidade"; qty.setAttribute("aria-label", "Quantidade");
+    row.append(product.wrap, qty, button("Remover", () => row.remove(), "ghost", "small"));
+    row._read = () => {
+      const chosen = product.selected;
+      if (!chosen) throw new Error("Escolha o produto de cada linha.");
+      const amount = Math.round(Number(qty.value.replace(",", ".")) * 1000);
+      if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error(`${chosen.name}: informe a quantidade.`);
+      return { product_id: chosen.id, quantity_milli: amount };
+    };
     lines.append(row);
   };
   addLine();
@@ -1847,13 +1967,8 @@ async function transferForm(fromShopId) {
   const submit = button("Enviar transferência", async () => {
     message.hidden = true;
     try {
-      const items = [...lines.children].map(row => {
-        const product = products.find(p => p.id === row.querySelector('[data-k="product"]').value);
-        const qty = Math.round(Number(row.querySelector('[data-k="qty"]').value.replace(",", ".")) * 1000);
-        if (!product) throw new Error("Escolha o produto de cada linha.");
-        if (!Number.isSafeInteger(qty) || qty <= 0) throw new Error(`${product.name}: informe a quantidade.`);
-        return { product_id: product.id, quantity_milli: qty };
-      });
+      const items = [...lines.children].map(row => row._read());
+      if (!items.length) throw new Error("Inclua ao menos um item.");
       submit.disabled = true;
       await api.post("/transfers", { from_shop_id: fromShopId, to_shop_id: head.querySelector("#transfer-to").value,
         note: head.querySelector("#transfer-note").value.trim(), idempotency_key: key, items });
@@ -1868,23 +1983,24 @@ async function transfersDialog() {
   const loading = el("div");
   loading.append(loadingSurface("Carregando transferências…"));
   openDialog("Transferências", "Enviadas, recebidas e canceladas.", loading);
-  const rows = records(await api.get("/transfers?limit=50"));
-  loading.replaceChildren(rows.length ? table([
+  const response = await api.get("/transfers?limit=50");
+  loading.replaceChildren(pagedContent(response, "/transfers?limit=50", [
     { label: "Data", render: r => dateTime(r.created_at) },
     { label: "Rota", render: r => `${r.from_shop_name} → ${r.to_shop_name}` },
     { label: "Itens", render: r => r.items.map(i => `${i.name} × ${quantity(i.quantity_milli, i.unit)}${i.received_milli != null && i.received_milli !== i.quantity_milli ? ` (recebido ${quantity(i.received_milli, i.unit)})` : ""}`).join(", ") },
     { label: "Estado", render: r => r.status === "sent" ? el("span", "badge warn", "Em trânsito") : statusBadge(r.status === "received" ? "Recebida" : "Cancelada") }
-  ], rows, r => r.status !== "sent" ? [] : [
+  ], r => r.status !== "sent" ? [] : [
     { label: "Receber", onClick: () => receiveTransfer(r) },
     { label: "Cancelar", danger: true, onClick: () => confirmAction("Cancelar transferência", "A mercadoria volta para o estoque da origem.", async () => {
       await api.post(`/transfers/${r.id}/cancel`, {}); toast("Transferência cancelada."); closeDialog(); renderRoute(); }, "Cancelar transferência") }
-  ]) : empty("Nenhuma transferência", "Use “Transferir” para enviar mercadoria a outra loja."));
+  ], empty("Nenhuma transferência", "Use “Transferir” para enviar mercadoria a outra loja.")));
 }
 function receiveTransfer(transfer) {
   const body = el("div");
   body.append(info(`Confira o que chegou em ${transfer.to_shop_name}. Se faltar algo, informe a quantidade recebida; a diferença fica registrada.`));
-  const inputs = transfer.items.map(item => {
+  const inputs = transfer.items.map((item, index) => {
     const field = el("div", "field"), label = el("label", "", `${item.name} (enviado ${quantity(item.quantity_milli, item.unit)})`), input = el("input");
+    input.id = "transfer-received-" + index; label.htmlFor = input.id;
     input.inputMode = "decimal"; input.value = String(item.quantity_milli / 1000).replace(".", ",");
     field.append(label, input); body.append(field);
     return { item, input };
@@ -1912,16 +2028,16 @@ async function promotionsPage() {
   const box = el("section", "surface");
   view.outer.append(box);
   try {
-    const rows = records(await api.get("/promotions?limit=100"));
+    const response = await api.get("/promotions?limit=100");
     if (current !== state.renderId) return;
-    box.append(rows.length ? table([
+    box.append(pagedContent(response, "/promotions?limit=100", [
       { label: "Promoção", render: r => r.name },
       { label: "Regra", render: r => r.kind === "buy_x_pay_y" ? r.label : `${r.label}: ${money(r.price_cents)}` },
       { label: "Vale para", render: r => r.product_name || (r.category_name ? "Categoria " + r.category_name : "—") },
       { label: "Período", render: r => r.starts_at || r.ends_at ? `${r.starts_at ? dateTime(r.starts_at) : "agora"} → ${r.ends_at ? dateTime(r.ends_at) : "sem fim"}` : "Sem data de fim" },
       { label: "Estado", render: r => el("span", "badge " + promotionStatus[r.status][1], promotionStatus[r.status][0]) }
-    ], rows, canEdit ? r => [{ label: "Editar", onClick: () => promotionForm(r).catch(handleError) }] : null)
-      : empty("Nenhuma promoção", canEdit ? "Crie a primeira promoção para atrair clientes." : "Nenhuma promoção cadastrada."));
+    ], canEdit ? r => [{ label: "Editar", onClick: () => promotionForm(r).catch(handleError) }] : null,
+      empty("Nenhuma promoção", canEdit ? "Crie a primeira promoção para atrair clientes." : "Nenhuma promoção cadastrada.")));
   } catch (error) { box.append(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
 }
 async function promotionForm(row) {
@@ -1952,11 +2068,18 @@ async function promotionForm(row) {
     event.preventDefault(); if (!form.reportValidity()) return;
     submit.disabled = true;
     try {
-      const data = formPayload(form, fields);
+      // Fields hidden for the chosen type are not read: an empty hidden price must not block "Leve X pague Y".
+      const data = formPayload(form, fields.filter(field => !form.elements.namedItem(field.key)?.closest(".field")?.hidden));
       for (const key of ["buy_quantity", "pay_quantity"]) data[key] = data[key] === undefined || data[key] === "" ? null : Number(data[key]);
-      for (const key of ["product_id", "category_id", "starts_at", "ends_at"]) if (data[key] === undefined) data[key] = null;
+      for (const key of ["product_id", "category_id"]) if (!data[key]) data[key] = null;
+      // datetime-local has no zone; send the instant so the period does not shift outside Brasília time.
+      for (const key of ["starts_at", "ends_at"]) data[key] = data[key] ? new Date(data[key]).toISOString() : null;
       if (data.kind === "buy_x_pay_y") { data.price_cents = null; data.min_quantity_milli = null; }
-      else { data.buy_quantity = null; data.pay_quantity = null; if (data.kind === "price") data.min_quantity_milli = null; }
+      else {
+        if (data.price_cents === undefined) throw new Error("Informe o preço promocional.");
+        if (data.kind === "wholesale" && !data.min_quantity_milli) throw new Error("Informe a quantidade mínima do atacado.");
+        data.buy_quantity = null; data.pay_quantity = null; if (data.kind === "price") data.min_quantity_milli = null;
+      }
       if (row) await api.patch("/promotions/" + row.id, data); else await api.post("/promotions", data);
       closeDialog(); toast("Promoção salva."); renderRoute();
     } catch (error) { handleError(error, message); submit.disabled = false; }
@@ -1972,49 +2095,18 @@ function idempotency(form, payload) {
   }
   return form.dataset.key;
 }
-async function productPicker(idPrefix) {
+function productPicker(idPrefix) {
   const wrap = el("div", "field");
   const label = el("label", "", "Produto");
   label.htmlFor = idPrefix + "-product";
-  const search = el("input");
-  search.type = "search"; search.placeholder = "Buscar nome, SKU ou código"; search.maxLength = 120;
-  search.setAttribute("aria-label", "Buscar produto");
-  const select = el("select");
-  select.id = idPrefix + "-product";
-  select.required = true;
-  const helper = el("small", "", "Digite para encontrar itens em catálogos maiores.");
-  wrap.append(label, search, select, helper);
-  let serial = 0, timer, products = [];
-  async function load(query = "") {
-    const requestId = ++serial;
-    const result = await api.get("/products" + (query ? "?q=" + encodeURIComponent(query) : ""));
-    if (requestId !== serial) return;
-    const current = select.value;
-    select.replaceChildren();
-    products = records(result).filter(item => item.active !== false);
-    products.forEach(product => {
-      const option = el("option", "", product.name + " · " + product.sku);
-      option.value = product.id;
-      select.append(option);
-    });
-    if (products.some(item => String(item.id) === String(current))) select.value = current;
-    if (!products.length) {
-      const option = el("option", "", "Nenhum produto encontrado");
-      option.value = "";
-      select.append(option);
-    }
-  }
-  search.addEventListener("input", () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => load(search.value.trim()).catch(error => { helper.textContent = errorText(error); }), 230);
-  });
-  await load();
-  return { wrap, select, getSelected: () => products.find(item => String(item.id) === String(select.value)) || null };
+  const combo = lookupControl({ id: label.htmlFor, source: "/products", placeholder: "Buscar nome, SKU ou código", required: true });
+  wrap.append(label, combo.wrap, el("small", "", "Digite para encontrar o produto pelo nome, SKU ou código de barras."));
+  return { wrap, select: combo.hidden, getSelected: () => combo.selected };
 }
 async function stockAdjustment(shopId) {
   const body = el("div");
   const form = el("form", "form-grid");
-  const picker = await productPicker("adjust");
+  const picker = productPicker("adjust");
   picker.wrap.classList.add("full");
   const quantityField = el("div", "field");
   const quantityLabel = el("label", "", "Variação de quantidade");
@@ -2051,17 +2143,14 @@ async function stockAdjustment(shopId) {
   openDialog("Ajustar estoque", "A movimentação ficará registrada para auditoria.", body);
 }
 async function stockReceipt(shopId) {
-  const suppliers = records(await api.get("/suppliers"));
   const body = el("div");
   const form = el("form");
   const fields = el("div", "form-grid");
   const supplierField = el("div", "field");
   const supplierLabel = el("label", "", "Fornecedor");
   supplierLabel.htmlFor = "receipt-supplier";
-  const supplier = el("select"); supplier.id = "receipt-supplier";
-  const blank = el("option", "", "Sem fornecedor vinculado"); blank.value = ""; supplier.append(blank);
-  suppliers.forEach(item => { const option = el("option", "", item.name); option.value = item.id; supplier.append(option); });
-  supplierField.append(supplierLabel, supplier);
+  const supplier = lookupControl({ id: "receipt-supplier", source: "/suppliers", placeholder: "Digite o nome ou deixe vazio" });
+  supplierField.append(supplierLabel, supplier.wrap);
   const referenceField = el("div", "field");
   const referenceLabel = el("label", "", "Referência");
   referenceLabel.htmlFor = "receipt-reference";
@@ -2079,7 +2168,7 @@ async function stockReceipt(shopId) {
     const item = el("div", "surface pad");
     item.style.marginTop = "10px";
     const grid = el("div", "form-grid");
-    const picker = await productPicker("receipt-" + number);
+    const picker = productPicker("receipt-" + number);
     const qtyField = el("div", "field");
     const qtyLabel = el("label", "", "Quantidade");
     qtyLabel.htmlFor = "receipt-quantity-" + number;
@@ -2120,7 +2209,7 @@ async function stockReceipt(shopId) {
       handleError(new Error("Inclua pelo menos um item com quantidade e custo válidos."), message); return;
     }
     const payload = { shop_id: shopId, items };
-    if (supplier.value) payload.supplier_id = supplier.value;
+    if (supplier.hidden.value) payload.supplier_id = supplier.hidden.value;
     if (reference.value.trim()) payload.reference = reference.value.trim();
     payload.idempotency_key = idempotency(form, payload);
     submit.disabled = true;
@@ -2149,7 +2238,7 @@ function normalizedHeader(value) {
   return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
 function importMoney(raw) {
-  const cents = parseMoneyInput(raw);
+  const cents = scaledInteger(parseImportDecimal(raw), 100);
   if (!Number.isSafeInteger(cents) || cents < 0) throw new Error(`Valor de compra inválido: ${raw}`);
   return cents;
 }
@@ -2162,12 +2251,13 @@ async function stockReceiptImport(shopId) {
   const hint = el("small", "", "Colunas aceitas: SKU ou código de barras, quantidade e custo unitário. Use ponto e vírgula ou vírgula.");
   fileField.append(label, file, hint); form.append(fileField);
   const summary = el("div", "info-strip"); summary.textContent = "Escolha o arquivo para conferir os itens antes de registrar."; form.append(summary);
+  const preview = el("div", "full"); form.append(preview);
   const message = el("p", "feedback error full"); message.hidden = true;
   const actions = el("div", "form-actions full"); actions.append(button("Cancelar", closeDialog, "ghost"));
   const submit = el("button", "button", "Registrar compra"); submit.type = "submit"; submit.disabled = true; actions.append(submit); form.append(message, actions); body.append(form);
   let parsed = null;
   file.addEventListener("change", async () => {
-    parsed = null; submit.disabled = true; message.hidden = true;
+    parsed = null; submit.disabled = true; message.hidden = true; preview.replaceChildren();
     try {
       const selected = file.files?.[0];
       if (!selected) return;
@@ -2188,29 +2278,40 @@ async function stockReceiptImport(shopId) {
         products.push(...records(response)); cursor = response.next_cursor || "";
       } while (cursor);
       const byCode = new Map(products.flatMap(product => [[String(product.sku).toUpperCase(), product], [String(product.barcode), product]]));
-      const items = []; const unknown = [];
+      const items = []; const unknown = []; const checked = []; const lineOf = new Map();
       for (let rowIndex = 1; rowIndex < lines.length; rowIndex++) {
         const cells = csvCells(lines[rowIndex], delimiter); const code = String(cells[identityIndex] || "").trim();
         if (!code) continue;
         const product = byCode.get(code.toUpperCase());
         if (!product) { unknown.push(code); continue; }
-        const rawQuantity = String(cells[quantityIndex] || "").trim().replace(/\s/g, "").includes(",")
-          ? String(cells[quantityIndex] || "").trim().replace(/\./g, "").replace(",", ".")
-          : String(cells[quantityIndex] || "").trim();
-        const quantityMilli = Math.round(Number(rawQuantity) * 1000);
+        // The server refuses the whole entry for these cases; say which line to fix before sending.
+        if (product.stock_controlled === false) throw new Error(`Linha ${rowIndex + 1}: ${product.name} é de produção própria e não recebe entrada de estoque.`);
+        if (lineOf.has(product.id)) throw new Error(`Linha ${rowIndex + 1}: ${product.name} já aparece na linha ${lineOf.get(product.id)}. Some as quantidades em uma única linha.`);
+        lineOf.set(product.id, rowIndex + 1);
+        const quantityMilli = scaledInteger(parseImportDecimal(cells[quantityIndex]), 1000);
         if (!Number.isSafeInteger(quantityMilli) || quantityMilli <= 0) throw new Error(`Quantidade inválida na linha ${rowIndex + 1}.`);
         const item = { product_id: product.id, quantity_milli: quantityMilli };
         if (!String(cells[costIndex] || "").trim()) throw new Error(`Custo ausente na linha ${rowIndex + 1}.`);
-        item.unit_cost_cents = importMoney(cells[costIndex]);
+        try { item.unit_cost_cents = importMoney(cells[costIndex]); }
+        catch { throw new Error(`Custo inválido na linha ${rowIndex + 1}: ${cells[costIndex]}`); }
         items.push(item);
+        checked.push({ line: rowIndex + 1, product, quantity_milli: quantityMilli, unit_cost_cents: item.unit_cost_cents });
       }
       if (unknown.length) throw new Error(`Produtos não encontrados: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? "…" : ""}`);
       if (!items.length) throw new Error("Nenhum item válido foi encontrado no arquivo.");
+      if (items.length > 200) throw new Error(`O arquivo tem ${items.length} itens e cada entrada aceita até 200. Divida a compra em arquivos menores.`);
       const buffer = await selected.arrayBuffer();
       const digest = await crypto.subtle.digest("SHA-256", buffer);
       const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
       parsed = { items, source_file: { name: selected.name, mime: selected.type || "text/csv", size: selected.size, sha256: hash }, reference: selected.name };
-      summary.className = "info-strip"; summary.textContent = `${items.length} item(ns) prontos para entrada. O arquivo ${selected.name} ficará vinculado ao registro.`; submit.disabled = false;
+      summary.className = "info-strip"; summary.textContent = `${items.length} item(ns) prontos para entrada. Confira quantidades e custos abaixo antes de registrar. O arquivo ${selected.name} ficará vinculado ao registro.`;
+      preview.replaceChildren(table([
+        { label: "Linha", render: row => String(row.line) },
+        { label: "Produto", render: row => productLabel(row.product) },
+        { label: "Quantidade", render: row => quantity(row.quantity_milli, row.product.unit) },
+        { label: "Custo unitário", render: row => money(row.unit_cost_cents) }
+      ], checked));
+      submit.disabled = false;
     } catch (error) { message.textContent = errorText(error); message.hidden = false; }
   });
   form.addEventListener("submit", async event => {
@@ -2220,6 +2321,14 @@ async function stockReceiptImport(shopId) {
     catch (error) { handleError(error, message); submit.disabled = false; }
   });
   openDialog("Importar compra para o estoque", "O arquivo é conferido antes de lançar quantidade e custo dos produtos.", body);
+}
+// Names for ids shown in the stock history, cached for the session.
+const stockNames = new Map();
+async function stockName(source, id) {
+  const key = source + "/" + id;
+  if (!id || stockNames.has(key)) return;
+  try { stockNames.set(key, await api.get(source + "/" + encodeURIComponent(id))); }
+  catch { /* the row falls back to a short id; the next load tries again */ }
 }
 async function stockPage() {
   const current = ++state.renderId;
@@ -2250,8 +2359,12 @@ async function stockPage() {
       view.actions.append(button("Transferências", () => transfersDialog().catch(handleError), "ghost"));
     }
   }
+  let requests = 0;
   async function load() {
-    const token = ++state.renderId;
+    // The debounced search can fire after navigation; it must not disturb the page that replaced this one.
+    if (current !== state.renderId) return;
+    const token = ++requests;
+    const stale = () => token !== requests || current !== state.renderId;
     results.replaceChildren(loadingSurface());
     try {
       const id = encodeURIComponent(shop.select.value);
@@ -2262,9 +2375,18 @@ async function stockPage() {
         api.get("/stock/movements?shop_id=" + id),
         api.get("/stock/receipts?shop_id=" + id)
       ]);
-      if (token !== state.renderId) return;
-      results.replaceChildren();
+      if (stale()) return;
       const balances = records(balance);
+      const movements = records(movementResult).slice(0, 20);
+      const receipts = records(receiptResult);
+      // Until the API sends product_name/sku/unit and supplier_name, resolve them here.
+      balances.forEach(row => { if (row.product_id && !stockNames.has("/products/" + row.product_id)) stockNames.set("/products/" + row.product_id, row); });
+      await Promise.all([
+        ...movements.filter(row => !row.product_name).map(row => stockName("/products", row.product_id)),
+        ...receipts.slice(0, 20).filter(row => !row.supplier_name).map(row => stockName("/suppliers", row.supplier_id))
+      ]);
+      if (stale()) return;
+      results.replaceChildren();
       const balanceBox = surface("Saldos atuais", "O saldo central pode exigir reconciliação de eventos offline.");
       const columns=[
             { label: "Produto", render: row => row.name },
@@ -2282,7 +2404,7 @@ async function stockPage() {
           more.disabled=true;
           try{
             const next=await api.get(balancePath+"&cursor="+encodeURIComponent(balance.next_cursor));
-            if(token!==state.renderId)return;
+            if(stale())return;
             balances.push(...records(next));
             balanceContent.replaceChildren(table(columns,balances));
             balance.next_cursor=next.next_cursor;
@@ -2296,14 +2418,24 @@ async function stockPage() {
       const grid = el("div", "section-grid");
       grid.style.marginTop = "16px";
       const movementBox = surface("Movimentações recentes", "Ajustes e baixas registrados na nuvem.");
-      const movements = records(movementResult);
+      const productOf = row => stockNames.get("/products/" + row.product_id) || {};
       movementBox.append(movements.length
-        ? table([{ label: "Produto", render: row => row.product_name || row.product_id }, { label: "Variação", render: row => quantity(row.delta_milli, row.unit || "UN") }, { label: "Motivo", render: row => row.reason }, { label: "Data", render: row => dateTime(row.created_at) }], movements.slice(0, 20))
+        ? table([
+          { label: "Produto", render: row => {
+            const name = row.product_name || productOf(row).name, sku = row.sku || productOf(row).sku;
+            return name ? name + (sku ? " · " + sku : "") : "Produto " + String(row.product_id).slice(0, 8);
+          } },
+          { label: "Variação", render: row => quantity(row.delta_milli, row.unit || productOf(row).unit || "") },
+          { label: "Motivo", render: row => row.reason }, { label: "Data", render: row => dateTime(row.created_at) }
+        ], movements)
         : empty("Sem movimentações", "Os ajustes registrados aparecerão aqui."));
       const receiptBox = surface("Entradas recentes", "Mercadorias recebidas e aplicadas ao saldo.");
-      const receipts = records(receiptResult);
       receiptBox.append(receipts.length
-        ? table([{ label: "Referência", render: row => row.source_file?.name || row.reference || String(row.id).slice(0, 8) }, { label: "Fornecedor", render: row => row.supplier_name || row.supplier_id }, { label: "Data", render: row => dateTime(row.created_at) }], receipts.slice(0, 20))
+        ? table([
+          { label: "Referência", render: row => row.source_file?.name || row.reference || String(row.id).slice(0, 8) },
+          { label: "Fornecedor", render: row => row.supplier_name || (row.supplier_id ? stockNames.get("/suppliers/" + row.supplier_id)?.name || "Fornecedor " + String(row.supplier_id).slice(0, 8) : "—") },
+          { label: "Data", render: row => dateTime(row.created_at) }
+        ], receipts.slice(0, 20))
         : empty("Sem entradas", "Registre a primeira entrada de mercadoria."));
       grid.append(movementBox, receiptBox);
       results.append(grid);
@@ -2315,8 +2447,8 @@ async function stockPage() {
       const costHistoryBox = surface("Histórico de custos", "Cada entrada preserva o custo pago e o custo médio após o lançamento.");
       costHistoryBox.append(costHistory.length
         ? table([
-          { label: "Produto", render: row => row.product_name || row.product_id },
-          { label: "Quantidade", render: row => quantity(row.quantity_milli, row.unit || "UN") },
+          { label: "Produto", render: row => row.product_name || "Produto " + String(row.product_id).slice(0, 8) },
+          { label: "Quantidade", render: row => quantity(row.quantity_milli, row.unit || "") },
           { label: "Custo da entrada", render: row => money(row.unit_cost_cents) },
           { label: "Custo médio após entrada", render: row => row.average_cost_cents == null ? "—" : money(row.average_cost_cents) },
           { label: "Referência", render: row => row.reference },
@@ -2326,12 +2458,12 @@ async function stockPage() {
       costHistoryBox.style.marginTop = "16px";
       results.append(costHistoryBox);
     } catch (error) {
-      if (token !== state.renderId) return;
+      if (stale()) return;
       results.replaceChildren(empty("Não foi possível carregar o estoque", errorText(error), "!"));
       handleError(error);
     }
   }
-  if (current === state.renderId) load();
+  load();
   shop.select.addEventListener("change", load);
   let searchTimer;
   search.addEventListener("input",()=>{
@@ -2444,11 +2576,13 @@ async function userEdit(row) {
   form.addEventListener("submit", async event => {
     event.preventDefault(); if (!form.reportValidity()) return;
     submit.disabled = true;
-    try { await api.patch("/users/" + row.id, formPayload(form, fields)); closeDialog(); toast("Acesso atualizado."); renderRoute(); }
+    try { await api.patch("/users/" + row.id, formPayload(form, fields, { editing: true })); closeDialog(); toast("Acesso atualizado."); renderRoute(); }
     catch (error) { handleError(error, message); submit.disabled = false; }
   });
   openDialog("Editar acesso", "Alterações de papel e desativação são auditadas.", form);
 }
+// Only the owner manages the owner's access and PIN.
+const canManageMember = row => !(row.role === "owner" && state.role !== "owner");
 function userPin(row) {
   const form = el("form", "auth-form");
   const field = el("div", "field");
@@ -2485,13 +2619,13 @@ async function usersPage() {
       {label:"Operador",render:row=>row.name},
       {label:"Papel",render:row=>roleNames[row.role]||row.role},
       {label:"Pode cancelar venda",render:row=>cancellationAccess(row.role)}
-    ],operators,row=>[{label:"Trocar PIN",onClick:()=>userPin(row)}])
+    ],operators,row=>canManageMember(row)?[{label:"Trocar PIN",onClick:()=>userPin(row)}]:[])
       :empty("Nenhum login de caixa pronto","Ative uma pessoa e defina um PIN para ela aparecer na tela de login do terminal."));
     box.append(pagedContent(response,"/users?limit=100",[
       { label:"Pessoa", render: row => row.name },{ label:"E-mail", render: row => row.email },
       { label:"Papel", render: row => roleNames[row.role] || row.role },{ label:"PIN do caixa", render: row => row.has_pin ? "Definido" : "Definir PIN" },
       { label:"Acesso", render: row => statusBadge(row.active ? "Ativo" : "Inativo") }
-    ], row => [...(row.role==="owner"&&state.role!=="owner"?[]:[{label:"Editar",onClick:()=>userEdit(row).catch(handleError)}]),{label:row.has_pin?"Trocar PIN":"Definir PIN",onClick:()=>userPin(row)}],
+    ], row => canManageMember(row)?[{label:"Editar",onClick:()=>userEdit(row).catch(handleError)},{label:row.has_pin?"Trocar PIN":"Definir PIN",onClick:()=>userPin(row)}]:[],
       empty("Equipe vazia", "Adicione pessoas para distribuir o acesso.")));
   } catch (error) { if (token === state.renderId) { operatorBox.replaceChildren();box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); } }
 }
@@ -2570,7 +2704,7 @@ async function terminalsPage() {
       {label:"Login",render:row=>row.name},
       {label:"Nível",render:row=>roleNames[row.role]||row.role},
       {label:"Cancelamento",render:row=>cancellationAccess(row.role)}
-    ],available,row=>[{label:"Trocar PIN",onClick:()=>userPin(row)}])
+    ],available,row=>canManageMember(row)?[{label:"Trocar PIN",onClick:()=>userPin(row)}]:[])
       :empty("Nenhum operador liberado","Abra Equipe e defina um PIN para ao menos uma pessoa ativa."));
     const teamLink=el("a","button secondary small","Gerenciar equipe e PINs");teamLink.href="#users";
     const actions=el("div","connection-actions");actions.append(teamLink);operatorBox.append(actions);
@@ -2656,11 +2790,11 @@ async function companyPage() {
     const addressNeighborhood=plainField("company-address-neighborhood","Bairro",company.address_neighborhood,100);
     const addressCity=plainField("company-address-city","Cidade",company.address_city,100);
     const addressState=plainField("company-address-state","UF",company.address_state,2,"RJ");addressState.input.maxLength=2;addressState.input.style.textTransform="uppercase";
-    const addressZip=plainField("company-address-zip","CEP",company.address_zip,8,"00000000");addressZip.input.inputMode="numeric";
+    const addressZip=plainField("company-address-zip","CEP",company.address_zip,9,"00000-000");addressZip.input.inputMode="numeric";
     const taxField=el("div","field"),taxLabel=el("label","","Regime tributário"),tax=el("select");tax.id="company-tax-regime";taxLabel.htmlFor=tax.id;[["simples_nacional","Simples Nacional"],["simples_excesso","Simples Nacional · excesso de sublimite"],["regime_normal","Regime normal"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;tax.append(option)});tax.value=company.tax_regime||"simples_nacional";taxField.append(taxLabel,tax);
     const environmentField=el("div","field"),environmentLabel=el("label","","Emissão fiscal"),environment=el("select");environment.id="company-fiscal-environment";environmentLabel.htmlFor=environment.id;[["non_fiscal","Comprovante não fiscal · atual"],["homologation","NFC-e em homologação"],["production","NFC-e em produção · requer provedor"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;environment.append(option)});environment.value=company.fiscal_environment||"non_fiscal";environmentField.append(environmentLabel,environment,el("small","","A chave de acesso, QR Code, protocolo e impostos só aparecem após autorização real da SEFAZ por um provedor configurado."));
-    const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(series);
-    const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumber);
+    const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(seriesLabel,series);
+    const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumberLabel,nextNumber,el("small","","Altere apenas ao migrar de outro sistema emissor."));
     form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,taxField,environmentField,seriesField,nextNumberField,discountField,hoursField);
     const message=formMessage(form);
     const actions=el("div","form-actions"),save=el("button","button","Salvar dados");save.type="submit";
@@ -2705,7 +2839,7 @@ async function auditPage() {
 
 async function syncConflictsPage() {
   const token = ++state.renderId;
-  const view = page("Conflitos offline", "Reveja vendas sincronizadas com divergência de estoque e registre a decisão da equipe.", "Administração");
+  const view = page("Conflitos offline", "Reveja eventos sincronizados com divergência e registre a decisão da equipe.", "Administração");
   view.actions.append(button("Atualizar", () => renderRoute(), "secondary"));
   const box = surface("Pendências", "Uma venda não é apagada: o terminal continua vendendo dentro da política local e esta fila orienta o ajuste de estoque.");
   view.outer.append(info("Conflitos são gerados quando dois terminais trabalham offline e a confirmação central deixa o estoque negativo. Resolva depois de conferir a contagem física.", true), box);
@@ -2718,8 +2852,8 @@ async function syncConflictsPage() {
     box.append(pagedContent(response, "/sync/conflicts?status=open", [
       { label: "Data", render: row => dateTime(row.created_at) },
       { label: "Terminal", render: row => row.terminal_name || "—" },
-      { label: "Motivo", render: row => ({ negative_stock: "Estoque negativo", return_exceeds_sold: "Devolução no caixa acima do disponível" })[row.reason] || row.reason },
-      { label: "Itens", render: row => (row.detail?.items || []).map(item => `${item.product_name} (${Number(item.central_balance_milli || 0) / 1000})`).join(" · ") || "Ver detalhes" },
+      { label: "Motivo", render: row => conflictReasonText(row) },
+      { label: "Itens", render: row => (row.detail?.items || []).map(item => `${item.product_name} (${Number(item.central_balance_milli || 0) / 1000})`).join(" · ") || row.detail?.message || "Ver detalhes" },
       { label: "Estado", render: row => statusBadge(row.status) }
     ], row => [{ label: "Resolver", onClick: () => resolveSyncConflict(row) }],
       empty("Nenhum conflito pendente", "As vendas offline estão conciliadas.")));
@@ -2731,7 +2865,8 @@ async function syncConflictsPage() {
 async function resolveSyncConflict(row) {
   const content = el("div");
   const items = (row.detail?.items || []).map(item => `${item.product_name}: saldo central ${Number(item.central_balance_milli || 0) / 1000}`).join("\n");
-  content.append(info(items || "Confira a venda e o estoque físico antes de resolver.", true));
+  content.append(detailList([["Motivo", conflictReasonText(row)], ["Terminal", row.terminal_name || "—"], ["Data", dateTime(row.created_at)]]));
+  content.append(info(items || row.detail?.message || "Confira a venda e o estoque físico antes de resolver.", true));
   const field = el("div", "field"), label = el("label", "", "Observação da resolução");
   const textarea = el("textarea"); textarea.rows = 4; textarea.placeholder = "Ex.: feita entrada de 2 unidades após conferência física"; label.htmlFor = "conflict-resolution"; textarea.id = "conflict-resolution"; field.append(label, textarea);
   const message = formMessage(content); message.hidden = true;
@@ -2837,6 +2972,8 @@ const planFields=[
   {key:"active",label:"Plano disponível para novas assinaturas",type:"checkbox",default:true,full:true},
   {key:"features",label:"Recursos (JSON)",type:"json",required:true,default:[],full:true,help:"Lista JSON de códigos de recursos. Ex.: [\"cloud_dashboard\", \"stock\"]."}
 ];
+// New companies always start on this plan (cloud/core/views_auth.py).
+const signupPlanSlug="essential";
 async function planForm(record) {
   const editing=!!record,fields=editing?planFields.filter(field=>field.key!=="slug"):planFields;
   const form=await formFor(fields,record||{});
@@ -2851,6 +2988,8 @@ async function planForm(record) {
       if(!Number.isSafeInteger(payload.terminal_limit)||!Number.isSafeInteger(payload.shop_limit)||payload.terminal_limit<1||payload.shop_limit<1)throw new Error("Os limites precisam ser inteiros maiores que zero.");
       if(!editing&&!/^[a-z0-9-]+$/.test(payload.slug))throw new Error("O identificador aceita letras minúsculas, números e hífen.");
       if(!Array.isArray(payload.features)||payload.features.some(feature=>typeof feature!=="string"))throw new Error("Recursos deve ser uma lista JSON de textos.");
+      if(editing&&record.slug===signupPlanSlug&&record.active&&payload.active===false&&
+        !window.confirm("Este é o plano usado no cadastro de novas empresas (teste grátis). Sem ele, ninguém consegue criar conta. Desativar mesmo assim?")){submit.disabled=false;return;}
       if(editing)await api.patch("/platform/plans/"+record.id,payload,{tenant:false});
       else await api.post("/platform/plans",payload,{tenant:false});
       closeDialog();toast("Plano salvo.");renderRoute();
@@ -2868,7 +3007,13 @@ async function platformPlans() {
     if(token!==state.renderId)return;
     box.lastChild.remove();const rows=records(response);state.plans=rows;
     box.append(pagedContent(response,"/platform/plans",[
-      {label:"Plano",render:row=>row.name},{label:"Mensal",render:row=>money(row.price_month_cents)},
+      {label:"Plano",render:row=>row.name},
+      {label:"Identificador",render:row=>{
+        const cell=el("div");cell.append(el("span","",row.slug||"—"));
+        if(row.slug===signupPlanSlug){cell.append(el("br"),el("span","badge warn","Plano do teste grátis"));}
+        return cell;
+      }},
+      {label:"Mensal",render:row=>money(row.price_month_cents)},
       {label:"Anual",render:row=>money(row.price_year_cents)},
       {label:"Terminais",render:row=>row.terminal_limit},{label:"Lojas",render:row=>row.shop_limit},
       {label:"Estado",render:row=>statusBadge(row.active?"Ativo":"Inativo")}
@@ -2891,6 +3036,10 @@ async function subscriptionEdit(row) {
     submit.disabled=true;
     try {
       const payload=formPayload(form,fields);
+      // Untouched fields stay out of the PATCH: resending them rewrites dates and marks the licence as manual.
+      const original={plan_id:row.plan?.id,status:row.status,trial_ends_at:row.trial_ends_at?.slice(0,10),current_period_end:row.current_period_end?.slice(0,10)};
+      for(const key of Object.keys(payload))if(String(payload[key]??"")===String(original[key]??""))delete payload[key];
+      if(!Object.keys(payload).length){closeDialog();toast("Nenhuma alteração para salvar.");return;}
       if(payload.trial_ends_at)payload.trial_ends_at=new Date(payload.trial_ends_at+"T12:00:00Z").toISOString();
       if(payload.current_period_end)payload.current_period_end=new Date(payload.current_period_end+"T12:00:00Z").toISOString();
       if(["active","past_due"].includes(payload.status)&&!payload.current_period_end&&!row.current_period_end)
@@ -3144,9 +3293,11 @@ async function platformServices() {
   const view=page("Serviços","Estado das integrações e do processamento da plataforma.","Plataforma");
   const content=el("div");view.outer.append(content);content.append(loadingSurface());
   try {
+    // /ops/jobs answers 403 to Atendimento; asking anyway would take the whole page down.
+    const canSeeJobs=platformCan("platform_ops","platform_billing");
     const [health,jobs,asaas]=await Promise.all([
       api.get("/ops/health",{tenant:false}),
-      api.get("/ops/jobs",{tenant:false}),
+      canSeeJobs?api.get("/ops/jobs",{tenant:false}):Promise.resolve(null),
       platformSuperuser()?api.get("/ops/integrations/asaas",{tenant:false}):Promise.resolve(null)
     ]);
     if(token!==state.renderId)return;
@@ -3165,7 +3316,7 @@ async function platformServices() {
     ]):info("A configuração da cobrança exige acesso de superusuário."));
     if(asaas)integration.append(button("Configurar Asaas",()=>integrationForm("asaas",asaas,true)));
     const tasks=surface("Tarefas recentes");const rows=records(jobs);
-    tasks.append(rows.length?table([
+    tasks.append(!canSeeJobs?info("A lista de tarefas é visível para os papéis Operação e Cobrança."):rows.length?table([
       {label:"Tipo",render:row=>row.kind},{label:"Estado",render:row=>statusBadge(row.status)},
       {label:"Tentativas",render:row=>row.attempts},{label:"Erro",render:row=>row.last_error},
       {label:"Criada em",render:row=>dateTime(row.created_at)}
@@ -3208,7 +3359,7 @@ async function platformBackupsPage() {
     const restore=result.restore||{};
     const cards=el("div","metric-grid");
     cards.append(
-      metric("Estado do backup",result.state||"—",result.pending_action?`Ação pendente: ${result.pending_action}`:"Verificação automática"),
+      metric("Estado do backup",statusNames[String(result.state||"").toLowerCase()]||result.state||"—",result.pending_action?`Ação pendente: ${result.pending_action}`:"Verificação automática"),
       metric("Última cópia",dateTime(result.last_success_at),result.last_failure_at?`Última falha: ${dateTime(result.last_failure_at)}`:"Sem falha registrada"),
       metric("Destino externo",result.external_configured?"Configurado":"Não configurado","Restic criptografado"),
       metric("Última restauração",restore.status?String(restore.status):"Nenhuma",restore.completed_at?dateTime(Number(restore.completed_at)*1000):"Ainda não executada")
@@ -3250,14 +3401,19 @@ function billingForm(plans) {
   const type=selectField("billing-type","Forma de cobrança",[["PIX","Pix"],["BOLETO","Boleto"]]);
   const name=inputField("billing-name","Nome do pagador");
   const documentNumber=inputField("billing-document","CPF ou CNPJ");documentNumber.maxLength=30;
+  documentNumber.addEventListener("input",()=>documentNumber.setCustomValidity(""));
   const email=inputField("billing-email","E-mail","email");
   form.append(info("A solicitação será enviada ao provedor quando configurado. Esta ação não confirma pagamento.",true));
   const message=formMessage(form),submit=formButtons(form,"Solicitar assinatura");
   form.addEventListener("submit",async event=>{
-    event.preventDefault();if(!form.reportValidity())return;
+    event.preventDefault();
+    // A wrong document only fails later at the provider and leaves the request stuck in review.
+    documentNumber.setCustomValidity(validTaxId(documentNumber.value)?"":"Informe um CPF ou CNPJ válido (confira os dígitos).");
+    if(!form.reportValidity())return;
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.value.trim())){handleError(new Error("Informe um e-mail válido para receber a cobrança."),message);return;}
     const payload={
       plan_id:plan.value,cycle:cycle.value,billing_type:type.value,
-      name:name.value.trim(),document:documentNumber.value.trim(),email:email.value.trim()
+      name:name.value.trim(),document:taxIdValue(documentNumber.value),email:email.value.trim()
     };
     payload.idempotency_key=idempotency(form,payload);
     submit.disabled=true;
@@ -3394,7 +3550,7 @@ async function platformUserForm(record) {
   form.append(roles);
   const active=el("label","checkbox-line full"),activeInput=el("input");
   activeInput.type="checkbox";activeInput.checked=record?!!record.active:true;
-  active.append(activeInput,el("span","","Acesso ativo"));
+  active.append(activeInput,el("span","","Conta de login ativa (desmarcar bloqueia também o painel da empresa)"));
   form.append(active);
   form.append(info(editing && !record.platform_access
     ? "Este usuário já pertence a uma empresa. Marque um ou mais papéis para promovê-lo também à administração SaaS."
@@ -3407,6 +3563,8 @@ async function platformUserForm(record) {
       const payload=formPayload(form,fields);
       payload.roles=choices.filter(([key])=>checked.get(key).checked).map(([key])=>key);
       payload.active=activeInput.checked;
+      if(editing&&record.active&&!payload.active&&
+        !window.confirm("Desativar a conta bloqueia todo o login desta pessoa, inclusive no painel da empresa dela. Para tirar só o acesso SaaS, desmarque os papéis. Desativar a conta?")){submit.disabled=false;return;}
       if(!editing&&!payload.roles.length)throw new Error("Selecione pelo menos um papel para criar o acesso SaaS.");
       if(payload.password&&!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,128}$/.test(payload.password))
         throw new Error("A senha precisa ter 8 a 128 caracteres, com maiúscula, minúscula, número e símbolo.");
@@ -3685,6 +3843,23 @@ function renderRoute() {
     handleError(error);
   });
 }
+function aboutDialog() {
+  const body=el("div","about");
+  const lockup=el("div","about-lockup");
+  lockup.append(el("strong","","PDV2"),el("small","","por "+VENDOR.name));
+  const link=el("a","",VENDOR.site);link.href=VENDOR.url;link.target="_blank";link.rel="noopener noreferrer";
+  body.append(lockup,detailList([["Versão",APP_VERSION],["Fabricante",VENDOR.name],["Site",link]]),el("p","about-foot",VENDOR.footer));
+  const actions=el("div","form-actions");actions.append(button("Fechar",closeDialog,"ghost"));body.append(actions);
+  openDialog("Sobre o PDV2","Sistema de ponto de venda e gestão para o varejo.",body);
+}
+function renderBrand() {
+  const version=$("#app-version");
+  if(version)version.textContent="v"+APP_VERSION;
+  $("#about-button")?.addEventListener("click",aboutDialog);
+}
+renderBrand();
+// pwa.js announces a new service worker; the running page still holds the old script.
+window.addEventListener("pdv2:update",()=>toast("Há uma versão nova do PDV2. Recarregue a página para atualizar."));
 window.addEventListener("hashchange",renderRoute);
 $("#tenant-selector").addEventListener("change",async event=>{
   const id=event.currentTarget.value;
@@ -3692,7 +3867,9 @@ $("#tenant-selector").addEventListener("change",async event=>{
   if(!membership)return;
   state.tenantId=id;state.role=membership.role;setTenant(id);
   $("#sidebar-role").textContent=roleNames[state.role]||state.role;
-  try { localStorage.setItem("pdv2-tenant",id); } catch {}
+  // Without storage the URL carries the choice, so a reload stays on the company just selected.
+  try { localStorage.setItem("pdv2-tenant",id); }
+  catch { history.replaceState(null,"",location.pathname+"?tenant="+encodeURIComponent(id)+location.hash); }
   state.shops=[];state.features=[];state.subscription=null;
   try { await Promise.all([loadShops(),loadSubscription()]); }
   catch(error) { handleError(error); }
@@ -3726,6 +3903,10 @@ async function init() {
       try {saved=new URLSearchParams(location.search).get("tenant") || localStorage.getItem("pdv2-tenant");}catch{}
       const current=state.memberships.find(row=>String(row.tenant_id)===String(saved))||state.memberships[0];
       state.tenantId=current.tenant_id;state.role=current.role;setTenant(state.tenantId);
+      // Keep the choice in storage and drop ?tenant=, or a reload would undo a later switch in the selector.
+      let stored=false;
+      try {localStorage.setItem("pdv2-tenant",state.tenantId);stored=true;}catch{}
+      if(stored&&new URLSearchParams(location.search).has("tenant"))history.replaceState(null,"",location.pathname+location.hash);
       const select=$("#tenant-selector");
       state.memberships.forEach(membership=>{
         const option=el("option","",membership.tenant_name);

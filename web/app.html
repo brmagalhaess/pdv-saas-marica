@@ -21,7 +21,7 @@
       <div class="sidebar-top">
         <a class="brand" href="/" aria-label="PDV2, voltar ao site">
           <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M8 28V8h11a7 7 0 0 1 0 14H8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 23c3-4 8-2 8 1 0 3-6 4-8 7h8" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg></span>
-          <span>PDV<strong>2</strong></span>
+          <span class="brand-lockup"><span>PDV<strong>2</strong></span><small>por CrownTech</small></span>
         </a>
         <button id="sidebar-close" class="button icon ghost sidebar-close" type="button" aria-label="Fechar menu">×</button>
       </div>
@@ -35,6 +35,10 @@
         <div id="sidebar-user" class="user-name"></div>
         <div id="sidebar-role" class="user-role"></div>
         <button id="logout" class="button secondary small" type="button">Sair da conta</button>
+        <div class="sidebar-signature">
+          <span>PDV2 · um produto <b>CrownTech</b></span>
+          <span><span id="app-version"></span> · <button id="about-button" class="sidebar-about" type="button">Sobre</button></span>
+        </div>
       </div>
     </aside>
     <div id="mobile-scrim" class="mobile-scrim" aria-hidden="true"></div>
