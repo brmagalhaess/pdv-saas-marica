@@ -67,6 +67,9 @@ class Tenant(models.Model):
     fiscal_environment = models.CharField(max_length=20, default="non_fiscal")
     nfce_series = models.PositiveIntegerField(default=1)
     nfce_next_number = models.PositiveBigIntegerField(default=1)
+    # E-mail of the company's accountant: receives the monthly accountant package
+    # (core/accountant, docs/PACOTE-CONTADOR.md). Other accountant data live in AccountantSettings.
+    accountant_email = models.EmailField(max_length=254, blank=True, default="")
     roles_version = models.PositiveIntegerField(default=1)
     # Percentage in basis points: 10000 = 100%. This is the hard company
     # ceiling for discounts, including manager approvals.
@@ -983,3 +986,7 @@ class AccountDeletionRequest(models.Model):
     handled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name="+")
     handled_at = models.DateTimeField(null=True)
     handled_note = models.CharField(max_length=500, blank=True)
+
+
+# Monthly accountant package (XMLs + summary + SPED Fiscal). Kept in its own module.
+from .accountant.models import AccountantDelivery, AccountantPackage, AccountantSettings  # noqa: E402,F401

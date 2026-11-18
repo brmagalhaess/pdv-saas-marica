@@ -574,3 +574,49 @@ export const CRT_OPTIONS = [
   [4, "4 · MEI"]
 ];
 export const isSimplesCrt = crt => Number(crt) === 1 || Number(crt) === 4;
+
+// ---------------------------------------------------------------- pacote do contador
+
+// Month the accountant package usually refers to: the previous one.
+export function previousMonth(now = new Date()) {
+  const month = now.getMonth(); // 0-based: in January the previous month is December of last year
+  return month === 0 ? { year: now.getFullYear() - 1, month: 12 } : { year: now.getFullYear(), month };
+}
+
+export function monthLabel(year, month) {
+  return String(month).padStart(2, "0") + "/" + year;
+}
+
+// "2026-10" (input type=month) -> {year, month}; null when invalid.
+export function parseMonthInput(value) {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(value || ""));
+  return match ? { year: Number(match[1]), month: Number(match[2]) } : null;
+}
+
+const packageStatusNames = { queued: "Na fila", running: "Gerando", ready: "Pronto", failed: "Falha", expired: "Expirado" };
+const deliveryStatusNames = { queued: "Envio na fila", sent: "Enviado", failed: "Falha no envio" };
+
+export function accountantPackageView(row) {
+  const counts = Object.fromEntries((row.by_status || []).map(item => [item.status, item]));
+  const authorized = counts.authorized || { count: 0, total_cents: 0 };
+  const parts = [authorized.count + " autorizada(s)"];
+  if (counts.cancelled?.count) parts.push(counts.cancelled.count + " cancelada(s)");
+  if (counts.inutilized?.count) parts.push(counts.inutilized.count + " inutilizada(s)");
+  const last = (row.deliveries || [])[0];
+  let sped = "Sem SPED";
+  if (row.sped?.generated) sped = (row.sped.problems || []).length ? "SPED com divergências" : "SPED gerado";
+  else if (row.status === "ready" && row.include_sped) sped = "SPED não gerado";
+  return {
+    period: monthLabel(row.year, row.month),
+    status: packageStatusNames[row.status] || row.status,
+    notes: row.status === "ready" || row.status === "expired" ? parts.join(" · ") : "—",
+    totalCents: authorized.total_cents || 0,
+    pending: row.warning_count ? row.warning_count + " pendência(s)" : "Sem pendências",
+    sped,
+    delivery: last ? (deliveryStatusNames[last.status] || last.status) + " para " + last.to_email : "Não enviado",
+    deliveryFailed: last?.status === "failed",
+    canDownload: Boolean(row.available),
+    canSped: Boolean(row.sped_available),
+    trigger: row.trigger === "schedule" ? "Automático (dia 1º)" : "Manual"
+  };
+}

@@ -209,9 +209,19 @@ def fiscal_cancel(job):
     if state!='cancelled':raise StillPending('Cancelamento ainda não confirmado; consultar documento')
     return {'document_id':str(record.pk),'status':state}
 
+def _accountant(name):
+    # Monthly accountant package (core/accountant); imported lazily to keep app loading order simple.
+    def run(job):
+        from core.accountant import jobs
+        return getattr(jobs,name)(job)
+    run.__name__=name
+    return run
+
 HANDLERS={'billing.subscribe':subscribe,'billing.reconcile':reconcile_payment,'billing.recover':recover_subscription,
           'billing.recover_customer':recover_customer,'fiscal.submit':fiscal_submit,
-          'fiscal.poll':fiscal_poll,'fiscal.archive':fiscal_archive,'fiscal.cancel':fiscal_cancel}
+          'fiscal.poll':fiscal_poll,'fiscal.archive':fiscal_archive,'fiscal.cancel':fiscal_cancel,
+          'accountant.package':_accountant('run_package'),'accountant.send':_accountant('run_send'),
+          'accountant.monthly':_accountant('run_monthly')}
 
 def run_one():
     now=timezone.now()

@@ -13,6 +13,7 @@ from core import views_owner as owner
 from core import views_fiscal as fiscal
 from core import views_labels as labels
 from core import views_app as app_api, views_app_admin as app_admin
+from core.accountant import views as accountant
 
 urlpatterns = [
     path("", lambda request: pages.page(request, "landing")),
@@ -155,6 +156,13 @@ urlpatterns = [
     path("api/v1/app/platform/access/<uuid:pk>/revoke", app_api.platform_access_revoke),
     path("api/v1/app/platform/devices", app_api.platform_devices),
     path("api/v1/app/platform/devices/<uuid:pk>/revoke", app_api.platform_device_revoke),
+    path("api/v1/accountant/settings", accountant.accountant_settings),
+    path("api/v1/accountant/packages", accountant.packages),
+    path("api/v1/accountant/packages/<uuid:pk>", accountant.package_detail),
+    path("api/v1/accountant/packages/<uuid:pk>/download", accountant.package_download),
+    path("api/v1/accountant/packages/<uuid:pk>/sped", accountant.package_sped),
+    path("api/v1/accountant/packages/<uuid:pk>/send", accountant.package_send),
+    path("api/v1/accountant/download/<str:token>", accountant.public_download),
     path("api/v1/ops/", include("operations.urls")),
     path("api/v1/<str:kind>", resources.collection),
     path("api/v1/<str:kind>/<uuid:pk>", resources.detail),
