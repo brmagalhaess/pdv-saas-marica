@@ -537,6 +537,9 @@ def label_bytes(product, fmt="zpl"):
     """Render labels for a separately configured ZPL/EPL printer."""
     if fmt == "escpos50x30":
         raise ValueError(LABEL_PRINTER_REQUIRED)
+    if fmt in ("ppla", "tspl"):
+        from .labels import shelf_label_bytes  # Argox/Elgin (PPLA) e TSC (TSPL)
+        return shelf_label_bytes(product, fmt)
     name = _clean(product["name"], 38)
     barcode = "".join(ch for ch in str(product.get("barcode") or product["id"])
                       if ch.isascii() and ch.isalnum())[:32]

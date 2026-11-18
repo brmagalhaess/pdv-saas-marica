@@ -698,8 +698,9 @@ class TerminalTests(unittest.TestCase):
         self.login()
         response = self.client.post("/api/print/labels", json={"product_id": self.unit_product_id, "quantity": 2},
                                     headers={"X-CSRF-Token": self.csrf()})
-        self.assertEqual(response.status_code, 410)
-        self.assertIn("painel da empresa", response.json["error"])
+        # A rota de gôndola agora usa a etiquetadora; o ajuste antigo de TM-T20 continua recusado.
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("TM-T20", response.json["error"])
         work = self.store.begin_print()
         self.assertEqual(work["id"], receipt)
         preserved = next(job for job in self.store.print_jobs() if job["id"] == blocked)

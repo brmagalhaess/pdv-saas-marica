@@ -18,6 +18,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from . import paths
+from .labels import SCALE_SCHEMA
 from .printers import (LABEL_PRINTER_REQUIRED, PAYMENT_LABELS, label_bytes, layout_bytes, receipt_bytes,
                        receipt_layout, voucher_layout)
 
@@ -97,6 +98,8 @@ RESTORE_COUNTERS = ("position", "total", "sales", "sales_cents", "returns", "ret
 # Same values the cloud accepts in the terminal.config event.
 CONFIG_DRIVERS = ("tcp", "windows_raw", "cups", "file")
 CONFIG_FORMATS = {"receipt": ("escpos58", "escpos80"), "label": ("zpl", "epl")}
+# PPLA/TSPL só existem neste computador: a nuvem ainda não aceita esses formatos no terminal.config.
+LABEL_FORMATS = ("zpl", "epl", "ppla", "tspl")
 EVENT_ID = re.compile(r"[0-9a-f]{32}")
 # Phase 3: additional cashiers ("estações") of the same shop. The computer that owns this
 # SQLite file is always the station "server"; the others reach it through the LAN listener.
@@ -307,6 +310,7 @@ class Store:
                     attempts INTEGER NOT NULL DEFAULT 0,error TEXT,created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL);
             """)
+            conn.executescript(SCALE_SCHEMA)  # balança: etiquetas impressas e validade por produto
             if self._meta(conn, "device_id") is None:
                 self._set_meta(conn, "device_id", _uuid())
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(products)")}
@@ -610,7 +614,8 @@ class Store:
         # These are downloaded/setup data, not locally created business records.
         # Clearing them also makes exports after a new pairing tenant-isolated.
         for table in ("products", "operators", "customers", "login_attempts", "audit", "print_settings",
-                      "sync_conflicts", "sync_quarantine", "station_enroll_codes"):
+                      "sync_conflicts", "sync_quarantine", "station_enroll_codes", "scale_labels",
+                      "scale_product_settings"):
             conn.execute(f"DELETE FROM {table}")
         # The additional cashiers belonged to the company that is leaving this file.
         conn.execute("DELETE FROM stations WHERE id != ?", (SERVER_STATION_ID,))
@@ -2469,7 +2474,7 @@ class Store:
         if kind == "label" and fmt == "escpos50x30":
             raise TerminalError(LABEL_PRINTER_REQUIRED, 409)
         if (kind == "receipt" and fmt not in ("escpos58", "escpos80")) or (
-                kind == "label" and fmt not in ("zpl", "epl")):
+                kind == "label" and fmt not in LABEL_FORMATS):
             raise TerminalError("Formato de impressão inválido")
         target = _str(target, "Destino", 260)
         with self.transaction() as conn:

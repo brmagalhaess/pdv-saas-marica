@@ -1,0 +1,71 @@
+/* Tela Balança (etiqueta de pesados). Usa os tokens de terminal.css. */
+.scale-panel{overflow:auto}
+.scale-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:10px;padding:10px;min-height:100%}
+.scale-pick,.scale-work{padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow)}
+.scale-products{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;align-content:start;overflow:auto;padding:2px}
+.scale-tile{display:grid;gap:4px;min-height:96px;padding:12px;border:2px solid var(--line);border-radius:12px;background:var(--surface-2);color:var(--ink);text-align:left;font:inherit;cursor:pointer}
+.scale-tile strong{font-size:17px;line-height:1.2;overflow-wrap:anywhere}
+.scale-tile span{color:var(--muted);font-size:13px;font-weight:600}
+.scale-tile b{font-size:16px}
+.scale-tile:hover,.scale-tile:focus-visible{border-color:var(--brand)}
+.scale-tile.on{border-color:var(--brand-strong);background:var(--brand-soft);color:var(--on-brand-soft)}
+.scale-tile.no-plu span{color:var(--warn)}
+.scale-product{display:grid;gap:2px;padding:10px 12px;border-radius:12px;background:var(--surface-2)}
+.scale-product strong{font-size:20px}
+.scale-product span{color:var(--muted);font-size:14px}
+.scale-product.empty strong{color:var(--muted)}
+.warn-text{color:var(--warn)}
+.scale-weight{display:grid;gap:8px;padding:12px;border-radius:12px;background:var(--total-bg);color:var(--total-ink)}
+.scale-weight .hint{color:inherit;opacity:.8}
+.sw-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.sw-value{font:800 56px/1 var(--mono);letter-spacing:-.02em;text-align:right}
+.sw-value small{font-size:22px;font-weight:700}
+.sw-value[data-stable="false"]{opacity:.6}
+.sw-manual input{font:800 28px var(--mono)!important;height:56px!important;text-align:right}
+.sw-manual span{color:var(--total-label)}
+.sw-actions{display:flex;flex-wrap:wrap;gap:6px}
+.scale-total{display:grid;grid-template-columns:auto 1fr;align-items:baseline;gap:4px 12px;padding:4px 2px}
+.scale-total span{font-weight:700;color:var(--muted)}
+.scale-total strong{font-size:36px;text-align:right}
+.scale-total small{grid-column:1/-1;text-align:right;color:var(--muted)}
+.scale-print-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:stretch}
+.scale-copies{display:flex;align-items:stretch;border:1.5px solid var(--line);border-radius:12px;overflow:hidden}
+.scale-copies button{width:48px;border:0;background:var(--surface-2);color:var(--ink);font-size:24px;font-weight:700}
+.scale-copies input{width:52px;border:0;background:var(--surface);color:var(--ink);text-align:center;font-size:20px;font-weight:700}
+.scale-print{min-height:64px;font-size:20px}
+.scale-message{min-height:22px;font-size:15px;font-weight:600;color:var(--muted)}
+.scale-message[data-tone="ok"]{color:var(--ok)}
+.scale-message[data-tone="warn"]{color:var(--warn)}
+.scale-message[data-tone="bad"]{color:var(--danger)}
+.scale-preview-box{display:grid;gap:6px;justify-items:center;padding:10px;border:1px dashed var(--line);border-radius:12px;background:var(--surface-2)}
+.scale-preview{zoom:1.6}
+.scale-preview:empty{display:none}
+.scale-history{margin:0 10px 10px}
+.scale-settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.scale-print-frame{position:fixed;right:0;bottom:0;width:0;height:0;border:0}
+#stockList .list-actions{align-items:center}
+/* Etiqueta (pré-visualização): mesmo desenho de scale-core.js LABEL_CSS. */
+.wlabel{box-sizing:border-box;display:flex;flex-direction:column;gap:.3mm;padding:1.2mm 1.5mm;overflow:hidden;background:#fff;color:#000;font:600 2.6mm/1.15 Arial,Helvetica,sans-serif;border-radius:1.5mm;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+.wl-store{font-size:2.2mm;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wl-name{font-size:3.1mm;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wl-line,.wl-dates{display:flex;justify-content:space-between;gap:1mm;white-space:nowrap}
+.wl-dates{font-size:2.1mm;font-weight:500}
+.wl-total{font-size:4.4mm;font-weight:900}
+.wl-total small{font-size:2.4mm;font-weight:700}
+.wl-bar{margin-top:auto;display:flex;justify-content:center}
+.wl-bar svg{display:block;max-width:100%;height:auto}
+@media (max-width:900px){
+  .scale-grid{grid-template-columns:1fr}
+  .sw-value{font-size:44px}
+}
+/* Sobre o painel escuro do peso: selos e botões legíveis em todos os temas. */
+.scale-weight .badge{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.3);color:var(--total-ink)}
+.scale-weight .badge.ok{background:var(--brand-strong);border-color:transparent;color:var(--on-brand)}
+.scale-weight .badge.warn{background:var(--total-label);border-color:transparent;color:#102630}
+.scale-weight .badge.bad{background:#b3261e;border-color:transparent;color:#fff}
+.sw-actions .btn{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.35);color:var(--total-ink)}
+.sw-actions .btn:disabled{opacity:.45}
+.scale-print{white-space:normal;line-height:1.15}
+.scale-print kbd{flex:none;font-size:12px}
+.scale-history .page-head{padding:12px 16px 4px}
+.scale-history #scaleHistory{padding:0 0 4px}
