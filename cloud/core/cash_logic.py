@@ -9,11 +9,27 @@ from collections import defaultdict
 from datetime import datetime, timezone as utc_timezone
 
 from .api_common import APIError
-from .models import CashMovement, CashSession, CreditReceipt, Membership, Sale, SalePayment, SaleReturn
+from .models import CashMovement, CashPause, CashSession, CreditReceipt, Membership, Sale, SalePayment, SaleReturn
 from .sale_logic import open_conflict
 from .station_logic import station_of
 
-CASH_EVENTS = ("cash.opened", "cash.closed", "cash.withdrawn", "cash.supplied")
+CASH_EVENTS = ("cash.opened", "cash.closed", "cash.withdrawn", "cash.supplied", "cash.paused", "cash.resumed")
+TOTAL_KEYS = ("sales_count", "gross_cents", "discount_cents", "net_cents", "returns_cents", "voided_count",
+              "supplied_cents", "withdrawn_cents")
+
+
+def validate_closing_totals(totals):
+    """Totals of the operator report sent with cash.closed (terminals with "cash_shifts")."""
+    if not isinstance(totals, dict) or set(totals) - set(TOTAL_KEYS) - {"by_method"}:
+        raise APIError("Totais do fechamento inválidos")
+    for key in TOTAL_KEYS:
+        if key in totals and (type(totals[key]) is not int or abs(totals[key]) > 10**12):
+            raise APIError("Totais do fechamento inválidos")
+    methods = totals.get("by_method", {})
+    if (not isinstance(methods, dict) or len(methods) > 40
+            or any(not isinstance(key, str) or not 0 < len(key) <= 80 or type(value) is not int
+                   or abs(value) > 10**12 for key, value in methods.items())):
+        raise APIError("Totais do fechamento inválidos")
 
 
 def _when(value):
@@ -77,8 +93,19 @@ def apply_cash_event(terminal, event, conflicts=None):
             session.difference_cents = data["difference_cents"]
             session.closed_by = _member(tenant, data.get("operator_id"))
             session.supervisor = _member(tenant, data.get("supervisor_id"))
-            session.save(update_fields=["closed_at", "counted_cents", "expected_cents",
-                                        "difference_cents", "closed_by", "supervisor"])
+            update = ["closed_at", "counted_cents", "expected_cents", "difference_cents", "closed_by", "supervisor"]
+            if "paused_ms" in data:
+                session.paused_ms = data["paused_ms"]
+                update.append("paused_ms")
+            if "totals" in data:
+                session.closing_totals = data["totals"]
+                update.append("closing_totals")
+            if data.get("shift_operator_id") and session.operator_id is None:
+                session.operator = _member(tenant, data["shift_operator_id"])
+                update.append("operator")
+            session.save(update_fields=update)
+        # A pause still open when the shift closed ends with it.
+        session.pauses.filter(ended_at__isnull=True).update(ended_at=when)
         if data["expected_cents"] < 0 and conflicts is not None:
             # Accepted as counted; the usual cause is a cash sale cancelled after a withdrawal.
             conflicts.append(open_conflict(
@@ -87,6 +114,29 @@ def apply_cash_event(terminal, event, conflicts=None):
                 "Confira o dinheiro da gaveta.",
                 cash_session_id=str(session.id), expected_cents=data["expected_cents"],
                 counted_cents=data["counted_cents"], difference_cents=data["difference_cents"]))
+    elif kind in ("cash.paused", "cash.resumed"):
+        session = _session(terminal, data["cash_session_id"], when)
+        pause_id = uuid.UUID(str(event["aggregate_id"]))
+        pause = CashPause.objects.filter(pk=pause_id).first()
+        if pause is not None and pause.session_id != session.id:
+            raise APIError("Pausa de caixa já recebida de outro caixa", 409)
+        if kind == "cash.paused":
+            if pause is None:
+                CashPause.objects.create(id=pause_id, session=session, operator=_member(tenant, data["operator_id"]),
+                                         reason=str(data.get("reason") or "").strip()[:120], started_at=when)
+            elif pause.operator_id is None and pause.started_at == pause.ended_at and when <= pause.ended_at:
+                # The resumption arrived first (history rebuilt in another order): now the start is known.
+                pause.started_at, pause.operator = when, _member(tenant, data["operator_id"])
+                pause.reason = str(data.get("reason") or "").strip()[:120]
+                pause.save(update_fields=["started_at", "operator", "reason"])
+        elif pause is None:
+            # The pause itself never arrived (older copy, quarantine): keep the resumption as a point in time.
+            CashPause.objects.create(id=pause_id, session=session, started_at=when, ended_at=when,
+                                     resumed_by=_member(tenant, data["operator_id"]))
+        elif pause.ended_at is None or pause.ended_at > when:
+            pause.ended_at = when
+            pause.resumed_by = _member(tenant, data["operator_id"])
+            pause.save(update_fields=["ended_at", "resumed_by"])
     else:
         session = _session(terminal, data["cash_session_id"], when)
         existing = CashMovement.objects.filter(pk=uuid.UUID(str(event["aggregate_id"]))).select_related("session").first()

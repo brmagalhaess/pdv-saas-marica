@@ -255,6 +255,19 @@ body.focus-mode .tabs{display:none}
 .pay-method:hover{border-color:var(--brand)}
 .pay-method.selected{background:var(--brand-strong);border-color:var(--brand-strong);color:var(--on-brand)}
 .pay-method.selected kbd{border-color:currentColor;color:inherit}
+/* Icon on the left, name and its keys ("1 · Alt+D") stacked: fits three columns at 1024 px. */
+.pay-method{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;column-gap:8px;row-gap:3px;align-content:center;padding:6px 9px}
+.pay-method .pm-icon{grid-row:1/span 2;width:24px;height:24px;color:var(--brand-strong)}
+.pay-method.selected .pm-icon{color:inherit}
+.pay-method .pm-keys{display:flex;flex-wrap:wrap;gap:3px;-webkit-line-clamp:unset;line-height:1}
+.pay-method .pm-keys kbd{min-width:0;padding:0 4px;font-size:11px;line-height:1.45}
+:root[data-theme="dark"] .pay-method .pm-icon,:root[data-theme="contrast"] .pay-method .pm-icon{color:var(--brand)}
+.pause-view .server-down-icon{color:var(--brand-strong)}
+.pause-view .field{width:100%}
+.pause-view .btn.big{width:100%}
+.shift-list{display:grid;gap:8px}
+.shift-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
+.shift-row small{display:block;color:var(--muted)}
 .pay-detail{flex:none;display:grid;gap:8px}
 .pay-info{min-height:22px;color:var(--muted);font-size:15px;font-weight:500}
 .pay-info.ready{color:var(--ink);font-weight:600}

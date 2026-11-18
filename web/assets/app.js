@@ -1355,6 +1355,16 @@ const paymentNames = { cash: "Dinheiro (líquido de troco)", pix: "Pix", card_cr
 function cashMethodName(method) {
   return method === "other" ? "Formas próprias" : paymentNames[method] || paymentKindNames[method] || method;
 }
+// "1h05min" / "15min" — time a shift spent paused.
+function durationText(ms) {
+  const minutes = Math.max(0, Math.floor((Number(ms) || 0) / 60000)), hours = Math.floor(minutes / 60);
+  return hours ? `${hours}h${String(minutes % 60).padStart(2, "0")}min` : `${minutes}min`;
+}
+function pauseSummary(row) {
+  const count = Number(row.pauses_count) || 0;
+  if (!count) return "Nenhuma";
+  return `${count} ${count === 1 ? "pausa" : "pausas"} · ${durationText(row.paused_ms)}${row.paused_now ? " · pausado agora" : ""}`;
+}
 function differenceBadge(cents) {
   if (cents == null) return statusBadge("open");
   const value = Number(cents);
@@ -1374,6 +1384,7 @@ async function cashDetail(id) {
       ["Abertura", dateTime(row.opened_at) + " · " + money(row.opening_cents)],
       ["Fechamento", row.closed_at ? dateTime(row.closed_at) : "Caixa aberto"],
       ["Fechado por", [row.closed_by_name, row.supervisor_name && "autorizado por " + row.supervisor_name].filter(Boolean).join(" · ") || "—"],
+      ["Pausas", pauseSummary(row)],
       ["Vendas", `${row.sales_count} · ${money(row.sales_total_cents)}`],
       ...(row.cash_refunds_cents ? [["Devoluções em dinheiro", "− " + money(row.cash_refunds_cents)]] : []),
       ["Esperado em dinheiro", row.expected_cents == null ? "—" : money(row.expected_cents)],
@@ -1399,6 +1410,19 @@ async function cashDetail(id) {
                { label: "Valor", render: m => money(m.amount_cents) }, { label: "Motivo", render: m => m.reason },
                { label: "Operador", render: m => m.operator_name || "—" }, { label: "Hora", render: m => dateTime(m.created_at) }], row.movements)
       : empty("Sem movimentos", "Não houve sangria nem suprimento neste turno."));
+    const pauses = row.pauses || [];
+    if (pauses.length) {
+      const pauseTitle = el("h3", "", "Pausas do turno");
+      pauseTitle.style.marginTop = "23px";
+      content.append(pauseTitle, table([
+        { label: "Início", render: p => dateTime(p.started_at) },
+        { label: "Fim", render: p => p.ended_at ? dateTime(p.ended_at) : statusBadge("open") },
+        { label: "Duração", render: p => durationText(p.ended_at ? Date.parse(p.ended_at) - Date.parse(p.started_at) : Date.now() - Date.parse(p.started_at)) },
+        { label: "Motivo", render: p => p.reason || "—" },
+        { label: "Pausado por", render: p => p.operator_name || "—" },
+        { label: "Retomado por", render: p => p.resumed_by_name || "—" }
+      ], pauses));
+    }
     loading.replaceChildren(content);
   } catch (error) {
     loading.replaceChildren(empty("Não foi possível abrir o caixa", errorText(error), "!"));
@@ -1471,6 +1495,7 @@ async function cashPage() {
         { label: "Fechamento", render: row => row.closed_at ? dateTime(row.closed_at) : statusBadge("open") },
         { label: "Vendido", render: row => money(row.sales_total_cents) },
         { label: "Sangrias", render: row => money(row.withdrawn_cents) },
+        { label: "Pausas", render: row => pauseSummary(row) },
         { label: "Quebra", render: row => differenceBadge(row.difference_cents) }
       ], rows, row => [{ label: "Conferir", onClick: () => cashDetail(row.id) }]));
       if (response.next_cursor) {

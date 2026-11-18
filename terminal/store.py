@@ -19,6 +19,8 @@ from pathlib import Path
 
 from . import paths
 from .labels import SCALE_SCHEMA
+from . import cash_reports
+from .cash_reports import METHOD_LABELS
 from .printers import (LABEL_PRINTER_REQUIRED, PAYMENT_LABELS, label_bytes, layout_bytes, receipt_bytes,
                        receipt_layout, voucher_layout)
 
@@ -345,6 +347,7 @@ class Store:
             self._migrate_conflict_key(conn)
             self._migrate_outbox_seq(conn)
             self._migrate_stations(conn)
+            self._migrate_shifts(conn)
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -456,6 +459,32 @@ class Store:
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS cash_one_open_station "
                          "ON cash_sessions(station_id) WHERE closed_at IS NULL")
             conn.execute("CREATE INDEX IF NOT EXISTS print_jobs_station ON print_jobs(station_id,status,created_at)")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+    @staticmethod
+    def _migrate_shifts(conn):
+        """Cashier per operator shift: pauses and who closed it. Idempotent.
+
+        A database from before this change keeps its open cashier: it already belongs to the
+        operator that opened it (cash_sessions.operator_id), so it simply becomes that
+        operator's shift, with no pause.
+        """
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS cash_pauses(
+                id TEXT PRIMARY KEY, session_id TEXT NOT NULL, operator_id TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL, ended_at INTEGER,
+                resumed_by TEXT)""")
+            conn.execute("CREATE INDEX IF NOT EXISTS cash_pauses_session ON cash_pauses(session_id,started_at)")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS cash_pauses_one_open "
+                         "ON cash_pauses(session_id) WHERE ended_at IS NULL")
+            # Who closed and who authorized, apart: cash_sessions keeps the columns an older
+            # executable knows (the updater's rollback does not restore the database).
+            conn.execute("""CREATE TABLE IF NOT EXISTS cash_closings(
+                session_id TEXT PRIMARY KEY, closed_by TEXT, supervisor_id TEXT)""")
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -1724,13 +1753,48 @@ class Store:
             return [row[0] for row in conn.execute("SELECT DISTINCT category FROM products WHERE active=1 ORDER BY category")]
 
     def cash_state(self):
-        """Open cashier of the station that is asking (each computer has its own)."""
+        """Open cashier (operator shift) of the station that is asking (each computer has its own)."""
         with self.connection() as conn:
             row = conn.execute("SELECT * FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
                                (self.current_station(),)).fetchone()
             if not row:
                 return None
-            return dict(row)
+            return self._shift_state(conn, row)
+
+    @staticmethod
+    def _shift_state(conn, row):
+        """Open shift as the screen needs it: whose it is and whether it is paused."""
+        result = dict(row)
+        owner = conn.execute("SELECT name FROM operators WHERE id=?", (row["operator_id"],)).fetchone()
+        result["operator_name"] = owner["name"] if owner else ""
+        pause = conn.execute("SELECT * FROM cash_pauses WHERE session_id=? AND ended_at IS NULL",
+                             (row["id"],)).fetchone()
+        result["paused"] = None
+        if pause:
+            by = conn.execute("SELECT name FROM operators WHERE id=?", (pause["operator_id"],)).fetchone()
+            result["paused"] = {"id": pause["id"], "since": pause["started_at"], "reason": pause["reason"],
+                                "operator_id": pause["operator_id"], "operator_name": by["name"] if by else ""}
+        return result
+
+    def _own_shift(self, conn, operator_id, manager=False):
+        """Open shift of this station, only if it belongs to `operator_id` and is not paused.
+
+        Rule: one active shift per station, and the shift belongs to the operator who opened it.
+        Another operator does not sell, take money in or out of that drawer: the shift is closed
+        first (manager PIN) and the next operator starts their own. `manager=True` (a manager doing
+        a refund at the counter) may act on the shift of someone else, never on a paused one.
+        """
+        cash = self._open_cash(conn)
+        if cash["operator_id"] and cash["operator_id"] != operator_id and not manager:
+            owner = conn.execute("SELECT name FROM operators WHERE id=?", (cash["operator_id"],)).fetchone()
+            raise TerminalError(f"O caixa está no turno de {owner['name'] if owner else 'outro operador'}. "
+                                "Peça para ele encerrar o turno, ou um gerente encerra (F12).", 409,
+                                code="cash_other_operator")
+        if conn.execute("SELECT 1 FROM cash_pauses WHERE session_id=? AND ended_at IS NULL",
+                        (cash["id"],)).fetchone():
+            raise TerminalError("Caixa pausado. Retome o caixa com o seu PIN para continuar.", 409,
+                                code="cash_paused")
+        return cash
 
     def _open_cash(self, conn):
         row = conn.execute("SELECT * FROM cash_sessions WHERE closed_at IS NULL AND station_id=?",
@@ -1760,9 +1824,16 @@ class Store:
         categories = {"cash_sales_net_cents": 0, "pix_cents": 0,
                       "card_credit_cents": 0, "card_debit_cents": 0,
                       "card_legacy_cents": 0, "supplied_cents": 0,
-                      "withdrawn_cents": 0}
+                      "withdrawn_cents": 0, "credit_account_cents": 0,
+                      "store_credit_cents": 0, "other_cents": 0}
         sales_total = received_total = changes = 0
         sales_count = 0
+        # Every form of payment, the company's own ones by name (closing screen and reports).
+        methods = {key: 0 for key in ("cash", "pix", "card_debit", "card_credit")}
+        method_names = {}
+        raw_config = Store._meta(conn, "payment_methods")
+        configured = {row.get("id"): row.get("name") for row in (json.loads(raw_config) if raw_config else [])
+                      if isinstance(row, dict) and row.get("kind") == "other"}
         for row in conn.execute("SELECT snapshot FROM sales WHERE session_id=? AND status='completed'",
                                 (cash["id"],)):
             sale = json.loads(row["snapshot"])
@@ -1774,6 +1845,16 @@ class Store:
                 method = payment.get("method")
                 amount = int(payment.get("amount_cents") or 0)
                 payment_total += amount
+                key = str(method)
+                if method == "other":
+                    configured_id = str(payment.get("payment_method_id") or "")
+                    key = "other:" + configured_id
+                    method_names[key] = ((sale.get("payment_names") or {}).get(configured_id)
+                                         or configured.get(configured_id) or "Outra forma")
+                    categories["other_cents"] += amount
+                elif method in ("credit_account", "store_credit"):
+                    categories[method + "_cents"] += amount
+                methods[key] = methods.get(key, 0) + amount
                 if method == "cash":
                     categories["cash_sales_net_cents"] += amount
                 elif method == "pix":
@@ -1786,6 +1867,7 @@ class Store:
                     categories["card_legacy_cents"] += amount
             received_total += payment_total
         categories["cash_sales_net_cents"] -= changes
+        methods["cash"] -= changes
         categories["cash_refunds_cents"] = conn.execute(
             "SELECT COALESCE(SUM(total_cents),0) FROM sale_returns WHERE session_id=? AND refund_method='cash'",
             (cash["id"],)).fetchone()[0]
@@ -1811,6 +1893,8 @@ class Store:
             "sales_total_cents": sales_total,
             "received_total_cents": received_total - changes,
             "categories": categories, "expected_cents": expected,
+            "methods": [{"key": key, "label": method_names.get(key) or METHOD_LABELS.get(key, key),
+                         "amount_cents": amount} for key, amount in methods.items()],
             "total_channels_cents": (categories["cash_sales_net_cents"] +
                                       categories["pix_cents"] + categories["card_credit_cents"] +
                                       categories["card_debit_cents"] + categories["card_legacy_cents"]),
@@ -1851,7 +1935,7 @@ class Store:
         amount_cents = _positive_int(amount_cents, "Valor")
         reason = _str(reason, "Motivo", 240)
         with self.transaction() as conn:
-            cash = self._open_cash(conn)
+            cash = self._own_shift(conn, operator_id)
             if kind == "withdrawn" and amount_cents > self._cash_expected(conn, cash):
                 raise TerminalError("Sangria excede o dinheiro esperado no caixa", 409)
             movement_id, timestamp = _uuid(), _now_ms()
@@ -1879,6 +1963,12 @@ class Store:
         counted_cents = _positive_int(counted_cents, "Valor contado", zero=True)
         with self.station(target):
             summary = self._close_cash(operator_id, counted_cents, supervisor_id)
+        # The operator report comes out where the closing was typed (the manager may be closing
+        # the shift of another computer). A printing problem never undoes a closing.
+        try:
+            summary["report"] = self._print_reports([summary["id"]], operator_id, "cash.report_printed")
+        except (TerminalError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+            summary["report"] = {"layout": None, "jobs": [], "error": str(exc)}
         _mirror_call("on_cash_closed", self)
         return summary
 
@@ -1888,17 +1978,309 @@ class Store:
             summary = self._cash_summary(conn, cash)
             expected = summary["expected_cents"]
             timestamp = _now_ms()
+            # A paused shift may be closed (by a manager): the pause ends with it.
+            conn.execute("UPDATE cash_pauses SET ended_at=? WHERE session_id=? AND ended_at IS NULL",
+                         (timestamp, cash["id"]))
             conn.execute("UPDATE cash_sessions SET closed_at=?,counted_cents=?,expected_cents=? WHERE id=?",
                          (timestamp, counted_cents, expected, cash["id"]))
-            self._event(conn, "cash.closed", cash["id"],
-                        {"counted_cents": counted_cents, "expected_cents": expected,
-                         "difference_cents": counted_cents - expected, "created_at": timestamp,
-                         "operator_id": operator_id, "supervisor_id": supervisor_id})
+            conn.execute("INSERT OR REPLACE INTO cash_closings(session_id,closed_by,supervisor_id) VALUES (?,?,?)",
+                         (cash["id"], operator_id, supervisor_id))
+            data = {"counted_cents": counted_cents, "expected_cents": expected,
+                    "difference_cents": counted_cents - expected, "created_at": timestamp,
+                    "operator_id": operator_id, "supervisor_id": supervisor_id}
+            if self._shift_events(conn):
+                # Only a cloud that announced "cash_shifts" knows these keys (an older one refuses them).
+                closed = self._shift_data(conn, conn.execute("SELECT * FROM cash_sessions WHERE id=?",
+                                                             (cash["id"],)).fetchone())
+                data["shift_operator_id"] = cash["operator_id"] or None
+                data["paused_ms"] = closed["paused_ms"]
+                data["totals"] = {"sales_count": closed["sales"]["count"],
+                                  "gross_cents": closed["sales"]["gross_cents"],
+                                  "discount_cents": closed["sales"]["discount_cents"],
+                                  "net_cents": closed["sales"]["net_cents"],
+                                  "returns_cents": closed["sales"]["returns_cents"],
+                                  "voided_count": closed["sales"]["voided_count"],
+                                  "supplied_cents": closed["supplied_cents"],
+                                  "withdrawn_cents": closed["withdrawn_cents"],
+                                  "by_method": {row["key"]: row["amount_cents"] for row in closed["methods"]
+                                                if row["amount_cents"]}}
+            self._event(conn, "cash.closed", cash["id"], data)
             self._audit(conn, operator_id, "cash.closed", cash["id"])
             summary.update({"closed_at": timestamp, "expected_cents": expected,
                             "counted_cents": counted_cents,
                             "difference_cents": counted_cents - expected})
             return summary
+
+    # ---------- operator shifts: pause, reports and the closing of the day ----------
+
+    def _shift_events(self, conn):
+        return "cash_shifts" in self._meta_json(self._meta(conn, "cloud_capabilities"), [])
+
+    def pause_cash(self, operator, reason=""):
+        """Pausar: blocks sales until the shift owner (or a manager) types the PIN again."""
+        reason = _optional_text(reason, 120) or ""
+        with self.transaction() as conn:
+            cash = self._open_cash(conn)
+            if cash["operator_id"] and cash["operator_id"] != operator["id"] and operator["role"] not in MANAGER_ROLES:
+                raise TerminalError("Só o operador do turno ou um gerente pode pausar este caixa", 403)
+            if conn.execute("SELECT 1 FROM cash_pauses WHERE session_id=? AND ended_at IS NULL",
+                            (cash["id"],)).fetchone():
+                raise TerminalError("O caixa já está pausado", 409, code="cash_paused")
+            pause_id, timestamp = _uuid(), _now_ms()
+            conn.execute("INSERT INTO cash_pauses(id,session_id,operator_id,reason,started_at,ended_at,resumed_by) "
+                         "VALUES (?,?,?,?,?,NULL,NULL)", (pause_id, cash["id"], operator["id"], reason, timestamp))
+            if self._shift_events(conn):
+                self._event(conn, "cash.paused", pause_id,
+                            {"cash_session_id": cash["id"], "operator_id": operator["id"], "reason": reason,
+                             "created_at": timestamp})
+            self._audit(conn, operator["id"], "cash.paused", cash["id"], reason or None)
+            return self._shift_state(conn, cash)
+
+    def resume_cash(self, operator, pin):
+        """Retomar: PIN of the shift owner or of a manager. Wrong PINs lock this screen for 5 minutes."""
+        from shared.security import verify_pin
+
+        if not isinstance(pin, str) or not pin.strip():
+            raise TerminalError("Digite o PIN para retomar o caixa")
+        now = int(time.time())
+        key = f"cash_resume:{operator['id']}{self._station_suffix()}"
+        lock_query = "SELECT failures,locked_until FROM login_attempts WHERE operator_id=?"
+        with self.connection() as conn:
+            attempts = conn.execute(lock_query, (key,)).fetchone()
+            if attempts and attempts["locked_until"] > now:
+                raise TerminalError("Muitas tentativas; aguarde cinco minutos", 429)
+            cash = self._open_cash(conn)
+            pause = conn.execute("SELECT * FROM cash_pauses WHERE session_id=? AND ended_at IS NULL",
+                                 (cash["id"],)).fetchone()
+            if not pause:
+                return self._shift_state(conn, cash)
+            candidates = conn.execute(
+                "SELECT id,pin_hash FROM operators WHERE active=1 AND (id=? OR role IN ('owner','admin','manager')) "
+                "ORDER BY id<>?", (cash["operator_id"], cash["operator_id"])).fetchall()
+        # PBKDF2 outside the write lock, as in login().
+        matched = next((row for row in candidates if verify_pin(pin.strip(), row["pin_hash"])), None)
+        with self.transaction() as conn:
+            attempts = conn.execute(lock_query, (key,)).fetchone()
+            if attempts and attempts["locked_until"] > now:
+                raise TerminalError("Muitas tentativas; aguarde cinco minutos", 429)
+            if not matched:
+                failures = (attempts["failures"] if attempts else 0) + 1
+                conn.execute("""INSERT INTO login_attempts VALUES (?,?,?)
+                    ON CONFLICT(operator_id) DO UPDATE SET failures=excluded.failures,locked_until=excluded.locked_until""",
+                             (key, failures, now + 300 if failures >= 5 else 0))
+                self._audit(conn, operator["id"], "cash.resume_failed", cash["id"])
+                failure = TerminalError("PIN inválido. Use o PIN do operador do turno ou de um gerente.", 403)
+            else:
+                failure = None
+                conn.execute("DELETE FROM login_attempts WHERE operator_id=?", (key,))
+                timestamp = _now_ms()
+                if conn.execute("UPDATE cash_pauses SET ended_at=?,resumed_by=? WHERE id=? AND ended_at IS NULL",
+                                (timestamp, matched["id"], pause["id"])).rowcount:
+                    if self._shift_events(conn):
+                        self._event(conn, "cash.resumed", pause["id"],
+                                    {"cash_session_id": cash["id"], "operator_id": matched["id"],
+                                     "created_at": timestamp})
+                    self._audit(conn, matched["id"], "cash.resumed", cash["id"])
+                state = self._shift_state(conn, conn.execute("SELECT * FROM cash_sessions WHERE id=?",
+                                                             (cash["id"],)).fetchone())
+        if failure:
+            raise failure
+        return state
+
+    def _shift_data(self, conn, cash):
+        """Everything the reports print about one shift (open or closed)."""
+        cash = dict(cash)
+        closing = conn.execute("SELECT closed_by,supervisor_id FROM cash_closings WHERE session_id=?",
+                               (cash["id"],)).fetchone()
+        cash["closed_by"], cash["supervisor_id"] = (closing["closed_by"], closing["supervisor_id"]) if closing else ("", "")
+        summary = self._cash_summary(conn, cash)
+        names = {row["id"]: row["name"] for row in conn.execute("SELECT id,name FROM operators")}
+        end = cash["closed_at"] or _now_ms()
+        pauses, paused_ms = [], 0
+        for row in conn.execute("SELECT * FROM cash_pauses WHERE session_id=? ORDER BY started_at,id", (cash["id"],)):
+            length = max(0, (row["ended_at"] or end) - row["started_at"])
+            paused_ms += length
+            pauses.append({"started_at": row["started_at"], "ended_at": row["ended_at"], "duration_ms": length,
+                           "reason": row["reason"], "operator_name": names.get(row["operator_id"], ""),
+                           "resumed_by_name": names.get(row["resumed_by"] or "", "")})
+        sales = {"count": 0, "gross_cents": 0, "discount_cents": 0, "returns_count": 0, "returns_cents": 0,
+                 "voided_count": 0, "voided_cents": 0, "net_cents": 0}
+        for row in conn.execute("SELECT status,snapshot,total_cents FROM sales WHERE session_id=?", (cash["id"],)):
+            if row["status"] == "completed":
+                snapshot = json.loads(row["snapshot"])
+                sales["count"] += 1
+                sales["gross_cents"] += int(snapshot.get("gross_cents") or 0)
+                sales["discount_cents"] += (int(snapshot.get("promo_discount_cents") or 0)
+                                            + int(snapshot.get("discount_cents") or 0))
+                sales["net_cents"] += int(row["total_cents"] or 0)
+            elif row["status"] == "voided":
+                sales["voided_count"] += 1
+                sales["voided_cents"] += int(row["total_cents"] or 0)
+        # A cash refund is tied to the shift; one in store credit or fiado only to who did it, and when.
+        for row in conn.execute(
+                """SELECT total_cents FROM sale_returns WHERE session_id=? OR (session_id IS NULL AND station_id=?
+                   AND operator_id=? AND created_at>=? AND created_at<=?)""",
+                (cash["id"], cash["station_id"], cash["operator_id"], cash["opened_at"], end)):
+            sales["returns_count"] += 1
+            sales["returns_cents"] += int(row["total_cents"] or 0)
+        sales["net_cents"] -= sales["returns_cents"]
+        movements = [{"created_at": row["created_at"], "kind": row["kind"], "amount_cents": row["amount_cents"],
+                      "reason": row["reason"], "operator_name": names.get(row["operator_id"], "")}
+                     for row in conn.execute("SELECT * FROM cash_movements WHERE session_id=? ORDER BY created_at,id",
+                                             (cash["id"],))]
+        credit = [{"key": row["method"], "label": METHOD_LABELS.get(row["method"], row["method"]),
+                   "amount_cents": row["amount"]}
+                  for row in conn.execute("SELECT method,COALESCE(SUM(amount_cents),0) amount FROM credit_receipts "
+                                          "WHERE session_id=? GROUP BY method", (cash["id"],))]
+        credit.sort(key=lambda row: cash_reports.method_key_order(row["key"]))
+        methods = sorted(summary["methods"], key=lambda row: cash_reports.method_key_order(row["key"]))
+        closed = cash["closed_at"] is not None
+        expected = cash["expected_cents"] if closed and cash["expected_cents"] is not None else summary["expected_cents"]
+        counted = cash["counted_cents"] if closed else None
+        raw = self._meta(conn, "issuer_profile")
+        station_id = cash["station_id"] or SERVER_STATION_ID
+        return {"id": cash["id"], "issuer": json.loads(raw) if raw else {"legal_name": self._meta(conn, "tenant_name") or ""},
+                "shop_name": self._meta(conn, "shop_name") or "", "station_id": station_id,
+                "station_name": self._station_name(conn, station_id) or "Caixa",
+                "operator_id": cash["operator_id"], "operator_name": names.get(cash["operator_id"], ""),
+                "opened_at": cash["opened_at"], "closed_at": cash["closed_at"],
+                "status": "closed" if closed else "open", "paused": any(p["ended_at"] is None for p in pauses),
+                "paused_ms": paused_ms, "effective_ms": max(0, end - cash["opened_at"] - paused_ms),
+                "opening_cents": cash["opening_cents"], "sales": sales, "methods": methods,
+                "movements": movements, "supplied_cents": summary["categories"]["supplied_cents"],
+                "withdrawn_cents": summary["categories"]["withdrawn_cents"],
+                "cash_refunds_cents": summary["categories"]["cash_refunds_cents"], "credit_received": credit,
+                "expected_cents": expected, "counted_cents": counted,
+                "difference_cents": counted - expected if counted is not None else None,
+                "pauses": pauses, "closed_by_name": names.get(cash.get("closed_by") or "", ""),
+                "supervisor_name": names.get(cash.get("supervisor_id") or "", "")}
+
+    @staticmethod
+    def _day_bounds(day=None):
+        zone = cash_reports._receipt_zone()
+        if day in (None, ""):
+            date = datetime.now(zone).date()
+        else:
+            try:
+                date = datetime.strptime(str(day), "%Y-%m-%d").date()
+            except ValueError:
+                raise TerminalError("Data inválida; use AAAA-MM-DD") from None
+        start = datetime(date.year, date.month, date.day, tzinfo=zone)
+        end = datetime.fromordinal(date.toordinal() + 1).replace(tzinfo=zone)
+        return date, int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+    def _visible_stations_clause(self):
+        """The main cashier sees every register of the shop; an additional one only itself."""
+        station = self.current_station()
+        return ("", ()) if station == SERVER_STATION_ID else (" AND station_id=?", (station,))
+
+    def _day_shift_rows(self, conn, start, end):
+        clause, params = self._visible_stations_clause()
+        return conn.execute(f"SELECT * FROM cash_sessions WHERE opened_at>=? AND opened_at<?{clause} "
+                            "ORDER BY opened_at,id", (start, end, *params)).fetchall()
+
+    def shifts_of_day(self, day=None):
+        """Shifts of one day (default today) of the registers this computer can see."""
+        date, start, end = self._day_bounds(day)
+        with self.connection() as conn:
+            shifts = [self._shift_data(conn, row) for row in self._day_shift_rows(conn, start, end)]
+            open_elsewhere = [self._shift_data(conn, row) for row in conn.execute(
+                f"SELECT * FROM cash_sessions WHERE closed_at IS NULL AND opened_at<?{self._visible_stations_clause()[0]}",
+                (start, *self._visible_stations_clause()[1]))]
+        keys = ("id", "station_id", "station_name", "operator_id", "operator_name", "opened_at", "closed_at",
+                "status", "paused", "paused_ms", "effective_ms", "opening_cents", "expected_cents", "counted_cents",
+                "difference_cents")
+        brief = lambda shift: {**{key: shift[key] for key in keys}, "sales_count": shift["sales"]["count"],
+                               "net_cents": shift["sales"]["net_cents"]}
+        return {"day": date.isoformat(), "all_stations": self.current_station() == SERVER_STATION_ID,
+                "shifts": [brief(shift) for shift in shifts],
+                # Still open from an earlier day: the manager must see it before closing the day.
+                "older_open": [brief(shift) for shift in open_elsewhere]}
+
+    def _report_width(self, conn):
+        setting = self._print_setting(conn, "receipt")
+        return (58 if setting and setting["format"] == "escpos58" else 80), setting
+
+    def _print_reports(self, session_ids, operator_id, action, reprint=False):
+        """Operator report of each shift: one print job each (when a printer is set) and the layout."""
+        with self.transaction() as conn:
+            width, setting = self._report_width(conn)
+            layouts, jobs = [], []
+            for session_id in session_ids:
+                row = conn.execute("SELECT * FROM cash_sessions WHERE id=?", (session_id,)).fetchone()
+                if not row:
+                    raise TerminalError("Turno não encontrado", 404)
+                layout = cash_reports.operator_report(self._shift_data(conn, row), width, reprint=reprint)
+                layouts.append(layout)
+                if setting:
+                    jobs.append(self._queue_print(conn, "receipt", layout_bytes(layout), setting))
+                self._audit(conn, operator_id, action, session_id)
+            return {"layout": cash_reports.combine(layouts), "jobs": jobs, "printer": bool(setting)}
+
+    def print_shift_report(self, session_id, operator_id, own_only=False):
+        """Reimprimir: the operator report of a shift this computer can see (a cashier: only their own)."""
+        session_id = _str(session_id, "Turno", 64)
+        with self.connection() as conn:
+            clause, params = self._visible_stations_clause()
+            row = conn.execute(f"SELECT operator_id FROM cash_sessions WHERE id=?{clause}",
+                               (session_id, *params)).fetchone()
+            if not row or (own_only and row["operator_id"] != operator_id):
+                raise TerminalError("Turno não encontrado neste caixa", 404)
+        return self._print_reports([session_id], operator_id, "cash.report_reprinted", reprint=True)
+
+    def close_day(self, operator_id, manager_pin, day=None):
+        """Fechamento do dia: one report per operator, one per register and the day's consolidated."""
+        supervisor_id = self.manager_override(manager_pin, operator_id)
+        date, start, end = self._day_bounds(day)
+        day_label = date.strftime("%d/%m/%Y")
+        with self.transaction() as conn:
+            rows = self._day_shift_rows(conn, start, end)
+            if not rows:
+                raise TerminalError("Nenhum turno de caixa neste dia", 404)
+            width, setting = self._report_width(conn)
+            shifts = [self._shift_data(conn, row) for row in rows]
+            issuer, shop_name = shifts[0]["issuer"], shifts[0]["shop_name"]
+            layouts = [cash_reports.operator_report(shift, width) for shift in shifts]
+            stations = {}
+            for shift in shifts:
+                stations.setdefault(shift["station_id"], []).append(shift)
+            for station_shifts in stations.values():
+                layouts.append(cash_reports.station_report(station_shifts[0]["station_name"], station_shifts, width,
+                                                           day_label, issuer, shop_name))
+            session_ids = [shift["id"] for shift in shifts]
+            names = {row["id"]: row["name"] for row in conn.execute("SELECT id,name FROM operators")}
+            marks = ",".join("?" * len(session_ids))
+            products = {}
+            for row in conn.execute(f"SELECT snapshot FROM sales WHERE status='completed' AND session_id IN ({marks})",
+                                    session_ids):
+                for item in json.loads(row["snapshot"]).get("items", []):
+                    entry = products.setdefault(item["product_id"], {
+                        "name": item.get("name") or "", "unit": item.get("unit") or "UN", "quantity_milli": 0,
+                        "amount_cents": 0, "category": ""})
+                    entry["quantity_milli"] += int(item.get("quantity_milli") or 0)
+                    entry["amount_cents"] += int(item.get("line_total_cents", item.get("gross_cents")) or 0)
+            for product_id, entry in products.items():
+                found = conn.execute("SELECT category FROM products WHERE id=?", (product_id,)).fetchone()
+                entry["category"] = (found["category"] if found else "") or ""
+            cancellations = [{"id": row["id"], "created_at": row["created_at"], "voided_at": row["voided_at"],
+                              "total_cents": row["total_cents"], "reason": row["void_reason"] or "",
+                              "operator_name": names.get(row["operator_id"], "")}
+                             for row in conn.execute(f"SELECT * FROM sales WHERE status='voided' AND session_id IN "
+                                                     f"({marks}) ORDER BY voided_at,id", session_ids)]
+            clause, params = self._visible_stations_clause()
+            returns = [{"created_at": row["created_at"], "total_cents": row["total_cents"],
+                        "refund_method": row["refund_method"], "reason": row["reason"],
+                        "operator_name": names.get(row["operator_id"], "")}
+                       for row in conn.execute(f"SELECT * FROM sale_returns WHERE created_at>=? AND created_at<?{clause} "
+                                               "ORDER BY created_at,id", (start, end, *params))]
+            layouts.append(cash_reports.day_report(day_label, shifts, list(products.values()), cancellations, returns,
+                                                   width, issuer, shop_name))
+            jobs = [self._queue_print(conn, "receipt", layout_bytes(layout), setting) for layout in layouts] if setting else []
+            self._audit(conn, operator_id, "cash.day_closed", date.isoformat(),
+                        f"supervisor={supervisor_id}; turnos={len(shifts)}")
+            return {"day": date.isoformat(), "layouts": layouts, "layout": cash_reports.combine(layouts),
+                    "jobs": jobs, "printer": bool(setting), "shifts": len(shifts),
+                    "open_shifts": sum(1 for shift in shifts if shift["status"] == "open")}
 
     def authorize_item_removal(self, operator, manager_pin=None):
         """Require a supervisor PIN when a cashier removes a line from a cart."""
@@ -1977,7 +2359,7 @@ class Store:
                 if _json(comparable) != _json(received):
                     raise TerminalError("Identificador já usado para outra venda", 409)
                 return self._receipt_data(conn, previous)
-            cash = self._open_cash(conn)
+            cash = self._own_shift(conn, operator["id"])
             seller_name = ""
             if seller_id is not None:
                 seller = conn.execute("SELECT name FROM operators WHERE id=? AND active=1", (seller_id,)).fetchone()
@@ -2242,7 +2624,7 @@ class Store:
             customer_id = request.get("customer_id") or snapshot.get("customer_id")
             session_id = None
             if refund == "cash":
-                cash = self._open_cash(conn)
+                cash = self._own_shift(conn, operator["id"], manager=operator["role"] in MANAGER_ROLES)
                 session_id = cash["id"]
                 if total > self._cash_expected(conn, cash):
                     raise TerminalError("Dinheiro no caixa insuficiente para a devolução", 409)
@@ -2325,7 +2707,7 @@ class Store:
                 if (old["customer_id"], old["amount_cents"], old["method"]) != (customer_id, amount, method):
                     raise TerminalError("Identificador já usado para outro recebimento", 409)
                 return {"id": receipt_id, "amount_cents": amount, "replayed": True}
-            cash = self._open_cash(conn)
+            cash = self._own_shift(conn, operator["id"])
             customer = conn.execute("SELECT * FROM customers WHERE id=? AND active=1", (customer_id,)).fetchone()
             if not customer:
                 raise TerminalError("Cliente não encontrado", 404)
@@ -2400,6 +2782,7 @@ class Store:
                     "products": [dict(row) for row in conn.execute("SELECT * FROM products ORDER BY name")],
                     "cash_sessions": [dict(row) for row in conn.execute("SELECT * FROM cash_sessions ORDER BY opened_at")],
                     "cash_movements": [dict(row) for row in conn.execute("SELECT * FROM cash_movements ORDER BY created_at")],
+                    "cash_pauses": [dict(row) for row in conn.execute("SELECT * FROM cash_pauses ORDER BY started_at")],
                     "sales": sales,
                     # Never the token of an additional cashier, not even its hash.
                     "stations": [dict(row) for row in conn.execute(
@@ -2606,7 +2989,8 @@ class Store:
         with self.transaction() as conn:
             self._ensure_abandonable(conn)
             self._clear_company_cache(conn)  # also the additional cashiers, their codes and printers
-            for table in ("sale_returns", "credit_receipts", "sales", "cash_movements", "cash_sessions",
+            for table in ("sale_returns", "credit_receipts", "sales", "cash_movements", "cash_pauses", "cash_closings",
+                          "cash_sessions",
                           "suspended_carts", "print_jobs", "outbox"):
                 conn.execute(f"DELETE FROM {table}")
             self._clear_connection_meta(conn)
@@ -3423,6 +3807,18 @@ class Store:
             conn.execute("UPDATE cash_sessions SET closed_at=?,counted_cents=?,expected_cents=? WHERE id=?",
                          (int(data["created_at"]), data.get("counted_cents"), data.get("expected_cents"),
                           aggregate_id))
+            conn.execute("INSERT OR REPLACE INTO cash_closings(session_id,closed_by,supervisor_id) VALUES (?,?,?)",
+                         (aggregate_id, data.get("operator_id"), data.get("supervisor_id")))
+            conn.execute("UPDATE cash_pauses SET ended_at=? WHERE session_id=? AND ended_at IS NULL",
+                         (int(data["created_at"]), aggregate_id))
+        elif kind == "cash.paused":
+            conn.execute("INSERT OR IGNORE INTO cash_pauses(id,session_id,operator_id,reason,started_at) "
+                         "VALUES (?,?,?,?,?)", (aggregate_id, str(data["cash_session_id"]),
+                                                str(data.get("operator_id") or ""), str(data.get("reason") or ""),
+                                                int(data["created_at"])))
+        elif kind == "cash.resumed":
+            conn.execute("UPDATE cash_pauses SET ended_at=?,resumed_by=? WHERE id=? AND ended_at IS NULL",
+                         (int(data["created_at"]), str(data.get("operator_id") or ""), aggregate_id))
         elif kind == "sale.completed":
             snapshot = {"id": aggregate_id, **data, "seller_name": names["operators"].get(data.get("seller_id"), ""),
                         "status": "completed", "station_id": station_id,

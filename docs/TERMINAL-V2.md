@@ -139,9 +139,21 @@ A régua fica sempre visível no rodapé e cada tecla também pode ser tocada ou
 | F9 | Reimprimir comprovante |
 | F10 | Pagar a venda |
 | F11 | Modo foco (tela cheia) |
-| F12 | Abrir caixa, ou fechar o caixa aberto |
+| F12 | Iniciar caixa; com turno aberto, menu do caixa: **P** pausar, **F** fechar turno, **S** sangria/suprimento, **R** reimprimir relatórios do dia, **D** fechamento do dia (gerente) |
+| Pause | Pausar o caixa (fora da régua) |
 | Esc | Voltar um passo |
 | Ctrl+K | Paleta de comandos: busca qualquer ação pelo nome |
+
+Pagamento (depois do F10): cada forma tem ícone, número e Alt+letra. **1** ou **Alt+D** dinheiro, **2**/**Alt+P** Pix, **3**/**Alt+B** débito, **4**/**Alt+C** crédito, **5**/**Alt+F** a prazo (fiado), **6**/**Alt+L** crédito na loja, **7 a 9** as três primeiras formas próprias da empresa e **Alt+1 a Alt+9** as nove primeiras formas próprias, **0**/**Alt+0** dividir. O Alt funciona também com o cursor no campo do valor recebido, e direto da venda (abre o pagamento já na forma). Ao dividir, a prazo e crédito na loja aparecem quando há cliente cadastrado (F4).
+
+### Caixa por turno de operador
+
+- Cada operador inicia o próprio turno: depois do PIN, sem turno aberto neste caixa, a tela pede **Iniciar caixa** com o troco inicial.
+- Um turno ativo por caixa (estação), do operador que o abriu. Se outro operador entra com um turno aberto de outra pessoa, a tela mostra de quem é e desde quando, e oferece **Aguardar (sair)** ou **Encerrar o turno de Fulano** (contagem do dinheiro + PIN de gerente). Ninguém vende, faz sangria ou recebe fiado no turno de outro; o gerente pode fazer devolução em dinheiro.
+- **Trocar operador** pausa o seu turno (motivo "Troca de operador") antes de sair.
+- **Pausar** (tecla Pause ou F12 › P): bloqueia vendas e mostra "Caixa pausado — Fulano desde HH:MM". Retoma com o PIN do dono do turno ou de um gerente (5 PINs errados travam por 5 minutos). As pausas (início, fim, motivo) entram no relatório.
+- **Fechar turno** (F12 › F): contagem cega do dinheiro, conferência das demais formas e PIN de gerente. Imprime o **relatório do operador** na térmica (80 mm, 48 colunas; 58 mm, 32 colunas); sem impressora, abre o mesmo relatório para imprimir pelo navegador. F12 › R reimprime os relatórios dos turnos do dia (o operador de caixa vê só os dele).
+- **Fechamento do dia** (F12 › D, PIN de gerente): lista os turnos do dia — no caixa principal, de todas as estações; numa estação, só dela — e imprime em sequência um relatório por operador, um por caixa e o **consolidado do dia** (balanço por forma de pagamento, sangrias e suprimentos, dinheiro esperado x contado, diferenças por operador, produtos vendidos por categoria e cancelamentos/devoluções).
 
 Leitura e lista de itens:
 

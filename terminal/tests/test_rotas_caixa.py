@@ -247,7 +247,7 @@ console.log(JSON.stringify(out));
         self.assertEqual(self.out["shortcuts"], [
             ["F1", "Ajuda"], ["F2", "Buscar"], ["F3", "Quantidade"], ["F4", "Cliente/CPF"], ["F5", "Desconto"],
             ["F6", "Em espera"], ["F7", "Sangria/Suprimento"], ["F8", "Cancelar item"], ["F9", "Reimprimir"],
-            ["F10", "Pagar"], ["F11", "Foco"], ["F12", "Fechar caixa"], ["Esc", "Voltar"]])
+            ["F10", "Pagar"], ["F11", "Foco"], ["F12", "Caixa"], ["Esc", "Voltar"], ["Pause", "Pausar caixa"]])
 
     def test_scan_field_accepts_quantity_times_code(self):
         self.assertEqual(self.out["scan"][0], {"quantityMilli": 3000, "code": "7891234567890"})

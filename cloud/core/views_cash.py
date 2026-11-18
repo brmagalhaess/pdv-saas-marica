@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.http import JsonResponse
+from django.utils import timezone
 
 from .api_common import APIError, endpoint, iso, membership_context, method, page, scoped, uuid_value
 from .cash_logic import session_summary
@@ -22,9 +23,21 @@ def cash_session_data(row, detail=False):
               "closed_at": iso(row.closed_at), "status": "closed" if row.closed_at else "open",
               "closed_by_name": _name(row.closed_by), "supervisor_name": _name(row.supervisor),
               "counted_cents": row.counted_cents, "expected_cents": row.expected_cents,
-              "difference_cents": row.difference_cents, "incomplete": row.incomplete}
+              "difference_cents": row.difference_cents, "incomplete": row.incomplete,
+              "paused_ms": row.paused_ms, "closing_totals": row.closing_totals or {}}
+    pauses = list(row.pauses.select_related("operator", "resumed_by").order_by("started_at", "id"))
+    result["pauses_count"] = len(pauses)
+    result["paused_now"] = any(pause.ended_at is None for pause in pauses)
+    if not row.paused_ms and pauses:
+        # Open shift (or older closing without the total): add up what arrived.
+        end = row.closed_at
+        result["paused_ms"] = sum(int(((pause.ended_at or end or timezone.now()) - pause.started_at)
+                                      .total_seconds() * 1000) for pause in pauses)
     result.update(session_summary(row))
     if detail:
+        result["pauses"] = [{"id": str(p.id), "reason": p.reason, "operator_name": _name(p.operator),
+                             "resumed_by_name": _name(p.resumed_by), "started_at": iso(p.started_at),
+                             "ended_at": iso(p.ended_at)} for p in pauses]
         result["movements"] = [{"id": str(m.id), "kind": m.kind, "amount_cents": m.amount_cents,
                                 "reason": m.reason, "operator_name": _name(m.operator),
                                 "created_at": iso(m.created_at)}
