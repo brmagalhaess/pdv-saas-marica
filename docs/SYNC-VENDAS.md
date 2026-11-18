@@ -193,6 +193,6 @@ O terminal envia `POST /api/v1/terminal/heartbeat` mesmo sem vendas, com versão
 
 - A quarentena não tem reprocessamento automático: depois de corrigir o cadastro, a operação precisa ser relançada pelo painel.
 - O catálogo é baixado por bootstrap periódico, sem cursor incremental.
-- NFC-e, contingência fiscal, TEF e Pix dinâmico ficam fora deste fluxo e exigem homologação própria.
+- NFC-e e contingência fiscal seguem [NFCE.md](NFCE.md) (rotas próprias, fora do lote de eventos); TEF e Pix dinâmico ficam fora e exigem homologação própria.
 
 Os testes de regressão deste contrato estão em `cloud/core/tests_sync_resiliente.py` e `terminal/tests/test_contract_cloud.py`.

@@ -432,6 +432,7 @@
 
   // ---------- NFC-e after the sale (docs/NFCE.md) ----------
   const NFCE_PRINT = ['always', 'ask', 'never'];
+  const WHATSAPP_LINK = 'https:' + '//wa.me/';
   // Same rule as shared/nfce/payments.py: split payment prints if any method says "always", asks if any says "ask".
   function nfcePrintDecision(payments, rules) {
     const defaults = {cash: 'ask', pix: 'ask', card: 'always', card_credit: 'always', card_debit: 'always',
@@ -480,7 +481,8 @@
     } else {
       let phone = value.replace(/\D/g, '');
       if (phone.length === 10 || phone.length === 11) phone = '55' + phone;
-      if (/^55\d{10,11}$/.test(phone)) result.whatsapp = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+      // A link the operator chooses to open (not an asset the page loads; the screen stays offline-safe).
+      if (/^55\d{10,11}$/.test(phone)) result.whatsapp = WHATSAPP_LINK + phone + "?text=" + encodeURIComponent(text);
     }
     return result.email || result.whatsapp ? result : null;
   }
