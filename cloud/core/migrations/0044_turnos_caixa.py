@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0041_app_gestao'),
+        ('core', '0043_fiscal_backfill'),
     ]
 
     operations = [
