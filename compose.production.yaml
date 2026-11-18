@@ -102,6 +102,23 @@ services:
       secrets-init: {condition: service_completed_successfully}
       migrate: {condition: service_completed_successfully}
     volumes: [pdv2_secrets:/secrets:ro, backup_status:/backup-status]
+    # Domínio antigo: pdv.crowntech.com.br redireciona (301) para o pdv2,
+    # mantendo o caminho. O domínio principal continua configurado no Dokploy.
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.pdv2-legado.loadbalancer.server.port=8080
+      - traefik.http.middlewares.pdv2-legado-redir.redirectregex.regex=^https?://pdv\.crowntech\.com\.br/(.*)
+      - traefik.http.middlewares.pdv2-legado-redir.redirectregex.replacement=https://pdv2.crowntech.com.br/$${1}
+      - traefik.http.middlewares.pdv2-legado-redir.redirectregex.permanent=true
+      - traefik.http.routers.pdv2-legado-web.rule=Host(`pdv.crowntech.com.br`)
+      - traefik.http.routers.pdv2-legado-web.entrypoints=web
+      - traefik.http.routers.pdv2-legado-web.middlewares=pdv2-legado-redir
+      - traefik.http.routers.pdv2-legado-web.service=pdv2-legado
+      - traefik.http.routers.pdv2-legado.rule=Host(`pdv.crowntech.com.br`)
+      - traefik.http.routers.pdv2-legado.entrypoints=websecure
+      - traefik.http.routers.pdv2-legado.tls.certresolver=letsencrypt
+      - traefik.http.routers.pdv2-legado.middlewares=pdv2-legado-redir
+      - traefik.http.routers.pdv2-legado.service=pdv2-legado
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/', timeout=3)"]
       interval: 20s
