@@ -431,6 +431,9 @@ class PaymentMethod(models.Model):
     settlement_days = models.PositiveIntegerField(default=0)
     active = models.BooleanField(default=True)
     position = models.PositiveIntegerField(default=0)
+    # Printing of the NFC-e DANFE after a sale paid with this method: always | ask | never.
+    # "" = default of the kind (shared/nfce/payments.py: cash and Pix ask, cards always).
+    print_rule = models.CharField(max_length=10, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -854,19 +857,122 @@ class BillingEvent(models.Model):
 
 
 class FiscalDocument(models.Model):
+    """One NFC-e attempt of a sale (docs/NFCE.md). status: pending | authorized | contingency |
+    rejected | cancelled. The authorized nfeProc lives in operations.FiscalPayload.xml_content."""
+    STATUSES = ("pending", "authorized", "contingency", "rejected", "cancelled")
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
     shop = models.ForeignKey(Shop, on_delete=models.PROTECT)
     sale = models.ForeignKey(Sale, on_delete=models.PROTECT)
+    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT, null=True, blank=True)
+    # "sefaz" (direct, company A1 certificate) or "focusnfe".
     provider = models.CharField(max_length=40, default="focusnfe")
     external_id = models.CharField(max_length=160, blank=True)
     kind = models.CharField(max_length=20, default="nfce")
+    model = models.PositiveSmallIntegerField(default=65)
+    environment = models.CharField(max_length=20, blank=True, default="")
+    series = models.PositiveIntegerField(null=True, blank=True)
+    number = models.PositiveBigIntegerField(null=True, blank=True)
+    access_key = models.CharField(max_length=44, blank=True, default="", db_index=True)
+    # tpEmis: 1 normal, 9 contingência off-line da NFC-e.
+    emission_type = models.PositiveSmallIntegerField(default=1)
+    issued_at = models.DateTimeField(null=True, blank=True)
+    authorized_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=40, default="pending")
+    status_code = models.CharField(max_length=10, blank=True, default="")
     authorization = models.CharField(max_length=160, blank=True)
     xml_url = models.URLField(blank=True)
+    qr_url = models.TextField(blank=True, default="")
+    url_key = models.CharField(max_length=300, blank=True, default="")
     error_message = models.TextField(blank=True)
+    # A normal attempt whose answer never came back is replaced by a contingency note with
+    # another number; the old number is checked later (cancel if authorized, else inutilize).
+    replaced_by = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True, related_name="replaces")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["tenant", "environment", "model", "series", "number"],
+                                               condition=Q(number__isnull=False) & ~Q(environment=""),
+                                               name="fiscal_document_number_unique")]
+        indexes = [models.Index(fields=["tenant", "status", "-created_at"], name="fiscal_doc_status_idx")]
+
+
+class FiscalConfig(models.Model):
+    """NFC-e emission settings of a company. Secrets are Fernet-encrypted (PDV_ENCRYPTION_KEY) and
+    never returned to the browser after saved."""
+    tenant = models.OneToOneField(Tenant, on_delete=models.PROTECT, primary_key=True, related_name="fiscal_config")
+    mode = models.CharField(max_length=20, default="sefaz")  # sefaz | focusnfe
+    qr_version = models.PositiveSmallIntegerField(default=3)
+    csc_homologation_id = models.CharField(max_length=10, blank=True, default="")
+    csc_homologation_encrypted = models.TextField(blank=True, default="")
+    csc_production_id = models.CharField(max_length=10, blank=True, default="")
+    csc_production_encrypted = models.TextField(blank=True, default="")
+    certificate_encrypted = models.TextField(blank=True, default="")
+    certificate_password_encrypted = models.TextField(blank=True, default="")
+    certificate_subject = models.CharField(max_length=300, blank=True, default="")
+    certificate_cnpj = models.CharField(max_length=14, blank=True, default="")
+    certificate_not_before = models.DateTimeField(null=True, blank=True)
+    certificate_not_after = models.DateTimeField(null=True, blank=True)
+    certificate_uploaded_at = models.DateTimeField(null=True, blank=True)
+    # Offline contingency at the register (QR version 2 with CSC; see docs/NFCE.md).
+    terminal_contingency = models.BooleanField(default=True)
+    accountant_email = models.EmailField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class FiscalEvent(models.Model):
+    """Event of a fiscal document (110111 = cancelamento) with the processed procEventoNFe."""
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
+    document = models.ForeignKey(FiscalDocument, on_delete=models.PROTECT, related_name="events")
+    kind = models.CharField(max_length=20, default="cancel")
+    event_type = models.CharField(max_length=6, default="110111")
+    sequence = models.PositiveSmallIntegerField(default=1)
+    status = models.CharField(max_length=20, default="pending")  # pending | registered | rejected
+    status_code = models.CharField(max_length=10, blank=True, default="")
+    protocol = models.CharField(max_length=60, blank=True, default="")
+    reason = models.CharField(max_length=255)
+    error_message = models.TextField(blank=True, default="")
+    xml_content = models.BinaryField(null=True, blank=True)
+    xml_sha256 = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    registered_at = models.DateTimeField(null=True, blank=True)
+
+
+class FiscalInutilization(models.Model):
+    """Inutilização de numeração (gaps) with the processed procInutNFe."""
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
+    environment = models.CharField(max_length=20)
+    model = models.PositiveSmallIntegerField(default=65)
+    series = models.PositiveIntegerField()
+    start = models.PositiveBigIntegerField()
+    end = models.PositiveBigIntegerField()
+    reason = models.CharField(max_length=255)
+    status = models.CharField(max_length=20, default="pending")  # pending | done | rejected
+    status_code = models.CharField(max_length=10, blank=True, default="")
+    protocol = models.CharField(max_length=60, blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+    xml_content = models.BinaryField(null=True, blank=True)
+    xml_sha256 = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    done_at = models.DateTimeField(null=True, blank=True)
+
+
+class NfceReservation(models.Model):
+    """Numbers handed to a register for offline contingency. Unused ones are inutilized when released."""
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT)
+    terminal = models.ForeignKey(Terminal, on_delete=models.PROTECT)
+    environment = models.CharField(max_length=20)
+    series = models.PositiveIntegerField()
+    start = models.PositiveBigIntegerField()
+    end = models.PositiveBigIntegerField()
+    used = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
 
 
 class RateLimit(models.Model):

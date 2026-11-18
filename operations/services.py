@@ -148,75 +148,74 @@ def recover_subscription(job):
         enqueue('billing.reconcile',job.tenant,'recovered:'+str(job.pk)+':'+payment['id'],{'payment_id':payment['id']})
     return {'subscription_id':remote['id'],'payment_confirmed':False,'recovered':True}
 
-def fiscal_result(document,response):
-    state=FocusNFe.normalized_status(response)
-    if state=='authorized' and (not str(response.get('chave_nfe','')).isdigit() or len(str(response.get('chave_nfe','')))!=44 or not response.get('numero_protocolo')):
-        state='pending'
-    with transaction.atomic():
-        record=FiscalDocument.objects.select_for_update().get(pk=document.pk)
-        record.status=state
-        record.authorization=str(response.get('numero_protocolo') or record.authorization)
-        record.xml_url=str(response.get('caminho_xml_nota_fiscal') or record.xml_url)
-        record.error_message=str(response.get('mensagem_sefaz',''))[:1000] if state in ('rejected','denied') else ''
-        record.save()
-        record.sale.fiscal_status=state;record.sale.save(update_fields=['fiscal_status'])
-        FiscalPayload.objects.filter(document=record).update(provider_response=response)
-    return state
+# NFC-e jobs: the logic lives in core.nfce.service (both modes, Focus NFe and direct SEFAZ).
+def _fiscal_document(job):
+    return FiscalDocument.objects.select_related('tenant','sale').get(pk=job.payload['document_id'],tenant=job.tenant)
 
 def fiscal_submit(job):
-    record=FiscalDocument.objects.select_related('tenant').get(pk=job.payload['document_id'],tenant=job.tenant)
-    provider=account('focusnfe',job.tenant)
-    try:
-        response=provider.submit(record.external_id,FiscalPayload.objects.get(document=record).request_payload)
-        state=fiscal_result(record,response)
-    except ProviderError as exc:
-        if not exc.outcome_unknown:raise
-        state='pending'
-    if state in ('pending','processing'):
-        enqueue('fiscal.poll',job.tenant,'fiscal.poll:'+str(record.pk),{'document_id':str(record.pk)},delay=15)
-    elif state=='authorized':
-        enqueue('fiscal.archive',job.tenant,'fiscal.archive:'+str(record.pk),{'document_id':str(record.pk)})
-    return {'document_id':str(record.pk),'status':state}
+    from core.nfce import service
+    record=service.send(_fiscal_document(job))
+    return {'document_id':str(record.pk),'status':record.status}
 
 def fiscal_poll(job):
-    record=FiscalDocument.objects.select_related('tenant').get(pk=job.payload['document_id'],tenant=job.tenant)
-    response=account('focusnfe',job.tenant).get(record.external_id)
-    state=fiscal_result(record,response)
-    if state in ('pending','processing'):raise StillPending('Aguardando resposta fiscal')
-    if state=='authorized':
-        enqueue('fiscal.archive',job.tenant,'fiscal.archive:'+str(record.pk),{'document_id':str(record.pk)})
-    return {'document_id':str(record.pk),'status':state}
+    from core.nfce import service
+    record=service.poll(_fiscal_document(job))
+    if record.status=='pending':raise StillPending('Aguardando resposta fiscal')
+    return {'document_id':str(record.pk),'status':record.status}
+
+def fiscal_transmit(job):
+    from core.nfce import service
+    record=_fiscal_document(job)
+    if record.status!='contingency':return {'document_id':str(record.pk),'status':record.status}
+    record=service.transmit(record)
+    return {'document_id':str(record.pk),'status':record.status}
 
 def fiscal_archive(job):
     record=FiscalDocument.objects.get(pk=job.payload['document_id'],tenant=job.tenant)
     payload=FiscalPayload.objects.get(document=record)
     if payload.xml_content:return {'document_id':str(record.pk),'sha256':payload.xml_sha256}
     if record.status!='authorized':raise ValueError('A nota precisa estar autorizada para arquivar o XML')
-    xml=account('focusnfe',job.tenant).download_xml(record.xml_url,payload.provider_response.get('chave_nfe'),record.authorization)
+    from core.nfce.service import _focus_client
+    xml=_focus_client(job.tenant).download_xml(record.xml_url,record.access_key,record.authorization)
     checksum=hashlib.sha256(xml).hexdigest()
     FiscalPayload.objects.filter(document=record).update(xml_content=xml,xml_sha256=checksum)
     return {'document_id':str(record.pk),'sha256':checksum}
 
 def fiscal_cancel(job):
-    record=FiscalDocument.objects.get(pk=job.payload['document_id'],tenant=job.tenant)
-    provider=account('focusnfe',job.tenant)
-    try:provider.cancel(record.external_id,job.payload['reason'])
-    except ProviderError as exc:
-        if not exc.outcome_unknown:raise
-    # Query canonical state even after a successful cancellation request.
-    response=provider.get(record.external_id)
-    state=fiscal_result(record,response)
-    if state!='cancelled':raise StillPending('Cancelamento ainda não confirmado; consultar documento')
-    return {'document_id':str(record.pk),'status':state}
+    from core.models import FiscalEvent
+    from core.nfce import service
+    record=_fiscal_document(job)
+    event=FiscalEvent.objects.get(pk=job.payload['event_id'],document=record)
+    if event.status=='registered':return {'document_id':str(record.pk),'status':'cancelled'}
+    service.run_cancel(record,event)
+    return {'document_id':str(record.pk),'status':'cancelled'}
+
+def fiscal_inutilize(job):
+    from core.models import FiscalInutilization
+    from core.nfce import service
+    row=FiscalInutilization.objects.get(pk=job.payload['inutilization_id'],tenant=job.tenant)
+    if row.status=='done':return {'inutilization_id':str(row.pk),'status':row.status}
+    row=service.run_inutilization(row)
+    return {'inutilization_id':str(row.pk),'status':row.status,'protocol':row.protocol}
+
+def fiscal_reconcile_replaced(job):
+    from core.nfce import service
+    service.reconcile_replaced(_fiscal_document(job))
+    return {'document_id':job.payload['document_id']}
 
 HANDLERS={'billing.subscribe':subscribe,'billing.reconcile':reconcile_payment,'billing.recover':recover_subscription,
           'billing.recover_customer':recover_customer,'fiscal.submit':fiscal_submit,
-          'fiscal.poll':fiscal_poll,'fiscal.archive':fiscal_archive,'fiscal.cancel':fiscal_cancel}
+          'fiscal.poll':fiscal_poll,'fiscal.archive':fiscal_archive,'fiscal.cancel':fiscal_cancel,
+          'fiscal.transmit':fiscal_transmit,'fiscal.inutilize':fiscal_inutilize,
+          'fiscal.reconcile_replaced':fiscal_reconcile_replaced}
+# Safe to retry on a provider error: queries, and transmissions identified by the access key
+# (a repeated NF-e is answered with 204 and then consulted).
+RETRY_SAFE=('billing.reconcile','fiscal.poll','fiscal.archive','fiscal.transmit','fiscal.reconcile_replaced')
 
 def run_one():
     now=timezone.now()
     # A process may die after the provider accepted a mutation. Never blindly replay that mutation.
-    mutations=['billing.subscribe','fiscal.submit','fiscal.cancel']
+    mutations=['billing.subscribe','fiscal.submit','fiscal.cancel','fiscal.inutilize']
     ProviderJob.objects.filter(status='running',locked_at__lt=now-timedelta(minutes=5),kind__in=mutations).update(status='needs_review',last_error='Processo interrompido; consultar provedor antes de repetir')
     ProviderJob.objects.filter(status='running',locked_at__lt=now-timedelta(minutes=5)).exclude(kind__in=mutations).update(status='queued',locked_at=None)
     with transaction.atomic():
@@ -227,7 +226,7 @@ def run_one():
         result=HANDLERS[job.kind](job)
         ProviderJob.objects.filter(pk=job.pk).update(status='done',result=result,locked_at=None,last_error='')
     except (ProviderError,StillPending) as exc:
-        safe=(isinstance(exc,StillPending) or (job.kind in ('billing.reconcile','fiscal.poll','fiscal.archive') and getattr(exc,'status',None) not in (400,401,403,404)))
+        safe=(isinstance(exc,StillPending) or (job.kind in RETRY_SAFE and getattr(exc,'status',None) not in (400,401,403,404)))
         if job.kind=='fiscal.cancel':safe=False
         retry=safe and job.attempts<30
         ProviderJob.objects.filter(pk=job.pk).update(status='queued' if retry else 'needs_review',
@@ -237,6 +236,8 @@ def run_one():
         logger.error('Job %s (%s) of tenant %s failed on attempt %s',job.pk,job.kind,job.tenant_id or '-',job.attempts,
                      exc_info=getattr(HANDLERS.get(job.kind),'logs_failures',None) is not True)
         # Avoid recording credentials or third-party response bodies in user-visible errors.
-        message=str(exc) if isinstance(exc,ValueError) else 'Falha interna ao executar tarefa; consulte o suporte'
+        # APIError carries a user-facing message too (missing certificate, fiscal setup...).
+        message=(str(exc) if isinstance(exc,ValueError) else getattr(exc,'message',None) if isinstance(getattr(exc,'message',None),str)
+                 else 'Falha interna ao executar tarefa; consulte o suporte')
         ProviderJob.objects.filter(pk=job.pk).update(status='needs_review',locked_at=None,last_error=message[:500])
     return True

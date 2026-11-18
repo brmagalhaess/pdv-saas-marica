@@ -23,8 +23,12 @@ def ensure(tenant):
 
 
 def method_data(row):
+    from shared.nfce.payments import default_print_rule
     return {"id": str(row.id), "kind": row.kind, "name": row.name, "fee_bps": row.fee_bps,
-            "settlement_days": row.settlement_days, "active": row.active, "builtin": row.kind != "other"}
+            "settlement_days": row.settlement_days, "active": row.active, "builtin": row.kind != "other",
+            # NFC-e printing after the sale: always | ask | never (empty in the database = default of the kind).
+            "print_rule": row.print_rule or default_print_rule(row.kind),
+            "print_rule_default": not row.print_rule}
 
 
 def fee_lookup(tenant):

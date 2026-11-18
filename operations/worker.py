@@ -55,6 +55,11 @@ def main():
             now=time.time()
             if now-last_cleanup>3600:
                 Session.objects.filter(expire_date__lt=timezone.now()).delete();last_cleanup=now
+                try:
+                    from core.nfce.service import sweep
+                    sweep()  # contingency number blocks left unused become inutilizações
+                except Exception:
+                    logger.exception('NFC-e sweep failed')
             Path('/tmp/pdv2-worker-health').write_text(str(int(now)))
             if not processed:time.sleep(2)
         except Exception:

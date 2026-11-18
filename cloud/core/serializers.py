@@ -137,6 +137,12 @@ def sale(row, detail=False):
               "stock_status": row.stock_status, "fiscal_status": row.fiscal_status,
               "created_at": iso(row.created_at), "received_at": iso(row.received_at),
               "cancelled_at": iso(row.cancelled_at), "cancellation_reason": row.cancellation_reason}
+    if row.fiscal_status not in ("not_issued", ""):
+        # Current NFC-e of the sale: Autorizada / Em contingência / Rejeitada (motivo) / Cancelada.
+        from .models import FiscalDocument
+        from .nfce.service import document_data
+        document = (FiscalDocument.objects.filter(sale=row, replaced_by__isnull=True).order_by("-created_at").first())
+        result["fiscal"] = document_data(document) if document else None
     if detail:
         result["items"] = [{"product_id": str(x.product_id), "name": x.name, "ncm": x.product.ncm,
                             "unit": x.unit,

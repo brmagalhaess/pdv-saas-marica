@@ -10,10 +10,11 @@ class ProviderClient:
     def __init__(self, base_url, session=None):
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
+        self.timeout = (5, 35)
 
     def request(self, method, path, **kwargs):
         try:
-            response = self.session.request(method, self.base_url + path, timeout=(5, 35),
+            response = self.session.request(method, self.base_url + path, timeout=self.timeout,
                                             allow_redirects=False, **kwargs)
         except (requests.Timeout, requests.ConnectionError) as exc:
             raise ProviderError("Provedor indisponível; consulte a referência antes de reenviar.",

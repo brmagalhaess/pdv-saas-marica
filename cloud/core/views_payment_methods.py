@@ -9,10 +9,14 @@ MANAGE = {"owner", "admin"}
 
 
 def _values(data, creating):
-    fields(data, ("name", "fee_bps", "settlement_days", "active", "position"), ("name",) if creating else ())
+    fields(data, ("name", "fee_bps", "settlement_days", "active", "position", "print_rule"), ("name",) if creating else ())
     if not data:
         raise APIError("Informe ao menos um campo")
     values = {}
+    if "print_rule" in data:
+        if data["print_rule"] not in ("always", "ask", "never"):
+            raise APIError("Impressão da nota: use sempre, perguntar ou não imprimir")
+        values["print_rule"] = data["print_rule"]
     if "name" in data:
         values["name"] = text(data["name"], "Nome", 60)
     if "fee_bps" in data:

@@ -16,6 +16,7 @@ from shared.licensing import MAX_LEASE_SECONDS, LicenseError, load_private_key, 
 from shared.releases import load_release_public_key
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
 from .fiscal import FiscalContext, issuer_profile_extras
+from .nfce.service import terminal_settings as nfce_settings
 from .models import Customer, Membership, Product, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .models import CashSession, TerminalFormerToken
 from .backup_key import tenant_backup_key
@@ -555,6 +556,8 @@ def bootstrap(request):
                          "shop": {"id": str(terminal.shop_id), "name": terminal.shop.name},
                          "customers": customers, "payment_methods": payment_config, "promotions": promotion_rules,
                          "terminal": terminal_data(terminal), "issuer": _issuer_profile(terminal.tenant), "products": products,
+                         # NFC-e settings without secrets (docs/NFCE.md); old terminals ignore it.
+                         "nfce": nfce_settings(terminal.tenant) if offset == 0 else None,
                          "next_cursor": str(offset + limit) if len(rows) > limit else None,
                          "operators": operators, "lease": lease, "public_key": public_key,
                          "release_public_key": _release_public_key(), "server_time": int(time.time()),
