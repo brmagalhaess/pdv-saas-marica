@@ -16,7 +16,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='product',
             name='fiscal_overrides',
-            field=models.JSONField(blank=True, default=dict),
+            field=models.JSONField(blank=True, db_default={}, default=dict),
         ),
         migrations.AddField(
             model_name='tenant',
@@ -26,17 +26,17 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='tenant',
             name='city_ibge_code',
-            field=models.CharField(blank=True, max_length=7),
+            field=models.CharField(blank=True, db_default='', default='', max_length=7),
         ),
         migrations.AddField(
             model_name='tenant',
             name='cnae',
-            field=models.CharField(blank=True, max_length=7),
+            field=models.CharField(blank=True, db_default='', default='', max_length=7),
         ),
         migrations.AddField(
             model_name='tenant',
             name='crt',
-            field=models.PositiveSmallIntegerField(default=1, validators=[django.core.validators.MinValueValidator(1), django.core.validators.MaxValueValidator(4)]),
+            field=models.PositiveSmallIntegerField(db_default=1, default=1, validators=[django.core.validators.MinValueValidator(1), django.core.validators.MaxValueValidator(4)]),
         ),
         migrations.AddField(
             model_name='tenant',
@@ -46,7 +46,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='tenant',
             name='special_tax_regime',
-            field=models.CharField(blank=True, max_length=1),
+            field=models.CharField(blank=True, db_default='', default='', max_length=1),
         ),
         migrations.CreateModel(
             name='IbptRate',

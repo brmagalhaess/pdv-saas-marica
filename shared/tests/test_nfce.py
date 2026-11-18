@@ -244,6 +244,24 @@ class XmlTests(unittest.TestCase):
         with self.assertRaises(XMLError):
             parse('<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>')
 
+    def test_parse_accepts_only_plain_utf8(self):
+        self.assertEqual(parse('<?xml version="1.0" encoding="UTF-8"?><x>ç</x>').text, "ç")
+        dtd = '<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>'
+        refused = [
+            b"\xef\xbb\xbf<x/>",                                           # UTF-8 BOM
+            dtd.encode("utf-16"),                                          # UTF-16 hides the DOCTYPE bytes
+            dtd.encode("utf-16-le"),
+            ('<?xml version="1.0" encoding="UTF-16"?>' + dtd).encode("utf-16-be"),
+            b'<?xml version="1.0" encoding="ISO-8859-1"?><x>\xe7</x>',  # declared non-UTF-8
+            b"<x>\xff</x>",                                                # invalid UTF-8
+            b"<x>\x00</x>",
+            '<!doctype x><x/>',                                            # case-insensitive
+        ]
+        for data in refused:
+            with self.subTest(data=data[:20]):
+                with self.assertRaises(XMLError):
+                    parse(data)
+
 
 class QrTests(unittest.TestCase):
     def test_v2_online_hash(self):

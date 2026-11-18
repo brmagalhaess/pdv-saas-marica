@@ -420,7 +420,8 @@ def request_nfce(store, sale_id, wait_s=None):
                 body = getattr(exc, "remote_body", None) or {}
                 status, error = "rejected", str(body.get("error") or exc)[:500]
     if status == "disabled":
-        store.nfce_record(sale_id, "offline", error="Emissão de NFC-e desligada na nuvem")
+        # Final: a sale made while the company's NFC-e is off never gets a retroactive note.
+        store.nfce_record(sale_id, "disabled", error="Emissão de NFC-e desligada na nuvem")
         return store.sale_detail(sale_id)
     if status == "offline" and cfg.get("contingency"):
         try:
@@ -433,7 +434,7 @@ def request_nfce(store, sale_id, wait_s=None):
 
 
 def nfce_states():
-    return ("pending", "offline", "authorized", "contingency", "rejected", "cancelled")
+    return ("pending", "offline", "authorized", "contingency", "rejected", "cancelled", "disabled")
 
 
 def nfce_step(store, limit=5):
@@ -448,7 +449,8 @@ def nfce_step(store, limit=5):
     done = {"reserved": False, "uploaded": 0, "retried": 0, "refreshed": 0}
     if store.nfce_needs_reservation():
         try:
-            store.nfce_store_reservation(_request("POST", base + "nfce/reserve", headers=headers, json={}))
+            body = store.nfce_reservation_request()  # also starts the minimum interval between asks
+            store.nfce_store_reservation(_request("POST", base + "nfce/reserve", headers=headers, json=body))
             done["reserved"] = True
         except TerminalError as exc:
             if _offline(exc):
@@ -460,6 +462,11 @@ def nfce_step(store, limit=5):
                               json={"sale_id": row["sale_id"], "xml": row["xml"]})
         except TerminalError as exc:
             if _offline(exc):
+                continue
+            if getattr(exc, "remote_code", None) == "reservation_released":
+                # The block was closed in the cloud (numbers inutilized): this note can never be
+                # authorized. Ask the cloud for a normal NFC-e of the sale (new number).
+                store.nfce_record(row["sale_id"], "pending", error=str(exc)[:300])
                 continue
             store.nfce_record(row["sale_id"], "contingency", error=str(exc)[:300])
             continue
@@ -474,7 +481,9 @@ def nfce_step(store, limit=5):
                 store.nfce_record(sale_id, "rejected", error=str(exc)[:300])
             continue
         status, data = nfce.from_cloud(answer)
-        if answer.get("status") != "disabled":
+        if answer.get("status") == "disabled":
+            store.nfce_record(sale_id, "disabled", error="Emissão de NFC-e desligada na nuvem")
+        else:
             store.nfce_record(sale_id, status if status in nfce_states() else "pending", data)
             done["retried"] += 1
     for sale_id in work["refresh"][:limit]:

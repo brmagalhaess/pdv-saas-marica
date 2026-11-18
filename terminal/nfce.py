@@ -30,9 +30,17 @@ CREATE TABLE IF NOT EXISTS nfce_docs(
 CREATE INDEX IF NOT EXISTS nfce_docs_status ON nfce_docs(status,uploaded);
 CREATE TABLE IF NOT EXISTS nfce_reservation(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
 """
-# local states: pending (asked, no answer), authorized, contingency, rejected, cancelled, offline (no NFC-e yet)
+# local states: pending (asked, no answer), authorized, contingency, rejected, cancelled, offline (no NFC-e yet),
+# disabled (the cloud said NFC-e is off for the company: never retried, no retroactive note when it is turned on)
 OVERDUE_MS = 20 * 60 * 60 * 1000
 RESERVATION_LOW = 3
+DAY_MS = 24 * 60 * 60 * 1000
+# Ask for a new block when the current one has less than this left (the cloud stops handing it out too).
+RESERVATION_RENEW_MS = 3 * DAY_MS
+# Stop using a block this long before it expires: the note still has to reach the cloud in time.
+RESERVATION_USE_MARGIN_MS = DAY_MS
+# Minimum time between two reservation requests (the worker runs every few seconds).
+RESERVATION_RETRY_MS = 120 * 1000
 
 
 def _now_ms():
@@ -130,24 +138,73 @@ def reservation(conn):
         return None
 
 
+def _expires_ms(value):
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return int(moment.timestamp() * 1000)
+
+
 def store_reservation(conn, value):
     if not isinstance(value, dict) or not isinstance(value.get("numbers"), list):
         return
-    clean = {key: value.get(key) for key in ("id", "environment", "series", "numbers", "csc_id", "csc", "qr_version",
-                                              "issuer", "tech", "approx_fallback", "expires_at")}
+    clean = {key: value.get(key) for key in ("id", "environment", "series", "numbers", "ranges", "csc_id", "csc",
+                                              "qr_version", "issuer", "tech", "approx_fallback", "expires_at")}
     used = set((reservation(conn) or {}).get("used") or [])
+    ranges = [r for r in (clean.get("ranges") or []) if isinstance(r, list) and len(r) == 2
+              and all(isinstance(n, int) for n in r)]
+    if ranges:
+        # Numbers used here stay remembered only while their block is still handed out.
+        used = {n for n in used if any(first <= n <= last for first, last in ranges)}
+    clean["ranges"] = ranges
     clean["numbers"] = [n for n in clean["numbers"] if isinstance(n, int) and n not in used]
     clean["used"] = sorted(used)
     conn.execute("INSERT INTO nfce_reservation(id,data) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
                  (json.dumps(clean, sort_keys=True),))
 
 
-def needs_reservation(conn, cfg):
+def strip_secrets(conn):
+    """Remove the CSC from a COPY of the database (local backup, mirror, replica).
+
+    The block numbers and the used list stay (so a restored copy never reuses a number); the
+    copy asks the cloud for the CSC again before issuing a contingency note.
+    """
+    try:
+        found = conn.execute("SELECT data FROM nfce_reservation WHERE id=1").fetchone()
+    except Exception:  # noqa: BLE001 - table absent in very old copies
+        return
+    if not found:
+        return
+    try:
+        data = json.loads(found[0])
+    except ValueError:
+        conn.execute("DELETE FROM nfce_reservation")
+        return
+    if isinstance(data, dict) and data.pop("csc", None) is not None:
+        conn.execute("UPDATE nfce_reservation SET data=? WHERE id=1", (json.dumps(data, sort_keys=True),))
+
+
+def usable_until_ms(current):
+    """Last moment (ms) a contingency note may be issued with this block; None = unknown (refuse)."""
+    expires = _expires_ms((current or {}).get("expires_at"))
+    return None if expires is None else expires - RESERVATION_USE_MARGIN_MS
+
+
+def needs_reservation(conn, cfg, now_ms=None, last_attempt_ms=None):
     if not (enabled(cfg) and cfg.get("contingency")):
         return False
+    now_ms = _now_ms() if now_ms is None else now_ms
+    if last_attempt_ms and now_ms - last_attempt_ms < RESERVATION_RETRY_MS:
+        return False
     current = reservation(conn)
-    return (not current or current.get("environment") != cfg.get("environment")
-            or len(current.get("numbers") or []) < RESERVATION_LOW)
+    if not current or current.get("environment") != cfg.get("environment") or not current.get("csc"):
+        return True
+    expires = _expires_ms(current.get("expires_at"))
+    return (len(current.get("numbers") or []) < RESERVATION_LOW
+            or expires is None or expires - now_ms < RESERVATION_RENEW_MS)
 
 
 def _product(conn, product_id):
@@ -167,6 +224,12 @@ def build_contingency(conn, sale, cfg, now=None):
         raise NfceError("Contingência indisponível neste caixa (sem faixa de números reservada)")
     if current.get("environment") != cfg.get("environment"):
         raise NfceError("Faixa reservada é de outro ambiente fiscal")
+    if not current.get("csc") or not current.get("csc_id"):
+        raise NfceError("Contingência indisponível neste caixa (CSC ainda não recebido da nuvem)")
+    moment_ms = int((now or datetime.now(timezone.utc)).timestamp() * 1000)
+    limit = usable_until_ms(current)
+    if limit is None or moment_ms > limit:
+        raise NfceError("Faixa de contingência vencida; aguarde o caixa receber uma nova da nuvem")
     issuer = current.get("issuer") or {}
     items = []
     for line in sale["items"]:

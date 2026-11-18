@@ -41,7 +41,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from . import paths
+from . import nfce, paths
 from .store import TerminalError
 
 ROOT_NAME = "PDV2-copia-de-seguranca"
@@ -300,6 +300,8 @@ def _local_copy(store, prefix=".mirror-"):
             target.execute("PRAGMA journal_mode=DELETE")
             target.execute("PRAGMA secure_delete=ON")
             target.execute("DELETE FROM meta WHERE key IN ('token','mirror_key')")
+            # Nor the CSC of the NFC-e contingency (the block numbers stay; terminal/nfce.py strip_secrets).
+            nfce.strip_secrets(target)
             target.commit()
             if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise MirrorError("A cópia do banco não passou na verificação.", 409)

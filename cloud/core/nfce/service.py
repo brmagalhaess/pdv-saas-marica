@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 ENVIRONMENTS = ("homologation", "production")
 RESERVATION_SIZE = 10
 RESERVATION_MAX_DAYS = 20
+# Blocks with fewer days left than this are not handed out anymore (the register renews before).
+RESERVATION_RENEW_DAYS = 3
+# A new block is opened when fewer free numbers than this remain.
+RESERVATION_LOW = 3
 CONTINGENCY_ALERT_HOURS = 20
 TERMINAL_TIMEOUT = (3, 5)
 
@@ -54,8 +58,14 @@ class NotConfigured(APIError):
 # ------------------------------------------------------------------ configuration
 
 def config_for(tenant):
+    """FiscalConfig of the company, created on first write (panel PATCH, certificate upload)."""
     config, _ = FiscalConfig.objects.get_or_create(tenant=tenant)
     return config
+
+
+def peek_config(tenant):
+    """FiscalConfig for reading: the saved one or an unsaved default. Never creates a row."""
+    return FiscalConfig.objects.filter(tenant=tenant).first() or FiscalConfig(tenant=tenant)
 
 
 def enabled(tenant):
@@ -64,6 +74,49 @@ def enabled(tenant):
 
 def live_allowed(environment):
     return environment != "production" or os.environ.get("PDV_ALLOW_LIVE_FISCAL") == "1"
+
+
+def _focus_account(tenant):
+    from operations.models import IntegrationAccount
+    return IntegrationAccount.objects.filter(provider="focusnfe", tenant=tenant, enabled=True).first()
+
+
+def readiness(tenant, config=None):
+    """(ready, reason): may this company emit NFC-e now? Checked before any number is spent.
+
+    Ready = fiscal environment on + production allowed by the platform + a saved configuration
+    with its credential (Focus NFe token, or A1 certificate of the company's CNPJ) + company
+    fiscal data complete. Merely opening the panel never turns emission on.
+    """
+    environment = tenant.fiscal_environment
+    if environment not in ENVIRONMENTS:
+        return False, "A emissão de NFC-e está desligada (ambiente: sem nota fiscal)"
+    if not live_allowed(environment):
+        return False, "Emissão em produção ainda não habilitada nesta plataforma (PDV_ALLOW_LIVE_FISCAL)"
+    config = config or peek_config(tenant)
+    if config._state.adding:
+        return False, "Configure a nota fiscal em Minha empresa > Nota fiscal"
+    if config.mode == "focusnfe":
+        if not _focus_account(tenant):
+            return False, "Configure o token da Focus NFe em Minha empresa > Nota fiscal"
+    else:
+        if not config.certificate_encrypted:
+            return False, "Envie o certificado digital A1 em Minha empresa > Nota fiscal"
+        if cnpj_value(config.certificate_cnpj) != cnpj_value(tenant.document):
+            return False, "O CNPJ do certificado não é o mesmo da empresa"
+    from ..fiscal import company_status
+    if not company_status(tenant)["ready"]:
+        return False, "Dados da empresa incompletos para a NFC-e"
+    return True, ""
+
+
+def ensure_ready(tenant, config=None):
+    ready, reason = readiness(tenant, config)
+    if ready:
+        return
+    if tenant.fiscal_environment in ENVIRONMENTS and not live_allowed(tenant.fiscal_environment):
+        raise APIError(reason, 409, code="fiscal_live_disabled")
+    raise NotConfigured(reason)
 
 
 def csc_for(config, environment):
@@ -84,36 +137,56 @@ def certificate_for(config):
     return load_pfx(data, password)
 
 
-def _focus_client(tenant, timeout=None):
-    from operations.models import IntegrationAccount
+def _focus_client(tenant, timeout=None, environment=None):
+    """Focus NFe client. ``environment`` = the document's own environment (legacy notes keep theirs
+    even after the company changed or switched off its fiscal environment)."""
     from integrations.fiscal import FocusNFe
-    row = IntegrationAccount.objects.filter(provider="focusnfe", tenant=tenant, enabled=True).first()
+    row = _focus_account(tenant)
     if not row:
         raise NotConfigured("Configure o token da Focus NFe em Minha empresa > Nota fiscal")
     token = decrypt_secret(row.token_encrypted)
-    environment = tenant.fiscal_environment if tenant.fiscal_environment in ENVIRONMENTS else row.environment
+    if environment not in ENVIRONMENTS:
+        environment = tenant.fiscal_environment if tenant.fiscal_environment in ENVIRONMENTS else row.environment
     client = FOCUS_FACTORY(token, environment) if FOCUS_FACTORY else FocusNFe(token, environment)
     if timeout:
         client.timeout = timeout
     return client
 
 
-def backend_for(tenant, config=None, environment=None, timeout=None):
-    config = config or config_for(tenant)
+def document_environment(document):
+    """Environment of an existing document; legacy Focus notes without one use the Focus account's."""
+    if document.environment in ENVIRONMENTS:
+        return document.environment
+    account = _focus_account(document.tenant) if document.provider == "focusnfe" else None
+    if account and account.environment in ENVIRONMENTS:
+        return account.environment
+    return document.tenant.fiscal_environment
+
+
+def backend_for(tenant, config=None, environment=None, timeout=None, provider=None):
+    """Backend for ``environment`` (default: the company's). ``provider`` (the document's) wins over
+    the current mode: a note issued through Focus is consulted/cancelled through Focus."""
+    config = config or peek_config(tenant)
     environment = environment or tenant.fiscal_environment
     if environment not in ENVIRONMENTS:
         raise NotConfigured("A emissão de NFC-e está desligada (ambiente: sem nota fiscal)")
     if not live_allowed(environment):
         raise APIError("Emissão em produção ainda não habilitada nesta plataforma (PDV_ALLOW_LIVE_FISCAL)", 409,
                        code="fiscal_live_disabled")
-    if config.mode == "focusnfe":
-        return FocusBackend(_focus_client(tenant, timeout))
+    if (provider or config.mode) == "focusnfe":
+        return FocusBackend(_focus_client(tenant, timeout, environment))
     certificate = certificate_for(config)
     if cnpj_value(certificate.cnpj) != cnpj_value(tenant.document):
         raise NotConfigured("O CNPJ do certificado não é o mesmo da empresa")
     timeout = timeout or (4, 25)
     transport = TRANSPORT_FACTORY(certificate, timeout) if TRANSPORT_FACTORY else SoapTransport(certificate, timeout)
     return SefazBackend(certificate, transport, tenant.address_state, environment)
+
+
+def document_backend(document, timeout=None):
+    """Backend of an existing document: its own environment and provider (not the company's current ones)."""
+    return backend_for(document.tenant, environment=document_environment(document), timeout=timeout,
+                       provider="focusnfe" if document.provider == "focusnfe" else "sefaz")
 
 
 def issuer_data(tenant):
@@ -138,7 +211,7 @@ def terminal_settings(tenant):
     """Non-secret NFC-e settings for the terminal bootstrap."""
     config = FiscalConfig.objects.filter(tenant=tenant).first()
     environment = tenant.fiscal_environment
-    on = enabled(tenant) and live_allowed(environment) and config is not None
+    on = config is not None and readiness(tenant, config)[0]
     return {"enabled": bool(on), "environment": environment, "mode": config.mode if config else "",
             "contingency": bool(on and config.mode == "sefaz" and config.terminal_contingency
                                 and csc_for(config, environment)[0]),
@@ -173,7 +246,7 @@ def sale_payments(sale):
 
 def _request(document, sale, params):
     tenant = sale.tenant
-    config = config_for(tenant)
+    config = peek_config(tenant)
     csc_id, csc = csc_for(config, document.environment)
     payments, names = sale_payments(sale)
     issued = datetime.fromisoformat(params["issued_at"])
@@ -327,7 +400,7 @@ def create_document(sale, terminal=None):
     tenant = sale.tenant
     if not enabled(tenant):
         raise NotConfigured("A emissão de NFC-e está desligada (ambiente: sem nota fiscal)")
-    config = config_for(tenant)
+    config = peek_config(tenant)
     with transaction.atomic():
         Sale.objects.select_for_update().get(pk=sale.pk)
         existing = current_document(sale)
@@ -335,6 +408,8 @@ def create_document(sale, terminal=None):
             return existing, False
         if sale.status != "completed":
             raise APIError("Venda cancelada não emite nota", 409)
+        # Production allowed, credential in place and company data complete BEFORE spending a number.
+        ensure_ready(tenant, config)
         provider = "focusnfe" if config.mode == "focusnfe" else "sefaz"
         series, number = _take_number(tenant.pk)
         document = FiscalDocument.objects.create(
@@ -360,6 +435,36 @@ def _danfe_extra(document, doc):
             "infcpl": approx_text(totals, items)}
 
 
+def is_legacy(document, params=None):
+    """Focus NFe note created by the release before NFC-e (core 0041): its request_payload is the
+    Focus JSON itself, without the cNF/dhEmi this module stores, and Focus numbers it."""
+    params = _params(document) if params is None else params
+    return document.provider == "focusnfe" and "cnf" not in params and "issued_at" not in params
+
+
+def _send_legacy(document, params, timeout=None):
+    """Old pending Focus note: ask Focus first (it may already have it); submit the stored payload
+    only when Focus does not know the reference, exactly as the previous release did."""
+    backend = document_backend(document, timeout=timeout)
+    try:
+        result = backend.consult(Ref(reference=document.external_id, key=document.access_key,
+                                     environment=document_environment(document)))
+    except ProviderError as exc:
+        if exc.status != 404:
+            raise
+        payload = {k: v for k, v in params.items() if k not in ("sent", "danfe", "cancel_requested")}
+        try:
+            result = backend._result(backend.client.submit(document.external_id, payload))
+        except ProviderError as error:
+            if not error.outcome_unknown:
+                return apply_result(document, IssueResult(status="rejected", message=str(error)))
+            result = IssueResult(status="pending", message=str(error))
+    document = apply_result(document, result)
+    if document.status == "pending":
+        _enqueue("fiscal.poll", document.tenant, "fiscal.poll:" + str(document.pk), {"document_id": str(document.pk)}, 15)
+    return document
+
+
 def send(document, timeout=None):
     """Transmit the pending document now. Network errors are handled here (contingency/replacement)."""
     document = FiscalDocument.objects.select_related("sale", "tenant", "sale__tenant").get(pk=document.pk)
@@ -369,10 +474,12 @@ def send(document, timeout=None):
         return transmit(document)
     sale = document.sale
     params = _params(document)
+    if is_legacy(document, params):
+        return _send_legacy(document, params, timeout)
     if params.get("sent") and document.access_key:
         return poll(document, timeout=timeout)
     try:
-        backend = backend_for(document.tenant, environment=document.environment, timeout=timeout)
+        backend = document_backend(document, timeout=timeout)
         request = _request(document, sale, params)
     except NfceError as exc:
         return apply_result(document, IssueResult(status="rejected", message=_issues_text(exc)))
@@ -389,7 +496,8 @@ def send(document, timeout=None):
         if exc.unreachable:
             # Nothing reached the SEFAZ: the same number goes out in offline contingency (tpEmis 9).
             return _cloud_contingency(document, backend, request, params)
-        raise
+        # The request may have arrived: never reuse this number for a contingency note.
+        result = IssueResult(status="pending", message=str(exc))
     except ProviderError as exc:
         params["sent"] = exc.outcome_unknown
         _save_params(document, params)
@@ -451,9 +559,13 @@ def _replace_with_contingency(old, backend, request):
 
 def poll(document, timeout=None):
     params = _params(document)
+    if is_legacy(document, params):
+        if document.status != "pending":
+            return document
+        return _send_legacy(document, params, timeout)
     if not document.access_key and document.provider == "sefaz":
         return document
-    backend = backend_for(document.tenant, environment=document.environment, timeout=timeout)
+    backend = document_backend(document, timeout=timeout)
     nfe_xml = _payload_model().objects.filter(document=document).values_list("nfe_xml", flat=True).first()
     result = backend.consult(Ref(reference=document.external_id, key=document.access_key, protocol=document.authorization,
                                  nfe_xml=bytes(nfe_xml) if nfe_xml else None, environment=document.environment))
@@ -470,7 +582,7 @@ def transmit(document):
     """Contingency note (signed in the cloud) sent to the SEFAZ when it is back."""
     FiscalPayload = _payload_model()
     row = FiscalPayload.objects.get(document=document)
-    backend = backend_for(document.tenant, environment=document.environment)
+    backend = document_backend(document)
     if not row.nfe_xml:
         raise ValueError("Nota de contingência sem XML assinado")
     result = backend.transmit(bytes(row.nfe_xml))
@@ -510,6 +622,9 @@ def retry(document):
     """Panel "Corrigir e reenviar": same number (never authorized), fresh data from the catalog."""
     if document.status != "rejected":
         raise APIError("Somente notas rejeitadas podem ser reenviadas", 409)
+    if is_legacy(document):
+        raise APIError("Nota da versão anterior (numerada pela Focus NFe): corrija o cadastro e reenvie pelo painel "
+                       "da Focus NFe, ou fale com o suporte.", 409, code="fiscal_legacy_document")
     validate_sale(document.sale)
     params = _params(document)
     if params.get("emission_type", 1) == 1:
@@ -533,7 +648,7 @@ def retry(document):
 def rebuild_contingency(document):
     """Rebuild a rejected contingency note with the same key data (number, cNF, dhEmi, dhCont)."""
     params = _params(document)
-    backend = backend_for(document.tenant, environment=document.environment)
+    backend = document_backend(document)
     request = _request(document, document.sale, params)
     request.emission_type = 9
     result = backend.issue_offline(request)
@@ -579,7 +694,7 @@ def request_cancel(document, reason, actor=None, automatic=False):
 
 
 def run_cancel(document, event):
-    backend = backend_for(document.tenant, environment=document.environment)
+    backend = document_backend(document)
     result = backend.cancel(Ref(reference=document.external_id, key=document.access_key, protocol=document.authorization,
                                 environment=document.environment), event.reason, sequence=event.sequence)
     with transaction.atomic():
@@ -648,7 +763,7 @@ def run_inutilization(row):
 
 def reconcile_replaced(document):
     """Old attempt replaced by contingency: cancel it if the SEFAZ authorized it, else inutilize the number."""
-    backend = backend_for(document.tenant, environment=document.environment)
+    backend = document_backend(document)
     nfe_xml = _payload_model().objects.filter(document=document).values_list("nfe_xml", flat=True).first()
     result = backend.consult(Ref(reference=document.external_id, key=document.access_key,
                                  nfe_xml=bytes(nfe_xml) if nfe_xml else None, environment=document.environment))
@@ -669,61 +784,105 @@ def reconcile_replaced(document):
 
 # ------------------------------------------------------------------ terminal contingency
 
-def reserve_numbers(terminal):
+def _client_numbers(values):
+    """Numbers the register says it already used offline (not uploaded yet); bounded and typed."""
+    if not isinstance(values, list):
+        return set()
+    return {n for n in values[:2000] if type(n) is int and 0 < n <= 999999999}
+
+
+def reserve_numbers(terminal, client_used=None):
+    """Contingency numbers for the register: every still-fresh open block of this terminal.
+
+    A new block of RESERVATION_SIZE numbers is opened only when fewer than RESERVATION_LOW free
+    numbers remain (counting the ones the register used offline and did not upload yet) or the
+    open blocks are close to expiring (RESERVATION_RENEW_DAYS). ``created`` says whether a block
+    was opened (only then the call is audited). Blocks near expiry are no longer handed out but
+    still accept the uploads of numbers already used, until the sweep releases them.
+    """
     tenant = terminal.tenant
-    config = config_for(tenant)
+    config = peek_config(tenant)
     environment = tenant.fiscal_environment
-    if not (enabled(tenant) and live_allowed(environment) and config.mode == "sefaz" and config.terminal_contingency):
+    if not (config.mode == "sefaz" and config.terminal_contingency and readiness(tenant, config)[0]):
         raise NotConfigured("Contingência no caixa desligada para esta empresa")
     csc_id, csc = csc_for(config, environment)
     if not csc_id:
         raise NotConfigured("Contingência no caixa exige o CSC do ambiente (QR Code versão 2)")
+    used_here = _client_numbers(client_used)
+    now = timezone.now()
+    stale = now - timedelta(days=RESERVATION_MAX_DAYS - RESERVATION_RENEW_DAYS)
+    created = False
     with transaction.atomic():
-        current = (NfceReservation.objects.select_for_update()
-                   .filter(terminal=terminal, environment=environment, released_at__isnull=True).order_by("created_at"))
-        for row in current:
-            if row.series != tenant.nfce_series or row.created_at < timezone.now() - timedelta(days=RESERVATION_MAX_DAYS):
+        rows = (NfceReservation.objects.select_for_update()
+                .filter(terminal=terminal, environment=environment, released_at__isnull=True).order_by("created_at"))
+        usable = []
+        for row in rows:
+            if row.series != tenant.nfce_series or row.created_at < now - timedelta(days=RESERVATION_MAX_DAYS):
                 release(row)
                 continue
-            if len(row.used) < row.end - row.start + 1:
-                reservation = row
-                break
-            row.released_at = timezone.now()
-            row.save(update_fields=["released_at"])
-        else:
+            if len(set(row.used)) >= row.end - row.start + 1:
+                # Every number came back to the cloud: nothing left to inutilize.
+                row.released_at = now
+                row.save(update_fields=["released_at"])
+                continue
+            free = [n for n in range(row.start, row.end + 1) if n not in row.used and n not in used_here]
+            if free and row.created_at >= stale:
+                usable.append((row, free))
+        if sum(len(free) for _row, free in usable) < RESERVATION_LOW:
             locked = Tenant.objects.select_for_update().get(pk=tenant.pk)
             start = locked.nfce_next_number
             locked.nfce_next_number = start + RESERVATION_SIZE
             locked.save(update_fields=["nfce_next_number"])
-            reservation = NfceReservation.objects.create(tenant=tenant, terminal=terminal, environment=environment,
-                                                         series=locked.nfce_series, start=start,
-                                                         end=start + RESERVATION_SIZE - 1)
+            row = NfceReservation.objects.create(tenant=tenant, terminal=terminal, environment=environment,
+                                                 series=locked.nfce_series, start=start, end=start + RESERVATION_SIZE - 1)
+            usable.append((row, list(range(row.start, row.end + 1))))
+            created = True
     tenant.refresh_from_db()
-    return {"id": str(reservation.pk), "environment": environment, "series": reservation.series,
-            "numbers": [n for n in range(reservation.start, reservation.end + 1) if n not in reservation.used],
+    newest = max((row for row, _free in usable), key=lambda row: row.created_at)
+    expires = min(row.created_at for row, _free in usable) + timedelta(days=RESERVATION_MAX_DAYS)
+    return {"id": str(newest.pk), "environment": environment, "series": newest.series,
+            "numbers": sorted(n for _row, free in usable for n in free),
+            "ranges": [[row.start, row.end] for row, _free in usable],
             "csc_id": csc_id, "csc": csc, "qr_version": 2, "issuer": issuer_data(tenant), "tech": tech_responsible(),
             "approx_fallback": str(tenant.approx_tax_fallback_rate) if tenant.approx_tax_fallback_rate is not None else None,
-            "expires_at": (reservation.created_at + timedelta(days=RESERVATION_MAX_DAYS)).isoformat()}
+            "expires_at": expires.isoformat(), "created": created}
 
 
 def release(reservation):
-    """Unused reserved numbers become gaps: inutilize them."""
-    reservation.released_at = timezone.now()
-    reservation.save(update_fields=["released_at"])
-    free = [n for n in range(reservation.start, reservation.end + 1) if n not in reservation.used]
-    taken = set(FiscalDocument.objects.filter(tenant=reservation.tenant, environment=reservation.environment,
-                                              series=reservation.series, number__in=free).values_list("number", flat=True))
-    free = [n for n in free if n not in taken]
-    ranges, start = [], None
-    for index, number in enumerate(free):
-        if start is None:
-            start = number
-        if index + 1 == len(free) or free[index + 1] != number + 1:
-            ranges.append((start, number))
-            start = None
-    for first, last in ranges:
-        request_inutilization(reservation.tenant, reservation.environment, reservation.series, first, last,
-                              "Numeracao reservada para contingencia e nao utilizada")
+    """Close a block; its unused numbers become gaps and are inutilized.
+
+    ``released_at`` is written in the same transaction that records (and enqueues) the
+    inutilizations: if any of them fails, the block stays open and the sweep tries again.
+    A company that is no longer emitting in the block's environment cannot inutilize: the block
+    is closed without it and the numbers stay as gaps for the accountant (docs/NFCE.md).
+    """
+    tenant = reservation.tenant
+    with transaction.atomic():
+        row = NfceReservation.objects.select_for_update().get(pk=reservation.pk)
+        if row.released_at:
+            reservation.released_at = row.released_at
+            return []
+        free = [n for n in range(row.start, row.end + 1) if n not in row.used]
+        taken = set(FiscalDocument.objects.filter(tenant=tenant, environment=row.environment, series=row.series,
+                                                  number__in=free).values_list("number", flat=True))
+        free = [n for n in free if n not in taken]
+        ranges, start = [], None
+        for index, number in enumerate(free):
+            if start is None:
+                start = number
+            if index + 1 == len(free) or free[index + 1] != number + 1:
+                ranges.append((start, number))
+                start = None
+        if ranges and tenant.fiscal_environment != row.environment:
+            logger.warning("Reservation %s released without inutilization (company environment %s, block %s): %s",
+                           row.pk, tenant.fiscal_environment, row.environment, ranges)
+        else:
+            for first, last in ranges:
+                request_inutilization(tenant, row.environment, row.series, first, last,
+                                      "Numeracao reservada para contingencia e nao utilizada")
+        row.released_at = timezone.now()
+        row.save(update_fields=["released_at"])
+        reservation.released_at = row.released_at
     return ranges
 
 
@@ -762,28 +921,48 @@ def register_terminal_contingency(terminal, sale, xml_text):
     for ok, message in checks:
         if not ok:
             raise APIError(message, 422)
+    qr_url = (nfe.findtext("infNFeSupl/qrCode") or "").strip()
+    url_key = (nfe.findtext("infNFeSupl/urlChave") or "").strip()
+    if not qr_url or not url_key:
+        raise APIError("XML da contingência sem QR Code ou URL de consulta (infNFeSupl)", 422)
+    # Signed BEFORE anything is written: a failure here (certificate missing, expired...) leaves no
+    # orphan document behind; the register keeps the note and uploads it again later.
+    signed = tobytes(backend_for(tenant, environment=environment, provider="sefaz").sign_received(nfe))
     with transaction.atomic():
         Sale.objects.select_for_update().get(pk=sale.pk)
         same = FiscalDocument.objects.filter(tenant=tenant, access_key=key).first()
         if same:
             if same.sale_id != sale.id:
                 raise APIError("Chave já usada por outra venda", 409)
+            if same.status == "contingency":
+                # Upload repeated (the register lost the answer, or a previous attempt failed half way):
+                # make sure it is signed and on its way to the SEFAZ.
+                FiscalPayload = _payload_model()
+                if not FiscalPayload.objects.filter(document=same).exclude(nfe_xml=None).exists():
+                    FiscalPayload.objects.filter(document=same).update(nfe_xml=signed)
+                _enqueue("fiscal.transmit", tenant, "fiscal.transmit:" + str(same.pk), {"document_id": str(same.pk)})
             return same
         reservation = (NfceReservation.objects.select_for_update()
                        .filter(terminal=terminal, environment=environment, series=parts["series"],
                                start__lte=parts["number"], end__gte=parts["number"]).first())
         if not reservation or parts["number"] in reservation.used:
-            raise APIError("Número fora da faixa reservada para este caixa", 409)
+            raise APIError("Número fora da faixa reservada para este caixa", 409, code="reservation_unknown")
+        if (reservation.released_at
+                or reservation.created_at < timezone.now() - timedelta(days=RESERVATION_MAX_DAYS)):
+            # The block was closed and its free numbers inutilized (or are about to be): this note can
+            # never be authorized. The register asks the cloud for a normal NFC-e instead.
+            raise APIError("Faixa de contingência já liberada; a nota será emitida de novo com outro número", 409,
+                           code="reservation_released")
         if FiscalDocument.objects.filter(tenant=tenant, environment=environment, series=parts["series"],
                                          number=parts["number"]).exists():
-            raise APIError("Número já usado", 409)
+            raise APIError("Número já usado", 409, code="reservation_unknown")
         previous = current_document(sale)
         document = FiscalDocument.objects.create(
             tenant=tenant, shop=sale.shop, sale=sale, terminal=terminal,
             provider="sefaz", external_id="pdv2-" + str(sale.pk) + "-t", environment=environment,
             series=parts["series"], number=parts["number"], access_key=key, emission_type=9, status="contingency",
             issued_at=_parse_time(infnfe.findtext("ide/dhEmi")) or timezone.now(),
-            qr_url=nfe.findtext("infNFeSupl/qrCode"), url_key=nfe.findtext("infNFeSupl/urlChave")[:300])
+            qr_url=qr_url, url_key=url_key[:300])
         reservation.used = sorted(set(reservation.used) | {parts["number"]})
         reservation.save(update_fields=["used"])
         if previous:
@@ -792,25 +971,28 @@ def register_terminal_contingency(terminal, sale, xml_text):
                                 "contingency_at": infnfe.findtext("ide/dhCont"),
                                 "contingency_reason": infnfe.findtext("ide/xJust"), "qr_version": 2,
                                 "sent": False, "origin": "terminal"})
+        _payload_model().objects.filter(document=document).update(nfe_xml=signed)
         _sync_sale(document)
-    backend = backend_for(tenant, environment=environment)
-    signed = backend.sign_received(nfe)
-    _payload_model().objects.filter(document=document).update(nfe_xml=tobytes(signed))
-    if previous:
-        _enqueue("fiscal.reconcile_replaced", tenant, "fiscal.reconcile_replaced:" + str(previous.pk),
-                 {"document_id": str(previous.pk)}, 30)
-    _enqueue("fiscal.transmit", tenant, "fiscal.transmit:" + str(document.pk), {"document_id": str(document.pk)})
+        # Same transaction: the note is never committed without its transmission job.
+        if previous:
+            _enqueue("fiscal.reconcile_replaced", tenant, "fiscal.reconcile_replaced:" + str(previous.pk),
+                     {"document_id": str(previous.pk)}, 30)
+        _enqueue("fiscal.transmit", tenant, "fiscal.transmit:" + str(document.pk), {"document_id": str(document.pk)})
     return document
 
 
 def sweep():
     """Periodic housekeeping: stale reservations are released (gaps inutilized)."""
     limit = timezone.now() - timedelta(days=RESERVATION_MAX_DAYS)
-    for reservation in NfceReservation.objects.filter(released_at__isnull=True, created_at__lt=limit):
+    released = 0
+    for reservation in NfceReservation.objects.select_related("tenant").filter(released_at__isnull=True,
+                                                                               created_at__lt=limit):
         try:
             release(reservation)
-        except APIError:
-            logger.warning("Reservation %s could not be released", reservation.pk)
+            released += 1
+        except Exception:  # noqa: BLE001 - one bad block must not stop the others; it stays open for the next run
+            logger.exception("Reservation %s could not be released", reservation.pk)
+    return released
 
 
 # ------------------------------------------------------------------ views data

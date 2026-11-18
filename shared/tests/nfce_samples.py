@@ -108,7 +108,7 @@ def _det(index, spec, values):
 
 
 def nfce(number, issued="2026-10-15T10:30:00-03:00", series=1, items=DEFAULT_ITEMS, payments=None,
-         change="0", emission_type=1, protocol=True, status="100", cnpj=CNPJ, uf="SP", crt=3, tp_amb=2,
+         change="0", emission_type=1, protocol=True, status="100", cnpj=CNPJ, uf="SP", crt=3, tp_amb=1,
          customer_cpf=None):
     """nfeProc completo (NFe + protNFe). protocol=False devolve só a NFe (contingência não transmitida)."""
     key = access_key(issued, number, series, cnpj, uf, 65, emission_type)
@@ -153,26 +153,26 @@ def key_of(xml):
     return text[start:start + 44]
 
 
-def cancel_event(key, when="2026-10-15T10:45:00-03:00", status="135", cnpj=CNPJ):
+def cancel_event(key, when="2026-10-15T10:45:00-03:00", status="135", cnpj=CNPJ, tp_amb=1):
     return (f'<?xml version="1.0" encoding="UTF-8"?><procEventoNFe xmlns="{NSURI}" versao="1.00">'
-            f'<evento versao="1.00"><infEvento Id="ID110111{key}01"><cOrgao>35</cOrgao><tpAmb>2</tpAmb>'
+            f'<evento versao="1.00"><infEvento Id="ID110111{key}01"><cOrgao>35</cOrgao><tpAmb>{tp_amb}</tpAmb>'
             f'<CNPJ>{cnpj}</CNPJ><chNFe>{key}</chNFe><dhEvento>{when}</dhEvento><tpEvento>110111</tpEvento>'
             f'<nSeqEvento>1</nSeqEvento><verEvento>1.00</verEvento><detEvento versao="1.00">'
             f'<descEvento>Cancelamento</descEvento><nProt>135000000000001</nProt>'
             f'<xJust>Cliente desistiu da compra no caixa</xJust></detEvento></infEvento></evento>'
-            f'<retEvento versao="1.00"><infEvento><tpAmb>2</tpAmb><cStat>{status}</cStat>'
+            f'<retEvento versao="1.00"><infEvento><tpAmb>{tp_amb}</tpAmb><cStat>{status}</cStat>'
             f'<xMotivo>Evento registrado e vinculado a NF-e</xMotivo><chNFe>{key}</chNFe><tpEvento>110111</tpEvento>'
             f'<nSeqEvento>1</nSeqEvento><dhRegEvento>{when}</dhRegEvento><nProt>135999000000001</nProt>'
             f'</infEvento></retEvento></procEventoNFe>').encode()
 
 
-def inutilization(start, end, series=1, when="2026-10-20T09:00:00-03:00", cnpj=CNPJ, year="26", status="102"):
+def inutilization(start, end, series=1, when="2026-10-20T09:00:00-03:00", cnpj=CNPJ, year="26", status="102", tp_amb=1):
     return (f'<?xml version="1.0" encoding="UTF-8"?><procInutNFe xmlns="{NSURI}" versao="4.00">'
             f'<inutNFe versao="4.00"><infInut Id="ID35{year}{cnpj}65{series:03d}{start:09d}{end:09d}">'
-            f'<tpAmb>2</tpAmb><xServ>INUTILIZAR</xServ><cUF>35</cUF><ano>{year}</ano><CNPJ>{cnpj}</CNPJ>'
+            f'<tpAmb>{tp_amb}</tpAmb><xServ>INUTILIZAR</xServ><cUF>35</cUF><ano>{year}</ano><CNPJ>{cnpj}</CNPJ>'
             f'<mod>65</mod><serie>{series}</serie><nNFIni>{start}</nNFIni><nNFFin>{end}</nNFFin>'
             f'<xJust>Falha no sistema pulou a numeracao</xJust></infInut></inutNFe>'
-            f'<retInutNFe versao="4.00"><infInut><tpAmb>2</tpAmb><cStat>{status}</cStat>'
+            f'<retInutNFe versao="4.00"><infInut><tpAmb>{tp_amb}</tpAmb><cStat>{status}</cStat>'
             f'<xMotivo>Inutilizacao de numero homologado</xMotivo><cUF>35</cUF><ano>{year}</ano><CNPJ>{cnpj}</CNPJ>'
             f'<mod>65</mod><serie>{series}</serie><nNFIni>{start}</nNFIni><nNFFin>{end}</nNFFin>'
             f'<dhRecbto>{when}</dhRecbto><nProt>135000000777</nProt></infInut></retInutNFe></procInutNFe>').encode()

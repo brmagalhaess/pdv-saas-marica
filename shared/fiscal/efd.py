@@ -21,6 +21,7 @@ Regras do Guia aplicadas à NFC-e (registro C100, exceções):
 import re
 from datetime import date, timedelta
 
+from . import nfce_xml
 from .month_report import analytic_rows
 from .validators import valid_cnpj, valid_cpf
 
@@ -112,6 +113,9 @@ def _payment_indicator(nfe):
 def build(company, accountant, year, month, documents, inutilizations=(), profile="A", options=None):
     """Monta o TXT. Devolve {text, data (bytes latin-1), lines, counts, e110, warnings, problems, version}."""
     options = options or {}
+    # Homologation (tpAmb=2) never goes to the SPED.
+    documents = [doc for doc in documents if not nfce_xml.is_homologation(doc)]
+    inutilizations = [inut for inut in inutilizations if not nfce_xml.is_homologation(inut)]
     if profile not in ("A", "B", "C"):
         raise EFDError("Perfil de apresentação deve ser A, B ou C")
     start, end = month_bounds(year, month)

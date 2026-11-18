@@ -19,6 +19,7 @@ from shared.fiscal import efd
 from shared.tests import nfce_samples as S
 
 from .accountant import jobs, sources
+from .accountant import package as package_module
 from .accountant.models import AccountantDelivery, AccountantPackage, AccountantSettings
 from .models import FiscalDocument, Membership, Plan, Sale, Shop, Subscription, Tenant
 
@@ -107,6 +108,17 @@ class AccountantBase(TestCase):
 
 
 class SourcesTests(AccountantBase):
+    def test_homologation_never_enters_the_package(self):
+        production = self.doc(S.nfce(1, issued="2026-10-05T10:00:00-03:00"))
+        self.doc(S.nfce(2, issued="2026-10-05T11:00:00-03:00", tp_amb=2))  # legacy row, XML says homologation
+        marked = self.doc(S.nfce(3, issued="2026-10-05T12:00:00-03:00"))
+        FiscalDocument.objects.filter(pk=marked.pk).update(environment="homologation")
+        FiscalDocument.objects.filter(pk=production.pk).update(environment="production")
+        docs = sources.iter_month(self.tenant, 2026, 10)
+        self.assertEqual([d["id"] for d in docs], [str(production.pk)])
+        with patch.object(sources, "load_inutilization_xmls", lambda tenant: [S.inutilization(4, 4, tp_amb=2)]):
+            self.assertEqual(sources.inutilizations_month(self.tenant, 2026, 10), [])
+
     def test_reads_authorized_cancelled_inutilized_and_contingency_from_xml(self):
         self.month_fixture()
         self.start_patches()
@@ -276,14 +288,14 @@ class DeliveryTests(AccountantBase):
         self.assertEqual(message.attachments, [])
         self.assertIn("10/2026", message.subject)
         self.assertIn("PVA", message.body)
-        link = re.search(r"https?://\S+/api/v1/accountant/download/(\S+)", message.body)
+        link = re.search(r"https?://\S+/api/v1/accountant/download\?t=(\S+)", message.body)
         token = link.group(1)
         delivery = AccountantDelivery.objects.get()
         self.assertEqual(delivery.status, "sent")
         self.assertNotIn(token, delivery.token_hash)
         self.assertAlmostEqual((delivery.link_expires_at - timezone.now()).days, 29, delta=1)
         self.client.logout()
-        download = self.client.get("/api/v1/accountant/download/" + token)
+        download = self.client.get("/api/v1/accountant/download", {"t": token})
         self.assertEqual(download.status_code, 200)
         self.assertEqual(download["Content-Type"], "application/zip")
         self.assertTrue(zipfile.ZipFile(io.BytesIO(download.content)).namelist())
@@ -294,6 +306,35 @@ class DeliveryTests(AccountantBase):
         listing = self.api("GET", "packages").json()["results"][0]
         self.assertEqual(listing["deliveries"][0]["status"], "sent")
         self.assertEqual(listing["deliveries"][0]["downloads"], 1)
+        # Old link form (/download/<token>) is still accepted for a valid token.
+        AccountantDelivery.objects.update(link_expires_at=timezone.now() + timedelta(days=1))
+        self.assertEqual(self.client.get("/api/v1/accountant/download/" + token).status_code, 200)
+
+    def test_token_is_recorded_before_the_email_leaves(self):
+        self.month_fixture()
+        self.start_patches()
+        seen = {}
+
+        def capture(message, fail_silently=False):
+            token = re.search(r"download\?t=(\S+)", message.body).group(1)
+            # At the moment the e-mail is handed to SMTP the link already works.
+            seen["delivery"] = bool(package_module.find_by_token(token))
+            return 1
+
+        with patch("django.core.mail.EmailMessage.send", capture):
+            self.api("POST", "packages", {"year": 2026, "month": 10, "send": True}, role="finance")
+            self.run_jobs()
+        self.assertTrue(seen.get("delivery"))
+
+    def test_public_download_is_rate_limited(self):
+        self.client.logout()
+        codes = [self.client.get("/api/v1/accountant/download", {"t": "x" * 40}).status_code for _ in range(21)]
+        self.assertEqual(codes[:20], [404] * 20)
+        self.assertEqual(codes[20], 429)
+
+    def test_smtp_has_a_timeout(self):
+        from django.conf import settings
+        self.assertEqual(settings.EMAIL_TIMEOUT, 15)
 
     def test_email_failure_is_recorded_and_resend_works(self):
         self.month_fixture()

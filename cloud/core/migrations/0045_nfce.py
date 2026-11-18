@@ -4,17 +4,11 @@ import core.models
 import django.db.models.deletion
 from django.db import migrations, models
 
-# Older provider states collapse into the five NFC-e states of docs/NFCE.md.
-LEGACY_STATUS = {"queued": "pending", "processing": "pending", "denied": "rejected", "cancel_pending": "authorized"}
-
-
-def normalize_statuses(apps, schema_editor):
-    FiscalDocument = apps.get_model("core", "FiscalDocument")
-    Sale = apps.get_model("core", "Sale")
-    for old, new in LEGACY_STATUS.items():
-        FiscalDocument.objects.filter(status=old).update(status=new)
-        Sale.objects.filter(fiscal_status=old).update(fiscal_status=new)
-    FiscalDocument.objects.filter(environment="").update(model=65)
+# Schema only. The data changes (legacy statuses, Focus NFe backfill) live in 0045_nfce_status:
+# on PostgreSQL an UPDATE in the same transaction as the deferred CREATE INDEX of this migration
+# fails with "cannot CREATE INDEX ... because it has pending trigger events".
+# Every new NOT NULL column of an existing table has a database default (db_default) so the
+# previous release keeps inserting rows during the deploy window and after a rollback.
 
 
 class Migration(migrations.Migration):
@@ -99,7 +93,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='fiscaldocument',
             name='access_key',
-            field=models.CharField(blank=True, db_index=True, default='', max_length=44),
+            field=models.CharField(db_default='', blank=True, db_index=True, default='', max_length=44),
         ),
         migrations.AddField(
             model_name='fiscaldocument',
@@ -114,12 +108,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='fiscaldocument',
             name='emission_type',
-            field=models.PositiveSmallIntegerField(default=1),
+            field=models.PositiveSmallIntegerField(db_default=1, default=1),
         ),
         migrations.AddField(
             model_name='fiscaldocument',
             name='environment',
-            field=models.CharField(blank=True, default='', max_length=20),
+            field=models.CharField(db_default='', blank=True, default='', max_length=20),
         ),
         migrations.AddField(
             model_name='fiscaldocument',
@@ -129,7 +123,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='fiscaldocument',
             name='model',
-            field=models.PositiveSmallIntegerField(default=65),
+            field=models.PositiveSmallIntegerField(db_default=65, default=65),
         ),
         migrations.AddField(
             model_name='fiscaldocument',
@@ -139,7 +133,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='fiscaldocument',
             name='qr_url',
-            field=models.TextField(blank=True, default=''),
+            field=models.TextField(db_default='', blank=True, default=''),
         ),
         migrations.AddField(
             model_name='fiscaldocument',
@@ -154,7 +148,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='fiscaldocument',
             name='status_code',
-            field=models.CharField(blank=True, default='', max_length=10),
+            field=models.CharField(db_default='', blank=True, default='', max_length=10),
         ),
         migrations.AddField(
             model_name='fiscaldocument',
@@ -164,12 +158,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='fiscaldocument',
             name='url_key',
-            field=models.CharField(blank=True, default='', max_length=300),
+            field=models.CharField(db_default='', blank=True, default='', max_length=300),
         ),
         migrations.AddField(
             model_name='paymentmethod',
             name='print_rule',
-            field=models.CharField(blank=True, default='', max_length=10),
+            field=models.CharField(db_default='', blank=True, default='', max_length=10),
         ),
         migrations.AddIndex(
             model_name='fiscaldocument',
@@ -204,5 +198,4 @@ class Migration(migrations.Migration):
             name='terminal',
             field=models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='core.terminal'),
         ),
-        migrations.RunPython(normalize_statuses, migrations.RunPython.noop),
     ]

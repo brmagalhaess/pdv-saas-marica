@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -52,6 +53,9 @@ class FakeCloud:
         self.online = online
         self.calls = []
         self.authorize = True
+        self.disabled = False
+        self.contingency_error = None
+        self.expires_in_days = 20
 
     def __call__(self, method, url, timeout=None, **kwargs):
         path = url.split("/api/v1/terminal/", 1)[1]
@@ -61,6 +65,8 @@ class FakeCloud:
         if path == "sync":
             return Answer(200, {"accepted_event_ids": [e["event_id"] for e in kwargs["json"]["events"]],
                                 "conflicts": [], "quarantined": []})
+        if path == "nfce" and self.disabled:
+            return Answer(200, {"status": "disabled", "fiscal": None})
         if path == "nfce":
             key = keys.access_key("SP", "2611", "11222333000181", 65, 1, 7, 1, "12345670")
             return Answer(200, {"status": "authorized", "fiscal": {
@@ -72,7 +78,11 @@ class FakeCloud:
         if path == "nfce/reserve":
             return Answer(200, {"id": "r1", "environment": "homologation", "series": 1, "numbers": list(range(11, 21)),
                                 "csc_id": "000001", "csc": CSC, "qr_version": 2, "issuer": ISSUER, "tech": {},
-                                "approx_fallback": "31.45"})
+                                "approx_fallback": "31.45", "ranges": [[11, 20]],
+                                "expires_at": datetime.fromtimestamp(time.time() + self.expires_in_days * 86400,
+                                                                     timezone.utc).isoformat()})
+        if path == "nfce/contingency" and self.contingency_error:
+            return Answer(409, {"error": "Faixa liberada", "code": self.contingency_error})
         if path == "nfce/contingency":
             return Answer(200, {"status": "contingency", "fiscal": {"status": "contingency", "state": "contingency"}})
         if path.startswith("nfce/"):
@@ -228,6 +238,93 @@ class NfceTerminalTests(unittest.TestCase):
             self.assertEqual(sync.nfce_step(self.store)["refreshed"], 1)
         with self.store.connection() as conn:
             self.assertEqual(nfce.row(conn, sale["id"])["status"], "authorized")
+
+    def reserve(self, cloud=None):
+        cloud = cloud or FakeCloud()
+        with patch.object(sync.requests, "request", cloud):
+            sync.nfce_step(self.store)
+        return cloud
+
+    def test_reservation_asks_are_spaced_and_send_the_numbers_used_here(self):
+        cloud = self.reserve()
+        self.assertEqual(sum(1 for call in cloud.calls if call[1] == "nfce/reserve"), 1)
+        with self.store.transaction() as conn:
+            current = nfce.reservation(conn)
+            current["numbers"], current["used"] = [19, 20], list(range(11, 19))
+            conn.execute("UPDATE nfce_reservation SET data=? WHERE id=1", (json.dumps(current),))
+        # Low on numbers, but the last ask was a moment ago: no new request yet.
+        self.assertFalse(self.store.nfce_needs_reservation())
+        with self.store.transaction() as conn:
+            self.store._set_meta(conn, "nfce_reserve_attempt_at", str(int(time.time() * 1000) - 10 * 60 * 1000))
+        self.assertTrue(self.store.nfce_needs_reservation())
+        self.reserve(cloud)
+        asks = [call for call in cloud.calls if call[1] == "nfce/reserve"]
+        self.assertEqual(asks[-1][2], {"used": list(range(11, 19))})
+
+    def test_expired_or_expiring_block_is_not_used(self):
+        cloud = FakeCloud()
+        cloud.expires_in_days = 2  # inside the renewal window: the worker asks again
+        self.reserve(cloud)
+        with self.store.connection() as conn:
+            self.assertTrue(nfce.needs_reservation(conn, nfce.config(conn, self.store._meta)))
+        cloud.expires_in_days = 0.5  # less than the safety margin: no contingency note with it
+        with self.store.transaction() as conn:
+            self.store._set_meta(conn, "nfce_reserve_attempt_at", "0")
+        self.reserve(cloud)
+        sale = self.sell()
+        cloud.online = False
+        with patch.object(sync.requests, "request", cloud):
+            detail = sync.request_nfce(self.store, sale["id"], wait_s=2)
+        self.assertEqual(detail["nfce"]["status"], "pending")
+        self.assertIn("vencida", detail["nfce"]["error"])
+
+    def test_block_released_in_the_cloud_turns_the_note_into_a_normal_request(self):
+        cloud = self.reserve()
+        sale = self.sell()
+        cloud.online = False
+        with patch.object(sync.requests, "request", cloud):
+            sync.request_nfce(self.store, sale["id"], wait_s=2)
+        cloud.online, cloud.contingency_error = True, "reservation_released"
+        with patch.object(sync.requests, "request", cloud):
+            sync.nfce_step(self.store)
+        with self.store.connection() as conn:
+            self.assertEqual(nfce.row(conn, sale["id"])["status"], "pending")
+            self.assertEqual(nfce.pending_uploads(conn), [])
+        cloud.contingency_error = None
+        with patch.object(sync.requests, "request", cloud):
+            self.assertEqual(sync.nfce_step(self.store)["retried"], 1)
+        self.assertEqual(self.store.sale_detail(sale["id"])["fiscal"]["status"], "authorized")
+
+    def test_sale_while_nfce_is_off_in_the_cloud_never_gets_a_late_note(self):
+        sale = self.sell()
+        cloud = FakeCloud()
+        cloud.disabled = True
+        with patch.object(sync.requests, "request", cloud):
+            sync.request_nfce(self.store, sale["id"])
+        cloud.disabled = False
+        with self.store.connection() as conn:
+            self.assertEqual(nfce.row(conn, sale["id"])["status"], "disabled")
+            self.assertEqual(nfce.to_retry(conn), [])
+        with patch.object(sync.requests, "request", cloud):
+            self.assertEqual(sync.nfce_step(self.store)["retried"], 0)
+        self.assertEqual(sum(1 for call in cloud.calls if call[:2] == ("POST", "nfce")), 1)
+
+    def test_csc_is_not_in_local_backups(self):
+        self.reserve()
+        backup = self.store.backup_now()
+        with sqlite3.connect(Path(backup["directory"]) / backup["name"]) as conn:
+            data = json.loads(conn.execute("SELECT data FROM nfce_reservation").fetchone()[0])
+        self.assertNotIn("csc", data)
+        self.assertEqual(data["numbers"][0], 11)
+        from terminal import mirror
+        staging, _seq = mirror._local_copy(self.store)
+        try:
+            with sqlite3.connect(staging) as conn:
+                self.assertNotIn("csc", json.loads(conn.execute("SELECT data FROM nfce_reservation").fetchone()[0]))
+        finally:
+            mirror._remove_local_copy(staging)
+        with self.store.connection() as conn:
+            self.assertEqual(nfce.reservation(conn)["csc"], CSC)  # the live database keeps it
 
     def test_offline_without_reservation_stays_pending_and_is_retried(self):
         sale = self.sell()

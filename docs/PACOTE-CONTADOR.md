@@ -54,7 +54,7 @@ Inutilização entra no mês do recibo (`dhRecbto`).
   se a frente de emissão criar um campo com o mesmo propósito, unificar no merge mantendo este nome).
 - Demais dados do contador e opções: `AccountantSettings` (nome, CPF, CRC, CNPJ do escritório, endereço,
   telefone, município IBGE, envio automático, perfil do SPED, SPED no Simples, E116).
-- E-mail **sem anexo**, com link `/api/v1/accountant/download/<token>`: token aleatório de 256 bits,
+- E-mail **sem anexo**, com link `/api/v1/accountant/download?t=<token>` (o log de acesso do gunicorn grava só o caminho, sem a query: `infra/Dockerfile.cloud`; um log de acesso do proxy, se ligado, precisa da mesma regra; o formato antigo `/download/<token>` continua aceito). Limite de 20 tentativas por IP a cada 10 min (`RateLimit`). O token é gravado **antes** de o e-mail sair (falha no envio o invalida): token aleatório de 256 bits,
   guardado só como SHA-256, **válido 30 dias**, um por envio, contagem de downloads e auditoria.
 - O ZIP fica guardado 35 dias (ou até o último link vencer) e depois é apagado pelo worker; os XMLs
   continuam no banco: basta gerar de novo.
@@ -74,7 +74,7 @@ Inutilização entra no mês do recibo (`dhRecbto`).
 | GET | `/api/v1/accountant/packages/<id>` (detalhe com pendências) | idem |
 | GET | `/api/v1/accountant/packages/<id>/download` (ZIP) e `/sped` (TXT) | idem |
 | POST | `/api/v1/accountant/packages/<id>/send` | idem |
-| GET | `/api/v1/accountant/download/<token>` (link do e-mail, sem login) | público com token |
+| GET | `/api/v1/accountant/download?t=<token>` (link do e-mail, sem login) | público com token |
 
 Pacote de outra empresa responde 404; `X-Tenant-ID` de empresa alheia responde 403. Mês futuro: 400.
 SPED pedido no Simples sem confirmar: 409 `sped_simples_confirm`.
@@ -159,7 +159,11 @@ XML (`operations.FiscalPayload.xml_content` — nfeProc) e usa campos do modelo 
 existirem, o pacote funciona com o que houver: a nota com status `cancelled` sem evento sai em canceladas/ com
 aviso, e não há inutilizações. Só modelo 65 entra.
 
-**Migração:** `core/0046_pacote_contador`, depois de `core/0045_nfce`.
+**Só produção:** notas e inutilizações de homologação nunca entram no pacote, no resumo nem no SPED. A consulta
+filtra `environment="production"` (notas antigas sem ambiente passam e são decididas pelo XML) e
+`normalize`/`month_report.summarize`/`efd.build` descartam todo XML com `tpAmb=2` (`nfce_xml.is_homologation`).
+
+**Migração:** `core/0046_pacote_contador`, depois de `core/0045_nfce_status`.
 
 ## Código
 

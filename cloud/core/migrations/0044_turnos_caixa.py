@@ -14,12 +14,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='cashsession',
             name='closing_totals',
-            field=models.JSONField(blank=True, default=dict),
+            field=models.JSONField(blank=True, db_default={}, default=dict),
         ),
         migrations.AddField(
             model_name='cashsession',
             name='paused_ms',
-            field=models.BigIntegerField(default=0),
+            field=models.BigIntegerField(db_default=0, default=0),
         ),
         migrations.CreateModel(
             name='CashPause',

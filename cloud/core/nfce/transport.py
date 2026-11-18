@@ -5,8 +5,10 @@
   as autoridades (certifi + ICP-Brasil). Nunca se desliga a verificação.
 - A chave privada só existe em memória durante a carga do contexto TLS: o PEM vai para um
   diretório temporário 0700, é carregado e apagado em seguida (o ``ssl`` do Python só lê arquivo).
-- Erros: ``unreachable`` = nada foi enviado (DNS, conexão recusada, handshake); ``outcome_unknown``
-  = o pedido pode ter chegado (tempo de resposta esgotado). A emissão trata cada caso.
+- Erros: ``unreachable`` = certamente nada foi enviado (DNS, conexão recusada, tempo de conexão,
+  handshake TLS) e o mesmo número pode sair em contingência; ``outcome_unknown`` = o pedido pode
+  ter chegado (tempo de leitura esgotado, conexão derrubada depois de aberta, resposta truncada):
+  a emissão consulta e, com o cliente esperando, sai contingência com número NOVO (``never_sent``).
 """
 import os
 import shutil
@@ -15,6 +17,7 @@ import tempfile
 
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3 import exceptions as urllib3_exceptions
 
 from integrations.base import ProviderError
 from shared.nfce.webservices import SERVICES
@@ -75,6 +78,33 @@ class _ContextAdapter(HTTPAdapter):
         return super().proxy_manager_for(*args, **kwargs)
 
 
+def _chain(exc, depth=0):
+    """The exception, its wrapped reasons (urllib3 MaxRetryError.reason, args) and causes."""
+    if exc is None or depth > 8:
+        return
+    yield exc
+    seen = []
+    for inner in (getattr(exc, "reason", None), exc.__cause__, exc.__context__,
+                  *(arg for arg in getattr(exc, "args", ()) if isinstance(arg, BaseException))):
+        if isinstance(inner, BaseException) and inner is not exc and all(inner is not s for s in seen):
+            seen.append(inner)
+            yield from _chain(inner, depth + 1)
+
+
+def never_sent(exc):
+    """True only when the request certainly did not leave this machine: connection not established
+    (DNS failure, refused, connect timeout) or the TLS handshake failed. Everything else is unknown."""
+    if isinstance(exc, requests.ConnectTimeout):
+        return True
+    for item in _chain(exc):
+        if isinstance(item, (urllib3_exceptions.NewConnectionError, urllib3_exceptions.ConnectTimeoutError,
+                             urllib3_exceptions.SSLError, ssl.SSLError)):
+            return True
+        if isinstance(item, (urllib3_exceptions.ProtocolError, urllib3_exceptions.ReadTimeoutError)):
+            return False
+    return False
+
+
 class SoapTransport:
     """``call(url, service, body_element) -> bytes`` (resposta SOAP)."""
 
@@ -93,17 +123,13 @@ class SoapTransport:
         try:
             response = self.session.post(url, data=envelope(service, body).encode("utf-8"), headers=headers,
                                          timeout=self.timeout, allow_redirects=False)
-        except (requests.ConnectTimeout, requests.exceptions.SSLError) as exc:
-            raise TransportError("SEFAZ indisponível (sem conexão)", unreachable=True) from exc
-        except requests.ConnectionError as exc:
-            # A connection reset after the request was written is ambiguous; a refused one is not.
-            unknown = isinstance(exc, requests.exceptions.ChunkedEncodingError)
-            raise TransportError("SEFAZ indisponível (sem conexão)", unreachable=not unknown,
-                                 outcome_unknown=unknown) from exc
-        except requests.Timeout as exc:
-            raise TransportError("SEFAZ não respondeu a tempo; a nota será consultada", outcome_unknown=True) from exc
         except requests.RequestException as exc:
-            raise TransportError("Falha de comunicação com a SEFAZ", outcome_unknown=True) from exc
+            if never_sent(exc):
+                raise TransportError("SEFAZ indisponível (sem conexão)", unreachable=True) from exc
+            # Anything after the connection was open (read timeout, connection dropped, broken
+            # chunked answer...) may have delivered the request: the outcome is unknown and the
+            # number must never be reused for a contingency note.
+            raise TransportError("SEFAZ não respondeu; a nota será consultada", outcome_unknown=True) from exc
         if response.status_code >= 500 and not response.content:
             raise TransportError(f"SEFAZ fora do ar (HTTP {response.status_code})", status=response.status_code,
                                  outcome_unknown=True)

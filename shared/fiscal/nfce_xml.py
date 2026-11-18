@@ -27,6 +27,15 @@ TOTAL_FIELDS = ("vBC", "vICMS", "vICMSDeson", "vFCP", "vBCST", "vST", "vFCPST", 
                 "vOutro", "vNF", "vTotTrib")
 
 
+def is_homologation(item):
+    """Normalized document (with "nfe") or parsed inutilization whose XML says tpAmb=2 (homologação).
+
+    Homologation notes have no fiscal value: the accountant package, the month summary and the
+    SPED never include them, whatever the database says."""
+    nfe = item.get("nfe") if isinstance(item, dict) and "nfe" in item else item
+    return isinstance(nfe, dict) and str(nfe.get("environment") or "") == "2"
+
+
 class XMLError(ValueError):
     pass
 
@@ -240,7 +249,7 @@ def parse_inutilization(raw):
     return {
         "model": pick("mod"), "series": int(pick("serie") or 0),
         "start": int(pick("nNFIni") or 0), "end": int(pick("nNFFin") or 0),
-        "year": pick("ano"), "cnpj": pick("CNPJ"), "reason": _text(inf, "xJust"),
+        "year": pick("ano"), "cnpj": pick("CNPJ"), "reason": _text(inf, "xJust"), "environment": pick("tpAmb"),
         "status": _text(ret, "cStat"), "protocol": _text(ret, "nProt"),
         "received_at": parse_datetime(_text(ret, "dhRecbto")), "raw": data,
     }

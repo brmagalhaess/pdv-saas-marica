@@ -80,7 +80,7 @@ def load_inutilization_xmls(tenant):
     model = _model(INUTILIZATION_MODEL_NAMES)
     if model is None:
         return []
-    rows = model.objects.filter(tenant=tenant)
+    rows = _fiscal_rows(model, tenant=tenant)
     return [xml for xml in (_xml_of(row) for row in rows) if xml]
 
 
@@ -91,9 +91,18 @@ def _window(year, month, zone):
     return start, end, begin, finish
 
 
+def _fiscal_rows(model, **filters):
+    """Rows of the production environment only (homologation has no fiscal value). Legacy rows
+    without environment are kept here and decided by the tpAmb of their XML (normalize)."""
+    rows = model.objects.filter(**filters)
+    if _has_field(model, "environment"):
+        rows = rows.filter(environment__in=("production", ""))
+    return rows
+
+
 def _candidates(tenant, begin, finish):
     from core.models import FiscalDocument
-    rows = FiscalDocument.objects.filter(tenant=tenant)
+    rows = _fiscal_rows(FiscalDocument, tenant=tenant)
     margin = timedelta(days=2)
     if _has_field(FiscalDocument, "issued_at"):
         from django.db.models import Q
@@ -146,6 +155,8 @@ def normalize(row, xml, events, zone):
     else:
         status = "pending"
     if nfe and nfe.get("model") and nfe["model"] != "65":
+        return None
+    if nfce_xml.is_homologation(nfe) or (not nfe and getattr(row, "environment", "") == "homologation"):
         return None
     if not nfe and str(getattr(row, "model", 65) or 65) != "65":
         return None
@@ -206,6 +217,8 @@ def inutilizations_month(tenant, year, month):
             continue
         if inut["status"] not in nfce_xml.INUT_OK or (inut["model"] and inut["model"] != "65"):
             continue
+        if nfce_xml.is_homologation(inut):
+            continue
         when = inut["received_at"]
         if when is None:
             continue
@@ -223,6 +236,6 @@ def previous_numbers(tenant, year, month):
         return {}
     zone = local_zone()
     _, _, begin, _ = _window(year, month, zone)
-    rows = (FiscalDocument.objects.filter(tenant=tenant, issued_at__lt=begin, issued_at__gte=begin - timedelta(days=62))
+    rows = (_fiscal_rows(FiscalDocument, tenant=tenant, issued_at__lt=begin, issued_at__gte=begin - timedelta(days=62))
             .exclude(status__in=("rejected", "pending")).values("series").annotate(top=Max("number")))
     return {int(r["series"] or 0): int(r["top"] or 0) for r in rows if r["top"]}

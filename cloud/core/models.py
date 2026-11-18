@@ -55,11 +55,11 @@ class Tenant(models.Model):
     tax_regime = models.CharField(max_length=30, default="simples_nacional")
     # Código de Regime Tributário of the NF-e: 1 Simples, 2 Simples excesso de sublimite,
     # 3 Regime Normal, 4 MEI.
-    crt = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(4)])
-    cnae = models.CharField(max_length=7, blank=True)
+    crt = models.PositiveSmallIntegerField(default=1, db_default=1, validators=[MinValueValidator(1), MaxValueValidator(4)])
+    cnae = models.CharField(max_length=7, blank=True, default="", db_default="")
     # cRegTrib (ISSQN), optional: "" or "1".."6".
-    special_tax_regime = models.CharField(max_length=1, blank=True)
-    city_ibge_code = models.CharField(max_length=7, blank=True)
+    special_tax_regime = models.CharField(max_length=1, blank=True, default="", db_default="")
+    city_ibge_code = models.CharField(max_length=7, blank=True, default="", db_default="")
     # pCredSN: ICMS credit rate (%) the Simples company may transfer (CSOSN 101/201).
     simples_credit_rate = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
     # Lei 12.741 approximate tax (%) used when the IBPT table has no row for the NCM.
@@ -69,7 +69,7 @@ class Tenant(models.Model):
     nfce_next_number = models.PositiveBigIntegerField(default=1)
     # E-mail of the company's accountant: receives the monthly accountant package
     # (core/accountant, docs/PACOTE-CONTADOR.md). Other accountant data live in AccountantSettings.
-    accountant_email = models.EmailField(max_length=254, blank=True, default="")
+    accountant_email = models.EmailField(max_length=254, blank=True, default="", db_default="")
     roles_version = models.PositiveIntegerField(default=1)
     # Percentage in basis points: 10000 = 100%. This is the hard company
     # ceiling for discounts, including manager approvals.
@@ -233,7 +233,7 @@ class Product(models.Model):
     tax_profile = models.ForeignKey("TaxProfile", on_delete=models.PROTECT, null=True, blank=True,
                                     related_name="products")
     # Product-specific fiscal fields over the profile (shared.fiscal.schema.FIELDS).
-    fiscal_overrides = models.JSONField(default=dict, blank=True)
+    fiscal_overrides = models.JSONField(default=dict, db_default={}, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -436,7 +436,7 @@ class PaymentMethod(models.Model):
     position = models.PositiveIntegerField(default=0)
     # Printing of the NFC-e DANFE after a sale paid with this method: always | ask | never.
     # "" = default of the kind (shared/nfce/payments.py: cash and Pix ask, cards always).
-    print_rule = models.CharField(max_length=10, blank=True, default="")
+    print_rule = models.CharField(max_length=10, blank=True, default="", db_default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -588,8 +588,8 @@ class CashSession(models.Model):
     incomplete = models.BooleanField(default=False)
     # Operator shift (terminals with "cash_shifts"): time paused and the totals the terminal
     # printed on the operator report when the shift was closed. Empty for older terminals.
-    paused_ms = models.BigIntegerField(default=0)
-    closing_totals = models.JSONField(default=dict, blank=True)
+    paused_ms = models.BigIntegerField(default=0, db_default=0)
+    closing_totals = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Meta:
         indexes = [models.Index(fields=["tenant", "-opened_at"])]
@@ -872,22 +872,22 @@ class FiscalDocument(models.Model):
     provider = models.CharField(max_length=40, default="focusnfe")
     external_id = models.CharField(max_length=160, blank=True)
     kind = models.CharField(max_length=20, default="nfce")
-    model = models.PositiveSmallIntegerField(default=65)
-    environment = models.CharField(max_length=20, blank=True, default="")
+    model = models.PositiveSmallIntegerField(default=65, db_default=65)
+    environment = models.CharField(max_length=20, blank=True, default="", db_default="")
     series = models.PositiveIntegerField(null=True, blank=True)
     number = models.PositiveBigIntegerField(null=True, blank=True)
-    access_key = models.CharField(max_length=44, blank=True, default="", db_index=True)
+    access_key = models.CharField(max_length=44, blank=True, default="", db_default="", db_index=True)
     # tpEmis: 1 normal, 9 contingência off-line da NFC-e.
-    emission_type = models.PositiveSmallIntegerField(default=1)
+    emission_type = models.PositiveSmallIntegerField(default=1, db_default=1)
     issued_at = models.DateTimeField(null=True, blank=True)
     authorized_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=40, default="pending")
-    status_code = models.CharField(max_length=10, blank=True, default="")
+    status_code = models.CharField(max_length=10, blank=True, default="", db_default="")
     authorization = models.CharField(max_length=160, blank=True)
     xml_url = models.URLField(blank=True)
-    qr_url = models.TextField(blank=True, default="")
-    url_key = models.CharField(max_length=300, blank=True, default="")
+    qr_url = models.TextField(blank=True, default="", db_default="")
+    url_key = models.CharField(max_length=300, blank=True, default="", db_default="")
     error_message = models.TextField(blank=True)
     # A normal attempt whose answer never came back is replaced by a contingency note with
     # another number; the old number is checked later (cancel if authorized, else inutilize).

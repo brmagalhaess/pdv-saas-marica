@@ -144,6 +144,8 @@ EMAIL_HOST_USER = os.environ.get("PDV_EMAIL_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("PDV_EMAIL_PASSWORD", "")
 EMAIL_USE_TLS = os.environ.get("PDV_EMAIL_USE_TLS", "1") == "1"
 DEFAULT_FROM_EMAIL = os.environ.get("PDV_DEFAULT_FROM_EMAIL", "PDV2 <no-reply@pdv2.local>")
+# Seconds; without it a stuck SMTP server would hold the worker job (and its lock) forever.
+EMAIL_TIMEOUT = int(os.environ.get("PDV_EMAIL_TIMEOUT", "15"))
 
 # Everything goes to stdout, which the container runtime already collects.
 # Without this, Django only logs errors when DEBUG is on and unhandled

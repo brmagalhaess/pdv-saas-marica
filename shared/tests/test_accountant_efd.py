@@ -107,6 +107,17 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("Mercado &lt;Teste&gt;", html)
         self.assertEqual(month_report.money(123456789), "1.234.567,89")
 
+    def test_homologation_documents_and_inutilizations_are_ignored(self):
+        production = doc(S.nfce(1, issued="2026-10-01T09:00:00-03:00"))
+        homologation = doc(S.nfce(2, issued="2026-10-01T18:00:00-03:00", tp_amb=2))
+        test_inut = nfce_xml.parse_inutilization(S.inutilization(3, 3, tp_amb=2))
+        test_inut["local_date"] = test_inut["received_at"].date()
+        summary = month_report.summarize([production, homologation], [test_inut], 2026, 10)
+        self.assertEqual(summary["by_day"][0]["count"], 1)
+        result = efd.build(COMPANY, ACCOUNTANT, 2026, 10, [production, homologation], [test_inut], options=E116)
+        self.assertEqual(result["documents"], {"authorized": 1, "cancelled": 0, "inutilized": 0})
+        self.assertNotIn(homologation["key"], result["text"])
+
 
 class EFDTests(unittest.TestCase):
     def build(self, docs, inutilizations=(), year=2026, month=10, **options):

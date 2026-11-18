@@ -2614,7 +2614,18 @@ class Store:
 
     def nfce_needs_reservation(self):
         with self.connection() as conn:
-            return nfce.needs_reservation(conn, nfce.config(conn, self._meta))
+            try:
+                last = int(self._meta(conn, "nfce_reserve_attempt_at") or 0)
+            except (TypeError, ValueError):
+                last = 0
+            return nfce.needs_reservation(conn, nfce.config(conn, self._meta), last_attempt_ms=last)
+
+    def nfce_reservation_request(self):
+        """Body of POST nfce/reserve; also records the attempt (minimum interval between asks)."""
+        with self.transaction() as conn:
+            self._set_meta(conn, "nfce_reserve_attempt_at", str(_now_ms()))
+            used = (nfce.reservation(conn) or {}).get("used") or []
+            return {"used": [n for n in used if isinstance(n, int)][-2000:]}
 
     def nfce_work(self):
         with self.connection() as conn:
@@ -2970,6 +2981,9 @@ class Store:
             with self.connection() as source:
                 with closing(sqlite3.connect(staging)) as target:
                     source.backup(target)
+                    # The CSC never goes to backups (the copy asks the cloud again; docs/NFCE.md).
+                    nfce.strip_secrets(target)
+                    target.commit()
                     if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                         raise TerminalError("Backup local não passou na verificação")
                     target.commit()

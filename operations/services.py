@@ -174,9 +174,14 @@ def fiscal_archive(job):
     record=FiscalDocument.objects.get(pk=job.payload['document_id'],tenant=job.tenant)
     payload=FiscalPayload.objects.get(document=record)
     if payload.xml_content:return {'document_id':str(record.pk),'sha256':payload.xml_sha256}
-    if record.status!='authorized':raise ValueError('A nota precisa estar autorizada para arquivar o XML')
-    from core.nfce.service import _focus_client
-    xml=_focus_client(job.tenant).download_xml(record.xml_url,record.access_key,record.authorization)
+    if record.status not in ('authorized','cancelled'):raise ValueError('A nota precisa estar autorizada para arquivar o XML')
+    from core.nfce.service import _focus_client,document_environment
+    # Legacy Focus notes (before core 0045) may still lack access_key: the Focus answer has it.
+    from core.nfce.backends import _focus_key
+    key=record.access_key or _focus_key((payload.provider_response or {}).get('chave_nfe'))
+    if not key:raise ValueError('Nota sem chave de acesso; consulte a nota antes de arquivar o XML')
+    if not record.xml_url:raise ValueError('Nota sem caminho do XML na Focus NFe; consulte a nota antes de arquivar')
+    xml=_focus_client(job.tenant,environment=document_environment(record)).download_xml(record.xml_url,key,record.authorization)
     checksum=hashlib.sha256(xml).hexdigest()
     FiscalPayload.objects.filter(document=record).update(xml_content=xml,xml_sha256=checksum)
     return {'document_id':str(record.pk),'sha256':checksum}
@@ -185,7 +190,18 @@ def fiscal_cancel(job):
     from core.models import FiscalEvent
     from core.nfce import service
     record=_fiscal_document(job)
-    event=FiscalEvent.objects.get(pk=job.payload['event_id'],document=record)
+    if record.status=='cancelled':return {'document_id':str(record.pk),'status':'cancelled'}
+    if job.payload.get('event_id'):
+        event=FiscalEvent.objects.filter(pk=job.payload['event_id'],document=record).first()
+        if event is None:raise ValueError('Evento de cancelamento não encontrado para esta nota')
+    else:
+        # Job queued by the release before NFC-e ({document_id, reason}): create the event now.
+        reason=' '.join(str(job.payload.get('reason') or '').split())
+        if not 15<=len(reason)<=255:raise ValueError('Pedido de cancelamento antigo sem justificativa válida; cancele de novo pelo painel')
+        if record.status!='authorized':raise ValueError('Somente notas autorizadas podem ser canceladas (situação: '+record.status+')')
+        event=(FiscalEvent.objects.filter(document=record,kind='cancel',status='pending').first()
+               or FiscalEvent.objects.create(tenant=record.tenant,document=record,reason=reason,
+                                             sequence=FiscalEvent.objects.filter(document=record,kind='cancel').count()+1))
     if event.status=='registered':return {'document_id':str(record.pk),'status':'cancelled'}
     service.run_cancel(record,event)
     return {'document_id':str(record.pk),'status':'cancelled'}

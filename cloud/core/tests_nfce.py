@@ -532,20 +532,20 @@ class TerminalContingencyTests(NfceTestBase):
 
     def test_reservation_requires_csc_and_sefaz_mode(self):
         self.configure_sefaz(csc=False)
-        self.assertEqual(self.terminal_api("POST", "nfce/reserve").status_code, 409)
+        self.assertEqual(self.terminal_api("POST", "nfce/reserve", {}).status_code, 409)
         self.api("PATCH", "/api/v1/ops/fiscal/config", {"csc_homologation_id": "000001", "csc_homologation": CSC})
-        reservation = self.terminal_api("POST", "nfce/reserve").json()
+        reservation = self.terminal_api("POST", "nfce/reserve", {}).json()
         self.assertEqual((reservation["numbers"][0], len(reservation["numbers"]), reservation["qr_version"]), (1, 10, 2))
         self.assertEqual(reservation["csc"], CSC)
         self.assertEqual(Tenant.objects.get(pk=self.tenant.pk).nfce_next_number, 11)
         # Same block while numbers remain.
-        self.assertEqual(self.terminal_api("POST", "nfce/reserve").json()["id"], reservation["id"])
+        self.assertEqual(self.terminal_api("POST", "nfce/reserve", {}).json()["id"], reservation["id"])
         self.api("PATCH", "/api/v1/ops/fiscal/config", {"mode": "focusnfe"})
-        self.assertEqual(self.terminal_api("POST", "nfce/reserve").status_code, 409)
+        self.assertEqual(self.terminal_api("POST", "nfce/reserve", {}).status_code, 409)
 
     def test_register_contingency_is_signed_transmitted_and_authorized(self):
         self.configure_sefaz()
-        reservation = self.terminal_api("POST", "nfce/reserve").json()
+        reservation = self.terminal_api("POST", "nfce/reserve", {}).json()
         sale = self.sale()
         draft, xml = self.offline_xml(sale, reservation)
         response = self.terminal_api("POST", "nfce/contingency", {"sale_id": str(sale.id), "xml": xml})
@@ -566,7 +566,7 @@ class TerminalContingencyTests(NfceTestBase):
 
     def test_register_contingency_validations(self):
         self.configure_sefaz()
-        reservation = self.terminal_api("POST", "nfce/reserve").json()
+        reservation = self.terminal_api("POST", "nfce/reserve", {}).json()
         sale = self.sale()
         _draft, xml = self.offline_xml(sale, reservation, number=999)
         self.assertEqual(self.terminal_api("POST", "nfce/contingency", {"sale_id": str(sale.id), "xml": xml}).status_code, 409)
@@ -578,7 +578,7 @@ class TerminalContingencyTests(NfceTestBase):
 
     def test_released_reservation_inutilizes_unused_numbers(self):
         self.configure_sefaz()
-        reservation = self.terminal_api("POST", "nfce/reserve").json()
+        reservation = self.terminal_api("POST", "nfce/reserve", {}).json()
         sale = self.sale()
         _draft, xml = self.offline_xml(sale, reservation)
         self.terminal_api("POST", "nfce/contingency", {"sale_id": str(sale.id), "xml": xml})

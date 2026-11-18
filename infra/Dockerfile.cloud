@@ -17,4 +17,6 @@ RUN mkdir -p /secrets && chown 10001:70 /secrets && chmod 0750 /secrets
 USER app
 WORKDIR /app/cloud
 EXPOSE 8080
-CMD ["gunicorn", "pdvcloud.wsgi:application", "--bind", "0.0.0.0:8080", "--workers", "3", "--threads", "2", "--timeout", "60", "--access-logfile", "-", "--error-logfile", "-"]
+# Access log without query strings (%(U)s = path only): one-time tokens, such as the accountant
+# package link (?t=...), must never be written to the logs.
+CMD ["gunicorn", "pdvcloud.wsgi:application", "--bind", "0.0.0.0:8080", "--workers", "3", "--threads", "2", "--timeout", "60", "--access-logfile", "-", "--access-logformat", "%(h)s %(l)s %(u)s %(t)s \"%(m)s %(U)s %(H)s\" %(s)s %(b)s %(L)s", "--error-logfile", "-"]

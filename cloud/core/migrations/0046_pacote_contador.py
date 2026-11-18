@@ -10,7 +10,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0045_nfce'),
+        ('core', '0045_nfce_status'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -42,7 +42,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='tenant',
             name='accountant_email',
-            field=models.EmailField(blank=True, default='', max_length=254),
+            field=models.EmailField(blank=True, db_default='', default='', max_length=254),
         ),
         migrations.CreateModel(
             name='AccountantPackage',

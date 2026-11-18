@@ -168,6 +168,7 @@ urlpatterns = [
     path("api/v1/accountant/packages/<uuid:pk>/download", accountant.package_download),
     path("api/v1/accountant/packages/<uuid:pk>/sped", accountant.package_sped),
     path("api/v1/accountant/packages/<uuid:pk>/send", accountant.package_send),
+    path("api/v1/accountant/download", accountant.public_download),
     path("api/v1/accountant/download/<str:token>", accountant.public_download),
     path("api/v1/ops/", include("operations.urls")),
     path("api/v1/<str:kind>", resources.collection),

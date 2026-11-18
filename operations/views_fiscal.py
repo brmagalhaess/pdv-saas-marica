@@ -34,7 +34,7 @@ def _encrypt(value):
 
 
 def config_data(tenant):
-    config = service.config_for(tenant)
+    config = service.peek_config(tenant)  # reading never creates the configuration (it would turn NFC-e on)
     focus = IntegrationAccount.objects.filter(provider="focusnfe", tenant=tenant).first()
     certificate = None
     if config.certificate_encrypted:
@@ -60,6 +60,7 @@ def config_data(tenant):
             "accountant_email": tenant.accountant_email, "uf": tenant.address_state,
             "authorizer": AUTHORIZER.get(tenant.address_state, ""), "cancel_minutes": cancel_minutes(tenant.address_state),
             "live_allowed": service.live_allowed("production"),
+            "ready": service.readiness(tenant, config)[0], "ready_message": service.readiness(tenant, config)[1],
             "production_confirmation": PRODUCTION_CONFIRMATION, "alerts": service.contingency_alerts(tenant)}
 
 
@@ -233,6 +234,9 @@ def fiscal_submit(request):
         raise APIError("Venda não encontrada", 404)
     if sale.status != "completed":
         raise APIError("Venda cancelada não emite nota", 409)
+    if not service.current_document(sale):
+        # Production allowed, credential and company data in place before any number is spent.
+        service.ensure_ready(member.tenant)
     try:
         service.validate_sale(sale)
     except service.NfceError as exc:

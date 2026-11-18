@@ -54,6 +54,8 @@ Tudo em **Minha empresa** (só proprietário ou administrador).
 7. Faça vendas de teste no caixa: autorização, impressão, "Perguntar", cancelamento (F9 para reimprimir), contingência (tire o cabo de rede).
 8. Para produção: escolha *Produção* e digite **EMITIR EM PRODUCAO** no campo de confirmação. A plataforma também precisa estar com `PDV_ALLOW_LIVE_FISCAL=1`; sem ela, produção é recusada (homologação é sempre liberada).
 
+**Quando a NFC-e liga no caixa** (`service.readiness`): ambiente homologação/produção **e** produção liberada pela plataforma **e** configuração salva com a credencial do modo (certificado A1 do CNPJ da empresa, ou token da Focus ativo) **e** dados fiscais da empresa completos. Só abrir a tela (GET da configuração) não cria registro nem liga nada. A emissão (`create_document`, caixa e "Emitir" do painel) confere tudo isso **antes** de gastar um número.
+
 Segredos (CSC, token, certificado e senha) são cifrados com `PDV_ENCRYPTION_KEY` (Fernet) e nunca voltam ao navegador nem aparecem em logs ou na auditoria (a auditoria registra só *quais* segredos mudaram).
 
 ## 3. Montagem do XML
@@ -91,16 +93,21 @@ Segredos (CSC, token, certificado e senha) são cifrados com `PDV_ENCRYPTION_KEY
    - **Resposta perdida (tempo esgotado depois de enviar)** → a nuvem consulta; sem confirmação emite a contingência com **outro número** e marca a primeira tentativa como substituída. O job `fiscal.reconcile_replaced` consulta a primeira chave: se foi autorizada, **cancela**; se não consta (217), **inutiliza** o número.
    - **Rejeitada** → motivo traduzido; nada é impresso como nota; o lojista corrige o cadastro e usa **Reenviar** no painel (mesmo número).
    - **Pendente** (Focus processando) → o caixa e o worker perguntam de novo.
-4. **Caixa sem internet**: com a contingência ligada, o caixa usa a faixa de números reservada (`POST /api/v1/terminal/nfce/reserve`, 10 números, renovada quando sobram menos de 3) e o CSC recebido nela, monta a NFC-e tpEmis 9 com `shared/nfce` e QR v2 off-line, imprime o DANFE de contingência (duas vias, "EMITIDA EM CONTINGÊNCIA / Pendente de autorização") e guarda o XML **sem assinatura**. Quando volta a falar com a nuvem, o worker envia (`POST /api/v1/terminal/nfce/contingency`); a nuvem confere emitente, modelo, tpEmis, chave × número/série, ambiente, faixa reservada do caixa e total da venda, **assina exatamente o XML impresso** (mesmo DigestValue do QR) e transmite. Se a venda já tinha uma tentativa na nuvem, ela é substituída e conciliada como acima.
-5. Sem contingência possível (modo Focus, sem CSC ou sem faixa), a venda fica **NFC-e pendente** e o worker pede a nota assim que houver conexão.
+4. **Caixa sem internet**: com a contingência ligada, o caixa usa a faixa de números reservada (`POST /api/v1/terminal/nfce/reserve {used}`, ver 5a) e o CSC recebido nela, monta a NFC-e tpEmis 9 com `shared/nfce` e QR v2 off-line, imprime o DANFE de contingência (duas vias, "EMITIDA EM CONTINGÊNCIA / Pendente de autorização") e guarda o XML **sem assinatura**. Quando volta a falar com a nuvem, o worker envia (`POST /api/v1/terminal/nfce/contingency`); a nuvem confere emitente, modelo, tpEmis, chave × número/série, ambiente, faixa reservada do caixa e total da venda, **assina exatamente o XML impresso** (mesmo DigestValue do QR) e transmite. Se a venda já tinha uma tentativa na nuvem, ela é substituída e conciliada como acima.
+5. Sem contingência possível (modo Focus, sem CSC, sem faixa ou faixa vencida), a venda fica **NFC-e pendente** e o worker pede a nota assim que houver conexão.
+5a. **Faixas de contingência** (`reserve_numbers`): blocos de 10 números por caixa, válidos por 20 dias. O caixa manda em `used` os números que já usou off-line e ainda não enviou; a nuvem só abre um bloco novo quando sobram menos de 3 livres (contando esses) ou quando os blocos abertos têm menos de 3 dias de validade, e só então grava a auditoria `fiscal.numbers_reserved`. A resposta traz os números livres de todos os blocos ainda válidos, `ranges` e `expires_at` (o do bloco mais antigo). O caixa pede de novo no máximo a cada 2 min, renova quando faltam menos de 3 dias e **não usa** a faixa no último dia antes de `expires_at` (margem para a nota chegar à nuvem). Um bloco perto de vencer não é mais entregue, mas continua aceitando o envio de números já usados até a varredura liberá-lo.
+5b. **Faixa liberada**: a nuvem recusa nota de contingência com número de bloco liberado ou vencido (`409 reservation_released`): esses números já foram (ou serão) inutilizados. O caixa então marca a venda como **pendente** e pede uma NFC-e normal (número novo). O DANFE de contingência já impresso perde valor; o cupom autorizado sai pela regra de impressão.
+5c. **Ordem na nuvem** (`register_terminal_contingency`): o XML do caixa é assinado **antes** de gravar qualquer coisa; a nota, o XML assinado e o job `fiscal.transmit` são gravados na **mesma transação**. Um reenvio da mesma chave (resposta perdida) refaz a assinatura e o job se faltarem. XML sem `infNFeSupl/qrCode` ou `urlChave` é recusado (422).
+5d. **Venda com a NFC-e desligada na nuvem**: o caixa grava o estado final `disabled` e **nunca** pede nota retroativa, nem quando a NFC-e é religada. Janela de emissão: só vendas feitas com a NFC-e ligada (o caixa cria o registro `pending` na hora da venda só quando o bootstrap diz `enabled`).
 6. **24 horas**: o caixa mostra o chip "NFC-e: N aguardando envio" e, passadas 20 h, "atrasada(s)" em vermelho; o painel mostra o mesmo alerta em Minha empresa e Integrações.
-7. **Numeração sem buracos**: números rejeitados são reutilizados no reenvio; tentativas substituídas e números reservados e não usados (reserva liberada após 20 dias, troca de série/ambiente) são **inutilizados automaticamente**; o painel tem "Inutilizar números" para lacunas antigas.
+7. **Numeração sem buracos**: números rejeitados são reutilizados no reenvio; tentativas substituídas e números reservados e não usados (reserva liberada após 20 dias, troca de série/ambiente) são **inutilizados automaticamente**; o painel tem "Inutilizar números" para lacunas antigas. A varredura (`sweep`, no worker) trata cada bloco isolado: `released_at` só é gravado na mesma transação que registra e enfileira as inutilizações; uma falha deixa o bloco aberto para a próxima rodada. Se a empresa não emite mais no ambiente do bloco (desligou a NFC-e ou trocou de ambiente), o bloco é fechado **sem** inutilizar (não há como transmitir): os números ficam como lacuna no resumo do contador e devem ser inutilizados pelo painel quando a emissão voltar.
+8. **Transporte (SEFAZ direta)**: só conta como "não chegou" (mesmo número em contingência) a falha antes de enviar: DNS, conexão recusada, tempo de conexão, handshake TLS. Tempo de leitura, conexão derrubada depois de aberta (`RemoteDisconnected`/`ProtocolError`), resposta truncada (`ChunkedEncodingError`) e qualquer outro erro são **resultado desconhecido**: com o cliente esperando, a contingência sai com **número novo** e a primeira tentativa é conciliada (cancelada se autorizada, inutilizada se não consta).
 
 ### Decisão sobre a contingência e riscos
 
 - **O certificado A1 nunca vai para o caixa.** O caixa só recebe CSC + faixa de números. O DANFE de contingência é impresso no caixa com o QR v2 (CSC + DigestValue, que é um hash e não exige a chave privada) e a assinatura é feita na nuvem, sobre o mesmo XML.
 - **Risco 1 (legal)**: a legislação descreve a NFC-e de contingência como assinada no momento da emissão; aqui a assinatura é aplicada na transmissão, sobre o conteúdo idêntico (o DigestValue do QR prova que nada mudou). Validar com o contador/SEFAZ da UF; a alternativa (assinar no caixa) exigiria entregar a chave privada ao computador da loja.
-- **Risco 2**: o CSC fica no SQLite do caixa (arquivo 0600, tabela própria, apagada ao desparear). Quem tiver o arquivo pode gerar QR codes válidos da empresa; o CSC pode ser revogado no portal da SEFAZ.
+- **Risco 2**: o CSC fica no SQLite do caixa (arquivo 0600, tabela própria, apagada ao desparear). Quem tiver o arquivo pode gerar QR codes válidos da empresa; o CSC pode ser revogado no portal da SEFAZ. O CSC **não vai** para cópias do banco: o backup local (`Store.backup_now`) e o segundo disco/réplica (`mirror._local_copy`) removem o campo `csc` (`nfce.strip_secrets`); números e lista de usados permanecem, e a cópia restaurada pede o CSC à nuvem antes de emitir em contingência.
 - **Risco 3**: se a UF deixar de aceitar QR v2 para CNPJ, a contingência no caixa deixa de funcionar (a da nuvem continua, com v3).
 - **Modo Focus NFe**: sem internet no caixa não há contingência local (a Focus não aceita XML assinado por terceiros); com a SEFAZ fora, a própria Focus faz a contingência (`contingencia_offline`). Lojas com internet instável devem usar o modo SEFAZ direta.
 
@@ -150,6 +157,33 @@ Contrato estável para a frente do pacote mensal (ZIP de XMLs, e-mail, SPED EFD)
 - `core.FiscalInutilization`: `environment, model, series, start, end, reason, status ∈ {pending, done, rejected}, protocol, done_at, xml_content` = **procInutNFe**, `xml_sha256`.
 - `core.FiscalConfig.accountant_email`.
 - Para o mês: notas com `environment="production"` e `status in ("authorized","cancelled")`, eventos `registered` e inutilizações `done`. Notas `contingency` ainda não autorizadas não têm nfeProc.
+
+## 10a. Notas da versão anterior (Focus NFe, até core 0041) e migração
+
+Em produção antes desta versão só havia emissão pela Focus NFe, com status próprios e sem número/chave nas colunas. A migração `core.0045_nfce_status` (separada de `0045_nfce`: no PostgreSQL um UPDATE na mesma transação dos índices criados dá "pending trigger events"):
+
+- status antigos para novos: `queued`/`processing` para `pending`, `denied` para `rejected` (mensagem prefixada com "Uso denegado"), `cancel_pending` para `authorized` (o cancelamento continua pelo job `fiscal.cancel` antigo, veja abaixo); o mesmo em `Sale.fiscal_status`;
+- empresas com `IntegrationAccount` focusnfe ativa e sem `FiscalConfig` ganham `FiscalConfig(mode="focusnfe")`;
+- notas antigas (`environment=""`) recebem `environment` da conta Focus, `access_key` de `provider_response.chave_nfe` (sem o prefixo "NFe"), `number`/`series` de `numero`/`serie` (ou da chave) quando não colidem com outra nota, `issued_at`/`authorized_at` de `data_emissao`/`data_autorizacao`.
+
+Comportamento com notas antigas (`service.is_legacy`: Focus sem `cnf`/`issued_at` no payload):
+
+- consulta, envio e cancelamento usam o **provedor e o ambiente do documento** (`document_backend`/`document_environment`), não o modo e o ambiente atuais da empresa; funcionam mesmo com a empresa em "sem nota fiscal";
+- `fiscal.submit`/`fiscal.poll` pendentes: consulta a Focus pela referência; se ela não conhece (404), reenvia o **payload antigo** guardado, como a versão anterior fazia;
+- `fiscal.archive`: usa `access_key` ou a `chave_nfe` da resposta da Focus;
+- `fiscal.cancel` antigo (`{document_id, reason}`, sem `event_id`): cria o `FiscalEvent` e cancela; sem justificativa válida vai para revisão com mensagem clara;
+- "Reenviar" de nota antiga rejeitada é recusado (`fiscal_legacy_document`): a numeração era da Focus.
+
+## 10b. Deploy e rollback
+
+**Janela do deploy.** Toda coluna nova `NOT NULL` em tabela existente tem default **no banco** (`db_default`): `core_tenant.crt/cnae/special_tax_regime/city_ibge_code/accountant_email`, `core_product.fiscal_overrides`, `core_cashsession.paused_ms/closing_totals`, `core_paymentmethod.print_rule`, `core_fiscaldocument.model/environment/access_key/emission_type/status_code/qr_url/url_key`. Assim o código anterior (que não conhece essas colunas) continua fazendo INSERT durante a migração e depois de um rollback. As demais colunas novas aceitam nulo; tabelas novas não são tocadas pelo código antigo.
+
+**Rollback só do código** (voltar a imagem anterior sem desfazer migrações) é o caminho recomendado: o código antigo ignora colunas e tabelas novas. Atenção:
+
+- notas emitidas no modo SEFAZ direta ficam invisíveis para o código antigo (ele só conhece a Focus); jobs `fiscal.transmit`, `fiscal.inutilize` e `fiscal.reconcile_replaced` ficam parados (o worker antigo não tem handler) até a versão nova voltar;
+- status novos (`contingency`, `rejected`) aparecem como texto no painel antigo.
+
+**Desfazer as migrações** (voltar `core` para 0041 e `operations` para 0003) apaga colunas e tabelas novas (NFC-e direta, eventos, inutilizações, reservas, pacote do contador). As migrações de dados `0043_fiscal_backfill` e `0045_nfce_status` têm reverso **noop**: o mapeamento de status **não volta**. `denied` virou `rejected` (sobra o prefixo "Uso denegado" na mensagem), `queued`/`processing` viraram `pending`, `cancel_pending` virou `authorized` (o pedido de cancelamento sobrevive só no job `fiscal.cancel`). `crt`, perfis e `fiscal_overrides` somem; `tax_regime` e `tax_fields` antigos nunca foram alterados. Faça backup do PostgreSQL antes do deploy.
 
 ## 11. Limites e o que precisa de teste real em homologação
 

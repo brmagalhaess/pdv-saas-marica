@@ -39,7 +39,7 @@ def issue(request):
     data = payload(request)
     fields(data, ("sale_id",), ("sale_id",))
     sale = _sale(terminal, data["sale_id"])
-    if not service.enabled(sale.tenant):
+    if not service.current_document(sale) and not service.readiness(sale.tenant)[0]:
         return JsonResponse({"status": "disabled", "fiscal": None})
     try:
         document = service.issue_for_sale(sale, terminal, timeout=TERMINAL_TIMEOUT)
@@ -70,9 +70,13 @@ def detail(request, sale_id):
 def reserve(request):
     method(request, "POST")
     terminal = _bearer_terminal(request)
-    result = service.reserve_numbers(terminal)
-    audit(terminal.tenant, None, "fiscal.numbers_reserved", terminal,
-          {"series": result["series"], "numbers": [result["numbers"][0], result["numbers"][-1]] if result["numbers"] else []})
+    data = payload(request) if request.body else {}
+    fields(data, ("used",))
+    result = service.reserve_numbers(terminal, data.get("used"))
+    if result["created"]:
+        # Audited only when a new block is opened; repeated asks for the same block are not events.
+        audit(terminal.tenant, None, "fiscal.numbers_reserved", terminal,
+              {"series": result["series"], "ranges": result["ranges"][-1:]})
     return JsonResponse(result)
 
 

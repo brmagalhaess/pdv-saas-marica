@@ -7,11 +7,15 @@ from django.utils import timezone
 
 from shared.fiscal.validators import digits, valid_cnpj, valid_cpf, valid_ibge_city
 
-from ..api_common import APIError, audit, endpoint, fields, membership_context, method, payload, text, uuid_value
+from ..api_common import (APIError, audit, client_ip, endpoint, fields, membership_context, method, payload, take_rate,
+                          text, uuid_value)
 from . import package as builder
 from .models import AccountantDelivery, AccountantPackage, AccountantSettings
 
 READ = ("owner", "admin", "finance")
+# Public download link: attempts per client IP per window (shared RateLimit table).
+DOWNLOAD_LIMIT = 20
+DOWNLOAD_WINDOW_S = 600
 WRITE_SETTINGS = ("owner", "admin")
 TEXT_FIELDS = (("name", "Nome do contador", 100), ("crc", "CRC", 15), ("address", "Endereço", 60),
                ("number", "Número", 10), ("complement", "Complemento", 60), ("neighborhood", "Bairro", 60),
@@ -230,10 +234,15 @@ def package_send(request, pk):
 
 
 @endpoint
-def public_download(request, token):
-    """Link do e-mail: sem login, válido por 30 dias, um token por envio (guardado só como hash)."""
+def public_download(request, token=None):
+    """Link do e-mail: sem login, válido por 30 dias, um token por envio (guardado só como hash).
+
+    O token vem em ``?t=`` (o log de acesso do gunicorn grava só o caminho); a forma antiga
+    ``/download/<token>`` continua aceita. Limite por IP no RateLimit compartilhado.
+    """
     method(request, "GET")
-    delivery = builder.find_by_token(token)
+    take_rate("accountant-download:" + client_ip(request), DOWNLOAD_LIMIT, DOWNLOAD_WINDOW_S)
+    delivery = builder.find_by_token(token or request.GET.get("t", ""))
     if not delivery:
         raise APIError("Link inválido ou expirado. Peça um novo envio à empresa.", 404)
     AccountantDelivery.objects.filter(pk=delivery.pk).update(downloads=delivery.downloads + 1,

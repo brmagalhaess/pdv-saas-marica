@@ -26,6 +26,7 @@ NFE_NS = "http://www.portalfiscal.inf.br/nfe"
 DSIG_NS = "http://www.w3.org/2000/09/xmldsig#"
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SPACES = re.compile(r"\s+")
+_DECLARATION = re.compile(r"""\s*<\?xml[^>]*?\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
 
 
 class XMLError(ValueError):
@@ -156,11 +157,23 @@ def parse(data):
         raise XMLError("XML vazio")
     if len(data) > MAX_XML_BYTES:
         raise XMLError("XML excede o limite de tamanho")
-    upper = bytes(data).upper()
-    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
+    data = bytes(data)
+    # Only plain UTF-8: a BOM or another encoding (UTF-16/32, declared latin-1...) could hide a
+    # DOCTYPE/ENTITY from the byte check below, since the parser decodes before reading markup.
+    if data.startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff", b"\x00")) or b"\x00" in data:
+        raise XMLError("XML deve estar em UTF-8 sem BOM")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise XMLError("XML deve estar em UTF-8") from exc
+    declaration = _DECLARATION.match(text)
+    if declaration and declaration.group(1).lower().replace("_", "-") not in ("utf-8", "utf8"):
+        raise XMLError("XML deve estar em UTF-8")
+    upper = text.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
         raise XMLError("Declaração XML não permitida")
     try:
-        return ET.fromstring(bytes(data))
+        return ET.fromstring(data)
     except ET.ParseError as exc:
         raise XMLError("XML inválido") from exc
 

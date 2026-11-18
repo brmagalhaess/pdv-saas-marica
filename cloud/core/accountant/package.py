@@ -202,7 +202,8 @@ def _hash(token):
 
 
 def download_url(token):
-    return f"{settings.PDV_PUBLIC_URL}/api/v1/accountant/download/{token}"
+    # Token in the query string: the gunicorn access log only records the path (infra/Dockerfile.cloud).
+    return f"{settings.PDV_PUBLIC_URL}/api/v1/accountant/download?t={token}"
 
 
 def send(delivery):
@@ -235,18 +236,20 @@ def send(delivery):
              "LEIA-ME.txt.", "", "PDV2 · CrownTech"]
     message = EmailMessage(f"PDV2: pacote do contador {period} — {tenant.name}", "\n".join(body),
                            None, [delivery.to_email])
+    # The link must work the moment the e-mail lands: record the token before sending. A failed
+    # send marks the delivery failed, which also invalidates the token (find_by_token).
+    with transaction.atomic():
+        AccountantDelivery.objects.filter(pk=delivery.pk).update(token_hash=_hash(token), link_expires_at=expires)
+        if not package.expires_at or package.expires_at < expires:
+            AccountantPackage.objects.filter(pk=package.pk).update(expires_at=expires)
     try:
         message.send(fail_silently=False)
     except Exception as exc:  # noqa: BLE001 - the failure is recorded and shown in the panel
         logger.warning("accountant e-mail %s failed: %s", delivery.pk, type(exc).__name__)
         reason = f"Falha ao enviar e-mail ({type(exc).__name__}). Confira o servidor de e-mail e reenvie."
-        AccountantDelivery.objects.filter(pk=delivery.pk).update(status="failed", error=reason[:500])
+        AccountantDelivery.objects.filter(pk=delivery.pk).update(status="failed", error=reason[:500], token_hash="")
         raise ValueError(reason)
-    with transaction.atomic():
-        AccountantDelivery.objects.filter(pk=delivery.pk).update(
-            status="sent", error="", token_hash=_hash(token), link_expires_at=expires, sent_at=now)
-        if not package.expires_at or package.expires_at < expires:
-            AccountantPackage.objects.filter(pk=package.pk).update(expires_at=expires)
+    AccountantDelivery.objects.filter(pk=delivery.pk).update(status="sent", error="", sent_at=now)
     return token
 
 
@@ -255,7 +258,7 @@ def find_by_token(token):
     if not token or len(token) > 100:
         return None
     delivery = (AccountantDelivery.objects.select_related("package", "tenant")
-                .filter(token_hash=_hash(token), status="sent").first())
+                .filter(token_hash=_hash(token), status__in=("queued", "sent")).first())
     if not delivery or not delivery.link_expires_at or delivery.link_expires_at <= timezone.now():
         return None
     if delivery.package.status != "ready" or not delivery.package.content:

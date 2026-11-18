@@ -11,6 +11,8 @@ import io
 from collections import defaultdict
 from html import escape
 
+from . import nfce_xml
+
 STATUS_LABELS = {
     "authorized": "Autorizadas", "cancelled": "Canceladas", "inutilized": "Inutilizadas",
     "contingency": "Contingência não transmitida", "pending": "Pendentes de retorno",
@@ -168,6 +170,8 @@ def _bucket():
 
 
 def summarize(docs, inutilizations, year, month, company=None, previous_numbers=None):
+    docs = [doc for doc in docs if not nfce_xml.is_homologation(doc)]
+    inutilizations = [inut for inut in inutilizations if not nfce_xml.is_homologation(inut)]
     by_status = {status: _bucket() for status in STATUS_ORDER}
     by_day = defaultdict(lambda: {"count": 0, "total_cents": 0, "icms_cents": 0})
     by_payment = defaultdict(lambda: {"count": 0, "amount_cents": 0})
