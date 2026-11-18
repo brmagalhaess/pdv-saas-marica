@@ -22,10 +22,12 @@ const driverNames = {file: 'Arquivo de teste', cups: 'CUPS', tcp: 'Rede (TCP)', 
 const canSell = role => ['owner', 'admin', 'manager', 'cashier'].includes(role);
 const canManage = role => ['owner', 'admin', 'manager'].includes(role);
 const canAdjustStock = role => canManage(role) || role === 'inventory';
+// Balança do balcão (etiqueta de pesados): quem vende e o atendente de estoque, sem caixa aberto.
+const canWeigh = role => canSell(role) || role === 'inventory';
 
 // No manager PIN is ever kept here: authorizations are asked for at the moment they are needed.
 const state = {
-  session: null, csrf: '', tab: 'checkout', indicator: null, pendingSince: 0,
+  session: null, csrf: '', tab: prefs.get('scale.home', 'off') === 'on' ? 'scale' : 'checkout', indicator: null, pendingSince: 0,
   cart: [], selectedId: null, lastItemId: null, flashId: null, flashAt: 0, pendingQty: null,
   quote: null, saleRequest: null, discount: null, customer: emptyCustomer(), customers: [],
   pay: {active: false, method: null, other: null}, payOptions: [], payOptionsSig: '',
@@ -34,7 +36,8 @@ const state = {
   bootstrapRefreshInFlight: false, lastOperatorsRefreshAt: 0, loginLockedUntil: 0,
   restore: {open: false, running: false, timer: null, finished: null, reviewing: false},
   scale: {port: null, reader: null, buffer: '', awaitingId: null, gate: C.createWeightGate(2), settleTimer: null,
-          barcodeMode: prefs.get('scale.barcodeMode', 'weight'), baudRate: prefs.get('scale.baudRate', '9600')},
+          barcodeMode: prefs.get('scale.barcodeMode', 'weight'), baudRate: prefs.get('scale.baudRate', '9600'),
+          protocol: prefs.get('scale.protocol', 'generic'), continuous: prefs.get('scale.continuous', 'off') === 'on', pollTimer: null},
 };
 const role = () => state.session?.operator?.role;
 
@@ -460,6 +463,7 @@ async function loadSession() {
   }
   showView('appView');
   applyRoleUi();
+  window.PDVScale?.onSession();
   renderPaymentMethods();
   loadCustomers().catch(() => {});
   loadPrinterStatus().catch(() => {});
@@ -490,6 +494,7 @@ function applyRoleUi() {
   document.body.dataset.canSell = String(canSell(current));
   document.querySelector('[data-tab="checkout"]').classList.toggle('hidden', !canSell(current));
   document.querySelector('[data-tab="stock"]').classList.toggle('hidden', !canAdjustStock(current));
+  document.querySelector('[data-tab="scale"]').classList.toggle('hidden', !canWeigh(current));
   document.querySelectorAll('.admin-only').forEach(node => node.classList.toggle('hidden', !manager));
   $('stockAdjustRow').classList.toggle('hidden', !canAdjustStock(current));
   $('printerForm').classList.toggle('hidden', !manager);
@@ -524,7 +529,7 @@ function renderPromotion(promotion) {
 }
 function allowedTab(tab) {
   const current = role();
-  const allowed = {checkout: canSell(current), sales: true, stock: canAdjustStock(current), printers: canManage(current), system: canManage(current)};
+  const allowed = {checkout: canSell(current), sales: true, stock: canAdjustStock(current), printers: canManage(current), system: canManage(current), scale: canWeigh(current)};
   if (allowed[tab]) return tab;
   return canSell(current) ? 'checkout' : canAdjustStock(current) ? 'stock' : 'sales';
 }
@@ -535,7 +540,8 @@ function setTab(tab) {
   document.querySelectorAll('.tab').forEach(button => button.classList.toggle('active', button.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.add('hidden'));
   $(tab + 'Tab').classList.remove('hidden');
-  const loader = {sales: loadSales, stock: loadStock, printers: loadPrinters, system: async () => { await loadSystem(); await loadBackups(); await loadMirror(); await loadStations(); }}[tab];
+  const loader = {sales: loadSales, stock: loadStock, printers: async () => { await loadPrinters(); await window.PDVScale?.loadLabelPrinter(); },
+    scale: () => window.PDVScale?.load() ?? Promise.resolve(), system: async () => { await loadSystem(); await loadBackups(); await loadMirror(); await loadStations(); }}[tab];
   if (loader) loader().catch(error => toast(error.message, true));
   renderKeybar();
   if (tab === 'checkout') focusHome();
@@ -1653,15 +1659,17 @@ function onScaleReading(milli) {
 }
 async function readScale(port, reader) {
   const decoder = new TextDecoder();
+  // Toledo/Filizola chegam em quadros STX…ETX; o genérico em linhas de texto (scale-core.js).
+  const parser = window.PDVScaleCore.createScaleParser(state.scale.protocol);
   try {
     while (state.scale.port === port && port.readable) {
       const result = await reader.read();
       if (result.done) break;
       if (!result.value) continue;
-      state.scale.buffer += decoder.decode(result.value, {stream: true});
-      const lines = state.scale.buffer.split(/[\r\n]+/);
-      state.scale.buffer = lines.pop() || '';
-      for (const line of lines) { const milli = C.scaleReading(line); if (milli) onScaleReading(milli); }
+      for (const reading of parser.push(decoder.decode(result.value, {stream: true}))) {
+        window.PDVScale?.onReading(reading);  // tela Balança: peso ao vivo
+        if (reading.status === 'ok' && reading.milli > 0 && state.tab !== 'scale') onScaleReading(reading.milli);
+      }
     }
   } catch (error) {
     if (state.scale.port === port) toast('A conexão com a balança foi encerrada', true);
@@ -1670,8 +1678,22 @@ async function readScale(port, reader) {
     if (state.scale.port === port) { state.scale.port = null; state.scale.reader = null; state.scale.buffer = ''; renderScaleChip(); }
   }
 }
+function stopScalePolling() { clearInterval(state.scale.pollTimer); state.scale.pollTimer = null; }
+// Toledo/Filizola sob pedido: o terminal manda ENQ e a balança responde com o peso.
+function startScalePolling(port) {
+  stopScalePolling();
+  const request = window.PDVScaleCore.requestBytes(state.scale.protocol, state.scale.continuous);
+  if (!request) return;
+  state.scale.pollTimer = setInterval(async () => {
+    if (state.scale.port !== port || !port.writable || port.writable.locked) return;
+    const writer = port.writable.getWriter();
+    try { await writer.write(request); } catch { /* the reader reports a lost connection */ } finally { writer.releaseLock(); }
+  }, 350);
+}
 async function disconnectScale() {
   const {port, reader} = state.scale;
+  stopScalePolling();
+  window.PDVScale?.onReading(null);
   state.scale.port = null;
   state.scale.reader = null;
   if (reader) { try { await reader.cancel(); } catch { /* ignore */ } try { reader.releaseLock(); } catch { /* ignore */ } }
@@ -1689,17 +1711,30 @@ async function connectScale() {
   const reader = port.readable.getReader();
   state.scale.reader = reader;
   readScale(port, reader);
+  startScalePolling(port);
   renderScaleChip();
 }
 async function scaleDialog() {
   const modal = openModal({title: 'Balança e etiquetas', eyebrow: 'Equipamentos', text: 'Com a balança conectada, escolha o produto por quilo e coloque-o no prato: o peso entra somente nesse item e fica travado.'});
   modal.body.innerHTML = `<p class="hint" data-status></p>
     <label class="field"><span>Etiqueta de balança (EAN iniciado em 2)</span><select data-field="mode"><option value="weight">Traz o peso em gramas</option><option value="price">Traz o preço total</option></select></label>
-    <label class="field"><span>Velocidade da porta serial</span><select data-field="baud"><option value="9600">9600 bps</option><option value="4800">4800 bps</option><option value="19200">19200 bps</option></select></label>`;
+    <label class="field"><span>Velocidade da porta serial</span><select data-field="baud"><option value="9600">9600 bps</option><option value="4800">4800 bps</option><option value="19200">19200 bps</option></select></label>
+    <label class="field"><span>Protocolo da balança</span><select data-field="protocol">${Object.entries(window.PDVScaleCore.PROTOCOLS).map(([id, spec]) => `<option value="${id}">${esc(spec.label)}</option>`).join('')}</select></label>
+    <label class="field"><span>Envio do peso</span><select data-field="continuous"><option value="off">Sob pedido (o terminal pede o peso)</option><option value="on">Contínuo (a balança transmite sozinha)</option></select></label>`;
   const mode = modal.body.querySelector('[data-field="mode"]'), baud = modal.body.querySelector('[data-field="baud"]'), status = modal.body.querySelector('[data-status]');
+  const protocol = modal.body.querySelector('[data-field="protocol"]'), continuous = modal.body.querySelector('[data-field="continuous"]');
   mode.value = state.scale.barcodeMode;
   baud.value = state.scale.baudRate;
-  mode.addEventListener('change', () => { state.scale.barcodeMode = mode.value; prefs.set('scale.barcodeMode', mode.value); });
+  protocol.value = state.scale.protocol;
+  continuous.value = state.scale.continuous ? 'on' : 'off';
+  // O formato da etiqueta vale para a loja toda (balança e caixas): só o gerente muda.
+  mode.disabled = !canManage(role());
+  mode.addEventListener('change', async () => {
+    try { await window.PDVScale.saveBarcodeMode(mode.value); } catch (error) { mode.value = state.scale.barcodeMode; modal.error(error.message); }
+  });
+  const reconnectHint = () => { if (state.scale.port) status.textContent = 'Desconecte e conecte a balança para aplicar a mudança.'; };
+  protocol.addEventListener('change', () => { state.scale.protocol = protocol.value; prefs.set('scale.protocol', protocol.value); reconnectHint(); });
+  continuous.addEventListener('change', () => { state.scale.continuous = continuous.value === 'on'; prefs.set('scale.continuous', continuous.value); reconnectHint(); });
   baud.addEventListener('change', () => { state.scale.baudRate = baud.value; prefs.set('scale.baudRate', baud.value); if (state.scale.port) status.textContent = 'Desconecte e conecte a balança para aplicar a nova velocidade.'; });
   modal.action('Fechar', '', () => modal.close());
   const toggle = modal.action('', 'primary', async () => { if (state.scale.port) await disconnectScale(); else await connectScale(); refresh(); });
@@ -1782,7 +1817,8 @@ const ACTIONS = {
   receiveCredit: {label: 'Receber fiado de cliente', words: 'fiado a prazo pagamento divida', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: receiveCreditDialog},
   returnSale: {label: 'Devolução ou troca', words: 'devolver trocar estorno', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: returnFlow},
   discardSale: {label: 'Cancelar a venda atual', words: 'descartar limpar nova venda', sale: true, why: needsCart, pin: () => role() === 'cashier', run: discardSale},
-  scale: {label: 'Balança e etiquetas', words: 'peso serial conectar', sell: true, run: scaleDialog},
+  scale: {label: 'Balança e etiquetas', words: 'peso serial conectar protocolo toledo filizola', why: () => (canWeigh(role()) ? '' : 'Seu perfil não usa a balança'), run: scaleDialog},
+  tabScale: {label: 'Balança: pesar e imprimir etiqueta', words: 'balanca etiqueta pesar peso plu acougue padaria frios hortifruti', why: () => (canWeigh(role()) ? '' : 'Seu perfil não usa a balança'), run: () => setTab('scale')},
   recheckLicense: {label: 'Verificar licença e relógio de novo', words: 'licenca renovar hora data relogio', run: recheckLicense},
   refreshCatalog: {label: 'Atualizar catálogo e operadores', words: 'sincronizar produtos precos', run: async () => { if (!C.stationNotice(state.session).isStation) await refreshOperators(); await poll(); await refreshCartProducts(); }},
   lock: {label: 'Trocar operador (bloquear caixa)', words: 'bloquear sair trocar', run: lockTerminal},
@@ -1845,7 +1881,7 @@ function openHelp() {
     ['Venda', C.SHORTCUTS.map(shortcut => item(shortcut.cap || shortcut.key, shortcut.action === 'closeCash' ? 'Abrir ou fechar caixa' : shortcut.hint || shortcut.label, shortcut.action)).join('')],
     ['Leitura e lista', [item('Enter', 'Lança o código digitado ou lido'), item('3*cód', 'Lança 3 unidades do código'), item('↑ ↓', 'Seleciona o item da lista'), item('Delete', 'Cancela o item selecionado'), item('Ctrl+K', 'Busca de comandos por nome', 'palette')].join('')],
     ['Pagamento (depois do F10)', [...C.PAY_KEYS.map(option => item(option.key, option.label)), item('7 a 9', 'Formas próprias da empresa'), item('0', 'Dividir o pagamento'), item('Enter', 'Confirma a venda'), item('Esc', 'Volta um passo')].join('')],
-    ['Outras ações', ['receiveCredit', 'returnSale', 'discardSale', 'scale', 'refreshCatalog', 'lock'].map(name => item('•', ACTIONS[name].label, name)).join('')],
+    ['Outras ações', [item('Ctrl+B', ACTIONS.tabScale.label, 'tabScale'), ...['receiveCredit', 'returnSale', 'discardSale', 'scale', 'refreshCatalog', 'lock'].map(name => item('•', ACTIONS[name].label, name))].join('')],
   ];
   modal.body.innerHTML = sections.map(([title, items]) => `<div class="menu-label">${title}</div><div class="help-grid">${items}</div>`).join('');
   modal.action('Fechar <kbd>Esc</kbd>', 'primary', () => modal.close()).focus();
@@ -1899,7 +1935,7 @@ function openMenu() {
     ${toggle('sound', 'Som de leitura', prefs.get('sound', 'on') === 'on' ? 'Ligado' : 'Desligado')}
     ${sells ? toggle('receiptPreview', 'Abrir comprovante após a venda', prefs.get('receiptPreview', 'off') === 'on' ? 'Sim' : 'Não') : ''}
     <div class="menu-sep"></div><div class="menu-label">Equipamentos e ajuda</div>
-    ${sells ? item('scale') : ''}${item('refreshCatalog')}${item('help')}
+    ${canWeigh(operator.role) ? item('tabScale', 'Balança (etiqueta de peso) · Ctrl+B') + item('scale') : ''}${item('refreshCatalog')}${item('help')}
     <div class="menu-sep"></div><div class="menu-label">Sessão</div>
     ${item('lock')}${cashOpen ? '' : item('logout')}</div>`;
   modal.body.addEventListener('click', event => {
@@ -1950,7 +1986,7 @@ async function loadStock() {
   $('stockCount').textContent = total > products.length ? `Mostrando ${products.length} de ${total} produtos. Refine a busca para ver os demais.` : '';
   select.innerHTML = products.map(product => `<option value="${esc(product.id)}">${esc(product.name)} (${esc(product.unit)})</option>`).join('');
   select.value = C.keepSelection(previous, products.map(product => product.id));
-  $('stockList').innerHTML = products.length ? products.map(product => `<div class="list-row"><span><strong>${esc(product.name)}</strong><small>${esc(product.sku || product.id)}${product.barcode ? ' · EAN ' + esc(product.barcode) : ''}</small></span><strong class="num">${product.stock_controlled === false ? 'Sem controle' : `${qtyText(product.stock_milli, product.unit)} ${esc(product.unit)}`}</strong></div>`).join('') : '<p class="list-empty">Nenhum produto encontrado.</p>';
+  $('stockList').innerHTML = products.length ? products.map(product => `<div class="list-row"><span><strong>${esc(product.name)}</strong><small>${esc(product.sku || product.id)}${product.barcode ? ' · EAN ' + esc(product.barcode) : ''}</small></span><span class="list-actions"><strong class="num">${product.stock_controlled === false ? 'Sem controle' : `${qtyText(product.stock_milli, product.unit)} ${esc(product.unit)}`}</strong>${state.labelPrinter ? `<button class="btn" type="button" data-shelf-label="${esc(product.id)}" title="Imprimir etiqueta de gôndola na etiquetadora">Etiqueta</button>` : ''}</span></div>`).join('') : '<p class="list-empty">Nenhum produto encontrado.</p>';
 }
 async function loadPrinters() {
   const data = await api('/api/print/settings');
@@ -2560,6 +2596,12 @@ document.addEventListener('keydown', event => {
   if (modalStack.length) { modalStack.at(-1).handleKey(event); return; }
   if (!logged) return;
   if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === 'k') { event.preventDefault(); runAction('palette'); return; }
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key.toLowerCase() === 'b') {
+    event.preventDefault();
+    if (state.pay.active && state.tab === 'checkout') { toast('Tecle Esc para voltar à venda antes de abrir a balança', true); return; }
+    runAction(state.tab === 'scale' && canSell(role()) ? 'tabCheckout' : 'tabScale');
+    return;
+  }
   const shortcut = !event.ctrlKey && !event.metaKey && !event.altKey ? C.SHORTCUTS.find(row => row.key === key) : null;
   if (shortcut) {
     event.preventDefault();

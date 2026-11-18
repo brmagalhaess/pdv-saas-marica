@@ -9,6 +9,7 @@
   <title>PDV2 por CrownTech · Caixa</title>
   <script src="{{ url_for('static', filename='theme.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='scale.css') }}">
 </head>
 <body>
   <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" focusable="false">
@@ -205,6 +206,7 @@
       <button class="tab active" data-tab="checkout">Caixa</button>
       <button class="tab" data-tab="sales">Vendas</button>
       <button class="tab" data-tab="stock">Estoque</button>
+      <button class="tab hidden" data-tab="scale" title="Pesar e imprimir etiqueta (Ctrl+B)">Balança</button>
       <button class="tab admin-only" data-tab="printers">Impressoras</button>
       <button class="tab admin-only" data-tab="system">Sistema</button>
     </nav>
@@ -300,12 +302,51 @@
         <div id="stockList" class="card list-card"></div>
       </section>
 
+      <section id="scaleTab" class="tab-panel scale-panel hidden">
+        <h1 class="sr-only">Balança: pesar e imprimir etiqueta</h1>
+        <div class="scale-grid">
+          <section class="zone scale-pick" aria-label="Escolha do produto">
+            <label class="search-field"><svg class="ico"><use href="#i-search"/></svg><input id="scaleSearch" placeholder="Nome, PLU ou código do produto por quilo" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" aria-label="Buscar produto vendido por quilo"></label>
+            <p id="scaleListTitle" class="hint">Mais usados</p>
+            <div id="scaleProducts" class="scale-products" role="list" aria-label="Produtos por quilo"></div>
+          </section>
+          <section class="zone scale-work" aria-label="Peso e etiqueta">
+            <div id="scaleProduct" class="scale-product" aria-live="polite"></div>
+            <div class="scale-weight">
+              <div class="sw-head"><span id="scaleStatus" class="badge">Sem balança</span><span id="scaleTareInfo" class="hint"></span></div>
+              <strong id="scaleWeight" class="sw-value" aria-live="polite">0,000<small> kg</small></strong>
+              <label id="scaleManualField" class="field sw-manual hidden"><span id="scaleManualLabel">Peso digitado (kg)</span><input id="scaleManual" type="text" inputmode="decimal" placeholder="0,000" autocomplete="off"></label>
+              <div class="sw-actions">
+                <button id="scaleConnectBtn" class="btn" type="button">Conectar balança</button>
+                <button id="scaleTareBtn" class="btn" type="button" title="Desconta o peso do pote ou bandeja que está na balança">Tarar</button>
+                <button id="scaleSettingsBtn" class="btn ghost" type="button">Ajustes</button>
+              </div>
+            </div>
+            <div class="scale-total"><span>Total</span><strong id="scaleTotal">R$ 0,00</strong><small id="scaleUnitPrice"></small></div>
+            <div class="scale-print-row">
+              <div class="scale-copies" role="group" aria-label="Cópias">
+                <button type="button" data-copies="-1" aria-label="Menos uma cópia">−</button>
+                <input id="scaleCopies" type="text" inputmode="numeric" value="1" aria-label="Quantidade de cópias">
+                <button type="button" data-copies="1" aria-label="Mais uma cópia">+</button>
+              </div>
+              <button id="scalePrintBtn" class="btn primary big scale-print" type="button" disabled>Imprimir etiqueta <kbd>Enter</kbd></button>
+            </div>
+            <p id="scaleMessage" class="scale-message" role="status"></p>
+            <div class="scale-preview-box"><span class="hint" id="scalePreviewTitle">Pré-visualização</span><div id="scalePreview" class="scale-preview"></div></div>
+          </section>
+        </div>
+        <div id="scaleHistoryCard" class="card list-card scale-history hidden">
+          <div class="page-head subhead"><h2>Etiquetas impressas (conferência)</h2><button id="scaleHistoryBtn" class="btn" type="button">Atualizar</button></div>
+          <div id="scaleHistory"></div>
+        </div>
+      </section>
+
       <section id="printersTab" class="tab-panel page hidden">
         <div class="page-head"><div><span class="eyebrow">Periféricos</span><h1>Impressoras</h1></div></div>
         <div class="card">
           <h2>Impressora de recibos</h2>
           <p id="stationPrinterHint" class="hint hidden"><strong>Impressora deste caixa.</strong> Ela fica ligada neste computador; cada caixa da loja tem a sua.</p>
-          <p class="hint">Configure aqui somente a impressora térmica do caixa. A impressão de etiquetas fica no painel da empresa, em Produtos → Imprimir etiquetas.</p>
+          <p class="hint">Configure aqui a impressora térmica do caixa. A etiquetadora (balança e gôndola) fica no quadro abaixo.</p>
           <form id="printerForm" class="printer-form">
             <input id="printerKind" type="hidden" value="receipt">
             <label class="field"><span>Conexão</span><select id="printerDriver"><option value="file">Arquivo de teste</option><option value="cups">CUPS · macOS/Linux</option><option value="tcp">TCP 9100</option><option value="windows_raw">Spool RAW Windows</option></select></label>
@@ -316,6 +357,19 @@
           <p id="printerDiscoveryStatus" class="hint">Configure a fila correspondente ao equipamento instalado.</p>
         </div>
         <div id="printerSettings" class="card list-card"></div>
+        <div class="card" id="labelPrinterCard">
+          <h2>Impressora de etiquetas</h2>
+          <p class="hint">Etiquetadora deste computador (Zebra, Argox, Elgin, TSC…) para a etiqueta de pesados da Balança e a de gôndola. Sem ela, a Balança imprime pelo navegador.</p>
+          <form id="labelPrinterForm" class="printer-form">
+            <label class="field"><span>Conexão</span><select id="labelPrinterDriver"><option value="file">Arquivo de teste</option><option value="cups">CUPS · macOS/Linux</option><option value="tcp">TCP 9100</option><option value="windows_raw">Spool RAW Windows</option></select></label>
+            <label class="field"><span>Linguagem</span><select id="labelPrinterFormat"><option value="zpl">ZPL (Zebra e compatíveis)</option><option value="ppla">PPLA (Argox, Elgin)</option><option value="tspl">TSPL (TSC, Elgin, genéricas)</option><option value="epl">EPL (Zebra/Eltron)</option></select></label>
+            <label class="field"><span>Tamanho da etiqueta</span><select id="labelPrinterSize"><option value="40x30">40 × 30 mm</option><option value="50x30">50 × 30 mm</option><option value="60x40">60 × 40 mm</option></select></label>
+            <label class="field printer-target-field"><span>Fila ou destino</span><input id="labelPrinterTarget" placeholder="Ex.: Argox_OS214 ou 192.168.1.60:9100" required></label>
+            <button class="btn primary" type="submit">Salvar etiquetadora</button>
+          </form>
+          <div id="labelPrinterInfo"></div>
+          <div id="labelJobs" class="list-card"></div>
+        </div>
         <div class="page-head subhead"><h2>Fila de impressão</h2><button id="flushPrintBtn" class="btn">Processar fila</button></div>
         <div id="printJobs" class="card list-card"></div>
       </section>
@@ -360,6 +414,8 @@
   </div>
 
   <script src="{{ url_for('static', filename='terminal-core.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='scale-core.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='scale.js') }}" defer></script>
   <script src="{{ url_for('static', filename='terminal.js') }}" defer></script>
 </body>
 </html>

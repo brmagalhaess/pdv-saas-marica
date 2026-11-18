@@ -16,7 +16,9 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, render_template, request, session
 
 from . import paths, sync
+from . import scale
 from .printers import cups_queues
+from .scale import SCALE_ROLES
 from .store import MANAGER_ROLES, SELL_ROLES, SERVER_ONLY_MESSAGE, SERVER_STATION_ID, Store, TerminalError
 
 
@@ -917,9 +919,11 @@ def create_app(config=None):
                                           data.get("target"), data.get("format"), operator["id"]))
 
     @app.post("/api/print/labels")
-    @authenticated(*SELL_ROLES)
+    @authenticated(*SCALE_ROLES)
     def print_label(_operator):
-        return jsonify({"error": "A impressão de etiquetas é feita no painel da empresa, em Produtos > Imprimir etiquetas."}), 410
+        # Etiqueta de gôndola na etiquetadora desta estação (sem ela, o painel imprime pelo navegador).
+        data = body()
+        return jsonify(store.queue_label(data.get("product_id"), data.get("quantity", 1)))
 
     @app.post("/api/discount/authorize")
     @authenticated(*SELL_ROLES)
@@ -941,7 +945,7 @@ def create_app(config=None):
         return jsonify(store.retry_print(operator["id"], job_id))
 
     @app.post("/api/print/flush")
-    @authenticated(*SELL_ROLES)
+    @authenticated(*SCALE_ROLES)  # o atendente da balança também manda a etiqueta sair na hora
     def flush_print(_operator):
         if store.current_station() != SERVER_STATION_ID:
             # The additional cashier prints on its own computer: its agent fetches the queue.
@@ -1086,6 +1090,9 @@ def create_app(config=None):
         if result.get("warning"):
             answer["warning"] = result["warning"]
         return jsonify(answer)
+
+    # Balança do balcão: pesar e imprimir etiqueta de pesado (terminal/scale.py).
+    scale.register_routes(app, store, authenticated, body)
 
     if config.get("START_WORKER", False) and store is not None:
         worker = sync.Worker(store)
