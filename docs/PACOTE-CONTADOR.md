@@ -50,7 +50,7 @@ Inutilização entra no mês do recibo (`dhRecbto`).
 
 ## Envio e links
 
-- `Tenant.accountant_email` (**e-mail do contador**, campo criado por esta frente em `0045_pacote_contador`;
+- `Tenant.accountant_email` (**e-mail do contador**, campo criado em `0046_pacote_contador`; a tela Nota fiscal grava no mesmo campo;
   se a frente de emissão criar um campo com o mesmo propósito, unificar no merge mantendo este nome).
 - Demais dados do contador e opções: `AccountantSettings` (nome, CPF, CRC, CNPJ do escritório, endereço,
   telefone, município IBGE, envio automático, perfil do SPED, SPED no Simples, E116).
@@ -159,8 +159,7 @@ XML (`operations.FiscalPayload.xml_content` — nfeProc) e usa campos do modelo 
 existirem, o pacote funciona com o que houver: a nota com status `cancelled` sem evento sai em canceladas/ com
 aviso, e não há inutilizações. Só modelo 65 entra.
 
-**Migração:** `core/0045_pacote_contador`. Se a frente de emissão também criar uma `0045_*` em `core`, rode
-`makemigrations --merge` no merge.
+**Migração:** `core/0046_pacote_contador`, depois de `core/0045_nfce`.
 
 ## Código
 

@@ -589,3 +589,30 @@ test("pacote do contador: mês anterior, entrada de mês e resumo da linha", () 
   assert.equal(queued.delivery, "Não enviado");
   assert.ok(!queued.canDownload);
 });
+
+test("NFC-e: situação da venda, certificado e configuração sem reenviar segredos", () => {
+  const { nfceStatusText, certificateView, fiscalConfigPayload, PRINT_RULE_OPTIONS } = core;
+  assert.deepEqual(PRINT_RULE_OPTIONS.map(([key]) => key), ["always", "ask", "never"]);
+  assert.equal(nfceStatusText(null), "Não emitida");
+  assert.equal(nfceStatusText({ status: "authorized", number: 7 }), "Autorizada · nº 7");
+  assert.equal(nfceStatusText({ status: "contingency", number: 11 }), "Em contingência · nº 11");
+  assert.equal(nfceStatusText({ status: "rejected", error_message: "778 - NCM inexistente" }), "Rejeitada (778 - NCM inexistente)");
+  assert.equal(nfceStatusText({ status: "cancelled" }), "Cancelada");
+  const now = Date.parse("2026-11-18T12:00:00Z");
+  const valid = certificateView({ subject: "MERCADO:11222333000181", cnpj: "11222333000181", not_after: "2027-11-18T12:00:00Z", matches_company: true }, now);
+  assert.equal(valid.tone, "ok");
+  assert.deepEqual(valid.lines.map(([label]) => label), ["Titular", "CNPJ", "Válido até"]);
+  assert.match(certificateView({ not_after: "2026-12-08T12:00:00Z", matches_company: true }, now).title, /vence em 20 dia/);
+  assert.equal(certificateView({ not_after: "2026-11-01T12:00:00Z", matches_company: true }, now).tone, "danger");
+  assert.equal(certificateView({ not_after: "2027-11-18T12:00:00Z", matches_company: false }, now).tone, "danger");
+  assert.equal(certificateView(null).tone, "warn");
+  const current = { environment: "homologation", mode: "sefaz", qr_version: 3, series: 1, next_number: 10,
+    terminal_contingency: true, accountant_email: "", csc: { homologation: { id: "000001", configured: true }, production: { id: "", configured: false } } };
+  assert.deepEqual(fiscalConfigPayload(current, { environment: "homologation", mode: "sefaz", qr_version: 3, series: 1, next_number: 10,
+    terminal_contingency: true, accountant_email: "", csc_homologation_id: "000001", csc_homologation: "", csc_production_id: "", csc_production: "", focus_token: "" }), {});
+  assert.deepEqual(fiscalConfigPayload(current, { environment: "production", mode: "focusnfe", qr_version: 2, series: 1, next_number: 10,
+    terminal_contingency: false, accountant_email: "c@x.test", csc_homologation_id: "000001", csc_homologation: "", csc_production_id: "000002",
+    csc_production: "CSC-NOVO-1234567890", focus_token: "tok" }),
+    { mode: "focusnfe", qr_version: 2, terminal_contingency: false, accountant_email: "c@x.test", csc_production_id: "000002",
+      csc_production: "CSC-NOVO-1234567890", focus_token: "tok", environment: "production" });
+});

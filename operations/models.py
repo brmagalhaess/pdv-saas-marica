@@ -47,8 +47,11 @@ class FiscalPayload(models.Model):
     document=models.OneToOneField('core.FiscalDocument',on_delete=models.PROTECT,primary_key=True)
     request_payload=models.JSONField(default=dict)
     provider_response=models.JSONField(default=dict)
+    # Authorized nfeProc (NFe + protNFe), the distribution XML for the accountant.
     xml_content=models.BinaryField(null=True,blank=True)
     xml_sha256=models.CharField(max_length=64,blank=True)
+    # Signed NFe without protocol (direct SEFAZ mode), kept to transmit contingency notes later.
+    nfe_xml=models.BinaryField(null=True,blank=True)
     updated_at=models.DateTimeField(auto_now=True)
 
 class ProductRelease(models.Model):

@@ -14,8 +14,9 @@ from .stock_balance import balance
 from .station_logic import station_of
 
 UNITS = ("UN", "KG", "L")
-FISCAL_AUTHORIZED = ("authorized", "cancel_pending")
-FISCAL_IN_PROGRESS = ("queued", "pending", "processing")
+# NFC-e states (docs/NFCE.md). A contingency note was handed to the consumer: it counts as issued.
+FISCAL_AUTHORIZED = ("authorized", "contingency")
+FISCAL_IN_PROGRESS = ("pending",)
 # Terminal clocks drift; a rule edited within this window is not reported as changed after the sale.
 CLOCK_TOLERANCE = timedelta(minutes=5)
 
@@ -302,8 +303,17 @@ def void_from_terminal(terminal, event, conflicts=None):
                 terminal, event, "void_after_return",
                 "Venda cancelada no caixa depois de uma devolução já registrada. Confira o reembolso e o estoque.",
                 sale_id=str(sale.id), total_cents=sale.total_cents, returned_cents=returned_cents))
-        fiscal = (FiscalDocument.objects.filter(sale=sale, status__in=FISCAL_AUTHORIZED + FISCAL_IN_PROGRESS)
-                  .order_by("-created_at").first())
+        fiscal = (FiscalDocument.objects.filter(sale=sale, status__in=FISCAL_AUTHORIZED + FISCAL_IN_PROGRESS,
+                                                replaced_by__isnull=True).order_by("-created_at").first())
+        if fiscal and fiscal.access_key and len(reason.strip()) >= 15:
+            # The register already asked the manager's PIN and a reason: cancel the NFC-e within the
+            # SEFAZ deadline (or right after authorization). Out of the deadline it becomes a conflict.
+            from .nfce.service import request_cancel
+            try:
+                request_cancel(fiscal, reason)
+                fiscal = None
+            except APIError:
+                pass
         if fiscal:
             message = ("Venda cancelada no caixa com NFC-e em processamento. Se a nota for autorizada, cancele-a na SEFAZ."
                        if fiscal.status in FISCAL_IN_PROGRESS else

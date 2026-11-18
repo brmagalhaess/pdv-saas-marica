@@ -6,7 +6,7 @@ import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, 
   canSetHub, stationLimitText, stationLabel, stationFilterOptions, appPermissionNames, appPermissionOrder,
   appPermissionText, appAccessStatusText, appAccessShopsText, appAccessCompanyText,
   fiscalOverridesPayload, sameFiscalFields, fiscalBadge, fiscalCodeSummary, contributionSummary, CRT_OPTIONS,
-  isSimplesCrt, previousMonth, parseMonthInput, accountantPackageView } from "./core.js";
+  isSimplesCrt, previousMonth, parseMonthInput, accountantPackageView, PRINT_RULE_OPTIONS, nfceStatusText, certificateView, fiscalConfigPayload } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -24,7 +24,7 @@ const platformSuperuser = () => !!state.user?.is_superuser;
 const tenantOption = platform ? { tenant: false } : {};
 const roleNames = { owner: "Proprietário", admin: "Administrador", manager: "Gerente", cashier: "Operador de caixa", inventory: "Estoque", finance: "Financeiro", viewer: "Consulta" };
 const cancellationAccess = role => ["owner","admin","manager"].includes(role) ? "Autorizado" : role==="cashier" ? "Com PIN de gerente" : "Sem permissão";
-const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", done:"Concluída", failed:"Falha", passed:"Aprovada", healthy:"Saudável", stale:"Atrasado", error:"Falha", unknown:"Aguardando", authorized:"Autorizada", rejected:"Rejeitada", denied:"Denegada", pending:"Pendente", processing:"Em processamento", overdue:"Vencida", disputed:"Em disputa", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
+const statusNames = { trial: "Em teste", active: "Ativa", past_due: "Pagamento pendente", expired:"Expirada", suspended: "Suspensa", cancelled: "Cancelada", paid: "Pago", open: "Em aberto", acknowledged:"Em análise", resolved:"Resolvido", ignored:"Ignorado", settled: "Liquidado", not_issued: "Não emitido", contingency: "Em contingência", completed: "Concluída", voided: "Cancelada", refunded:"Estornada", queued:"Na fila", running:"Em andamento", needs_review:"Revisão necessária", succeeded:"Concluída", done:"Concluída", failed:"Falha", passed:"Aprovada", healthy:"Saudável", stale:"Atrasado", error:"Falha", unknown:"Aguardando", authorized:"Autorizada", rejected:"Rejeitada", denied:"Denegada", pending:"Pendente", processing:"Em processamento", overdue:"Vencida", disputed:"Em disputa", ativo:"Ativo", ativa:"Ativa", inativo:"Inativo", inativa:"Inativa", revoked:"Revogado", pareado:"Pareado", aguardando:"Aguardando", baixo:"Baixo", regular:"Regular", retirada:"Retirada" };
 
 const tenantNav = [
   { group: "Acompanhar", id: "reports", label: "Relatórios", icon: "▧", feature:"reports", roles: ["owner","admin","manager","finance","viewer"] },
@@ -233,7 +233,7 @@ async function productFiscalFields() {
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
   const tone = ["suspended","cancelled","expired","revoked","voided","failed","refunded","rejected","denied","overdue","error","inativo","inativa","baixo","retirada"].includes(normalized) ? "danger"
-    : ["trial","past_due","pending","processing","disputed","stale","open","acknowledged","not_issued","queued","running","needs_review","aguardando"].includes(normalized) ? "warn"
+    : ["trial","past_due","pending","processing","disputed","stale","open","acknowledged","not_issued","queued","running","needs_review","aguardando","contingency"].includes(normalized) ? "warn"
     : ["active","settled","completed","succeeded","done","authorized","paid","resolved","ignored","passed","healthy","ativo","ativa","pareado","regular"].includes(normalized) ? "" : "neutral";
   return el("span", "badge " + tone, statusNames[normalized] || value || "—");
 }
@@ -1434,6 +1434,44 @@ async function dashboardPage() {
   [shop.select,...(hasFeature("reports")?[fromInput,toInput]:[])].forEach(input => input.addEventListener("change", load));
 }
 
+// NFC-e of a sale: "Autorizada / Em contingência / Rejeitada (motivo) / Cancelada".
+function fiscalCell(row) {
+  const fiscal = row.fiscal;
+  const badge = statusBadge(fiscal ? fiscal.status : (row.fiscal_status || "not_issued"));
+  if (fiscal?.status === "rejected" && fiscal.error_message) badge.title = fiscal.error_message;
+  if (fiscal?.number) badge.textContent += " · nº " + fiscal.number;
+  return badge;
+}
+function fiscalSection(sale) {
+  const box = el("section", "fiscal-sale");
+  const fiscal = sale.fiscal;
+  box.append(el("h3", "", "Nota fiscal (NFC-e)"));
+  if (!fiscal) {
+    box.append(info("Esta venda não tem NFC-e. Com a emissão ligada em Minha empresa > Nota fiscal, ela pode ser emitida agora."));
+    if (sale.status === "completed") box.append(button("Emitir NFC-e", async () => {
+      try { await api.post("/ops/fiscal/submit", { sale_id: sale.id }); toast("Emissão solicitada; acompanhe nesta venda."); closeDialog(); renderRoute(); }
+      catch (error) { handleError(error); }
+    }, "ghost"));
+    return box;
+  }
+  const rows = [["Situação", nfceStatusText(fiscal)], ["Número / série", fiscal.number ? `${fiscal.number} / ${fiscal.series}` : "—"],
+    ["Chave de acesso", fiscal.access_key || "—"], ["Protocolo", fiscal.authorization || "—"],
+    ["Emissão", fiscal.emission_type === 9 ? "Contingência off-line" : "Normal"],
+    ["Ambiente", fiscal.environment === "production" ? "Produção" : "Homologação (sem valor fiscal)"]];
+  if (fiscal.cancel_until && fiscal.status === "authorized") rows.push(["Cancelar até", dateTime(fiscal.cancel_until)]);
+  box.append(detailList(rows));
+  if (fiscal.status === "rejected") box.append(info("Rejeitada pela SEFAZ: " + (fiscal.error_message || "motivo não informado") + ". Corrija o cadastro (empresa ou produto) e reenvie.", true));
+  const actions = el("div", "form-actions");
+  if (fiscal.status === "authorized" || fiscal.status === "cancelled") actions.append(button("Baixar XML", () => downloadFiscalXml(fiscal).catch(handleError), "ghost"));
+  if (fiscal.status === "rejected") actions.append(button("Reenviar", async () => {
+    try { await api.post(`/ops/fiscal/documents/${fiscal.id}/retry`, {}); toast("Nota reenviada; acompanhe a situação."); closeDialog(); renderRoute(); }
+    catch (error) { handleError(error); }
+  }));
+  if (fiscal.status === "authorized" && fiscal.can_cancel) actions.append(button("Cancelar NFC-e", () => fiscalCancel(fiscal), "danger"));
+  if (fiscal.qr_url) { const link = el("a", "button ghost", "Consulta pública"); link.href = fiscal.qr_url; link.target = "_blank"; link.rel = "noopener"; actions.append(link); }
+  box.append(actions);
+  return box;
+}
 async function saleDetail(id) {
   const loading = el("div");
   loading.append(loadingSurface("Carregando venda…"));
@@ -1444,7 +1482,7 @@ async function saleDetail(id) {
     const items = response.items || sale.items || [];
     const payments = response.payments || sale.payments || [];
     const content = el("div");
-    content.append(info("O estado fiscal “Não emitido” indica que a NFC-e não foi gerada por esta versão.", true));
+    content.append(fiscalSection(sale));
     content.append(detailList([
       ["Identificador", sale.id],
       ["Loja", shopName(sale.shop_id)],
@@ -1454,7 +1492,7 @@ async function saleDetail(id) {
       ["Data", dateTime(sale.created_at)],
       ["Total", money(sale.total_cents)],
       ["Estado", statusBadge(sale.status)],
-      ["Fiscal", statusBadge(sale.fiscal_state || sale.fiscal_status || "not_issued")]
+      ["NFC-e", fiscalCell(sale)]
     ]));
     const itemsTitle = el("h3", "", "Itens");
     itemsTitle.style.marginTop = "23px";
@@ -1577,7 +1615,7 @@ function cancelSale(sale) {
 async function salesPage() {
   const current = ++state.renderId;
   const view = page("Vendas", "Acompanhe as vendas recebidas dos terminais e abra os detalhes.", "Operação");
-  view.outer.append(info("Pagamentos exibidos são informados pelo operador; a integração de pagamento e a NFC-e ainda não estão homologadas.", true));
+  view.outer.append(info("Pagamentos exibidos são informados pelo operador. A coluna NFC-e mostra a nota de cada venda: abra os detalhes para baixar o XML, cancelar no prazo ou reenviar uma nota rejeitada.", true));
   const box = el("section", "surface");
   const toolbar = el("div", "toolbar");
   const shop = shopSelect("sales-shop", true);
@@ -1617,7 +1655,7 @@ async function salesPage() {
         { label: "Operador / vendedor", render: row => [row.operator_name, row.seller_name].filter(Boolean).join(" / ") || "—" },
         { label: "Total", render: row => money(row.total_cents) },
         { label: "Estado", render: row => statusBadge(row.status) },
-        { label: "Fiscal", render: row => statusBadge(row.fiscal_state || row.fiscal_status || "not_issued") }
+        { label: "NFC-e", render: row => fiscalCell(row) }
       ], rows, row => [{ label: "Detalhes", onClick: () => saleDetail(row.id) }]));
       if (response.next_cursor) {
         const footer = el("div", "table-footer");
@@ -1998,6 +2036,8 @@ async function paymentMethodsPage() {
     { key: "name", label: "Nome exibido no caixa", required: true, max: 60, full: true },
     { key: "fee_bps", label: "Taxa (%)", type: "percent", default: 0, help: "Percentual cobrado pela adquirente ou operadora." },
     { key: "settlement_days", label: "Prazo de recebimento (dias)", type: "number", default: 0 },
+    { key: "print_rule", label: "Impressão da nota fiscal (NFC-e)", type: "select", required: true, choices: PRINT_RULE_OPTIONS,
+      default: "ask", help: "A nota é emitida de qualquer forma; muda só a impressão. Pagamento dividido: imprime se alguma forma pedir “Sempre”, pergunta se alguma pedir “Perguntar”." },
     { key: "active", label: "Ativa no caixa", type: "checkbox", default: true }
   ];
   const payloadOf = (form, editing) => { const data = formPayload(form, fields, { editing }); if (data.settlement_days !== undefined) data.settlement_days = Number(data.settlement_days); return data; };
@@ -2026,6 +2066,7 @@ async function paymentMethodsPage() {
       { label: "Tipo", render: r => paymentKindNames[r.kind] || r.kind },
       { label: "Taxa", render: r => percentText(r.fee_bps) },
       { label: "Recebimento", render: r => r.settlement_days ? `${r.settlement_days} dia(s)` : "Na hora" },
+      { label: "Nota fiscal", render: r => (PRINT_RULE_OPTIONS.find(([key]) => key === r.print_rule) || [null, "Perguntar"])[1] },
       { label: "Estado", render: r => statusBadge(r.active ? "Ativa" : "Inativa") }
     ], rows, r => [{ label: "Editar", onClick: () => edit(r).catch(handleError) }]));
   } catch (error) { box.append(empty("Não foi possível carregar", errorText(error), "!")); handleError(error); }
@@ -3310,10 +3351,7 @@ async function companyPage() {
     const specialField=el("div","field"),specialLabel=el("label","","Regime especial de tributação (ISS)"),special=el("select");special.id="company-special-regime";specialLabel.htmlFor=special.id;[["","Nenhum"],["1","1 · Microempresa municipal"],["2","2 · Estimativa"],["3","3 · Sociedade de profissionais"],["4","4 · Cooperativa"],["5","5 · Microempreendedor individual (MEI)"],["6","6 · ME ou EPP"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;special.append(option)});special.value=company.special_tax_regime||"";specialField.append(specialLabel,special,el("small","","Opcional; usado apenas quando há serviços com ISS."));
     const creditRate=plainField("company-simples-credit","Crédito de ICMS do Simples · pCredSN (%)",company.simples_credit_rate,8,"Ex.: 1,25");creditRate.input.inputMode="decimal";creditRate.field.append(el("small","","Só para CSOSN 101/201 (venda a contribuinte). Na NFC-e normalmente fica vazio."));
     const approxRate=plainField("company-approx-tax","Tributos aproximados sem tabela IBPT (%)",company.approx_tax_fallback_rate,8,"Ex.: 31,45");approxRate.input.inputMode="decimal";approxRate.field.append(el("small","","Lei 12.741: usado quando a tabela IBPT não tem o NCM. Deixe vazio para não estimar."));
-    const environmentField=el("div","field"),environmentLabel=el("label","","Emissão fiscal"),environment=el("select");environment.id="company-fiscal-environment";environmentLabel.htmlFor=environment.id;[["non_fiscal","Comprovante não fiscal · atual"],["homologation","NFC-e em homologação"],["production","NFC-e em produção · requer provedor"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;environment.append(option)});environment.value=company.fiscal_environment||"non_fiscal";environmentField.append(environmentLabel,environment,el("small","","A chave de acesso, QR Code, protocolo e impostos só aparecem após autorização real da SEFAZ por um provedor configurado."));
-    const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(seriesLabel,series);
-    const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumberLabel,nextNumber,el("small","","Altere apenas ao migrar de outro sistema emissor."));
-    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,ibge.field,taxField,cnae.field,specialField,creditRate.field,approxRate.field,environmentField,seriesField,nextNumberField,discountField,hoursField);
+    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,ibge.field,taxField,cnae.field,specialField,creditRate.field,approxRate.field,discountField,hoursField);
     const message=formMessage(form);
     const actions=el("div","form-actions"),save=el("button","button","Salvar dados");save.type="submit";
     actions.append(save);form.append(actions);
@@ -3331,10 +3369,10 @@ async function companyPage() {
           state_registration:stateRegistration.input.value.trim(),municipal_registration:municipalRegistration.input.value.trim(),
           address_line:addressLine.input.value.trim(),address_number:addressNumber.input.value.trim(),address_complement:addressComplement.input.value.trim(),
           address_neighborhood:addressNeighborhood.input.value.trim(),address_city:addressCity.input.value.trim(),address_state:addressState.input.value.trim().toUpperCase(),
-          address_zip:addressZip.input.value.replace(/\D/g,""),crt:Number(tax.value),fiscal_environment:environment.value,
+          address_zip:addressZip.input.value.replace(/\D/g,""),crt:Number(tax.value),
           cnae:cnae.input.value.replace(/\D/g,""),city_ibge_code:ibge.input.value.replace(/\D/g,""),special_tax_regime:special.value,
           simples_credit_rate:creditRate.input.value.trim().replace(",","."),approx_tax_fallback_rate:approxRate.input.value.trim().replace(",","."),
-          nfce_series:Number(series.value),nfce_next_number:Number(nextNumber.value),max_discount_bps:Math.round(maxDiscount*100),
+          max_discount_bps:Math.round(maxDiscount*100),
           business_hours:Object.fromEntries(Object.entries(hoursInputs).map(([day,inputs])=>[day,{enabled:inputs.toggle.checked,open:inputs.toggle.checked?inputs.open.value:"",close:inputs.toggle.checked?inputs.close.value:""}]))};
         if(!documentChanged)delete companyPayload.document;
         await api.patch("/ops/company",companyPayload);
@@ -3345,8 +3383,127 @@ async function companyPage() {
     const tech=company.tech_responsible||{};
     const techBox=surface("Responsável técnico do sistema","Informado automaticamente nas notas (grupo infRespTec), conforme a configuração da plataforma.");
     techBox.append(detailList([["Empresa",tech.contact],["CNPJ",tech.cnpj||"Pendente de configuração pela plataforma"],["E-mail",tech.email],["Telefone",tech.phone]]));
-    view.outer.append(techBox);
+    const fiscalBox=surface("Nota fiscal (NFC-e)","Ambiente, modo de emissão, numeração, CSC, certificado digital e e-mail do contador.");
+    view.outer.append(fiscalBox,techBox);
+    const fiscalContent=el("div");fiscalBox.append(fiscalContent);fiscalContent.append(loadingSurface("Carregando a configuração da nota…"));
+    fiscalSettings(fiscalContent,token).catch(error=>{fiscalContent.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));});
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
+}
+const FISCAL_ENVIRONMENTS=[["non_fiscal","Sem nota fiscal (só comprovante)"],["homologation","Homologação (teste, sem valor fiscal)"],["production","Produção (nota com valor fiscal)"]];
+function readFileBase64(file) {
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(String(reader.result).split(",").pop());
+    reader.onerror=()=>reject(new Error("Não foi possível ler o arquivo."));
+    reader.readAsDataURL(file);
+  });
+}
+// Minha empresa > Nota fiscal. Secrets are write-only: the page only learns whether they are configured.
+async function fiscalSettings(box,token) {
+  const config=await api.get("/ops/fiscal/config");
+  if(token!==state.renderId)return;
+  box.replaceChildren();
+  const alerts=config.alerts||{};
+  if(alerts.overdue)box.append(info(`${alerts.overdue} NFC-e em contingência há mais de 20 horas. A SEFAZ exige o envio em até 24 horas: verifique a internet dos caixas.`,true));
+  else if(alerts.pending)box.append(info(`${alerts.pending} NFC-e em contingência aguardando envio automático à SEFAZ.`));
+  if(config.environment==="non_fiscal")box.append(info("Comece pela homologação: as notas saem com a chave e o QR Code, mas sem valor fiscal. Passe para produção só depois de testar vendas, cancelamento e contingência."));
+  const field=(labelText,input,help="")=>{const wrap=el("div","field"),label=el("label","",labelText);input.id=input.id||"fiscal-"+Math.random().toString(36).slice(2);label.htmlFor=input.id;wrap.append(label,input);if(help)wrap.append(el("small","",help));return wrap;};
+  const select=(options,value)=>{const node=el("select");options.forEach(([key,text])=>{const option=el("option","",text);option.value=String(key);node.append(option);});node.value=String(value);return node;};
+  const input=(value,type="text",extra={})=>{const node=el("input");node.type=type;node.value=value??"";Object.assign(node,extra);return node;};
+  const form=el("form","form-grid");
+  const environment=select(FISCAL_ENVIRONMENTS,config.environment);
+  const mode=select([["sefaz","SEFAZ direta (certificado A1 da empresa)"],["focusnfe","Provedor Focus NFe"]],config.mode);
+  const qr=select([["3","Versão 3 (atual, sem CSC na emissão normal)"],["2","Versão 2 (com CSC)"]],config.qr_version);
+  const series=input(config.series,"number",{min:"0",max:"999"});
+  const next=input(config.next_number,"number",{min:"1"});
+  const cscHomId=input(config.csc?.homologation?.id||"","text",{maxLength:6,inputMode:"numeric",placeholder:"000001"});
+  const cscHom=input("","password",{maxLength:36,autocomplete:"new-password",placeholder:config.csc?.homologation?.configured?"Configurado · deixe em branco para manter":"Cole o CSC de homologação"});
+  const cscProdId=input(config.csc?.production?.id||"","text",{maxLength:6,inputMode:"numeric",placeholder:"000001"});
+  const cscProd=input("","password",{maxLength:36,autocomplete:"new-password",placeholder:config.csc?.production?.configured?"Configurado · deixe em branco para manter":"Cole o CSC de produção"});
+  const focusToken=input("","password",{maxLength:1000,autocomplete:"new-password",placeholder:config.focus?.configured?"Configurado · deixe em branco para manter":"Token da Focus NFe"});
+  const contingency=input("","checkbox");contingency.checked=!!config.terminal_contingency;contingency.style.width="18px";
+  const accountant=input(config.accountant_email||"","email",{maxLength:254,placeholder:"contador@escritorio.com.br"});
+  const focusField=field("Token da Focus NFe",focusToken,"Fica guardado cifrado no servidor e não aparece de novo.");
+  const contingencyField=el("label","checkbox-line");contingencyField.append(contingency,el("span","","Contingência no caixa sem internet (exige o CSC; o caixa recebe uma faixa de números)"));
+  form.append(field("Ambiente",environment,"Produção pede uma confirmação: as notas passam a ter valor fiscal."),
+    field("Modo de emissão",mode,`UF ${config.uf||"—"} · autorizador ${config.authorizer||"—"} · cancelamento em até ${config.cancel_minutes||30} minutos`),
+    field("Série da NFC-e",series),
+    field("Próximo número",next,`Último usado: ${config.last_used_number??"nenhum"}. Nunca reutilize um número já emitido; altere só ao migrar de outro emissor.`),
+    field("Versão do QR Code",qr,"A versão 3 (NT 2025.001) dispensa o CSC na emissão normal. A contingência no caixa usa a versão 2 com CSC."),
+    field("ID do CSC · homologação",cscHomId),field("CSC · homologação",cscHom,"Código de Segurança do Contribuinte, gerado no portal da SEFAZ."),
+    field("ID do CSC · produção",cscProdId),field("CSC · produção",cscProd),
+    focusField,contingencyField,field("E-mail do contador",accountant,"Usado para o envio do pacote mensal de XMLs."));
+  const toggleFocus=()=>{focusField.hidden=mode.value!=="focusnfe";};toggleFocus();mode.addEventListener("change",toggleFocus);
+  // Strong confirmation before production: the notes become legally valid documents.
+  const confirmation=input("","text",{autocomplete:"off",placeholder:config.production_confirmation});
+  const confirmationField=field(`Para emitir em produção, digite ${config.production_confirmation}`,confirmation,
+    "A partir daí as NFC-e têm valor fiscal: não podem ser apagadas, só canceladas no prazo da SEFAZ.");
+  confirmationField.classList.add("full");
+  form.append(confirmationField);
+  const toggleConfirmation=()=>{confirmationField.hidden=!(environment.value==="production"&&config.environment!=="production");};
+  toggleConfirmation();environment.addEventListener("change",toggleConfirmation);
+  const message=formMessage(form),submit=el("button","button","Salvar nota fiscal");submit.type="submit";
+  const formActions=el("div","form-actions");formActions.append(submit);form.append(formActions);
+  form.addEventListener("submit",async event=>{
+    event.preventDefault();if(!form.reportValidity())return;
+    submit.disabled=true;
+    try{
+      const payload=fiscalConfigPayload(config,{environment:environment.value,mode:mode.value,qr_version:Number(qr.value),
+        series:Number(series.value),next_number:Number(next.value),terminal_contingency:contingency.checked,
+        accountant_email:accountant.value.trim(),csc_homologation_id:cscHomId.value.trim(),csc_homologation:cscHom.value.trim(),
+        csc_production_id:cscProdId.value.trim(),csc_production:cscProd.value.trim(),focus_token:focusToken.value.trim()});
+      if(!Object.keys(payload).length){toast("Nada mudou.");submit.disabled=false;return;}
+      if(payload.environment==="production"){
+        if(confirmation.value.trim().toUpperCase()!==config.production_confirmation)throw new Error(`Digite ${config.production_confirmation} para confirmar a produção.`);
+        payload.confirmation=config.production_confirmation;
+      }
+      await api.patch("/ops/fiscal/config",payload);
+      toast("Configuração da nota fiscal salva.");renderRoute();
+    }catch(error){handleError(error,message);submit.disabled=false;}
+  });
+  box.append(form);
+  // Certificate A1
+  const certBox=el("div","fiscal-certificate");
+  const view=certificateView(config.certificate);
+  certBox.append(el("h3","","Certificado digital A1"),info(view.title,view.tone!=="ok"));
+  if(view.lines.length)certBox.append(detailList(view.lines));
+  const certForm=el("form","form-grid"),file=input("","file",{accept:".pfx,.p12,application/x-pkcs12"}),password=input("","password",{autocomplete:"off",maxLength:200});
+  certForm.append(field("Arquivo do certificado (.pfx)",file,"O CNPJ do certificado precisa ser o mesmo da empresa. O arquivo e a senha ficam cifrados no servidor."),field("Senha do certificado",password));
+  const certMessage=formMessage(certForm),certSubmit=el("button","button",config.certificate?"Trocar certificado":"Enviar certificado");
+  certSubmit.type="submit";const certActions=el("div","form-actions");certActions.append(certSubmit);certForm.append(certActions);
+  certForm.addEventListener("submit",async event=>{
+    event.preventDefault();
+    if(!file.files?.[0]){handleError(new Error("Escolha o arquivo .pfx do certificado."),certMessage);return;}
+    certSubmit.disabled=true;
+    try{
+      await api.post("/ops/fiscal/certificate",{pfx_base64:await readFileBase64(file.files[0]),password:password.value});
+      password.value="";toast("Certificado salvo.");renderRoute();
+    }catch(error){handleError(error,certMessage);certSubmit.disabled=false;}
+  });
+  certBox.append(certForm);
+  if(config.certificate)certBox.append(button("Remover certificado",()=>confirmAction("Remover certificado","A emissão direta na SEFAZ para até um novo certificado ser enviado.",async()=>{await api.delete("/ops/fiscal/certificate");toast("Certificado removido.");renderRoute();},"Remover"),"ghost danger"));
+  if(config.mode==="sefaz")box.append(certBox);
+  const test=button("Testar comunicação",async()=>{
+    test.disabled=true;
+    try{const result=await api.post("/ops/fiscal/test",{});toast((result.online?"Comunicação ok: ":"Sem comunicação: ")+result.message,result.online?"success":"error");}
+    catch(error){handleError(error);}finally{test.disabled=false;}
+  },"ghost");
+  const inutilize=button("Inutilizar números",()=>inutilizeDialog(config),"ghost");
+  const actions=el("div","form-actions");actions.append(test,inutilize);box.append(actions);
+}
+function inutilizeDialog(config) {
+  const form=el("form","form-grid");
+  const make=(labelText,type,value="")=>{const wrap=el("div","field"),label=el("label","",labelText),node=el(type==="textarea"?"textarea":"input");if(type!=="textarea")node.type=type;node.value=value;node.id="inut-"+labelText.length+type;label.htmlFor=node.id;wrap.append(label,node);return {wrap,node};};
+  const start=make("Do número","number"),end=make("Até o número","number"),reason=make("Justificativa (mín. 15 caracteres)","textarea");
+  start.node.min=end.node.min="1";start.node.required=end.node.required=reason.node.required=true;reason.node.minLength=15;reason.node.maxLength=255;
+  form.append(info(`Série ${config.series}. Use para números que nunca foram emitidos (falha do sistema ou salto de numeração). O sistema já inutiliza sozinho as faixas reservadas aos caixas e não usadas.`,true),start.wrap,end.wrap,reason.wrap);
+  const message=formMessage(form),submit=formButtons(form,"Inutilizar");
+  form.addEventListener("submit",async event=>{
+    event.preventDefault();if(!form.reportValidity())return;submit.disabled=true;
+    try{await api.post("/ops/fiscal/inutilize",{start:Number(start.node.value),end:Number(end.node.value),reason:reason.node.value.trim()});closeDialog();toast("Inutilização enviada; acompanhe em Integrações.");}
+    catch(error){handleError(error,message);submit.disabled=false;}
+  });
+  openDialog("Inutilizar numeração da NFC-e","A SEFAZ registra a faixa como não usada.",form);
 }
 async function auditPage() {
   const token = ++state.renderId;
@@ -3718,9 +3875,12 @@ function integrationForm(provider, current, asPlatform=false) {
   openDialog(asPlatform?"Asaas da plataforma":"Focus NFe da empresa","A credencial é armazenada no servidor; não será exibida no painel.",form);
 }
 async function downloadFiscalXml(row) {
+  return downloadFiscalFile("/api/v1/ops/fiscal/documents/"+row.id+"/xml","nfce-"+(row.access_key||row.id)+".xml");
+}
+async function downloadFiscalFile(path,filename) {
   let response;
   try {
-    response=await fetch("/api/v1/ops/fiscal/documents/"+row.id+"/xml",{
+    response=await fetch(path,{
       credentials:"same-origin",headers:{"X-Tenant-ID":state.tenantId,Accept:"application/xml"}
     });
   }catch{throw new Error("Sem conexão para baixar o XML.");}
@@ -3731,7 +3891,7 @@ async function downloadFiscalXml(row) {
   }
   const blob=await response.blob();
   const url=URL.createObjectURL(blob);
-  const link=el("a");link.href=url;link.download="nfce-"+row.id+".xml";
+  const link=el("a");link.href=url;link.download=filename;
   document.body.append(link);link.click();link.remove();
   setTimeout(()=>URL.revokeObjectURL(url),1500);
 }
@@ -3807,25 +3967,36 @@ async function integrationsPage() {
       api.get("/ops/fiscal/documents")
     ]);
     if(token!==state.renderId)return;
-    const config=surface("Focus NFe","Configuração fiscal desta empresa.");
+    const config=surface("Focus NFe","Usada quando o modo de emissão é “Provedor Focus NFe” (Minha empresa > Nota fiscal).");
     config.append(detailList([
       ["Credencial",integration.configured?"Configurada":"Não configurada"],
       ["Ambiente",integration.environment==="production"?"Produção":"Homologação"],
       ["Estado",statusBadge(integration.enabled?"Ativo":"Inativo")]
     ]));
     config.append(button("Configurar",()=>integrationForm("focusnfe",integration)));
-    const documents=surface("Documentos fiscais","Solicitações e retornos dos documentos desta empresa.");
+    const documents=surface("Notas fiscais (NFC-e)","Notas emitidas, em contingência, rejeitadas e canceladas.");
+    const alerts=docs.alerts||{};
+    if(alerts.overdue)documents.append(info(`${alerts.overdue} NFC-e em contingência há mais de 20 horas: a SEFAZ exige o envio em até 24 horas.`,true));
     const docRows=records(docs);
     documents.append(docRows.length?table([
       {label:"Venda",render:row=>String(row.sale_id).slice(0,8)},
+      {label:"Número",render:row=>row.number?`${row.number} / ${row.series}`:"—"},
       {label:"Estado",render:row=>statusBadge(row.status)},
+      {label:"Emissão",render:row=>row.emission_type===9?"Contingência":"Normal"},
       {label:"Autorização",render:row=>row.authorization},
-      {label:"Erro",render:row=>row.error_message},
+      {label:"Motivo",render:row=>row.error_message},
       {label:"Data",render:row=>dateTime(row.created_at)}
     ],docRows,row=>[
       ...(row.xml_archived?[{label:"Baixar XML",onClick:()=>downloadFiscalXml(row).catch(handleError)}]:[]),
-      ...(row.status==="authorized"?[{label:"Solicitar cancelamento",danger:true,onClick:()=>fiscalCancel(row)}]:[])
-    ]):empty("Nenhum documento","As solicitações fiscais aparecerão aqui."));
+      ...(row.events||[]).filter(event=>event.xml_archived).map(event=>({label:"XML do cancelamento",onClick:()=>downloadFiscalFile("/api/v1/ops/fiscal/events/"+event.id+"/xml","cancelamento-"+row.id+".xml").catch(handleError)})),
+      ...(row.status==="rejected"?[{label:"Reenviar",onClick:async()=>{try{await api.post(`/ops/fiscal/documents/${row.id}/retry`,{});toast("Nota reenviada.");renderRoute();}catch(error){handleError(error);}}}]:[]),
+      ...(row.status==="authorized"&&row.can_cancel?[{label:"Cancelar NFC-e",danger:true,onClick:()=>fiscalCancel(row)}]:[])
+    ]):empty("Nenhuma nota","As NFC-e emitidas aparecerão aqui."));
+    const gaps=docs.inutilizations||[];
+    if(gaps.length)documents.append(el("h3","","Inutilizações"),table([
+      {label:"Série",render:row=>row.series},{label:"Faixa",render:row=>`${row.start} a ${row.end}`},
+      {label:"Estado",render:row=>statusBadge(row.status)},{label:"Protocolo",render:row=>row.protocol},
+      {label:"Motivo",render:row=>row.error_message}],gaps,row=>row.xml_archived?[{label:"Baixar XML",onClick:()=>downloadFiscalFile("/api/v1/ops/fiscal/inutilizations/"+row.id+"/xml","inutilizacao-"+row.start+".xml").catch(handleError)}]:[]));
     const tasks=surface("Tarefas de integração","Execuções recentes; pagamentos e documentos podem permanecer pendentes.");
     const jobRows=records(jobs);
     tasks.append(jobRows.length?table([

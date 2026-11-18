@@ -324,6 +324,10 @@ function renderStatus() {
   const hours = session.hours || {};
   $('hoursChip').classList.toggle('hidden', !hours.configured || hours.open);
   setChip('hoursChip', 'warn', 'Fora do horário', 'Fora do horário de funcionamento da empresa. Um caixa já aberto continua ativo.');
+  // NFC-e in contingency or waiting: the SEFAZ must receive it within 24 hours.
+  const nfceNotice = C.nfceChip(session.sync?.nfce);
+  $('nfceChip').classList.toggle('hidden', nfceNotice.hidden);
+  if (!nfceNotice.hidden) setChip('nfceChip', nfceNotice.state, nfceNotice.text, nfceNotice.title);
   const update = session.update || {}, staged = update.state === 'staged' && update.staged_version;
   // On an additional cashier this is the update of the MAIN computer, and the button is not here.
   $('releaseChip').classList.toggle('hidden', notice.isStation || (!staged && !update.available));
@@ -1274,10 +1278,72 @@ function finishSale(sale) {
   if (fiscalWarnings.length) toast(`Aviso fiscal: ${fiscalWarnings.length === 1 ? `“${fiscalWarnings[0].name}” ainda não está pronto` : `${fiscalWarnings.length} itens ainda não estão prontos`} para nota fiscal. Ajuste o cadastro no painel.`);
   poll().catch(() => {});
   loadCustomers().catch(() => {});
+  if (C.nfcePlan(sale).issue) {
+    // NFC-e on: the DANFE waits for the note (cloud, up to ~8 s; offline contingency otherwise).
+    setDoneStatus(sale, 'Emitindo a NFC-e…', 1);
+    nfceAfterSale(sale).catch(error => setDoneStatus(sale, error.message || 'Não foi possível emitir a NFC-e agora. F9 imprime depois.', 3));
+    return;
+  }
   printAfterSale().then(plan => {
     if (state.done?.sale === sale) { state.done.printStatus = plan.status; state.done.stamp = sale.id + ':1'; renderPanels(); }
     if (plan.preview) receiptDialog(sale, plan.status, {autoPrint: plan.autoPrint}).catch(() => {});
   });
+}
+function setDoneStatus(sale, text, step) {
+  if (state.done?.sale?.id !== sale.id) return;
+  state.done.printStatus = text;
+  state.done.stamp = sale.id + ':' + step;
+  renderPanels();
+}
+async function nfceAfterSale(sale) {
+  let current = sale;
+  try { current = (await api('/api/sales/' + encodeURIComponent(sale.id) + '/nfce', 'POST', {})).sale || sale; }
+  catch (error) { current = {...sale, nfce: {...(sale.nfce || {}), status: 'pending', error: error.message}}; }
+  if (state.done?.sale?.id === sale.id) state.done.sale = {...state.done.sale, ...current};
+  state.lastSale = current;
+  const plan = C.nfcePlan(current), status = C.nfceStatusText(current);
+  setDoneStatus(sale, status, 2);
+  poll().catch(() => {});
+  if (plan.print === 'never') { setDoneStatus(sale, status + ' Nota não impressa (regra da forma de pagamento).', 3); return; }
+  const wanted = plan.print === 'always' || await printPrompt(current);
+  if (!wanted) { setDoneStatus(sale, status + ' Nota não impressa.', 3); return; }
+  setDoneStatus(sale, status + ' ' + await printSaleNow(current), 3);
+}
+// Queue the DANFE (or the receipt) of this sale and flush it to the thermal printer.
+async function printSaleNow(sale) {
+  try { await api('/api/sales/' + encodeURIComponent(sale.id) + '/print', 'POST', {}); }
+  catch (error) {
+    if (error.status === 409) { receiptDialog(sale, 'Sem impressora de recibos configurada: imprima pelo sistema.', {autoPrint: true}).catch(() => {}); return 'Sem impressora térmica; prévia aberta.'; }
+    return error.message;
+  }
+  const plan = await printAfterSale();
+  if (plan.preview) receiptDialog(sale, plan.status, {autoPrint: plan.autoPrint}).catch(() => {});
+  return plan.status;
+}
+// "Imprimir a nota fiscal?" — Enter/S = Sim, Esc/N = Não, big touch buttons; optional consultation link.
+function printPrompt(sale) {
+  const modal = openModal({title: 'Imprimir a nota fiscal?', eyebrow: 'NFC-e', text: C.nfceStatusText(sale), className: 'print-ask',
+    onKey: (event, self) => {
+      if (event.target.matches?.('input')) return false;
+      const answer = C.printPromptKey(event.key);
+      if (!answer) return false;
+      event.preventDefault();
+      self.close(answer === 'yes');
+      return true;
+    }});
+  const fiscal = sale.fiscal || {};
+  if (fiscal.qr_url || fiscal.url_consulta) {
+    const share = el('div', 'print-ask-share', `<label for="nfceShareContact">Enviar o link da nota (opcional)</label><div class="print-ask-share-row"><input id="nfceShareContact" type="text" inputmode="email" autocomplete="off" placeholder="WhatsApp com DDD ou e-mail do cliente"><button type="button" class="btn" data-share>Abrir link</button></div><small>Só o link de consulta pública da SEFAZ; nada é enviado automaticamente.</small>`);
+    share.querySelector('[data-share]').addEventListener('click', () => {
+      const links = C.nfceShareLinks(fiscal, share.querySelector('input').value);
+      if (!links) { modal.error('Informe um WhatsApp com DDD ou um e-mail válido.'); return; }
+      window.open(links.whatsapp || links.email, '_blank', 'noopener');
+    });
+    modal.body.append(share);
+  }
+  modal.action('Não <kbd>Esc</kbd>', 'big', () => modal.close(false));
+  modal.action('Sim, imprimir <kbd>Enter</kbd>', 'primary big', () => modal.close(true)).focus();
+  return modal.promise.then(Boolean);
 }
 // Background printing. The system print dialog is never opened behind the operator's back when a
 // thermal printer is configured, so a CUPS queue cannot print the same receipt twice.

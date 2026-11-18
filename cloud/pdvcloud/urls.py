@@ -11,6 +11,7 @@ from core import views_sales as sales, views_stock as stock, views_terminal as t
 from core import views_users as users
 from core import views_owner as owner
 from core import views_fiscal as fiscal
+from core import views_nfce as nfce
 from core import views_labels as labels
 from core import views_app as app_api, views_app_admin as app_admin
 from core.accountant import views as accountant
@@ -63,6 +64,11 @@ urlpatterns = [
     path("api/v1/terminal/sync", terminal.sync),
     path("api/v1/terminal/restore", terminal.restore),
     path("api/v1/terminal/release", terminal.release),
+    path("api/v1/terminal/nfce", nfce.issue),
+    path("api/v1/terminal/nfce/reserve", nfce.reserve),
+    path("api/v1/terminal/nfce/contingency", nfce.contingency),
+    path("api/v1/terminal/nfce/<uuid:sale_id>", nfce.detail),
+    path("api/v1/terminal/nfce/<uuid:sale_id>/cancel", nfce.cancel),
     path("api/v1/label-settings", labels.label_settings),
     path("api/v1/sync/conflicts", terminal.conflicts),
     path("api/v1/sync/conflicts/<uuid:pk>", terminal.conflict_detail),

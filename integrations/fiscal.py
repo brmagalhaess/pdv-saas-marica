@@ -1,4 +1,4 @@
-"""Focus NFe NFC-e connector. Tax payload must be reviewed for each issuer."""
+"""Focus NFe NFC-e connector (API v2). The payload is built from the tax engine (core.nfce.backends)."""
 import os
 import re
 from urllib.parse import quote, urljoin, urlsplit
@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from .base import ProviderClient, ProviderError
 
 URLS = {"homologation":"https://homologacao.focusnfe.com.br", "production":"https://api.focusnfe.com.br"}
+NS = {'n':'http://www.portalfiscal.inf.br/nfe'}
 
 class FocusNFe(ProviderClient):
     def __init__(self, token, environment="homologation", session=None):
@@ -40,7 +41,14 @@ class FocusNFe(ProviderClient):
         self._live()
         return self.request("DELETE","/v2/nfce/"+self._ref(reference),json={"justificativa":reason.strip()},auth=(self.token,""))
 
-    def download_xml(self, path, access_key, protocol):
+    def inutilize(self, cnpj, series, start, end, reason):
+        if not isinstance(reason,str) or not 15 <= len(reason.strip()) <= 255:
+            raise ValueError("Justificativa fiscal deve ter de 15 a 255 caracteres")
+        self._live()
+        return self.request("POST","/v2/nfce/inutilizacao",json={"cnpj":cnpj,"serie":str(series),"numero_inicial":str(start),
+                            "numero_final":str(end),"justificativa":reason.strip()},auth=(self.token,""))
+
+    def _download(self, path):
         """Download only from this configured provider; never forward credentials elsewhere."""
         if not isinstance(path,str) or not path or len(path)>2048:
             raise ProviderError("Caminho do XML indisponível")
@@ -65,13 +73,34 @@ class FocusNFe(ProviderClient):
             raise ProviderError("Declaração XML não permitida")
         try:root=ET.fromstring(data)
         except ET.ParseError as exc:raise ProviderError("Provedor retornou XML inválido") from exc
-        ns={'n':'http://www.portalfiscal.inf.br/nfe'}
-        invoice=root.find('.//n:infNFe',ns);authorization=root.find('.//n:infProt',ns)
+        return data,root
+
+    def download_xml(self, path, access_key, protocol):
+        data,root=self._download(path)
+        invoice=root.find('.//n:infNFe',NS);authorization=root.find('.//n:infProt',NS)
         if (invoice is None or invoice.get('Id')!='NFe'+str(access_key) or authorization is None
-            or authorization.findtext('n:chNFe',namespaces=ns)!=str(access_key)
-            or authorization.findtext('n:nProt',namespaces=ns)!=str(protocol)
-            or authorization.findtext('n:cStat',namespaces=ns) not in ('100','150')):
+            or authorization.findtext('n:chNFe',namespaces=NS)!=str(access_key)
+            or authorization.findtext('n:nProt',namespaces=NS)!=str(protocol)
+            or authorization.findtext('n:cStat',namespaces=NS) not in ('100','150')):
             raise ProviderError("XML não corresponde à autorização da nota")
+        return data
+
+    def download_event_xml(self, path, access_key):
+        """procEventoNFe of the cancellation (110111) of this access key, registered (135/136/155)."""
+        data,root=self._download(path)
+        info=root.find('.//n:retEvento/n:infEvento',NS)
+        event=root.find('.//n:evento/n:infEvento',NS)
+        if (event is None or info is None or event.findtext('n:chNFe',namespaces=NS)!=str(access_key)
+            or event.findtext('n:tpEvento',namespaces=NS)!='110111'
+            or info.findtext('n:cStat',namespaces=NS) not in ('135','136','155')):
+            raise ProviderError("XML não corresponde ao cancelamento da nota")
+        return data
+
+    def download_inutilization_xml(self, path):
+        data,root=self._download(path)
+        info=root.find('.//n:retInutNFe/n:infInut',NS)
+        if info is None or info.findtext('n:cStat',namespaces=NS)!='102':
+            raise ProviderError("XML não corresponde à inutilização homologada")
         return data
 
     @staticmethod

@@ -1,18 +1,16 @@
 import os
-from datetime import date
 from decimal import Decimal,InvalidOperation
 from pathlib import Path
 from django.db import transaction
-from django.db.models import Sum
-from django.http import JsonResponse,HttpResponse
+from django.db.models import Max,Sum
+from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from core.api_common import endpoint,APIError,method,payload,fields,text,uuid_value,membership_context,platform_user,audit
-from core.models import Plan,Sale,BillingEvent,FiscalDocument,Tenant,Terminal,Subscription,BillingInvoice
+from core.models import Plan,BillingEvent,FiscalDocument,Tenant,Terminal,Subscription,BillingInvoice
 from shared.secrets import encrypt_secret
-from shared.licensing import payload_digest
 from integrations.billing import verify_webhook_token
-from .models import IntegrationAccount,ProviderJob,FiscalPayload,BillingBinding
+from .models import IntegrationAccount,ProviderJob,BillingBinding
 from .services import enqueue,JobConflict,capacity_fits
 from core.fiscal import company_data,company_status,tech_responsible
 from shared.fiscal.data import CRT_REGIME,REGIME_CRT,SPECIAL_TAX_REGIMES,UF_CODES
@@ -103,11 +101,20 @@ def company(request):
             value=text(data['fiscal_environment'],'Ambiente fiscal',20)
             if value not in ('non_fiscal','homologation','production'):
                 raise APIError('Ambiente fiscal inválido')
+            if value=='production' and tenant.fiscal_environment!='production':
+                # Production is switched on only in Minha empresa > Nota fiscal, with a typed confirmation.
+                raise APIError('Ative a produção em Minha empresa > Nota fiscal, com a confirmação de emissão real',409,
+                               code='production_confirmation')
             tenant.fiscal_environment=value
-        for field,label,minimum,maximum in (('nfce_series','Série NFC-e',1,999),('nfce_next_number','Próximo número NFC-e',1,10**12)):
+        for field,label,minimum,maximum in (('nfce_series','Série NFC-e',1,999),('nfce_next_number','Próximo número NFC-e',1,999999999)):
             if field in data:
                 value=data[field]
                 if type(value) is not int or not minimum<=value<=maximum:raise APIError(f'{label} inválida')
+                if field=='nfce_next_number' and value!=tenant.nfce_next_number:
+                    used=(FiscalDocument.objects.filter(tenant=tenant,environment=tenant.fiscal_environment,
+                          series=data.get('nfce_series',tenant.nfce_series)).aggregate(value=Max('number'))['value'])
+                    if used and value<=used:
+                        raise APIError(f'O número {value} já foi usado nesta série (último: {used}). Nunca reutilize números.',409)
                 setattr(tenant,field,value)
         if 'max_discount_bps' in data:
             value = data['max_discount_bps']
@@ -233,76 +240,6 @@ def asaas_webhook(request):
         try:job=enqueue('billing.reconcile',None,'asaas:'+event_id,{'payment_id':payment_id})
         except JobConflict as exc:raise APIError(str(exc),409)
     return JsonResponse({'accepted':True,'job_id':str(job.pk)})
-
-@endpoint
-def fiscal_submit(request):
-    method(request,'POST');member=membership_context(request,('owner','admin','manager'),write=True)
-    data=payload(request);fields(data,('sale_id','fiscal_payload'),('sale_id','fiscal_payload'))
-    body=data['fiscal_payload']
-    if not isinstance(body,dict):raise APIError('Payload fiscal inválido')
-    if body.get('tipo_emissao',1) not in (1,'1'):raise APIError('Contingência fiscal local ainda não habilitada')
-    if not IntegrationAccount.objects.filter(provider='focusnfe',tenant=member.tenant,enabled=True).exists():raise APIError('Configure a integração fiscal antes de emitir',503)
-    with transaction.atomic():
-        sale=Sale.objects.select_for_update().filter(pk=uuid_value(data['sale_id']),tenant=member.tenant,status='completed').first()
-        if not sale:raise APIError('Venda não encontrada',404)
-        try:total=Decimal(str(body.get('valor_total')))*100
-        except (InvalidOperation,TypeError):raise APIError('Total fiscal inválido')
-        if not total.is_finite() or total!=sale.total_cents:raise APIError('Total fiscal difere da venda')
-        issuer=''.join(x for x in str(body.get('cnpj_emitente',body.get('cpf_emitente',''))) if x.isdigit())
-        expected=''.join(x for x in member.tenant.document if x.isdigit())
-        if not expected or issuer!=expected:raise APIError('Emitente deve corresponder ao documento cadastrado na empresa')
-        items=body.get('items',[]);sale_items=list(sale.items.select_related('product'))
-        if not isinstance(items,list) or len(items)!=len(sale_items):raise APIError('Itens fiscais não correspondem à venda')
-        for item,line in zip(items,sale_items):
-            if not isinstance(item,dict) or str(item.get('codigo_produto')) not in (str(line.product_id),line.product.sku):raise APIError('Produto fiscal divergente')
-            try:quantity=Decimal(str(item.get('quantidade_comercial')))*1000
-            except InvalidOperation:raise APIError('Quantidade fiscal inválida')
-            if not quantity.is_finite() or quantity!=line.quantity_milli:raise APIError('Quantidade fiscal divergente')
-        record=FiscalDocument.objects.filter(sale=sale).first()
-        if record:
-            if FiscalPayload.objects.get(document=record).request_payload!=body:raise APIError('Venda já possui requisição fiscal com outros dados',409)
-        else:
-            record=FiscalDocument.objects.create(tenant=member.tenant,shop=sale.shop,sale=sale,external_id='pdv2-'+str(sale.pk),status='queued')
-            FiscalPayload.objects.create(document=record,request_payload=body)
-        job=enqueue('fiscal.submit',member.tenant,'fiscal.submit:'+str(record.pk),{'document_id':str(record.pk)})
-        audit(member.tenant,request.user,'fiscal.requested',record)
-    return JsonResponse({'document_id':str(record.pk),'job_id':str(job.pk),'status':record.status},status=202)
-
-@endpoint
-def fiscal_documents(request):
-    method(request,'GET');member=membership_context(request,('owner','admin','manager','finance','viewer'))
-    rows=FiscalDocument.objects.filter(tenant=member.tenant).order_by('-created_at')[:100]
-    return JsonResponse({'results':[{'id':str(x.pk),'sale_id':str(x.sale_id),'status':x.status,'reference':x.external_id,
-                                    'authorization':x.authorization,'error_message':x.error_message,'created_at':x.created_at.isoformat(),
-                                    'xml_archived':FiscalPayload.objects.filter(document=x).exclude(xml_sha256='').exists()} for x in rows]})
-
-@endpoint
-def fiscal_xml(request,pk):
-    method(request,'GET');member=membership_context(request,('owner','admin','manager','finance'))
-    row=FiscalPayload.objects.filter(document_id=uuid_value(pk),document__tenant=member.tenant).first()
-    if not row:raise APIError('Documento não encontrado',404)
-    if not row.xml_content:raise APIError('XML ainda não arquivado; consulte a fila de integração',409)
-    response=HttpResponse(bytes(row.xml_content),content_type='application/xml')
-    response['Content-Disposition']='attachment; filename="nfce-'+str(row.document_id)+'.xml"'
-    response['Cache-Control']='private, no-store'
-    response['X-Content-SHA256']=row.xml_sha256
-    audit(member.tenant,request.user,'fiscal.xml_downloaded',row.document)
-    return response
-
-@endpoint
-def fiscal_cancel(request,pk):
-    method(request,'POST');member=membership_context(request,('owner','admin','manager'),write=True)
-    data=payload(request);fields(data,('reason',),('reason',))
-    reason=text(data['reason'],'Justificativa',255)
-    if len(reason)<15:raise APIError('Justificativa deve ter pelo menos 15 caracteres')
-    with transaction.atomic():
-        row=FiscalDocument.objects.select_for_update().filter(pk=uuid_value(pk),tenant=member.tenant).first()
-        if not row:raise APIError('Documento não encontrado',404)
-        if row.status!='authorized':raise APIError('Somente notas autorizadas podem solicitar cancelamento',409)
-        try:job=enqueue('fiscal.cancel',member.tenant,'fiscal.cancel:'+str(row.pk),{'document_id':str(row.pk),'reason':reason})
-        except JobConflict as exc:raise APIError(str(exc),409)
-        audit(member.tenant,request.user,'fiscal.cancel_requested',row)
-    return JsonResponse({'job_id':str(job.pk),'status':job.status},status=202)
 
 @endpoint
 def reconcile_job(request,pk):

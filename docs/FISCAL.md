@@ -248,7 +248,7 @@ cst_ibs_cbs. Casa por SKU e depois por EAN; linha com erro impede a gravação d
 
 ## 10. Limites conhecidos
 
-- Não emite nem assina XML; CSC, certificado e numeração ficam com a frente de emissão.
+- A emissão (XML, assinatura, CSC, certificado, numeração, contingência) está em [NFCE.md](NFCE.md).
 - ST por pauta/preço tabelado, PIS/COFINS por unidade (CST 03), ICMS desonerado (`vICMSDeson`),
   ICMS monofásico de combustíveis, DIFAL/partilha (vendas interestaduais a não contribuinte) e ISSQN não são calculados.
 - Existência do NCM: o validador aceita uma função `ncm_exists`; a tabela NCM oficial não está embutida.

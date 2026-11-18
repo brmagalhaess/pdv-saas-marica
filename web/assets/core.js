@@ -620,3 +620,43 @@ export function accountantPackageView(row) {
     trigger: row.trigger === "schedule" ? "Automático (dia 1º)" : "Manual"
   };
 }
+
+// ---------- NFC-e (docs/NFCE.md) ----------
+export const PRINT_RULE_OPTIONS = [["always", "Sempre imprimir"], ["ask", "Perguntar"], ["never", "Não imprimir (só enviar)"]];
+export const NFCE_STATUS_NAMES = { pending: "Pendente", authorized: "Autorizada", contingency: "Em contingência",
+  rejected: "Rejeitada", cancelled: "Cancelada", not_issued: "Não emitida" };
+// "Autorizada / Em contingência / Rejeitada (motivo) / Cancelada" for the sales list.
+export function nfceStatusText(fiscal) {
+  if (!fiscal) return NFCE_STATUS_NAMES.not_issued;
+  const name = NFCE_STATUS_NAMES[fiscal.status] || fiscal.status || "—";
+  const number = fiscal.number ? ` · nº ${fiscal.number}` : "";
+  if (fiscal.status === "rejected") return `${name}${fiscal.error_message ? " (" + fiscal.error_message + ")" : ""}`;
+  return name + number;
+}
+// Certificate card: holder, CNPJ, validity and the warning 30 days before it expires.
+export function certificateView(certificate, now = Date.now()) {
+  if (!certificate) return { tone: "warn", title: "Nenhum certificado enviado", lines: [] };
+  const until = certificate.not_after ? new Date(certificate.not_after) : null;
+  const days = until ? Math.floor((until.getTime() - now) / 86400000) : null;
+  const validity = until ? until.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "—";
+  const lines = [["Titular", certificate.subject || "—"], ["CNPJ", certificate.cnpj || "—"], ["Válido até", validity]];
+  if (certificate.matches_company === false) return { tone: "danger", title: "O CNPJ do certificado é diferente do CNPJ da empresa", lines };
+  if (days !== null && days < 0) return { tone: "danger", title: "Certificado vencido: envie o certificado renovado", lines };
+  if (days !== null && days <= 30) return { tone: "warn", title: `O certificado vence em ${days} dia(s): renove antes para não parar as vendas com nota`, lines };
+  return { tone: "ok", title: "Certificado válido", lines };
+}
+// Only the fields that changed; empty secret fields mean "keep the saved one".
+export function fiscalConfigPayload(current, values) {
+  const payload = {};
+  for (const key of ["mode", "qr_version", "series", "next_number", "terminal_contingency", "accountant_email"]) {
+    if (values[key] !== undefined && values[key] !== current[key]) payload[key] = values[key];
+  }
+  for (const environment of ["homologation", "production"]) {
+    const id = values[`csc_${environment}_id`];
+    if (id !== undefined && id !== (current.csc?.[environment]?.id || "")) payload[`csc_${environment}_id`] = id;
+    if (values[`csc_${environment}`]) payload[`csc_${environment}`] = values[`csc_${environment}`];
+  }
+  if (values.focus_token) payload.focus_token = values.focus_token;
+  if (values.environment !== undefined && values.environment !== current.environment) payload.environment = values.environment;
+  return payload;
+}
