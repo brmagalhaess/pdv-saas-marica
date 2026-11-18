@@ -30,14 +30,14 @@ def clean_profile_fields(value):
     try:
         return clean_fields(value, PROFILE_FIELDS)
     except FiscalFieldError as exc:
-        raise APIError(exc.message, extra={"field": exc.field})
+        raise APIError(exc.message, code="fiscal_field_invalid", extra={"field": exc.field})
 
 
 def clean_overrides(value):
     try:
         return clean_fields(value, OVERRIDE_FIELDS)
     except FiscalFieldError as exc:
-        raise APIError(exc.message, extra={"field": exc.field})
+        raise APIError(exc.message, code="fiscal_field_invalid", extra={"field": exc.field})
 
 
 def _usage(tenant):
