@@ -18,7 +18,7 @@ from .api_common import APIError, audit, client_ip, digest, endpoint, fields, me
 from .models import Customer, Membership, Product, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .models import CashSession, TerminalFormerToken
 from .backup_key import tenant_backup_key
-from .cash_logic import CASH_EVENTS, apply_cash_event
+from .cash_logic import CASH_EVENTS, apply_cash_event, validate_closing_totals
 from .credit_logic import apply_credit_receipt, apply_return, balances as credit_balances
 from .payment_methods import ensure as ensure_payment_methods, method_data
 from .views_promotions import for_terminal as promotions_for_terminal
@@ -35,7 +35,7 @@ DEVICE_ROLES = {"owner", "admin"}
 LONG_LEASE_CAPABILITY = "long-lease"
 LEGACY_LEASE_SECONDS = 72 * 3600
 EVENT_TYPES = {"sale.completed", "sale.voided", "sale.returned", "credit.received", "stock.adjusted", "cash.opened", "cash.closed",
-               "cash.withdrawn", "cash.supplied", "terminal.config"}
+               "cash.withdrawn", "cash.supplied", "cash.paused", "cash.resumed", "terminal.config"}
 # "Trocar de computador" (fase 2). The cloud announces what it supports and the
 # terminal only uses what was announced.
 SEND_ONLY_DAYS = 7  # minimum; see _send_only_days
@@ -47,7 +47,7 @@ RESTORE_PAGE_MAX = 500
 RESTORE_PAGE_BYTES = 1_000_000
 # "stations" (fase 3): events may carry the top-level "station" label, terminal.config may
 # carry "stations" and the lease carries the claims "max_stations" and "hub".
-CLOUD_CAPABILITIES = ["restore", "send-only", "terminal-config", "mirror-key", "stations"]
+CLOUD_CAPABILITIES = ["restore", "send-only", "terminal-config", "mirror-key", "stations", "cash_shifts"]
 RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 RECOVERY_CODE_SHAPE = re.compile(r"[A-Za-z2-9]{4}-?[A-Za-z2-9]{4}-?[A-Za-z2-9]{4}")
 TRANSFERRED_MESSAGE = "Este caixa foi transferido para outro computador."
@@ -669,13 +669,20 @@ def _validate_event(event):
         event_time(data["created_at"])
     elif event["type"] == "cash.closed":
         data = event["data"]
+        # shift_operator_id, paused_ms and totals come only from terminals told about "cash_shifts";
+        # the closing of an older terminal (without them) is still accepted as it always was.
         fields(data, ("counted_cents", "expected_cents", "difference_cents", "created_at",
-                      "operator_id", "supervisor_id"),
+                      "operator_id", "supervisor_id", "shift_operator_id", "paused_ms", "totals"),
                ("counted_cents", "expected_cents", "difference_cents", "created_at"))
         uuid_value(aggregate_id, "Sessão de caixa")
-        for key, label in (("operator_id", "Operador"), ("supervisor_id", "Supervisor")):
+        for key, label in (("operator_id", "Operador"), ("supervisor_id", "Supervisor"),
+                           ("shift_operator_id", "Operador do turno")):
             if data.get(key):
                 uuid_value(data[key], label)
+        if "paused_ms" in data and (type(data["paused_ms"]) is not int or not 0 <= data["paused_ms"] <= 10**12):
+            raise APIError("Tempo de pausa inválido")
+        if "totals" in data:
+            validate_closing_totals(data["totals"])
         counted = money(data["counted_cents"], "Valor contado")
         # Signed: a cash sale cancelled after a withdrawal leaves the drawer owing.
         expected = data["expected_cents"]
@@ -693,6 +700,17 @@ def _validate_event(event):
         money(data["amount_cents"], "Movimento de caixa", allow_zero=False)
         text(data["reason"], "Motivo", 240)
         uuid_value(data["operator_id"], "Operador")
+        event_time(data["created_at"])
+    elif event["type"] in ("cash.paused", "cash.resumed"):
+        data = event["data"]
+        paused = event["type"] == "cash.paused"
+        allowed = ("cash_session_id", "operator_id", "created_at") + (("reason",) if paused else ())
+        fields(data, allowed, ("cash_session_id", "operator_id", "created_at"))
+        uuid_value(aggregate_id, "Pausa de caixa")
+        uuid_value(data["cash_session_id"], "Sessão de caixa")
+        uuid_value(data["operator_id"], "Operador")
+        if paused:
+            text(data.get("reason"), "Motivo da pausa", 120, optional=True)
         event_time(data["created_at"])
     elif event["type"] == "terminal.config":
         data = event["data"]

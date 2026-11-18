@@ -522,9 +522,26 @@ class CashSession(models.Model):
     # True when a movement or close arrived for a session whose opening was
     # never received; the opening amount is then unknown.
     incomplete = models.BooleanField(default=False)
+    # Operator shift (terminals with "cash_shifts"): time paused and the totals the terminal
+    # printed on the operator report when the shift was closed. Empty for older terminals.
+    paused_ms = models.BigIntegerField(default=0)
+    closing_totals = models.JSONField(default=dict, blank=True)
 
     class Meta:
         indexes = [models.Index(fields=["tenant", "-opened_at"])]
+
+
+class CashPause(models.Model):
+    """Pause of an operator shift (cash.paused / cash.resumed events)."""
+    id = models.UUIDField(primary_key=True, editable=False)
+    session = models.ForeignKey(CashSession, on_delete=models.PROTECT, related_name="pauses")
+    operator = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name="cash_pauses")
+    reason = models.CharField(max_length=120, blank=True, default="")
+    started_at = models.DateTimeField()
+    ended_at = models.DateTimeField(null=True, blank=True)
+    resumed_by = models.ForeignKey(Membership, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name="resumed_cash_pauses")
 
 
 class CashMovement(models.Model):

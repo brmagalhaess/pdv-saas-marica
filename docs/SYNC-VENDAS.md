@@ -17,7 +17,7 @@ Quando o evento chega à nuvem, a venda já foi entregue, o dinheiro já entrou 
 Cada evento: `{event_id, type, aggregate_id, identity, data}`.
 
 - `event_id`: 32 caracteres hexadecimais, estável no reenvio.
-- `type`: `sale.completed`, `sale.voided`, `sale.returned`, `credit.received`, `stock.adjusted`, `cash.opened`, `cash.closed`, `cash.withdrawn` ou `cash.supplied`.
+- `type`: `sale.completed`, `sale.voided`, `sale.returned`, `credit.received`, `stock.adjusted`, `cash.opened`, `cash.closed`, `cash.withdrawn`, `cash.supplied`, `cash.paused` ou `cash.resumed` (os dois últimos só de terminais avisados da capacidade `cash_shifts`).
 - `aggregate_id`: ID local do agregado (venda, devolução, recebimento, sessão ou movimento de caixa).
 - `identity`: `{tenant_id, shop_id, terminal_id}`, igual ao que o token representa.
 
@@ -156,6 +156,18 @@ Na consulta da venda (`GET /api/v1/sales/<id>`), cada devolução aparece em `re
 ### `cash.opened`, `cash.closed`, `cash.withdrawn`, `cash.supplied`
 
 Alimentam a sessão de caixa na nuvem: abertura (`opening_cents`, `operator_id`), fechamento (`counted_cents`, `expected_cents`, `difference_cents`, `operator_id?`, `supervisor_id?`), sangria e suprimento (`cash_session_id`, `amount_cents`, `reason`, `operator_id`). `expected_cents` pode ser negativo; `difference_cents` tem de ser `counted_cents − expected_cents`.
+
+### Caixa por turno de operador (capacidade `cash_shifts`)
+
+A nuvem anuncia `cash_shifts` em `capabilities` (pair, lease, bootstrap). Só então o terminal manda:
+
+- `cash.paused`: `aggregate_id` = id da pausa; `data: {cash_session_id, operator_id, reason?, created_at}` (`reason` até 120 caracteres, pode ser vazio).
+- `cash.resumed`: mesmo `aggregate_id` da pausa; `data: {cash_session_id, operator_id, created_at}` — `operator_id` é quem digitou o PIN (dono do turno ou gerente).
+- `cash.closed` com três chaves opcionais a mais: `shift_operator_id` (dono do turno), `paused_ms` (tempo pausado) e `totals` (`sales_count`, `gross_cents`, `discount_cents`, `net_cents`, `returns_cents`, `voided_count`, `supplied_cents`, `withdrawn_cents` e `by_method` = `{forma: centavos}`, com formas próprias como `other:<id>`).
+
+A nuvem grava `CashPause` (idempotente pelo id; uma retomada que chega sem a pausa vira um registro de instante e é completada quando a pausa chegar), `CashSession.paused_ms` e `CashSession.closing_totals`, e fecha a pausa ainda aberta quando o turno fecha. Terminais antigos continuam mandando o `cash.closed` sem essas chaves e nunca mandam pausa: é aceito como antes. Um terminal novo diante de uma nuvem antiga (sem `cash_shifts`) guarda as pausas só no computador (relatório impresso) e manda o `cash.closed` no formato antigo.
+
+Regra do turno: um turno ativo por estação, do operador que o abriu. Outro operador (gerente inclusive) não vende, não faz sangria/suprimento nem recebe fiado nesse turno; aguarda ou encerra o turno (contagem cega + PIN de gerente). Exceção: o gerente pode fazer devolução em dinheiro no turno de outro operador. Turno pausado bloqueia tudo isso até o PIN do dono do turno ou de um gerente.
 
 ## Regra para não baixar duas vezes
 
