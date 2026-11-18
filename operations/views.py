@@ -54,7 +54,9 @@ def company(request):
             value=text(data['state_registration'],'Inscrição estadual',30,optional=True)
             code=ie_value(value)
             uf=tenant.address_state
-            if code and code!='ISENTO' and uf in UF_CODES and not valid_ie(code,uf):
+            # An IE saved before this check is only validated when it changes (readiness still reports it).
+            unchanged=code==ie_value(tenant.state_registration)
+            if not unchanged and code and code!='ISENTO' and uf in UF_CODES and not valid_ie(code,uf):
                 raise APIError(f'Inscrição estadual inválida para {uf}: confira os dígitos')
             if code and code!='ISENTO' and not uf and not code.lstrip('P').isdigit():
                 raise APIError('Inscrição estadual inválida')

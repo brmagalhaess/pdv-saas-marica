@@ -41,9 +41,16 @@ def clean_overrides(value):
 
 
 def _usage(tenant):
-    rows = (Product.objects.filter(tenant=tenant, active=True, tax_profile__isnull=False)
+    rows = (Product.objects.filter(tenant=tenant, active=True)
             .values("tax_profile").annotate(total=Count("id")))
-    return {row["tax_profile"]: row["total"] for row in rows}
+    usage = {row["tax_profile"]: row["total"] for row in rows}
+    # Products without a profile follow the default one.
+    unassigned = usage.pop(None, 0)
+    if unassigned:
+        default_id = TaxProfile.objects.filter(tenant=tenant, is_default=True).values_list("id", flat=True).first()
+        if default_id:
+            usage[default_id] = usage.get(default_id, 0) + unassigned
+    return usage
 
 
 @endpoint
@@ -412,8 +419,11 @@ def products_import(request):
     created = sum(1 for _, product, _, _ in plan if product is None)
     summary_body = {"dry_run": dry_run, "rows": len(rows), "created": created, "updated": len(plan) - created,
                     "errors": errors[:200], "ignored_columns": unknown}
-    if dry_run or errors:
-        return JsonResponse(summary_body, status=200 if dry_run else 400)
+    if dry_run:
+        return JsonResponse(summary_body)
+    if errors:
+        summary_body["error"] = f"O arquivo tem {len(errors)} linha(s) com erro; nada foi importado"
+        return JsonResponse(summary_body, status=400)
     from .views_resources import default_product_image, generated_product_codes
     try:
         with transaction.atomic():

@@ -4,7 +4,9 @@ import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, 
   productSaveErrorText, displayVersion, sendOnlyActive, terminalStateText, mirrorText, canTransferTerminal,
   transferConfirmText, transferWarnings, transferSteps, backupKeyView, hubConfirmText, terminalStationsView,
   canSetHub, stationLimitText, stationLabel, stationFilterOptions, appPermissionNames, appPermissionOrder,
-  appPermissionText, appAccessStatusText, appAccessShopsText, appAccessCompanyText } from "./core.js";
+  appPermissionText, appAccessStatusText, appAccessShopsText, appAccessCompanyText,
+  fiscalOverridesPayload, sameFiscalFields, fiscalBadge, fiscalCodeSummary, contributionSummary, CRT_OPTIONS,
+  isSimplesCrt } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -33,6 +35,7 @@ const tenantNav = [
   { group: "Operação", id: "inventory", label: "Inventário", icon: "☑", feature:"stock", roles: ["owner","admin","manager","inventory","cashier"] },
   { group: "Operação", id: "promotions", label: "Promoções", icon: "★", roles: ["owner","admin","manager","inventory","cashier","finance","viewer"] },
   { group: "Operação", id: "categories", label: "Categorias", icon: "◈", roles: ["owner","admin","manager","inventory","viewer"] },
+  { group: "Operação", id: "tax_profiles", label: "Perfis tributários", icon: "§", roles: ["owner","admin","manager","inventory","finance","viewer"] },
   { group: "Operação", id: "stock", label: "Estoque", icon: "▣", feature:"stock", roles: ["owner","admin","manager","inventory","finance","viewer"] },
   { group: "Relacionamento", id: "customers", label: "Clientes", icon: "♧", roles: ["owner","admin","manager","cashier","finance"] },
   { group: "Relacionamento", id: "suppliers", label: "Fornecedores", icon: "▱", roles: ["owner","admin","manager","inventory","finance"] },
@@ -176,6 +179,55 @@ function productStatus(row) {
   wrap.append(statusBadge(row.active ? "Ativo" : "Inativo"));
   wrap.append(el("small", "", row.stock_controlled === false ? "Produção própria · sem controle de saldo" : row.stock_minimum_milli ? `Estoque mínimo: ${quantity(row.stock_minimum_milli, row.unit)}` : "Estoque mínimo não definido"));
   return wrap;
+}
+function productFiscalCell(row) {
+  const wrap = el("div", "product-status-stack");
+  const badge = fiscalBadge(row.fiscal), node = el("span", "badge " + badge.tone, badge.label);
+  if (badge.detail) { node.title = badge.detail; node.setAttribute("aria-label", row.fiscal?.ready ? badge.label + ". " + badge.detail : badge.detail); }
+  const note = el("small", "", row.ncm ? "NCM " + row.ncm : "Sem NCM");
+  if (row.fiscal?.profile_name) note.title = "Perfil tributário: " + row.fiscal.profile_name;
+  wrap.append(node, note);
+  return wrap;
+}
+async function fiscalReference() {
+  if (!state.fiscalReference) state.fiscalReference = await api.get("/fiscal/reference");
+  return state.fiscalReference;
+}
+const codeChoices = rows => rows.map(row => [row.code, row.code + " · " + row.label]);
+// Fields of the "Fiscal" tab of a product. `override` fields travel in fiscal_overrides;
+// empty means "use the value of the tax profile".
+async function productFiscalFields() {
+  const [reference, profiles, presets] = await Promise.all([fiscalReference(), api.get("/tax-profiles?limit=100"), api.get("/tax-profiles/presets")]);
+  const fromProfile = "Usar o do perfil";
+  const extra = { section: "fiscal", override: true, advanced: true };
+  const rate = (key, label, help = "") => ({ key, label, ...extra, rate: true, inputMode: "decimal", max: 14, pattern: "[0-9]+([.,][0-9]{1,4})?", placeholder: "Do perfil", help });
+  const pick = (key, label, rows) => ({ key, label, type: "select", ...extra, choices: codeChoices(rows), blank: fromProfile });
+  const icms = isSimplesCrt(presets.crt) ? pick("icms_csosn", "CSOSN", reference.icms_csosn) : pick("icms_cst", "CST do ICMS", reference.icms_cst);
+  return [
+    { key: "tax_profile_id", label: "Perfil tributário", type: "select", section: "fiscal", full: true, blank: "Padrão da empresa",
+      choices: records(profiles).filter(row => row.active).map(row => [row.id, row.name + (row.is_default ? " (padrão)" : "")]),
+      help: "O perfil reúne CFOP, CST/CSOSN e PIS/COFINS de vários produtos. Crie e edite perfis em Operação > Perfis tributários." },
+    { key: "ncm", label: "NCM", section: "fiscal", max: 8, inputMode: "numeric", pattern: "[0-9]{8}", help: "Classificação fiscal de 8 dígitos. Está na nota de compra do fornecedor." },
+    { key: "cest", label: "CEST", section: "fiscal", override: true, max: 9, inputMode: "numeric", pattern: "[0-9]{2}\\.?[0-9]{3}\\.?[0-9]{2}", help: "Obrigatório para produtos da substituição tributária (7 dígitos)." },
+    { key: "cfop", label: "CFOP", section: "fiscal", override: true, max: 4, inputMode: "numeric", pattern: "[0-9]{4}", placeholder: "Do perfil", help: "Vazio = usar o CFOP do perfil (ex.: 5102 ou 5405)." },
+    { key: "origin", label: "Origem da mercadoria", type: "select", section: "fiscal", override: true, integer: true, full: true, choices: codeChoices(reference.origins), blank: fromProfile },
+    icms,
+    rate("icms_rate", "Alíquota do ICMS (%)"), rate("icms_bc_reduction", "Redução da base do ICMS (%)"), rate("fcp_rate", "FCP (%)"),
+    { key: "cbenef", label: "Código de benefício fiscal (cBenef)", ...extra, max: 10, help: "Exigido por algumas UFs para isenção, redução ou diferimento." },
+    { key: "st_retained_bc_unit", label: "ST retida: base por unidade (R$)", ...extra, rate: true, inputMode: "decimal", max: 14, pattern: "[0-9]+([.,][0-9]{1,4})?", help: "Da nota de compra (CST 60 / CSOSN 500)." },
+    rate("st_retained_rate", "ST retida: alíquota suportada pST (%)"),
+    { key: "st_retained_substitute_unit", label: "ST retida: ICMS do substituto por unidade (R$)", ...extra, rate: true, inputMode: "decimal", max: 14, pattern: "[0-9]+([.,][0-9]{1,4})?" },
+    rate("st_retained_fcp_rate", "ST retida: FCP (%)"),
+    pick("pis_cst", "CST do PIS", reference.pis_cofins_cst), rate("pis_rate", "Alíquota do PIS (%)"),
+    pick("cofins_cst", "CST da COFINS", reference.pis_cofins_cst), rate("cofins_rate", "Alíquota da COFINS (%)"),
+    { key: "tax_unit", label: "Unidade tributável", ...extra, max: 6, placeholder: "Igual à de venda", help: "Use quando a unidade fiscal difere da de venda (ex.: vende UN, tributa CX)." },
+    rate("tax_unit_factor", "Fator da unidade tributável", "Quantas unidades tributáveis há em uma unidade de venda."),
+    { key: "tax_gtin", label: "GTIN da unidade tributável", ...extra, max: 14, inputMode: "numeric", placeholder: "Igual ao EAN" },
+    { key: "ex_tipi", label: "EX TIPI", ...extra, max: 3, inputMode: "numeric", pattern: "[0-9]{1,3}" },
+    { key: "ibs_cbs_cst", label: "CST do IBS/CBS (Reforma)", ...extra, max: 3, inputMode: "numeric", pattern: "[0-9]{3}" },
+    { key: "ibs_cbs_class", label: "cClassTrib do IBS/CBS", ...extra, max: 6, inputMode: "numeric", pattern: "[0-9]{6}" },
+    rate("cbs_rate", "Alíquota da CBS (%)"), rate("ibs_state_rate", "Alíquota do IBS estadual (%)"), rate("ibs_city_rate", "Alíquota do IBS municipal (%)")
+  ];
 }
 function statusBadge(value) {
   const normalized = String(value ?? "").toLowerCase();
@@ -502,7 +554,6 @@ const resourceSpecs = {
       { key: "name", label: "Nome do produto", required: true, max: 160, full: true },
       { key: "sku", label: "Código interno (SKU)", generated: true, max: 40, help: "Gerado automaticamente pelo sistema e bloqueado para edição." },
       { key: "barcode", label: "Código de barras (EAN)", sendIfChanged: true, max: 14, inputMode: "numeric", pattern: "[0-9]{8}|[0-9]{12,14}", placeholder: "Vazio = gerar código interno", help: "Informe o EAN de fábrica (8, 12, 13 ou 14 dígitos). Deixe vazio para o sistema gerar um código interno EAN-13." },
-      { key: "ncm", label: "NCM (opcional)", max: 8, inputMode: "numeric", pattern: "[0-9]{7,8}", help: "Informe o NCM do produto quando a empresa tiver a classificação fiscal definida." },
       { key: "scale_code", label: "Código PLU da balança (opcional)", max: 6, inputMode: "numeric", pattern: "[0-9]{1,6}", help: "Use o código numérico programado na balança para etiquetas EAN-13 com peso." },
       { key: "category_id", label: "Categoria", type: "source", source: "/categories", valueKey: "id", labelKey: "name" },
       { key: "variant", label: "Variação", placeholder: "Ex.: Tamanho M ou sabor morango", max: 100 },
@@ -514,10 +565,12 @@ const resourceSpecs = {
       { key: "image_url", label: "Imagem do produto (URL opcional)", placeholder: "https://... ou /assets/product-images/...", max: 500, full: true, help: "Se ficar vazio, o PDV escolhe automaticamente uma imagem da categoria." },
       { key: "active", label: "Produto ativo", type: "checkbox", default: true }
     ],
+    sections: [["basic", "Básico"], ["fiscal", "Fiscal"]],
+    fieldsAsync: async () => [...resourceSpecs.products.fields, ...await productFiscalFields()],
     columns: [
       { label: "Produto", render: row => productIdentity(row) },
       { label: "Códigos", render: row => productCodes(row) },
-      { label: "NCM", render: row => row.ncm || "—" },
+      { label: "Nota fiscal", render: row => productFiscalCell(row) },
       { label: "Unidade", render: row => row.unit === "KG" ? "Quilo (KG)" : row.unit === "L" ? "Litro (L)" : "Unidade (UN)" },
       { label: "Financeiro", render: row => productFinancials(row) },
       { label: "Margem", render: row => row.cost_cents == null || Number(row.cost_cents) === 0 || !Number(row.price_cents) ? "—" : `${((Number(row.price_cents) - Number(row.cost_cents)) / Number(row.price_cents) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%` },
@@ -790,7 +843,7 @@ async function fieldNode(field, value, creating = false) {
     input = el("select");
     const choices = field.choices;
     if (!field.required) {
-      const blank = el("option", "", "Selecione, se desejar");
+      const blank = el("option", "", field.blank || "Selecione, se desejar");
       blank.value = "";
       input.append(blank);
     }
@@ -843,12 +896,75 @@ async function formFor(fields, values = {}, creating = false) {
   for (const field of fields) form.append(await fieldNode(field, values[field.key], creating));
   return form;
 }
+// Form split in tabs (spec.sections, field.section); `advanced` fields go in a collapsed block.
+async function sectionedForm(spec, fields, values, creating, record) {
+  const form = el("form", "form-sections");
+  const tabs = el("div", "form-tabs");
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "Seções do cadastro");
+  form.append(tabs);
+  const panels = {}, buttons = [];
+  spec.sections.forEach(([id, label], index) => {
+    const tab = el("button", "form-tab", label), panel = el("div", "form-grid form-panel");
+    tab.type = "button"; tab.id = "form-tab-" + id; tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", "form-panel-" + id); tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    panel.id = "form-panel-" + id; panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", tab.id);
+    panel.hidden = index !== 0;
+    panels[id] = { tab, panel }; buttons.push(tab); tabs.append(tab); form.append(panel);
+  });
+  const select = id => Object.entries(panels).forEach(([key, { tab, panel }]) => {
+    const on = key === id;
+    tab.setAttribute("aria-selected", String(on)); tab.tabIndex = on ? 0 : -1; panel.hidden = !on;
+  });
+  buttons.forEach((tab, index) => {
+    tab.addEventListener("click", () => select(spec.sections[index][0]));
+    tab.addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : buttons.length - 1)) % buttons.length;
+      select(spec.sections[next][0]); buttons[next].focus();
+    });
+  });
+  const fiscal = record?.fiscal;
+  if (panels.fiscal && fiscal) {
+    panels.fiscal.panel.append(fiscal.ready
+      ? info("Pronto para nota fiscal." + (fiscal.warnings?.length ? " Para conferir com o contador: " + fiscal.warnings.join(" · ") : ""))
+      : info("Para emitir nota fiscal deste produto, falta: " + fiscal.missing.join(" · "), true));
+  }
+  let advanced = null;
+  for (const field of fields) {
+    const target = (panels[field.section || "basic"] || Object.values(panels)[0]).panel;
+    const node = await fieldNode(field, values[field.key], creating);
+    if (!field.advanced) { target.append(node); continue; }
+    if (!advanced) {
+      advanced = el("details", "advanced-fields full");
+      advanced.append(el("summary", "", "Campos fiscais avançados (para o contador)"), el("div", "form-grid"));
+      target.append(advanced);
+    }
+    advanced.lastChild.append(node);
+  }
+  // A field that fails validation inside a hidden tab or a closed block is shown before the browser message.
+  form.revealInvalid = () => {
+    const bad = form.querySelector("input:invalid, select:invalid, textarea:invalid");
+    if (!bad) return;
+    const panel = bad.closest('[role="tabpanel"]');
+    if (panel) select(panel.id.replace("form-panel-", ""));
+    const block = bad.closest("details");
+    if (block) block.open = true;
+  };
+  return form;
+}
 async function resourceForm(spec, record) {
   const editing = !!record;
-  const fields = spec.fieldsFor ? spec.fieldsFor(editing) : editing ? (spec.editFields || spec.fields) : spec.fields;
+  const fields = spec.fieldsAsync ? await spec.fieldsAsync(editing, record)
+    : spec.fieldsFor ? spec.fieldsFor(editing) : editing ? (spec.editFields || spec.fields) : spec.fields;
+  const overrideFields = fields.filter(field => field.override), plainFields = fields.filter(field => !field.override);
   const body = el("div");
-  const formValues = editing && spec.endpoint === "/shops" ? { ...record, address: addressText(record.address) === "—" ? "" : addressText(record.address) } : record || {};
-  const form = await formFor(fields, formValues, !editing);
+  const formValues = editing && spec.endpoint === "/shops" ? { ...record, address: addressText(record.address) === "—" ? "" : addressText(record.address) }
+    : record ? { ...(record.fiscal_overrides || {}), ...record } : {};
+  const form = spec.sections ? await sectionedForm(spec, fields, formValues, !editing, record) : await formFor(fields, formValues, !editing);
   const message = el("p", "dialog-message feedback error");
   message.hidden = true;
   const actions = el("div", "form-actions");
@@ -859,9 +975,17 @@ async function resourceForm(spec, record) {
   form.append(message, actions);
   form.addEventListener("submit", async event => {
     event.preventDefault();
+    form.revealInvalid?.();
     if (!form.reportValidity()) return;
     let payload;
-    try { payload = formPayload(form, fields, { editing, record }); }
+    try {
+      payload = formPayload(form, plainFields, { editing, record });
+      if (overrideFields.length) {
+        const previous = record?.fiscal_overrides || {};
+        const overrides = fiscalOverridesPayload(form, overrideFields, previous);
+        if (editing ? !sameFiscalFields(overrides, previous) : Object.keys(overrides).length) payload.fiscal_overrides = overrides;
+      }
+    }
     catch (error) { handleError(error, message); return; }
     if (spec.endpoint === "/shops" && typeof payload.address === "string") payload.address = { text: payload.address };
     save.disabled = true;
@@ -896,11 +1020,12 @@ async function resourcePage(key) {
   if (key === "products" && spec.create()) {
     view.actions.append(button("+ Nova grade", () => productGroupForm(null).catch(handleError), "ghost"));
     view.actions.append(button("Grades", () => productGroupsDialog().catch(handleError), "ghost"));
+    view.actions.append(button("Importar CSV", () => productImportDialog().catch(handleError), "ghost"));
   }
   if (key === "products") {
     view.outer.append(info("O estoque mínimo é apenas um alerta. O saldo disponível do terminal é lançado por loja em Operação > Estoque, usando Registrar entrada, Importar compra CSV ou Ajustar estoque."));
     view.outer.append(info("Para itens fabricados pela própria empresa, como pão e refeições vendidos por KG, desative Controlar estoque no cadastro. O terminal aceitará a venda pelo preço do quilo sem exigir entrada ou saldo, mantendo esses itens identificados como produção própria."));
-    view.outer.append(info("A emissão fiscal depende de configuração tributária e homologação próprias. Este catálogo ainda não torna o PDV apto a emitir NFC-e.", true));
+    view.outer.append(info("A coluna Nota fiscal mostra se o produto já tem NCM, perfil tributário e os códigos exigidos pela NFC-e. A emissão em si ainda depende do provedor fiscal e da homologação da empresa.", true));
   }
   const box = el("section", "surface");
   if (key === "products") box.classList.add("products-surface");
@@ -986,6 +1111,230 @@ async function resourcePage(key) {
     }
   }
   load();
+}
+
+// ---------------------------------------------------------------- fiscal: CSV import and tax profiles
+
+async function readTextFile(file) {
+  const buffer = await file.arrayBuffer();
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); }
+  catch { return new TextDecoder("windows-1252").decode(buffer); }  // CSV saved by Excel in Portuguese
+}
+async function productImportDialog() {
+  const form = el("form", "form-grid");
+  form.append(info("Primeira linha com os nomes das colunas, separadas por ; ou ,. Colunas aceitas: nome, sku, ean, preço, custo, unidade, categoria, ativo, ncm, cest, cfop, origem, cst, csosn, aliquota_icms, reducao_bc, fcp, cbenef, cst_pis, aliquota_pis, cst_cofins, aliquota_cofins, perfil_tributario, unidade_tributavel, fator_tributavel, gtin_tributavel. Produto com SKU ou EAN já cadastrado é atualizado; os demais são criados com o perfil padrão."));
+  const fileField = el("div", "field full"), fileLabel = el("label", "", "Arquivo CSV de produtos"), file = el("input");
+  file.type = "file"; file.id = "product-import-file"; file.accept = ".csv,.txt,text/csv"; file.required = true; fileLabel.htmlFor = file.id;
+  fileField.append(fileLabel, file, el("small", "", "Até 5.000 produtos e 2 MB por arquivo. Confira primeiro: nada é gravado enquanto houver linhas com erro."));
+  const result = el("div", "full import-result"); result.setAttribute("aria-live", "polite");
+  form.append(fileField, result);
+  const message = formMessage(form);
+  const actions = el("div", "form-actions"), check = el("button", "button secondary", "Conferir arquivo"), apply = button("Importar produtos", null);
+  check.type = "submit"; apply.disabled = true;
+  actions.append(button("Cancelar", closeDialog, "ghost"), check, apply); form.append(actions);
+  let content = "";
+  file.addEventListener("change", () => { apply.disabled = true; result.replaceChildren(); content = ""; });
+  const show = (body, applied) => {
+    result.replaceChildren();
+    const summary = applied ? `Importação concluída: ${body.created} produto(s) criado(s) e ${body.updated} atualizado(s).`
+      : `${body.rows} linha(s) conferida(s): ${body.created} produto(s) novo(s) e ${body.updated} a atualizar.`;
+    result.append(info(summary, !!body.errors?.length));
+    if (body.ignored_columns?.length) result.append(el("p", "muted", "Colunas ignoradas: " + body.ignored_columns.join(", ")));
+    if (body.errors?.length) {
+      const list = el("ul", "import-errors");
+      body.errors.slice(0, 50).forEach(item => list.append(el("li", "", `Linha ${item.line}: ${item.message}`)));
+      result.append(el("strong", "", "Corrija estas linhas e confira de novo:"), list);
+    }
+  };
+  async function run(dryRun) {
+    message.hidden = true;
+    if (!content) {
+      const selected = file.files?.[0];
+      if (!selected) throw new Error("Escolha o arquivo CSV.");
+      if (selected.size > 2 * 1024 * 1024) throw new Error("O arquivo passa de 2 MB; divida em partes.");
+      content = await readTextFile(selected);
+    }
+    try {
+      const body = await api.post("/products/import", { csv: content, dry_run: dryRun });
+      show(body, !dryRun);
+      return body;
+    } catch (error) {
+      if (error?.status === 400 && error.details?.errors) { show(error.details, false); }
+      throw error;
+    }
+  }
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    check.disabled = true;
+    try { const body = await run(true); apply.disabled = !!body.errors.length; }
+    catch (error) { handleError(error, message); }
+    finally { check.disabled = false; }
+  });
+  apply.addEventListener("click", async () => {
+    apply.disabled = true; check.disabled = true;
+    try { await run(false); toast("Produtos importados."); renderRoute(); }
+    catch (error) { handleError(error, message); }
+    finally { check.disabled = false; }
+  });
+  openDialog("Importar produtos (CSV)", "Cadastro e dados fiscais em lote.", form);
+}
+
+const canEditTaxProfiles = () => can("owner", "admin", "manager", "finance");
+function taxProfileFieldDefs(reference, crt, values = {}) {
+  const decimal = { rate: true, inputMode: "decimal", max: 14, pattern: "[0-9]+([.,][0-9]{1,4})?" };
+  const pick = (key, label, rows, extra = {}) => ({ key, label, type: "select", choices: codeChoices(rows), blank: "Não se aplica", ...extra });
+  const simples = isSimplesCrt(crt);
+  const icmsCodes = [];
+  // The regime code first; the other one only shows up when the profile already uses it.
+  if (simples || values.icms_csosn) icmsCodes.push(pick("icms_csosn", "CSOSN (Simples Nacional)", reference.icms_csosn));
+  if (!simples || values.icms_cst) icmsCodes.push(pick("icms_cst", "CST do ICMS (regime normal)", reference.icms_cst));
+  return [
+    { group: "ICMS", fields: [
+      pick("origin", "Origem da mercadoria", reference.origins, { integer: true, full: true }),
+      { key: "cfop", label: "CFOP de venda", max: 4, inputMode: "numeric", pattern: "[0-9]{4}", help: "Venda no balcão: 5102 (tributado) ou 5405 (ST já recolhida)." },
+      ...icmsCodes,
+      pick("icms_bc_mode", "Modalidade da base do ICMS", reference.icms_bc_modes, { integer: true }),
+      { key: "icms_rate", label: "Alíquota do ICMS (%)", ...decimal, help: "Alíquota interna da sua UF (regime normal)." },
+      { key: "icms_bc_reduction", label: "Redução da base (%)", ...decimal, help: "Somente CST 20, 70 ou 90." },
+      { key: "fcp_rate", label: "FCP (%)", ...decimal, help: "Fundo de Combate à Pobreza, quando a UF cobra." },
+      { key: "icms_deferral_rate", label: "Diferimento (%)", ...decimal, help: "Somente CST 51." },
+      { key: "cbenef", label: "Código de benefício fiscal (cBenef)", max: 10, help: "Exigido por PR, RJ, RS, DF, GO, SC e ES em isenções e reduções." }
+    ] },
+    { group: "Substituição tributária", fields: [
+      { key: "st_retained_bc_unit", label: "ST retida: base por unidade (R$)", ...decimal, help: "Da nota de compra; CST 60 ou CSOSN 500." },
+      { key: "st_retained_rate", label: "ST retida: alíquota suportada pST (%)", ...decimal },
+      { key: "st_retained_substitute_unit", label: "ST retida: ICMS do substituto por unidade (R$)", ...decimal },
+      { key: "st_retained_fcp_rate", label: "ST retida: FCP (%)", ...decimal },
+      pick("st_bc_mode", "Modalidade da base da ST (ST na própria venda)", reference.st_bc_modes, { integer: true }),
+      { key: "st_mva", label: "MVA da ST (%)", ...decimal },
+      { key: "st_rate", label: "Alíquota do ICMS ST (%)", ...decimal },
+      { key: "st_bc_reduction", label: "Redução da base da ST (%)", ...decimal },
+      { key: "st_fcp_rate", label: "FCP ST (%)", ...decimal }
+    ] },
+    { group: "PIS e COFINS", fields: [
+      pick("pis_cst", "CST do PIS", reference.pis_cofins_cst),
+      { key: "pis_rate", label: "Alíquota do PIS (%)", ...decimal, help: "Presumido 0,65 · Real 1,65 · Simples: vazio." },
+      pick("cofins_cst", "CST da COFINS", reference.pis_cofins_cst),
+      { key: "cofins_rate", label: "Alíquota da COFINS (%)", ...decimal, help: "Presumido 3 · Real 7,6 · Simples: vazio." },
+      { key: "pis_cofins_exclude_icms", label: "Excluir o ICMS da base do PIS/COFINS", type: "checkbox", full: true, help: "Tema 69 do STF; marque se o contador orientar." }
+    ] },
+    { group: "Avançado: padrões, IPI e Reforma Tributária", advanced: true, fields: [
+      { key: "ncm", label: "NCM padrão do perfil", max: 8, inputMode: "numeric", pattern: "[0-9]{8}", help: "O NCM do produto, se informado, prevalece." },
+      { key: "cest", label: "CEST padrão do perfil", max: 9, inputMode: "numeric", pattern: "[0-9]{2}\\.?[0-9]{3}\\.?[0-9]{2}" },
+      { key: "ex_tipi", label: "EX TIPI", max: 3, inputMode: "numeric", pattern: "[0-9]{1,3}" },
+      { key: "tax_unit", label: "Unidade tributável", max: 6 },
+      { key: "tax_unit_factor", label: "Fator da unidade tributável", ...decimal },
+      pick("ipi_cst", "CST do IPI (somente NF-e)", reference.ipi_cst),
+      { key: "ipi_rate", label: "Alíquota do IPI (%)", ...decimal },
+      { key: "ipi_enquadramento", label: "Enquadramento do IPI", max: 3, inputMode: "numeric", pattern: "[0-9]{3}", placeholder: "999" },
+      { key: "ibs_cbs_cst", label: "CST do IBS/CBS", max: 3, inputMode: "numeric", pattern: "[0-9]{3}" },
+      { key: "ibs_cbs_class", label: "cClassTrib", max: 6, inputMode: "numeric", pattern: "[0-9]{6}" },
+      { key: "cbs_rate", label: "Alíquota da CBS (%)", ...decimal },
+      { key: "ibs_state_rate", label: "Alíquota do IBS estadual (%)", ...decimal },
+      { key: "ibs_city_rate", label: "Alíquota do IBS municipal (%)", ...decimal },
+      { key: "ibs_cbs_base_excludes_taxes", label: "Excluir ICMS, PIS e COFINS da base do IBS/CBS", type: "checkbox", default: true, full: true }
+    ] }
+  ];
+}
+async function taxProfileForm(row, preset = null) {
+  const [reference, presets] = await Promise.all([fiscalReference(), api.get("/tax-profiles/presets")]);
+  const values = row ? row.fields || {} : preset ? preset.fields : {};
+  const groups = taxProfileFieldDefs(reference, presets.crt, values);
+  const form = el("form", "form-grid");
+  const nameField = await fieldNode({ key: "name", label: "Nome do perfil", required: true, max: 120, full: true }, row ? row.name : preset?.name || "");
+  const description = await fieldNode({ key: "description", label: "Quando usar", type: "textarea", max: 500, full: true }, row ? row.description : preset?.when || "");
+  form.append(nameField, description);
+  if (preset?.notes) form.append(info(preset.notes));
+  const fiscalFields = [];
+  for (const group of groups) {
+    const holder = group.advanced ? el("details", "advanced-fields full") : form;
+    if (group.advanced) { holder.append(el("summary", "", group.group), el("div", "form-grid")); form.append(holder); }
+    else form.append(el("h3", "form-section-title full", group.group));
+    for (const field of group.fields) {
+      fiscalFields.push(field);
+      (group.advanced ? holder.lastChild : form).append(await fieldNode(field, values[field.key] ?? (field.type === "checkbox" ? field.default : undefined)));
+    }
+  }
+  const message = formMessage(form), submit = formButtons(form, row ? "Salvar perfil" : "Criar perfil");
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const bad = form.querySelector("input:invalid, select:invalid, textarea:invalid");
+    if (bad?.closest("details")) bad.closest("details").open = true;
+    if (!form.reportValidity()) return;
+    submit.disabled = true; message.hidden = true;
+    try {
+      const body = { name: form.elements.namedItem("name").value.trim(), description: form.elements.namedItem("description").value.trim(),
+                     fields: fiscalOverridesPayload(form, fiscalFields, {}) };
+      if (row) await api.patch("/tax-profiles/" + row.id, body);
+      else await api.post("/tax-profiles", { ...body, ...(preset ? { preset: preset.slug } : {}) });
+      closeDialog(); toast(row ? "Perfil atualizado." : "Perfil criado."); renderRoute();
+    } catch (error) {
+      if (error?.details?.field) form.elements.namedItem(error.details.field)?.closest("details")?.setAttribute("open", "");
+      handleError(error, message); submit.disabled = false;
+    }
+  });
+  openDialog(row ? "Editar perfil tributário" : "Novo perfil tributário",
+    "Os produtos deste perfil usam estes códigos; campos vazios não se aplicam. Confirme alíquotas com o contador.", form, { dirty: !row && !!preset });
+}
+async function taxProfilePresetDialog() {
+  const presets = await api.get("/tax-profiles/presets");
+  const body = el("div", "preset-list");
+  body.append(info("Escolha um modelo pronto para começar. Os modelos do seu regime aparecem primeiro; você ainda poderá ajustar tudo antes de salvar."));
+  const rows = [...presets.results].sort((a, b) => Number(b.applies) - Number(a.applies));
+  rows.forEach(preset => {
+    const card = el("button", "preset-card" + (preset.applies ? "" : " other-regime"));
+    card.type = "button";
+    card.append(el("strong", "", preset.name), el("span", "", preset.when));
+    if (!preset.applies) card.append(el("small", "", "Modelo de outro regime tributário"));
+    card.addEventListener("click", () => taxProfileForm(null, preset).catch(handleError));
+    body.append(card);
+  });
+  const blank = button("Começar em branco", () => taxProfileForm(null).catch(handleError), "ghost");
+  body.append(blank);
+  openDialog("Novo perfil tributário", "Modelos para as situações mais comuns do varejo.", body);
+}
+async function taxProfilesPage() {
+  const token = ++state.renderId;
+  const view = page("Perfis tributários", "Grupos de tributação usados pelos produtos: CFOP, CST/CSOSN, alíquotas e PIS/COFINS, prontos para a NFC-e.", "Operação");
+  const editable = canEditTaxProfiles();
+  if (editable) view.actions.append(button("+ Novo perfil", () => taxProfilePresetDialog().catch(handleError)));
+  const overview = el("div", "products-overview"), box = surface("Perfis da empresa", "O perfil padrão vale para todo produto sem perfil escolhido. Um produto pode trocar de perfil ou ajustar campos na aba Fiscal do cadastro.");
+  view.outer.append(overview, box);
+  box.append(loadingSurface());
+  try {
+    const [response, status] = await Promise.all([api.get("/tax-profiles?include_inactive=1&limit=100"), api.get("/fiscal/status").catch(() => null)]);
+    if (token !== state.renderId) return;
+    box.lastChild.remove();
+    if (status) {
+      overview.append(metric("Produtos prontos para nota", String(status.products.ready), "Ativos com dados fiscais completos"),
+                      metric("Produtos com pendência", String(status.products.pending), "Veja a coluna Nota fiscal em Produtos"),
+                      metric("Empresa", status.company.ready ? "Pronta" : "Pendente", status.company.ready ? "Dados do emitente completos" : status.company.missing[0] || ""));
+      if (status.products.top_missing.length) view.outer.insertBefore(info("O que mais falta nos produtos: " + status.products.top_missing.map(item => `${item.message} (${item.count})`).join(" · "), true), box);
+    }
+    const rows = records(response);
+    const actionsFor = editable ? row => {
+      const actions = [{ label: "Editar", onClick: () => taxProfileForm(row).catch(handleError) }];
+      if (row.active && !row.is_default) actions.push({ label: "Tornar padrão", onClick: async () => {
+        try { await api.patch("/tax-profiles/" + row.id, { is_default: true }); toast("Perfil padrão alterado."); renderRoute(); } catch (error) { handleError(error); }
+      } });
+      if (!row.active) actions.push({ label: "Reativar", onClick: async () => {
+        try { await api.patch("/tax-profiles/" + row.id, { active: true }); toast("Perfil reativado."); renderRoute(); } catch (error) { handleError(error); }
+      } });
+      else if (!row.is_default) actions.push({ label: "Desativar", danger: true, onClick: () => confirmAction("Desativar perfil", "O perfil deixa de aparecer no cadastro de produtos. Só é possível quando nenhum produto ativo o utiliza.", async () => {
+        await api.delete("/tax-profiles/" + row.id); toast("Perfil desativado."); renderRoute();
+      }, "Desativar") });
+      return actions;
+    } : null;
+    box.append(rows.length ? table([
+      { label: "Perfil", render: row => { const wrap = el("div", "product-identity-copy"); wrap.append(el("strong", "", row.name), el("small", "", row.description || "")); return wrap; } },
+      { label: "ICMS e CFOP", render: row => fiscalCodeSummary(row.fields) },
+      { label: "PIS/COFINS", render: row => contributionSummary(row.fields) },
+      { label: "Produtos", render: row => String(row.products_count ?? 0) },
+      { label: "Situação", render: row => statusBadge(row.is_default ? "Padrão" : row.active ? "Ativo" : "Inativo") }
+    ], rows, actionsFor) : empty("Nenhum perfil", "Crie o primeiro perfil a partir de um modelo pronto."));
+  } catch (error) {
+    if (token === state.renderId) { box.replaceChildren(empty("Falha ao carregar", errorText(error), "!")); handleError(error); }
+  }
 }
 
 async function loadShops() {
@@ -2891,6 +3240,10 @@ async function companyPage() {
     const company=await api.get("/ops/company");
     if(token!==state.renderId)return;
     box.lastChild.remove();
+    const fiscalStatus=company.fiscal_status;
+    if(fiscalStatus)box.append(fiscalStatus.ready
+      ?info("Dados do emitente completos para a NFC-e."+(fiscalStatus.warnings?.length?" Recomendado: "+fiscalStatus.warnings.join(" · "):""))
+      :info("Para emitir NFC-e, falta: "+fiscalStatus.missing.join(" · "),true));
     const form=el("form","form-grid");
     const nameField=el("div","field"),nameLabel=el("label","","Nome da empresa"),name=el("input");
     name.id="company-name";nameLabel.htmlFor=name.id;name.required=true;name.maxLength=160;name.value=company.name||"";
@@ -2898,7 +3251,7 @@ async function companyPage() {
     const documentField=el("div","field"),documentLabel=el("label","","CPF ou CNPJ do emitente"),documentNumber=el("input");
     documentNumber.id="company-document";documentLabel.htmlFor=documentNumber.id;documentNumber.inputMode="numeric";
     documentNumber.maxLength=30;documentNumber.value=company.document||"";
-    documentField.append(documentLabel,documentNumber,el("small","","Informe 11 ou 14 dígitos. A emissão fiscal também exige configuração do provedor."));
+    documentField.append(documentLabel,documentNumber,el("small","","CNPJ (numérico ou alfanumérico) com dígitos verificadores corretos. A NFC-e exige CNPJ."));
     const discountField=el("div","field"),discountLabel=el("label","","Desconto máximo autorizado (%)"),discount=el("input");
     discount.id="company-discount";discountLabel.htmlFor=discount.id;discount.type="number";discount.min="0";discount.max="100";discount.step="0.01";
     discount.value=(Number(company.max_discount_bps ?? 10000)/100).toFixed(2).replace(/\.00$/,"");
@@ -2916,7 +3269,7 @@ async function companyPage() {
     });
     const plainField=(id,labelText,value,max=160,placeholder="")=>{const field=el("div","field"),label=el("label","",labelText),input=el("input");input.id=id;label.htmlFor=id;input.maxLength=max;input.value=value||"";if(placeholder)input.placeholder=placeholder;field.append(label,input);return {field,input}};
     const trade=plainField("company-trade-name","Nome fantasia",company.trade_name,160);
-    const stateRegistration=plainField("company-state-registration","Inscrição estadual",company.state_registration,30,"Não contribuinte, se aplicável");
+    const stateRegistration=plainField("company-state-registration","Inscrição estadual",company.state_registration,30,"Conferida pelo dígito da sua UF");
     const municipalRegistration=plainField("company-municipal-registration","Inscrição municipal",company.municipal_registration,30);
     const addressLine=plainField("company-address-line","Logradouro",company.address_line,180);
     const addressNumber=plainField("company-address-number","Número",company.address_number,20);
@@ -2925,11 +3278,16 @@ async function companyPage() {
     const addressCity=plainField("company-address-city","Cidade",company.address_city,100);
     const addressState=plainField("company-address-state","UF",company.address_state,2,"RJ");addressState.input.maxLength=2;addressState.input.style.textTransform="uppercase";
     const addressZip=plainField("company-address-zip","CEP",company.address_zip,9,"00000-000");addressZip.input.inputMode="numeric";
-    const taxField=el("div","field"),taxLabel=el("label","","Regime tributário"),tax=el("select");tax.id="company-tax-regime";taxLabel.htmlFor=tax.id;[["simples_nacional","Simples Nacional"],["simples_excesso","Simples Nacional · excesso de sublimite"],["regime_normal","Regime normal"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;tax.append(option)});tax.value=company.tax_regime||"simples_nacional";taxField.append(taxLabel,tax);
+    const taxField=el("div","field"),taxLabel=el("label","","Regime tributário (CRT)"),tax=el("select");tax.id="company-crt";taxLabel.htmlFor=tax.id;CRT_OPTIONS.forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=String(value);tax.append(option)});tax.value=String(company.crt||1);taxField.append(taxLabel,tax,el("small","","Define se os produtos usam CSOSN (Simples e MEI) ou CST (regime normal)."));
+    const cnae=plainField("company-cnae","CNAE principal",company.cnae,9,"4711-3/02");cnae.input.inputMode="numeric";
+    const ibge=plainField("company-city-ibge","Código IBGE do município",company.city_ibge_code,7,"3550308");ibge.input.inputMode="numeric";ibge.input.pattern="[0-9]{7}";ibge.field.append(el("small","","7 dígitos; consulte em ibge.gov.br pelo nome da cidade."));
+    const specialField=el("div","field"),specialLabel=el("label","","Regime especial de tributação (ISS)"),special=el("select");special.id="company-special-regime";specialLabel.htmlFor=special.id;[["","Nenhum"],["1","1 · Microempresa municipal"],["2","2 · Estimativa"],["3","3 · Sociedade de profissionais"],["4","4 · Cooperativa"],["5","5 · Microempreendedor individual (MEI)"],["6","6 · ME ou EPP"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;special.append(option)});special.value=company.special_tax_regime||"";specialField.append(specialLabel,special,el("small","","Opcional; usado apenas quando há serviços com ISS."));
+    const creditRate=plainField("company-simples-credit","Crédito de ICMS do Simples · pCredSN (%)",company.simples_credit_rate,8,"Ex.: 1,25");creditRate.input.inputMode="decimal";creditRate.field.append(el("small","","Só para CSOSN 101/201 (venda a contribuinte). Na NFC-e normalmente fica vazio."));
+    const approxRate=plainField("company-approx-tax","Tributos aproximados sem tabela IBPT (%)",company.approx_tax_fallback_rate,8,"Ex.: 31,45");approxRate.input.inputMode="decimal";approxRate.field.append(el("small","","Lei 12.741: usado quando a tabela IBPT não tem o NCM. Deixe vazio para não estimar."));
     const environmentField=el("div","field"),environmentLabel=el("label","","Emissão fiscal"),environment=el("select");environment.id="company-fiscal-environment";environmentLabel.htmlFor=environment.id;[["non_fiscal","Comprovante não fiscal · atual"],["homologation","NFC-e em homologação"],["production","NFC-e em produção · requer provedor"]].forEach(([value,labelText])=>{const option=el("option","",labelText);option.value=value;environment.append(option)});environment.value=company.fiscal_environment||"non_fiscal";environmentField.append(environmentLabel,environment,el("small","","A chave de acesso, QR Code, protocolo e impostos só aparecem após autorização real da SEFAZ por um provedor configurado."));
     const seriesField=el("div","field"),seriesLabel=el("label","","Série NFC-e"),series=el("input");series.id="company-nfce-series";series.type="number";series.min="1";series.max="999";series.value=company.nfce_series||1;seriesLabel.htmlFor=series.id;seriesField.append(seriesLabel,series);
     const nextNumberField=el("div","field"),nextNumberLabel=el("label","","Próximo número NFC-e"),nextNumber=el("input");nextNumber.id="company-nfce-next-number";nextNumber.type="number";nextNumber.min="1";nextNumber.value=company.nfce_next_number||1;nextNumberLabel.htmlFor=nextNumber.id;nextNumberField.append(nextNumberLabel,nextNumber,el("small","","Altere apenas ao migrar de outro sistema emissor."));
-    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,taxField,environmentField,seriesField,nextNumberField,discountField,hoursField);
+    form.append(nameField,trade.field,documentField,stateRegistration.field,municipalRegistration.field,addressLine.field,addressNumber.field,addressComplement.field,addressNeighborhood.field,addressCity.field,addressState.field,addressZip.field,ibge.field,taxField,cnae.field,specialField,creditRate.field,approxRate.field,environmentField,seriesField,nextNumberField,discountField,hoursField);
     const message=formMessage(form);
     const actions=el("div","form-actions"),save=el("button","button","Salvar dados");save.type="submit";
     actions.append(save);form.append(actions);
@@ -2937,22 +3295,31 @@ async function companyPage() {
       event.preventDefault();if(!form.reportValidity())return;
       save.disabled=true;
       try {
-        const digits=documentNumber.value.replace(/\D/g,"");
-        if(digits&&!([11,14].includes(digits.length)))throw new Error("Informe um CPF com 11 dígitos ou CNPJ com 14 dígitos.");
+        const digits=taxIdValue(documentNumber.value);
+        // A document saved before the check-digit validation is only checked when it is changed.
+        const documentChanged=digits!==taxIdValue(company.document);
+        if(documentChanged&&digits&&!validTaxId(digits))throw new Error("CNPJ ou CPF inválido: confira os dígitos.");
         const maxDiscount=Number(String(discount.value).replace(",","."));
         if(!Number.isFinite(maxDiscount)||maxDiscount<0||maxDiscount>100)throw new Error("O desconto máximo deve ficar entre 0% e 100%.");
         const companyPayload={name:name.value.trim(),trade_name:trade.input.value.trim(),document:digits,
           state_registration:stateRegistration.input.value.trim(),municipal_registration:municipalRegistration.input.value.trim(),
           address_line:addressLine.input.value.trim(),address_number:addressNumber.input.value.trim(),address_complement:addressComplement.input.value.trim(),
           address_neighborhood:addressNeighborhood.input.value.trim(),address_city:addressCity.input.value.trim(),address_state:addressState.input.value.trim().toUpperCase(),
-          address_zip:addressZip.input.value.replace(/\D/g,""),tax_regime:tax.value,fiscal_environment:environment.value,
+          address_zip:addressZip.input.value.replace(/\D/g,""),crt:Number(tax.value),fiscal_environment:environment.value,
+          cnae:cnae.input.value.replace(/\D/g,""),city_ibge_code:ibge.input.value.replace(/\D/g,""),special_tax_regime:special.value,
+          simples_credit_rate:creditRate.input.value.trim().replace(",","."),approx_tax_fallback_rate:approxRate.input.value.trim().replace(",","."),
           nfce_series:Number(series.value),nfce_next_number:Number(nextNumber.value),max_discount_bps:Math.round(maxDiscount*100),
           business_hours:Object.fromEntries(Object.entries(hoursInputs).map(([day,inputs])=>[day,{enabled:inputs.toggle.checked,open:inputs.toggle.checked?inputs.open.value:"",close:inputs.toggle.checked?inputs.close.value:""}]))};
+        if(!documentChanged)delete companyPayload.document;
         await api.patch("/ops/company",companyPayload);
         toast("Dados da empresa atualizados.");renderRoute();
       }catch(error){handleError(error,message);save.disabled=false;}
     });
     box.append(form);
+    const tech=company.tech_responsible||{};
+    const techBox=surface("Responsável técnico do sistema","Informado automaticamente nas notas (grupo infRespTec), conforme a configuração da plataforma.");
+    techBox.append(detailList([["Empresa",tech.contact],["CNPJ",tech.cnpj||"Pendente de configuração pela plataforma"],["E-mail",tech.email],["Telefone",tech.phone]]));
+    view.outer.append(techBox);
   }catch(error){if(token===state.renderId){box.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
 }
 async function auditPage() {
@@ -4209,7 +4576,7 @@ async function platformAppAccessPage() {
 
 const tenantRoutes = {
   dashboard:dashboardPage,sales:salesPage,cash:cashPage,inventory:inventoryPage,promotions:promotionsPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
-  categories:()=>resourcePage("categories"),stock:stockPage,
+  categories:()=>resourcePage("categories"),stock:stockPage,tax_profiles:taxProfilesPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,
   terminals:terminalsPage,printers:printersPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage
