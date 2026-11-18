@@ -21,3 +21,32 @@ class FiscalXMLTests(unittest.TestCase):
         self.assertEqual(session.get.call_count,before)
         response.iter_content.return_value=[b'<!DOCTYPE root [<!ENTITY x "y">]><root/>']
         with self.assertRaises(ProviderError):provider.download_xml('/a',key,protocol)
+
+    def _provider(self, xml):
+        session=Mock();response=Mock(status_code=200);response.iter_content.return_value=[xml]
+        context=Mock();context.__enter__=Mock(return_value=response);context.__exit__=Mock(return_value=False)
+        session.get.return_value=context
+        return FocusNFe('test-token',session=session)
+
+    def test_cancel_event_and_inutilization_xml_are_checked(self):
+        key='3'*44
+        event=(f'<procEventoNFe xmlns="http://www.portalfiscal.inf.br/nfe"><evento><infEvento><chNFe>{key}</chNFe>'
+               '<tpEvento>110111</tpEvento></infEvento></evento><retEvento><infEvento><cStat>135</cStat>'
+               '</infEvento></retEvento></procEventoNFe>').encode()
+        self.assertEqual(self._provider(event).download_event_xml('/a.xml',key),event)
+        with self.assertRaises(ProviderError):self._provider(event).download_event_xml('/a.xml','4'*44)
+        with self.assertRaises(ProviderError):self._provider(event.replace(b'135',b'573')).download_event_xml('/a.xml',key)
+        inut=(b'<procInutNFe xmlns="http://www.portalfiscal.inf.br/nfe"><retInutNFe><infInut><cStat>102</cStat>'
+              b'</infInut></retInutNFe></procInutNFe>')
+        self.assertEqual(self._provider(inut).download_inutilization_xml('/i.xml'),inut)
+        with self.assertRaises(ProviderError):self._provider(inut.replace(b'102',b'241')).download_inutilization_xml('/i.xml')
+
+    def test_production_mutations_need_the_platform_flag(self):
+        import os
+        from unittest.mock import patch
+        session=Mock()
+        provider=FocusNFe('test-token','production',session=session)
+        with patch.dict(os.environ,{'PDV_ALLOW_LIVE_FISCAL':'0'}):
+            with self.assertRaises(ProviderError):provider.inutilize('11222333000181',1,1,2,'Falha no sistema de emissao')
+            with self.assertRaises(ProviderError):provider.submit('ref-1',{'items':[{}]})
+        session.request.assert_not_called()
