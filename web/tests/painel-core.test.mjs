@@ -560,3 +560,32 @@ test("fiscal badge, code summaries and CRT helpers", () => {
   assert.ok(isSimplesCrt(1) && isSimplesCrt("4") && !isSimplesCrt(3));
   assert.deepEqual(CRT_OPTIONS.map(([value]) => value), [1, 2, 3, 4]);
 });
+
+test("pacote do contador: mês anterior, entrada de mês e resumo da linha", () => {
+  const { previousMonth, parseMonthInput, monthLabel, accountantPackageView } = core;
+  assert.deepEqual(previousMonth(new Date(2026, 0, 1)), { year: 2025, month: 12 });
+  assert.deepEqual(previousMonth(new Date(2026, 10, 18)), { year: 2026, month: 10 });
+  assert.deepEqual(parseMonthInput("2026-10"), { year: 2026, month: 10 });
+  assert.equal(parseMonthInput("2026-13"), null);
+  assert.equal(parseMonthInput(""), null);
+  assert.equal(monthLabel(2026, 3), "03/2026");
+  const ready = accountantPackageView({
+    year: 2026, month: 10, status: "ready", trigger: "schedule", available: true, sped_available: true,
+    include_sped: true, warning_count: 3, sped: { generated: true, problems: [] },
+    by_status: [{ status: "authorized", count: 3, total_cents: 16170 }, { status: "cancelled", count: 1 },
+      { status: "inutilized", count: 2 }],
+    deliveries: [{ status: "failed", to_email: "ana@contab.test" }]
+  });
+  assert.equal(ready.period, "10/2026");
+  assert.equal(ready.notes, "3 autorizada(s) · 1 cancelada(s) · 2 inutilizada(s)");
+  assert.equal(ready.pending, "3 pendência(s)");
+  assert.equal(ready.sped, "SPED gerado");
+  assert.equal(ready.delivery, "Falha no envio para ana@contab.test");
+  assert.ok(ready.deliveryFailed && ready.canDownload && ready.canSped);
+  assert.equal(ready.trigger, "Automático (dia 1º)");
+  const queued = accountantPackageView({ year: 2026, month: 9, status: "queued", trigger: "manual" });
+  assert.equal(queued.status, "Na fila");
+  assert.equal(queued.notes, "—");
+  assert.equal(queued.delivery, "Não enviado");
+  assert.ok(!queued.canDownload);
+});

@@ -6,7 +6,7 @@ import { api, getCsrf, setTenant, records, money, dateTime, dateOnly, quantity, 
   canSetHub, stationLimitText, stationLabel, stationFilterOptions, appPermissionNames, appPermissionOrder,
   appPermissionText, appAccessStatusText, appAccessShopsText, appAccessCompanyText,
   fiscalOverridesPayload, sameFiscalFields, fiscalBadge, fiscalCodeSummary, contributionSummary, CRT_OPTIONS,
-  isSimplesCrt } from "./core.js";
+  isSimplesCrt, previousMonth, parseMonthInput, accountantPackageView } from "./core.js";
 
 const $ = selector => document.querySelector(selector);
 const platform = location.pathname.startsWith("/platform/");
@@ -41,6 +41,7 @@ const tenantNav = [
   { group: "Relacionamento", id: "suppliers", label: "Fornecedores", icon: "▱", roles: ["owner","admin","manager","inventory","finance"] },
   { group: "Relacionamento", id: "commissions", label: "Comissões", icon: "%", feature:"finance", roles: ["owner","admin","manager","finance"] },
   { group: "Relacionamento", id: "finance", label: "Financeiro", icon: "◎", feature:"finance", roles: ["owner","admin","manager","finance","viewer"] },
+  { group: "Fiscal", id: "accountant", label: "Pacote do contador", icon: "✉", roles: ["owner","admin","finance"] },
   { group: "Administração", id: "shops", label: "Lojas", icon: "⌂", roles: ["owner","admin","manager","viewer"] },
   { group: "Administração", id: "company", label: "Minha empresa", icon: "◧", roles: ["owner","admin"] },
   { group: "Administração", id: "users", label: "Equipe", icon: "♙", roles: ["owner","admin"] },
@@ -4599,12 +4600,199 @@ async function platformAppAccessPage() {
   await Promise.all([loadAccesses().catch(failed(accessHost)), loadDevices().catch(failed(devicesBox)), loadDeletions().catch(failed(deletionBox))]);
 }
 
+// ---------------------------------------------------------------- Fiscal > Pacote do contador
+async function downloadAccountantFile(path, fallbackName) {
+  let response;
+  try {
+    response=await fetch("/api/v1/accountant/"+path,{credentials:"same-origin",headers:{"X-Tenant-ID":state.tenantId}});
+  }catch{throw new Error("Sem conexão para baixar o arquivo.");}
+  if(!response.ok) {
+    let body;
+    try {body=await response.json();}catch{}
+    throw new Error(body?.error||"Não foi possível baixar o arquivo.");
+  }
+  const disposition=response.headers.get("Content-Disposition")||"";
+  const name=(/filename="([^"]+)"/.exec(disposition)||[])[1]||fallbackName;
+  const blob=await response.blob();
+  const url=URL.createObjectURL(blob);
+  const link=el("a");link.href=url;link.download=name;
+  document.body.append(link);link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+function accountantField(label, input, help="") {
+  const field=el("div","field"),caption=el("label","",label);
+  input.id="accountant-"+Math.random().toString(36).slice(2,9);caption.htmlFor=input.id;
+  field.append(caption,input);if(help)field.append(el("small","",help));
+  return field;
+}
+function accountantInput(value, options={}) {
+  const input=el("input");input.value=value??"";
+  Object.assign(input,options);
+  return input;
+}
+function accountantSettingsForm(current) {
+  const form=el("form","form-grid");
+  const inputs={
+    accountant_email:accountantInput(current.accountant_email,{type:"email",maxLength:254,autocomplete:"off"}),
+    name:accountantInput(current.name,{maxLength:100}),cpf:accountantInput(current.cpf,{maxLength:14,inputMode:"numeric"}),
+    crc:accountantInput(current.crc,{maxLength:15}),cnpj:accountantInput(current.cnpj,{maxLength:18,inputMode:"numeric"}),
+    phone:accountantInput(current.phone,{maxLength:15,inputMode:"tel"}),cep:accountantInput(current.cep,{maxLength:9,inputMode:"numeric"}),
+    address:accountantInput(current.address,{maxLength:60}),number:accountantInput(current.number,{maxLength:10}),
+    complement:accountantInput(current.complement,{maxLength:60}),neighborhood:accountantInput(current.neighborhood,{maxLength:60}),
+    city_ibge:accountantInput(current.city_ibge,{maxLength:7,inputMode:"numeric",pattern:"[0-9]{7}"}),
+    e116_cod_rec:accountantInput(current.e116_cod_rec,{maxLength:30}),
+    e116_due_day:accountantInput(current.e116_due_day??"",{type:"number",min:1,max:31})
+  };
+  const profile=el("select");
+  [["A","A — completo"],["B","B — simplificado"],["C","C"]].forEach(([value,label])=>{const option=el("option","",label);option.value=value;profile.append(option);});
+  profile.value=current.sped_profile||"A";
+  const auto=el("input");auto.type="checkbox";auto.checked=current.auto_send!==false;
+  const autoLine=el("label","checkbox-line full");autoLine.append(auto,el("span","","Enviar automaticamente no dia 1º o pacote do mês anterior"));
+  const simples=el("input");simples.type="checkbox";simples.checked=!!current.sped_for_simples;
+  const simplesLine=el("label","checkbox-line full");simplesLine.append(simples,el("span","","Gerar o SPED mesmo sendo do Simples Nacional (só se a UF exigir)"));
+  form.append(
+    accountantField("E-mail do contador",inputs.accountant_email,"Recebe o link do pacote todo mês."),
+    accountantField("Nome do contador",inputs.name),accountantField("CPF",inputs.cpf),accountantField("CRC",inputs.crc),
+    accountantField("CNPJ do escritório",inputs.cnpj,"Opcional."),accountantField("Telefone",inputs.phone),
+    accountantField("CEP",inputs.cep),accountantField("Endereço",inputs.address),accountantField("Número",inputs.number),
+    accountantField("Complemento",inputs.complement),accountantField("Bairro",inputs.neighborhood),
+    accountantField("Município (código IBGE)",inputs.city_ibge,"7 dígitos."),
+    accountantField("Perfil do SPED",profile,"Definido pela UF/contador (registro 0000)."),
+    accountantField("Código de receita do ICMS (E116)",inputs.e116_cod_rec,"Código da UF para o ICMS próprio."),
+    accountantField("Dia de vencimento do ICMS",inputs.e116_due_day,"No mês seguinte ao da apuração."),
+    autoLine
+  );
+  if(Number(current.crt)!==3)form.append(simplesLine);
+  const message=formMessage(form),submit=formButtons(form,"Salvar");
+  form.addEventListener("submit",async event=>{
+    event.preventDefault();if(!form.reportValidity())return;
+    submit.disabled=true;
+    try {
+      const body=Object.fromEntries(Object.entries(inputs).map(([key,input])=>[key,input.value.trim()]));
+      body.e116_due_day=body.e116_due_day?Number(body.e116_due_day):null;
+      body.sped_profile=profile.value;body.auto_send=auto.checked;
+      if(Number(current.crt)!==3)body.sped_for_simples=simples.checked;
+      await api.patch("/accountant/settings",body);
+      closeDialog();toast("Dados do contador salvos.");renderRoute();
+    }catch(error){handleError(error,message);submit.disabled=false;}
+  });
+  openDialog("Contador e envio","Dados usados no e-mail mensal e no registro 0100 do SPED Fiscal.",form);
+}
+function accountantDetails(row) {
+  const body=el("div");
+  const view=accountantPackageView(row);
+  body.append(detailList([["Mês",view.period],["Situação",view.status],["Notas",view.notes],
+    ["Valor autorizado",money(view.totalCents)],["SPED",view.sped],["Origem",view.trigger]]));
+  const warnings=row.warnings||{};
+  const labels={contingency:"Contingência não transmitida",pending:"Aguardando SEFAZ",rejected:"Rejeitadas sem correção",
+    gaps:"Lacunas de numeração não inutilizadas",missing_xml:"Sem XML arquivado",mismatches:"Totais divergentes",other:"Outros avisos"};
+  const list=el("ul");
+  Object.entries(labels).forEach(([key,label])=>(warnings[key]||[]).forEach(text=>list.append(el("li","",label+": "+text))));
+  body.append(el("h3","","Pendências"),list.childElementCount?list:el("p","","Nenhuma pendência encontrada."));
+  if(row.sped?.generated){
+    const sped=el("ul");
+    [...(row.sped.warnings||[]),...(row.sped.problems||[])].forEach(text=>sped.append(el("li","",text)));
+    body.append(el("h3","","SPED Fiscal (leiaute "+row.sped.version+")"),
+      sped.childElementCount?sped:el("p","","Sem avisos na conferência interna."),
+      info("Valide o arquivo no PVA da Receita antes da entrega: ele traz só as saídas por NFC-e.",true));
+  } else if(row.sped?.notice) body.append(info(row.sped.notice,true));
+  const deliveries=row.deliveries||[];
+  body.append(el("h3","","Envios"),deliveries.length?table([
+    {label:"Para",render:item=>item.to_email},{label:"Situação",render:item=>statusBadge(item.status==="sent"?"done":item.status)},
+    {label:"Data",render:item=>dateTime(item.sent_at||item.created_at)},{label:"Link vale até",render:item=>item.link_expires_at?dateOnly(item.link_expires_at):"—"},
+    {label:"Downloads",render:item=>String(item.downloads)},{label:"Erro",render:item=>item.error||"—"}
+  ],deliveries):el("p","","Ainda não enviado."));
+  const actions=el("div","form-actions");actions.append(button("Fechar",closeDialog,"ghost"));body.append(actions);
+  openDialog("Pacote "+view.period,"Resumo do que vai para o contador.",body);
+}
+async function accountantSend(row) {
+  try {
+    await api.post("/accountant/packages/"+row.id+"/send",{});
+    toast("Envio na fila. Acompanhe a situação na lista.");renderRoute();
+  }catch(error){handleError(error);}
+}
+async function accountantPage() {
+  const token=++state.renderId;
+  const view=page("Pacote do contador","XMLs das NFC-e do mês, resumo para conferência e SPED Fiscal, com envio ao contador.","Fiscal");
+  view.actions.append(button("Atualizar",()=>renderRoute(),"secondary"));
+  const content=el("div");view.outer.append(content);content.append(loadingSurface());
+  try {
+    const response=await api.get("/accountant/packages");
+    if(token!==state.renderId)return;
+    const settings=response.settings||{};
+    const rows=records(response);
+    const generator=surface("Gerar pacote","Escolha o mês. O pacote é montado em segundo plano e fica disponível para baixar por "+
+      "35 dias; o link enviado ao contador vale 30 dias.");
+    const form=el("form","form-grid");
+    const month=el("input");month.type="month";month.required=true;
+    const last=previousMonth();month.value=last.year+"-"+String(last.month).padStart(2,"0");
+    const now=new Date();month.max=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+    form.append(accountantField("Mês",month));
+    const normal=Number(settings.crt)===3;
+    const sped=el("input");sped.type="checkbox";sped.checked=normal||!!settings.sped_for_simples;
+    const spedLine=el("label","checkbox-line full");
+    spedLine.append(sped,el("span","",normal?"Incluir o SPED Fiscal (EFD ICMS/IPI) do mês":"Gerar o SPED Fiscal mesmo assim (Simples Nacional: em regra dispensado)"));
+    form.append(spedLine);
+    if(!normal)form.append(info(settings.sped_notice||"Empresa do Simples Nacional: em regra dispensada da EFD ICMS/IPI.",true));
+    const send=el("input");send.type="checkbox";send.disabled=!settings.accountant_email;
+    const sendLine=el("label","checkbox-line full");
+    sendLine.append(send,el("span","",settings.accountant_email?"Enviar o link ao contador ("+settings.accountant_email+")":"Enviar ao contador (cadastre o e-mail abaixo)"));
+    form.append(sendLine);
+    const message=formMessage(form);
+    const submit=el("button","button","Gerar pacote");submit.type="submit";
+    const actions=el("div","form-actions");actions.append(submit);form.append(actions);
+    form.addEventListener("submit",async event=>{
+      event.preventDefault();if(!form.reportValidity())return;
+      const period=parseMonthInput(month.value);
+      if(!period){handleError(new Error("Escolha um mês válido."),message);return;}
+      submit.disabled=true;
+      try {
+        const body={...period,include_sped:sped.checked,send:send.checked};
+        if(!normal&&sped.checked)body.force_sped=true;
+        await api.post("/accountant/packages",body);
+        toast("Pacote na fila de geração.");renderRoute();
+      }catch(error){handleError(error,message);submit.disabled=false;}
+    });
+    generator.append(form);
+    if(normal||settings.sped_for_simples)generator.append(info(settings.pva_notice||"Valide o SPED no PVA da Receita antes da entrega.",true));
+    const contact=surface("Contador e envio automático","Todo dia 1º o pacote do mês anterior é gerado e o contador recebe um link seguro (sem anexo).");
+    contact.append(detailList([
+      ["E-mail do contador",settings.accountant_email||"Não cadastrado"],
+      ["Contador",[settings.name,settings.crc?"CRC "+settings.crc:""].filter(Boolean).join(" · ")||"—"],
+      ["Envio automático",settings.accountant_email?(settings.auto_send?"Ligado (dia 1º)":"Desligado"):"Precisa do e-mail"],
+      ["SPED",normal?"Gerado (Regime Normal), perfil "+(settings.sped_profile||"A"):(settings.sped_for_simples?"Gerado por exigência da UF":"Não gerado (Simples Nacional)")]
+    ]));
+    if(isOwner())contact.append(button("Editar dados do contador",()=>accountantSettingsForm(settings),"secondary"));
+    const list=surface("Pacotes gerados","Gerados no painel ou automaticamente; os mais recentes primeiro.");
+    list.append(rows.length?table([
+      {label:"Mês",render:row=>accountantPackageView(row).period},
+      {label:"Situação",render:row=>{const v=accountantPackageView(row);const badge=statusBadge(row.status==="ready"?"done":row.status);badge.textContent=v.status;return badge;}},
+      {label:"Notas",render:row=>accountantPackageView(row).notes},
+      {label:"Pendências",render:row=>row.status==="failed"?row.error:accountantPackageView(row).pending},
+      {label:"SPED",render:row=>accountantPackageView(row).sped},
+      {label:"Envio",render:row=>{const v=accountantPackageView(row);return v.deliveryFailed?el("span","badge danger",v.delivery):v.delivery;}},
+      {label:"Gerado em",render:row=>dateTime(row.ready_at||row.created_at)}
+    ],rows,row=>{
+      const v=accountantPackageView(row),items=[];
+      if(row.status==="ready"||row.status==="expired")items.push({label:"Detalhes",onClick:()=>api.get("/accountant/packages/"+row.id).then(accountantDetails).catch(handleError)});
+      if(v.canDownload)items.push({label:"Baixar ZIP",onClick:()=>downloadAccountantFile("packages/"+row.id+"/download","pacote-contador.zip").catch(handleError)});
+      if(v.canSped)items.push({label:"Baixar SPED",onClick:()=>downloadAccountantFile("packages/"+row.id+"/sped","sped.txt").catch(handleError)});
+      if(v.canDownload&&settings.accountant_email)items.push({label:"Enviar ao contador",onClick:()=>accountantSend(row)});
+      return items;
+    }):empty("Nenhum pacote ainda","Gere o primeiro pacote acima ou aguarde o envio automático do dia 1º."));
+    content.replaceChildren(generator,contact,list);
+    // Refresh while a package is being built, unless a dialog is open (renderRoute closes it).
+    if(rows.some(row=>row.status==="queued"||row.status==="running"))setTimeout(()=>{if(token===state.renderId&&!$("#dialog-root").childElementCount)renderRoute();},5000);
+  }catch(error){if(token===state.renderId){content.replaceChildren(empty("Falha ao carregar",errorText(error),"!"));handleError(error);}}
+}
+
 const tenantRoutes = {
   dashboard:dashboardPage,sales:salesPage,cash:cashPage,inventory:inventoryPage,promotions:promotionsPage,commissions:commissionsPage,reports:reportsPage,payment_methods:paymentMethodsPage,products:()=>resourcePage("products"),
   categories:()=>resourcePage("categories"),stock:stockPage,tax_profiles:taxProfilesPage,
   customers:()=>resourcePage("customers"),suppliers:()=>resourcePage("suppliers"),
   finance:financePage,shops:()=>resourcePage("shops"),company:companyPage,users:usersPage,
-  terminals:terminalsPage,printers:printersPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage
+  terminals:terminalsPage,printers:printersPage,subscription:subscriptionPage,integrations:integrationsPage,audit:auditPage,sync_conflicts:syncConflictsPage,
+  accountant:accountantPage
 };
 const platformRoutes = {
   overview:platformOverview,tenants:platformTenants,plans:platformPlans,

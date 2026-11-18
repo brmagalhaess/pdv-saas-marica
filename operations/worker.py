@@ -43,6 +43,14 @@ def install_job_logging():
         if getattr(handler,'logs_failures',None) is not True:
             services.HANDLERS[kind]=_logged(kind,handler)
 
+def accountant_housekeeping():
+    """Day 1: queue last month's accountant package; also drop expired ZIPs. Never stops the worker."""
+    try:
+        from core.accountant.jobs import housekeeping
+        housekeeping()
+    except Exception:
+        logger.exception('Accountant package scheduling failed')
+
 def main():
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     install_job_logging()
@@ -55,6 +63,7 @@ def main():
             now=time.time()
             if now-last_cleanup>3600:
                 Session.objects.filter(expire_date__lt=timezone.now()).delete();last_cleanup=now
+                accountant_housekeeping()
             Path('/tmp/pdv2-worker-health').write_text(str(int(now)))
             if not processed:time.sleep(2)
         except Exception:
