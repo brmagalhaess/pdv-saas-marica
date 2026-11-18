@@ -20,6 +20,7 @@ from pathlib import Path
 from . import paths
 from .labels import SCALE_SCHEMA
 from . import cash_reports
+from . import nfce
 from .cash_reports import METHOD_LABELS
 from .printers import (LABEL_PRINTER_REQUIRED, PAYMENT_LABELS, label_bytes, layout_bytes, receipt_bytes,
                        receipt_layout, voucher_layout)
@@ -367,6 +368,7 @@ class Store:
             self._migrate_outbox_seq(conn)
             self._migrate_stations(conn)
             self._migrate_shifts(conn)
+            nfce.migrate(conn)  # NFC-e per sale and the contingency number block (terminal/nfce.py)
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -663,7 +665,7 @@ class Store:
         # Clearing them also makes exports after a new pairing tenant-isolated.
         for table in ("products", "operators", "customers", "login_attempts", "audit", "print_settings",
                       "sync_conflicts", "sync_quarantine", "station_enroll_codes", "scale_labels",
-                      "scale_product_settings"):
+                      "scale_product_settings", "nfce_reservation"):
             conn.execute(f"DELETE FROM {table}")
         # The additional cashiers belonged to the company that is leaving this file.
         conn.execute("DELETE FROM stations WHERE id != ?", (SERVER_STATION_ID,))
@@ -676,7 +678,7 @@ class Store:
                     "release_info", "release_error", "release_checked_at", "last_backup_at",
                     "last_heartbeat_at", "last_heartbeat_error", "bootstrap_summary", "catalog_skipped",
                     "release_public_key", "lease_renewed_at", "clock_skew", "clock_checked_at",
-                    "superseded_at", "superseded_by", *PHASE2_META,
+                    "superseded_at", "superseded_by", "nfce_config", *PHASE2_META,
                     *PROMOTION_META):
             conn.execute("DELETE FROM meta WHERE key=?", (key,))
         conn.execute("DELETE FROM meta WHERE key LIKE 'manager_override_window|%'")
@@ -751,7 +753,9 @@ class Store:
                     "last_heartbeat_error": self._meta(conn, "last_heartbeat_error"),
                     "bootstrap_at": self._meta(conn, "bootstrap_at"),
                     "release": json.loads(release) if release else None,
-                    "release_error": self._meta(conn, "release_error")}
+                    "release_error": self._meta(conn, "release_error"),
+                    # NFC-e waiting for the cloud/SEFAZ (contingency must be sent within 24 h).
+                    "nfce": nfce.summary(conn)}
 
     def set_sync_result(self, error=None):
         with self.transaction() as conn:
@@ -1300,6 +1304,9 @@ class Store:
                 self._set_meta(conn, "license_hint", _optional_text(response["license_hint"], 16))
             if response.get("issuer"):
                 self._set_meta(conn, "issuer_profile", _json(response["issuer"]))
+            if isinstance(response.get("nfce"), dict):
+                # NFC-e switch, environment and printing rules (no secrets); old clouds send nothing.
+                nfce.store_config(conn, self._set_meta, response["nfce"])
             self._set_meta(conn, "bootstrap_at", str(timestamp))
             # Bootstrap runs every 30 seconds: audit it only when something changed.
             summary = f"{len(products)} produtos; {len(operators)} operadores"
@@ -1495,9 +1502,12 @@ class Store:
             try:
                 if not isinstance(row, dict) or row.get("kind") not in BUILTIN_PAYMENTS + ("other",):
                     raise TerminalError("Forma de pagamento recebida inválida")
-                result.append({"id": _str(row.get("id"), "Forma de pagamento"), "kind": row["kind"],
-                               "name": _str(row.get("name"), "Nome da forma de pagamento", 60),
-                               "active": bool(row.get("active", True))})
+                method = {"id": _str(row.get("id"), "Forma de pagamento"), "kind": row["kind"],
+                          "name": _str(row.get("name"), "Nome da forma de pagamento", 60),
+                          "active": bool(row.get("active", True))}
+                if row.get("print_rule") in ("always", "ask", "never"):
+                    method["print_rule"] = row["print_rule"]  # NFC-e printing after a sale (docs/NFCE.md)
+                result.append(method)
             except TerminalError as exc:
                 skipped.append(cls._skipped("payment_method", row, exc))
         return result
@@ -2381,7 +2391,8 @@ class Store:
                             "customer_id": customer_id, "seller_id": seller_id}
                 if _json(comparable) != _json(received):
                     raise TerminalError("Identificador já usado para outra venda", 409)
-                return self._receipt_data(conn, previous)
+                previous["fiscal"] = nfce.fiscal_for_receipt(conn, previous["id"])
+                return self._with_nfce(conn, self._receipt_data(conn, previous), previous)
             cash = self._own_shift(conn, operator["id"])
             seller_name = ""
             if seller_id is not None:
@@ -2506,8 +2517,13 @@ class Store:
             self._event(conn, "sale.completed", sale_id, event_data)
             self._audit(conn, operator["id"], "sale.completed", sale_id,
                         f"manager_override={override_id}" if override_id else None)
-            self._queue_receipt(conn, snapshot)
-            result = self._receipt_data(conn, snapshot)
+            cfg = nfce.config(conn, self._meta)
+            if nfce.enabled(cfg):
+                # The DANFE is printed after the NFC-e answer, following the payment rule.
+                nfce.save(conn, sale_id, "pending")
+            else:
+                self._queue_receipt(conn, snapshot)
+            result = self._with_nfce(conn, self._receipt_data(conn, snapshot), snapshot)
             if fiscal_warnings:
                 # Advice for the cashier screen only: never part of the sale event or the receipt.
                 result["fiscal_warnings"] = fiscal_warnings
@@ -2544,11 +2560,91 @@ class Store:
             result = json.loads(row["snapshot"])
             result["status"] = row["status"]
             result["void_reason"] = row["void_reason"]
-            return self._receipt_data(conn, result)
+            fiscal = nfce.fiscal_for_receipt(conn, sale_id)
+            if fiscal:
+                result["fiscal"] = fiscal  # DANFE NFC-e (F9 reprints it)
+            return self._with_nfce(conn, self._receipt_data(conn, result), result)
+
+    def _with_nfce(self, conn, result, snapshot):
+        """NFC-e status and print decision for the screen (never part of the sale event)."""
+        cfg = nfce.config(conn, self._meta)
+        found = nfce.row(conn, snapshot["id"])
+        if nfce.enabled(cfg) or found:
+            result["nfce"] = {"enabled": nfce.enabled(cfg), "status": found["status"] if found else None,
+                              "print": nfce.decision(cfg, snapshot.get("payments") or []),
+                              "contingency": bool(cfg.get("contingency")), "wait_ms": int(cfg.get("wait_ms") or 8000),
+                              "error": found["error"] if found else ""}
+        return result
+
+    # ---------- NFC-e (terminal/nfce.py; docs/NFCE.md) ----------
+
+    def nfce_config(self):
+        with self.connection() as conn:
+            return nfce.config(conn, self._meta)
+
+    def nfce_record(self, sale_id, status, data=None, xml=None, error="", uploaded=None):
+        with self.transaction() as conn:
+            if not conn.execute("SELECT 1 FROM sales WHERE id=?", (sale_id,)).fetchone():
+                raise TerminalError("Venda não encontrada", 404)
+            nfce.save(conn, sale_id, status, data, xml, error, uploaded)
+
+    def nfce_contingency(self, sale_id, now=None):
+        """Offline NFC-e built here (tpEmis 9). Raises TerminalError when it cannot be issued."""
+        from shared.nfce import NfceError
+        with self.transaction() as conn:
+            row = conn.execute("SELECT snapshot,status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            if not row:
+                raise TerminalError("Venda não encontrada", 404)
+            current = nfce.row(conn, sale_id)
+            if current and current["status"] in ("authorized", "contingency"):
+                return current["data"]
+            sale = json.loads(row["snapshot"])
+            try:
+                data, xml = nfce.build_contingency(conn, sale, nfce.config(conn, self._meta), now)
+            except (NfceError, ValueError, KeyError) as exc:
+                raise TerminalError(str(exc), 409, code="nfce_contingency_unavailable") from exc
+            nfce.save(conn, sale_id, "contingency", data, xml, uploaded=False)
+            self._audit(conn, sale.get("operator_id"), "nfce.contingency", sale_id,
+                        f"NFC-e {data['number']} série {data['series']} em contingência")
+            return data
+
+    def nfce_store_reservation(self, value):
+        with self.transaction() as conn:
+            nfce.store_reservation(conn, value)
+
+    def nfce_needs_reservation(self):
+        with self.connection() as conn:
+            return nfce.needs_reservation(conn, nfce.config(conn, self._meta))
+
+    def nfce_work(self):
+        with self.connection() as conn:
+            return {"uploads": nfce.pending_uploads(conn), "retry": nfce.to_retry(conn),
+                    "refresh": nfce.to_refresh(conn)}
+
+    def nfce_summary(self):
+        with self.connection() as conn:
+            return nfce.summary(conn)
+
+    def print_sale(self, sale_id, operator_id=None):
+        """Print the DANFE (or the receipt) of a sale on the thermal printer."""
+        return self.reprint(sale_id, operator_id)
 
     def void_sale(self, operator, sale_id, reason, manager_pin=None):
         reason = _str(reason, "Motivo do cancelamento", 240)
         self.ensure_sale_allowed()
+        with self.connection() as conn:
+            fiscal_row = nfce.row(conn, sale_id)
+            cfg = nfce.config(conn, self._meta)
+        fiscal_issued = bool(fiscal_row and fiscal_row["status"] in ("authorized", "contingency"))
+        if fiscal_issued:
+            # Cancelling a NFC-e: manager PIN, reason of 15+ characters and the SEFAZ deadline.
+            if len(reason.strip()) < 15:
+                raise TerminalError("A venda tem NFC-e: o motivo do cancelamento precisa ter pelo menos 15 caracteres", 400)
+            authorized_at = fiscal_row["data"].get("authorized_at")
+            minutes = int(cfg.get("cancel_minutes") or 30)
+            if fiscal_row["status"] == "authorized" and authorized_at and _now_ms() - int(authorized_at) > minutes * 60000:
+                raise TerminalError(f"Prazo de cancelamento da NFC-e encerrado ({minutes} minutos). "
+                                    "Registre uma devolução.", 409, code="nfce_cancel_expired")
         authorizer = (operator["id"] if operator["role"] in MANAGER_ROLES
                       else self.manager_override(manager_pin, operator["id"]))
         with self.transaction() as conn:
@@ -2557,6 +2653,9 @@ class Store:
                 raise TerminalError("Venda não encontrada", 404)
             if row["status"] == "voided":
                 return self.sale_detail(sale_id)
+            if fiscal_issued:
+                # The cloud cancels the NFC-e when the sale.voided event arrives (reason and manager already checked).
+                nfce.save(conn, sale_id, fiscal_row["status"], {"cancel_requested": True, "cancel_reason": reason})
             if (row["station_id"] or SERVER_STATION_ID) != self.current_station():
                 # Each cashier answers for its own drawer: the refund would leave another one.
                 other = self._station_name(conn, row["station_id"] or SERVER_STATION_ID) or "outro caixa"

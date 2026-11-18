@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone as dt_timezone
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import transaction
@@ -20,14 +21,14 @@ from shared.nfce import keys
 from shared.nfce.builder import CONTINGENCY_REASON, NfceError, approx_text
 from shared.nfce.payments import default_print_rule
 from shared.nfce.webservices import cancel_minutes
-from shared.nfce.xml import XMLError, etree_text, from_etree, parse, tobytes
+from shared.nfce.xml import XMLError, from_etree, parse, tobytes
 from shared.secrets import decrypt_secret
 
 from ..api_common import APIError
 from ..fiscal import simulate, tech_responsible
 from ..models import (FiscalConfig, FiscalDocument, FiscalEvent, FiscalInutilization, NfceReservation, PaymentMethod,
                       Sale, Tenant)
-from .backends import EventResult, FocusBackend, IssueRequest, IssueResult, Ref, SefazBackend
+from .backends import FocusBackend, IssueRequest, IssueResult, Ref, SefazBackend
 from .certificate import load_pfx
 from .transport import SoapTransport, TransportError
 
@@ -726,6 +727,13 @@ def release(reservation):
     return ranges
 
 
+def _cents(text):
+    try:
+        return int((Decimal(str(text)) * 100).to_integral_value())
+    except (InvalidOperation, TypeError):
+        return None
+
+
 def register_terminal_contingency(terminal, sale, xml_text):
     """XML (unsigned, with infNFeSupl) of a contingency note made by the register while offline."""
     tenant = terminal.tenant
@@ -749,7 +757,7 @@ def register_terminal_contingency(terminal, sale, xml_text):
         (int(infnfe.findtext("ide/nNF") or 0) == parts["number"] and int(infnfe.findtext("ide/serie") or -1) == parts["series"],
          "Número ou série não conferem com a chave"),
         (environment == tenant.fiscal_environment, "Ambiente da nota difere do ambiente da empresa"),
-        (round(float(infnfe.findtext("total/ICMSTot/vNF") or 0) * 100) == sale.total_cents, "Total difere da venda"),
+        (_cents(infnfe.findtext("total/ICMSTot/vNF")) == sale.total_cents, "Total difere da venda"),
     ]
     for ok, message in checks:
         if not ok:

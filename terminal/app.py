@@ -907,6 +907,19 @@ def create_app(config=None):
     def reprint(operator, sale_id):
         return jsonify(store.reprint(sale_id, operator["id"]))
 
+    @app.post("/api/sales/<sale_id>/nfce")
+    @authenticated(*SELL_ROLES)
+    def sale_nfce(_operator, sale_id):
+        """Ask the NFC-e of the sale (cloud, up to ~8 s; offline contingency otherwise)."""
+        store.sale_detail(sale_id)  # 404 before any cloud call
+        return jsonify({"sale": sync.request_nfce(store, sale_id)})
+
+    @app.post("/api/sales/<sale_id>/print")
+    @authenticated(*SELL_ROLES)
+    def sale_print(operator, sale_id):
+        """Print the DANFE after "Imprimir a nota fiscal?" (or the "Sempre imprimir" rule)."""
+        return jsonify(store.print_sale(sale_id, operator["id"]))
+
     @app.get("/api/carts/suspended")
     @authenticated(*SELL_ROLES)
     def carts(_operator):

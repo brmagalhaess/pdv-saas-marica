@@ -8,7 +8,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 
-from . import paths
+from . import nfce, paths
 from .printers import send_bytes
 from .store import TerminalError
 
@@ -89,9 +89,9 @@ def _json_response(response):
     return body
 
 
-def _request(method, url, **kwargs):
+def _request(method, url, timeout=12, **kwargs):
     try:
-        return _json_response(requests.request(method, url, timeout=12, **kwargs))
+        return _json_response(requests.request(method, url, timeout=timeout, **kwargs))
     except requests.RequestException as exc:
         raise TerminalError("Sem conexão com o servidor; dados locais preservados", 503) from exc
 
@@ -297,8 +297,17 @@ def _fit_batch(events, limit=MAX_BATCH_BYTES):
     return batch
 
 
-def sync_once(store):
+_SYNC_LOCK = threading.Lock()
+
+
+def sync_once(store, timeout=12):
     """Acknowledges only a complete, ordered server response after cloud commit."""
+    # The NFC-e request (request_nfce) also flushes the queue; one upload at a time.
+    with _SYNC_LOCK:
+        return _sync_once(store, timeout)
+
+
+def _sync_once(store, timeout=12):
     events = _fit_batch(store.pending_events(MAX_BATCH_EVENTS))
     if not events:
         # Nothing left to deliver: an old delivery error must not outlive a cloud
@@ -314,7 +323,7 @@ def sync_once(store):
         try:
             response = _request("POST", meta["cloud_url"] + "/api/v1/terminal/sync",
                                 headers=_auth_headers(meta),
-                                json={"events": events})
+                                json={"events": events}, timeout=timeout)
             break
         except TerminalError as exc:
             if getattr(exc, "remote_status", None) == 413 and len(events) > 1:
@@ -369,6 +378,115 @@ def heartbeat_once(store):
     store.clear_transferred()  # only the current computer of the terminal gets an answer here
     store.clear_sync_error()
     return response
+
+
+# ------------------------------------------------------------------ NFC-e (docs/NFCE.md)
+
+def _offline(exc):
+    """No usable answer from the cloud: network down, server error or the sale still not there."""
+    status = getattr(exc, "remote_status", None)
+    return (getattr(exc, "status", None) == 503 or status is None or status >= 500
+            or getattr(exc, "remote_code", None) == "sale_not_synced")
+
+
+def request_nfce(store, sale_id, wait_s=None):
+    """Ask the cloud for the NFC-e of a sale, waiting a short time; fall back to offline contingency.
+
+    Returns the sale with its receipt (store.sale_detail), whose ``nfce`` says what to print.
+    """
+    cfg = store.nfce_config()
+    if not nfce.enabled(cfg):
+        return store.sale_detail(sale_id)
+    budget = float(wait_s if wait_s is not None else (cfg.get("wait_ms") or 8000) / 1000)
+    started = time.monotonic()
+    meta = store.meta()
+    status, data, error = "offline", {}, ""
+    if meta.get("token") and meta.get("cloud_url"):
+        try:
+            # The cloud builds the note from the synced sale: deliver the queue first.
+            for _ in range(5):
+                left = budget - (time.monotonic() - started)
+                if left <= 1 or not sync_once(store, timeout=(min(3, left), max(1, left)))["remaining"]:
+                    break
+            left = max(1.0, budget - (time.monotonic() - started))
+            answer = _request("POST", meta["cloud_url"] + "/api/v1/terminal/nfce", headers=_auth_headers(meta),
+                              json={"sale_id": sale_id}, timeout=(min(3, left), left))
+            status, data = nfce.from_cloud(answer)
+            if answer.get("status") == "disabled":
+                status = "disabled"
+        except TerminalError as exc:
+            error = str(exc)
+            if not _offline(exc):
+                body = getattr(exc, "remote_body", None) or {}
+                status, error = "rejected", str(body.get("error") or exc)[:500]
+    if status == "disabled":
+        store.nfce_record(sale_id, "offline", error="Emissão de NFC-e desligada na nuvem")
+        return store.sale_detail(sale_id)
+    if status == "offline" and cfg.get("contingency"):
+        try:
+            store.nfce_contingency(sale_id)
+            return store.sale_detail(sale_id)
+        except TerminalError as exc:
+            error = f"{error} {exc}".strip()
+    store.nfce_record(sale_id, status if status in nfce_states() and status != "offline" else "pending", data, error=error)
+    return store.sale_detail(sale_id)
+
+
+def nfce_states():
+    return ("pending", "offline", "authorized", "contingency", "rejected", "cancelled")
+
+
+def nfce_step(store, limit=5):
+    """Worker duty: keep a contingency number block, upload offline notes, retry and refresh states."""
+    cfg = store.nfce_config()
+    if not nfce.enabled(cfg):
+        return {}
+    meta = store.meta()
+    if not meta.get("token") or not meta.get("cloud_url"):
+        return {}
+    base, headers = meta["cloud_url"] + "/api/v1/terminal/", _auth_headers(meta)
+    done = {"reserved": False, "uploaded": 0, "retried": 0, "refreshed": 0}
+    if store.nfce_needs_reservation():
+        try:
+            store.nfce_store_reservation(_request("POST", base + "nfce/reserve", headers=headers, json={}))
+            done["reserved"] = True
+        except TerminalError as exc:
+            if _offline(exc):
+                raise
+    work = store.nfce_work()
+    for row in work["uploads"][:limit]:
+        try:
+            answer = _request("POST", base + "nfce/contingency", headers=headers,
+                              json={"sale_id": row["sale_id"], "xml": row["xml"]})
+        except TerminalError as exc:
+            if _offline(exc):
+                continue
+            store.nfce_record(row["sale_id"], "contingency", error=str(exc)[:300])
+            continue
+        status, data = nfce.from_cloud(answer)
+        store.nfce_record(row["sale_id"], status if status in nfce_states() else "contingency", data, uploaded=True)
+        done["uploaded"] += 1
+    for sale_id in work["retry"][:limit]:
+        try:
+            answer = _request("POST", base + "nfce", headers=headers, json={"sale_id": sale_id})
+        except TerminalError as exc:
+            if not _offline(exc):
+                store.nfce_record(sale_id, "rejected", error=str(exc)[:300])
+            continue
+        status, data = nfce.from_cloud(answer)
+        if answer.get("status") != "disabled":
+            store.nfce_record(sale_id, status if status in nfce_states() else "pending", data)
+            done["retried"] += 1
+    for sale_id in work["refresh"][:limit]:
+        try:
+            answer = _request("GET", base + "nfce/" + quote(sale_id, safe=""), headers=headers)
+        except TerminalError:
+            continue
+        status, data = nfce.from_cloud(answer)
+        if status in ("authorized", "rejected", "cancelled"):
+            store.nfce_record(sale_id, status, data, error=data.get("error") or "")
+            done["refreshed"] += 1
+    return done
 
 
 def restore_step(store, max_pages=20):
@@ -551,6 +669,12 @@ class Worker:
                     self.stop_event.wait(0.1)
             except Exception as exc:
                 errors.append(_describe(exc))
+            try:
+                # NFC-e: contingency notes go to the cloud (24 h limit), unanswered ones are asked again.
+                if online:
+                    nfce_step(self.store)
+            except Exception as exc:
+                errors.append("NFC-e: " + _describe(exc))
             try:
                 bootstrap_at = int(self.store.meta().get("bootstrap_at") or 0)
                 # Keep the local catalog close to the cloud so product

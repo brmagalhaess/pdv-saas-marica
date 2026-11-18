@@ -430,7 +430,74 @@
       && Number(item.quantity_milli) === Number(now[index].quantity_milli)) ? id : null;
   }
 
-  return {restoreStep, restoreProgress, restoreErrorText, restoreSummary, restoreImportText, restoreImportNotice,
+  // ---------- NFC-e after the sale (docs/NFCE.md) ----------
+  const NFCE_PRINT = ['always', 'ask', 'never'];
+  // Same rule as shared/nfce/payments.py: split payment prints if any method says "always", asks if any says "ask".
+  function nfcePrintDecision(payments, rules) {
+    const defaults = {cash: 'ask', pix: 'ask', card: 'always', card_credit: 'always', card_debit: 'always',
+      credit_account: 'always', store_credit: 'ask', other: 'ask'};
+    const found = (payments || []).map(payment => {
+      let rule = payment.method === 'other' && payment.payment_method_id ? (rules || {})[payment.payment_method_id] : null;
+      rule = rule || (rules || {})[payment.method] || defaults[payment.method] || 'ask';
+      return NFCE_PRINT.includes(rule) ? rule : 'ask';
+    });
+    if (found.includes('always')) return 'always';
+    if (found.includes('ask') || !found.length) return 'ask';
+    return 'never';
+  }
+  // What the screen does once the NFC-e answer arrived: print now, ask, or only tell.
+  function nfcePlan(sale) {
+    const info = sale?.nfce || {};
+    if (!info.enabled && !info.status) return {issue: false, print: 'always'};
+    const fiscal = sale.fiscal || {}, status = fiscal.status || info.status || 'pending';
+    return {issue: true, status, print: NFCE_PRINT.includes(info.print) ? info.print : 'ask',
+            fiscal: ['authorized', 'contingency'].includes(status)};
+  }
+  function nfceStatusText(sale) {
+    const fiscal = sale?.fiscal || {}, status = fiscal.status || sale?.nfce?.status || 'pending';
+    const number = fiscal.number ? ` nº ${fiscal.number}` : '';
+    const homologation = fiscal.environment === 'homologation' ? ' (homologação, sem valor fiscal)' : '';
+    if (status === 'authorized') return `NFC-e${number} autorizada${homologation}.`;
+    if (status === 'contingency') return `NFC-e${number} emitida em contingência${homologation}: será enviada à SEFAZ quando a internet voltar (prazo de 24 h).`;
+    if (status === 'rejected') return `NFC-e rejeitada${fiscal.error || sale?.nfce?.error ? ': ' + (fiscal.error || sale.nfce.error) : ''}. Corrija o cadastro no painel e reenvie.`;
+    if (status === 'cancelled') return `NFC-e${number} cancelada.`;
+    return 'NFC-e pendente: será emitida assim que o caixa falar com a nuvem. F9 imprime quando sair.';
+  }
+  // "Imprimir a nota fiscal?": Enter or S = sim, Esc or N = não.
+  function printPromptKey(key) {
+    if (key === 'Enter' || key === 's' || key === 'S') return 'yes';
+    if (key === 'Escape' || key === 'n' || key === 'N') return 'no';
+    return null;
+  }
+  // Public consultation link only (no WhatsApp integration): wa.me / mailto built from what the customer said.
+  function nfceShareLinks(fiscal, contact) {
+    const link = fiscal?.qr_url || (fiscal?.url_consulta && fiscal?.access_key ? fiscal.url_consulta : '');
+    if (!link) return null;
+    const text = `Sua NFC-e${fiscal.number ? ' nº ' + fiscal.number : ''}: ${link}${fiscal.access_key && !fiscal.qr_url ? ' Chave de acesso: ' + fiscal.access_key : ''}`;
+    const value = String(contact || '').trim(), result = {text};
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+      result.email = `mailto:${encodeURIComponent(value)}?subject=${encodeURIComponent('Sua NFC-e')}&body=${encodeURIComponent(text)}`;
+    } else {
+      let phone = value.replace(/\D/g, '');
+      if (phone.length === 10 || phone.length === 11) phone = '55' + phone;
+      if (/^55\d{10,11}$/.test(phone)) result.whatsapp = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+    }
+    return result.email || result.whatsapp ? result : null;
+  }
+  // Header chip: NFC-e still waiting for the cloud/SEFAZ (contingency has 24 h).
+  function nfceChip(summary) {
+    const info = summary || {}, waiting = Number(info.waiting) || 0, overdue = Number(info.overdue) || 0, rejected = Number(info.rejected) || 0;
+    if (!waiting && !rejected) return {hidden: true};
+    if (overdue) return {hidden: false, state: 'danger', text: `NFC-e: ${overdue} atrasada(s)`,
+      title: `${overdue} NFC-e em contingência ou pendente há mais de 20 horas. Ligue a internet do caixa: a SEFAZ exige o envio em até 24 horas.`};
+    if (rejected && !waiting) return {hidden: false, state: 'warn', text: `NFC-e: ${rejected} rejeitada(s)`,
+      title: 'Corrija o cadastro no painel (Vendas) e reenvie a nota.'};
+    return {hidden: false, state: 'warn', text: `NFC-e: ${waiting} aguardando envio`,
+      title: 'Notas emitidas em contingência ou pendentes. Serão enviadas automaticamente quando houver internet.'};
+  }
+
+  return {nfcePrintDecision, nfcePlan, nfceStatusText, printPromptKey, nfceShareLinks, nfceChip,
+          restoreStep, restoreProgress, restoreErrorText, restoreSummary, restoreImportText, restoreImportNotice,
           transferredBlock, mirrorNotice, mirrorCard,
           stationNotice, stationsCard, enrollCodeText, promotionCard, draftSaleRequest, SERVER_DOWN_CODES, STATION_GONE_CODES,
           SHORTCUTS, PAY_KEYS, SPLIT_OPTION, payShortcutText, payAltOption, shiftView, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
