@@ -1269,6 +1269,9 @@ function finishSale(sale) {
   resetSale({keepDone: true});
   scanStatus('', 'Leitor pronto');
   beep('ok');
+  // Discreet fiscal advice: the sale is done; some items still lack data for a NFC-e.
+  const fiscalWarnings = sale.fiscal_warnings || [];
+  if (fiscalWarnings.length) toast(`Aviso fiscal: ${fiscalWarnings.length === 1 ? `“${fiscalWarnings[0].name}” ainda não está pronto` : `${fiscalWarnings.length} itens ainda não estão prontos`} para nota fiscal. Ajuste o cadastro no painel.`);
   poll().catch(() => {});
   loadCustomers().catch(() => {});
   printAfterSale().then(plan => {

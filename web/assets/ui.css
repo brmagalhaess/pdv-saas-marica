@@ -435,3 +435,24 @@ td.actions { white-space: nowrap; text-align: right; }
 .conflict-payload { margin: 12px 0 0; font-size: 12px; }
 .conflict-payload summary { color: var(--green-dark); font-weight: 750; cursor: pointer; }
 .conflict-payload pre { max-height: 240px; margin: 8px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; background: #f6f8f5; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+/* Fiscal: product form tabs, advanced block, tax profile presets, CSV import */
+.form-sections { display: grid; gap: 16px; }
+.form-tabs { display: inline-flex; gap: 4px; padding: 4px; border-radius: 11px; background: #eaf0eb; justify-self: start; }
+.form-tab { border: 0; border-radius: 8px; padding: 9px 18px; background: transparent; color: #4f6a5c; font-weight: 800; font-size: 13px; cursor: pointer; }
+.form-tab[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 4px 12px #163a2511; }
+.form-tab:focus-visible { outline: 3px solid #9fd8b6; outline-offset: 1px; }
+.form-panel[hidden] { display: none; }
+.advanced-fields { border: 1px solid var(--line); border-radius: 11px; padding: 0 14px; background: #fbfdfb; }
+.advanced-fields > summary { padding: 13px 0; color: var(--green-dark); font-weight: 800; font-size: 13px; cursor: pointer; }
+.advanced-fields[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.advanced-fields > .form-grid { padding-bottom: 14px; }
+.form-section-title { margin: 8px 0 -4px; font-size: 14px; color: var(--ink); }
+.preset-list { display: grid; gap: 10px; }
+.preset-card { display: grid; gap: 4px; text-align: left; border: 1px solid #cfe3d6; border-radius: 11px; padding: 13px 15px; background: #fff; color: var(--ink); cursor: pointer; }
+.preset-card span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.preset-card small { color: #885b17; font-size: 11px; font-weight: 700; }
+.preset-card:hover, .preset-card:focus-visible { border-color: var(--green); background: #f4fbf6; }
+.preset-card.other-regime { opacity: .8; }
+.import-errors { margin: 6px 0 0; padding-left: 18px; max-height: 220px; overflow: auto; font-size: 12px; line-height: 1.6; color: #943d3d; }
+@media (max-width: 650px) { .form-tabs { justify-self: stretch; } .form-tab { flex: 1; } }

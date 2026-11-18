@@ -512,3 +512,65 @@ export function appAccessCompanyText(row) {
   if (!row) return "—";
   return row.scope === "platform" ? "Equipe CrownTech" : (row.tenant?.name || "—");
 }
+
+// ---------------------------------------------------------------- fiscal (docs/FISCAL.md)
+
+// Product fiscal overrides typed in the form. Keys of `previous` that the form does not show are
+// kept; an emptied field is dropped (the product then follows its tax profile again).
+export function fiscalOverridesPayload(form, fields, previous = {}) {
+  const shown = new Set(fields.map(field => field.key));
+  const result = {};
+  for (const [key, value] of Object.entries(previous || {})) if (!shown.has(key)) result[key] = value;
+  for (const field of fields) {
+    const input = form.elements.namedItem(field.key);
+    if (!input) { if (previous && field.key in previous) result[field.key] = previous[field.key]; continue; }
+    if (field.type === "checkbox") { result[field.key] = !!input.checked; continue; }
+    const raw = String(input.value ?? "").trim();
+    if (!raw) continue;
+    if (field.integer) {
+      const number = Number(raw);
+      if (!Number.isInteger(number)) throw new Error(field.label + ": informe um número inteiro.");
+      result[field.key] = number;
+    } else result[field.key] = field.rate ? raw.replace(",", ".") : raw;
+  }
+  return result;
+}
+
+export function sameFiscalFields(left = {}, right = {}) {
+  const canonical = value => JSON.stringify(Object.keys(value || {}).sort().map(key => [key, String(value[key])]));
+  return canonical(left) === canonical(right);
+}
+
+// Badge of the product list: "Pronto para nota" or the first thing that is missing ("Falta NCM").
+export function fiscalBadge(fiscal) {
+  if (!fiscal) return { label: "Sem dados fiscais", tone: "neutral", detail: "" };
+  const warnings = (fiscal.warnings || []).join(" · ");
+  if (fiscal.ready) return { label: "Pronto para nota", tone: "", detail: warnings };
+  const missing = fiscal.missing || [];
+  const first = String(missing[0] || "Dados fiscais incompletos").split(":")[0];
+  return { label: missing.length > 1 ? `${first} (+${missing.length - 1})` : first, tone: "warn",
+           detail: missing.join(" · ") };
+}
+
+// "CSOSN 102 · CFOP 5102" for profile lists.
+export function fiscalCodeSummary(fields = {}) {
+  const parts = [];
+  if (fields.icms_csosn) parts.push("CSOSN " + fields.icms_csosn);
+  if (fields.icms_cst) parts.push("CST " + fields.icms_cst);
+  if (fields.cfop) parts.push("CFOP " + fields.cfop);
+  if (fields.icms_rate) parts.push("ICMS " + String(fields.icms_rate).replace(".", ",") + "%");
+  return parts.join(" · ") || "—";
+}
+
+export function contributionSummary(fields = {}) {
+  const part = (label, cst, rate) => cst ? `${label} ${cst}${rate ? " · " + String(rate).replace(".", ",") + "%" : ""}` : "";
+  return [part("PIS", fields.pis_cst, fields.pis_rate), part("COFINS", fields.cofins_cst, fields.cofins_rate)].filter(Boolean).join(" / ") || "—";
+}
+
+export const CRT_OPTIONS = [
+  [1, "1 · Simples Nacional"],
+  [2, "2 · Simples Nacional — excesso de sublimite"],
+  [3, "3 · Regime Normal (Lucro Presumido ou Real)"],
+  [4, "4 · MEI"]
+];
+export const isSimplesCrt = crt => Number(crt) === 1 || Number(crt) === 4;

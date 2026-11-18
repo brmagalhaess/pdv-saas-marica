@@ -326,7 +326,7 @@ test("edição de produto não reenvia o código de barras inalterado (legado n�
 test("formulário de produto marca o código de barras como enviado só quando muda", async () => {
   const app = await readFile(new URL("../assets/app.js", import.meta.url), "utf8");
   assert.match(app, /\{ key: "barcode",[^}]*sendIfChanged: true/);
-  assert.match(app, /formPayload\(form, fields, \{ editing, record \}\)/);
+  assert.match(app, /formPayload\(form, plainFields, \{ editing, record \}\)/);
 });
 
 test("terminais: estado mostra o computador antigo enviando só dentro do prazo", () => {
@@ -527,4 +527,36 @@ test("app access texts for the platform panel", () => {
   assert.equal(appAccessShopsText({ scope: "platform", all_shops: true, shops: [] }), "Todas");
   assert.equal(appAccessCompanyText({ scope: "platform", tenant: null }), "Equipe CrownTech");
   assert.equal(appAccessCompanyText({ scope: "tenant", tenant: { name: "Mercado" } }), "Mercado");
+});
+
+test("fiscal overrides keep hidden keys, drop emptied fields and type origin and checkboxes", () => {
+  const { fiscalOverridesPayload, sameFiscalFields } = core;
+  const fields = [{ key: "cest", label: "CEST" }, { key: "origin", label: "Origem", integer: true },
+    { key: "icms_rate", label: "ICMS", rate: true }, { key: "cfop", label: "CFOP" },
+    { key: "pis_cofins_exclude_icms", label: "Excluir", type: "checkbox" }];
+  const form = fakeForm({ cest: " 0300700 ", origin: "2", icms_rate: "18,5", cfop: "", pis_cofins_exclude_icms: true });
+  const previous = { cfop: "5405", st_bc_mode: 4 };
+  const result = fiscalOverridesPayload(form, fields, previous);
+  assert.deepEqual(result, { st_bc_mode: 4, cest: "0300700", origin: 2, icms_rate: "18.5", pis_cofins_exclude_icms: true });
+  assert.throws(() => fiscalOverridesPayload(fakeForm({ origin: "1.5" }), [fields[1]]), /número inteiro/);
+  assert.ok(sameFiscalFields({ a: 1, b: "x" }, { b: "x", a: "1" }));
+  assert.ok(!sameFiscalFields({ a: 1 }, { a: 1, b: 2 }));
+  assert.ok(sameFiscalFields({}, undefined));
+});
+
+test("fiscal badge, code summaries and CRT helpers", () => {
+  const { fiscalBadge, fiscalCodeSummary, contributionSummary, isSimplesCrt, CRT_OPTIONS } = core;
+  assert.deepEqual(fiscalBadge({ ready: true, missing: [], warnings: [] }), { label: "Pronto para nota", tone: "", detail: "" });
+  const pending = fiscalBadge({ ready: false, missing: ["Falta CEST: este produto está na ST", "Falta CFOP: use 5405"], warnings: [] });
+  assert.equal(pending.label, "Falta CEST (+1)");
+  assert.equal(pending.tone, "warn");
+  assert.match(pending.detail, /Falta CFOP/);
+  assert.equal(fiscalBadge(null).label, "Sem dados fiscais");
+  assert.equal(fiscalCodeSummary({ icms_csosn: "102", cfop: "5102" }), "CSOSN 102 · CFOP 5102");
+  assert.equal(fiscalCodeSummary({ icms_cst: "00", cfop: "5102", icms_rate: "17.5" }), "CST 00 · CFOP 5102 · ICMS 17,5%");
+  assert.equal(fiscalCodeSummary({}), "—");
+  assert.equal(contributionSummary({ pis_cst: "01", pis_rate: "0.65", cofins_cst: "01", cofins_rate: "3" }), "PIS 01 · 0,65% / COFINS 01 · 3%");
+  assert.equal(contributionSummary({ pis_cst: "49", cofins_cst: "49" }), "PIS 49 / COFINS 49");
+  assert.ok(isSimplesCrt(1) && isSimplesCrt("4") && !isSimplesCrt(3));
+  assert.deepEqual(CRT_OPTIONS.map(([value]) => value), [1, 2, 3, 4]);
 });

@@ -175,3 +175,9 @@ LOGGING = {
 PDV_PUBLIC_URL = os.environ.get("PDV_PUBLIC_URL", "https://pdv2.crowntech.com.br").rstrip("/")
 # Contact shown in the privacy policy and support page (to be confirmed by the owner).
 PDV_SUPPORT_EMAIL = os.environ.get("PDV_SUPPORT_EMAIL", "suporte@crowntech.com.br")
+# Responsável técnico of the NFC-e/NF-e (grupo infRespTec): the software house.
+# Platform-wide default; the CNPJ must be set by the platform before production emission.
+PDV_FISCAL_TECH_CNPJ = os.environ.get("PDV_FISCAL_TECH_CNPJ", "")
+PDV_FISCAL_TECH_CONTACT = os.environ.get("PDV_FISCAL_TECH_CONTACT", "CrownTech")
+PDV_FISCAL_TECH_EMAIL = os.environ.get("PDV_FISCAL_TECH_EMAIL", PDV_SUPPORT_EMAIL)
+PDV_FISCAL_TECH_PHONE = os.environ.get("PDV_FISCAL_TECH_PHONE", "")

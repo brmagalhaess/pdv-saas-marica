@@ -14,6 +14,10 @@ from shared.licensing import payload_digest
 from integrations.billing import verify_webhook_token
 from .models import IntegrationAccount,ProviderJob,FiscalPayload,BillingBinding
 from .services import enqueue,JobConflict,capacity_fits
+from core.fiscal import company_data,company_status,tech_responsible
+from shared.fiscal.data import CRT_REGIME,REGIME_CRT,SPECIAL_TAX_REGIMES,UF_CODES
+from shared.fiscal.validators import (cnpj_value,digits as digits_only,ie_value,valid_cnpj,valid_cpf,
+                                      valid_ibge_city,valid_ie)
 
 OWNER=('owner','admin')
 
@@ -25,36 +29,76 @@ def company(request):
         data=payload(request);fields(data,('name','trade_name','document','state_registration',
             'municipal_registration','address_line','address_number','address_complement',
             'address_neighborhood','address_city','address_state','address_zip','tax_regime',
-            'fiscal_environment','nfce_series','nfce_next_number','max_discount_bps','business_hours'))
+            'fiscal_environment','nfce_series','nfce_next_number','max_discount_bps','business_hours',
+            'crt','cnae','special_tax_regime','city_ibge_code','simples_credit_rate','approx_tax_fallback_rate'))
         if not data:raise APIError('Informe os dados a alterar')
         if 'name' in data:tenant.name=text(data['name'],'Razão social',160)
         if 'trade_name' in data:tenant.trade_name=text(data['trade_name'],'Nome fantasia',160,optional=True)
         if 'document' in data:
             value=text(data['document'],'Documento',30,optional=True)
-            digits=''.join(c for c in value if c.isascii() and c.isdigit())
-            if value and (len(digits) not in (11,14) or any(c not in '0123456789./- ' for c in value)):
-                raise APIError('Informe CPF com 11 dígitos ou CNPJ com 14 dígitos')
-            tenant.document=digits
-        for field,label,limit in (('state_registration','Inscrição estadual',30),
-                                   ('municipal_registration','Inscrição municipal',30),
+            code=cnpj_value(value)
+            if value and (any(c not in '0123456789./- ' for c in value.upper() if not c.isalpha())
+                          or not (valid_cnpj(code) or (len(code)==11 and valid_cpf(code)))):
+                raise APIError('CNPJ ou CPF inválido: confira os dígitos verificadores')
+            tenant.document=code
+        for field,label,limit in (('municipal_registration','Inscrição municipal',30),
                                    ('address_line','Logradouro',180),('address_number','Número',20),
                                    ('address_complement','Complemento',80),('address_neighborhood','Bairro',100),
                                    ('address_city','Cidade',100)):
             if field in data:setattr(tenant,field,text(data[field],label,limit,optional=True))
         if 'address_state' in data:
             value=text(data['address_state'],'UF',2,optional=True).upper()
-            if value and (len(value)!=2 or not value.isalpha()):raise APIError('Informe a UF com duas letras')
+            if value and value not in UF_CODES:raise APIError('Informe uma UF válida com duas letras')
             tenant.address_state=value
+        if 'state_registration' in data:
+            value=text(data['state_registration'],'Inscrição estadual',30,optional=True)
+            code=ie_value(value)
+            uf=tenant.address_state
+            # An IE saved before this check is only validated when it changes (readiness still reports it).
+            unchanged=code==ie_value(tenant.state_registration)
+            if not unchanged and code and code!='ISENTO' and uf in UF_CODES and not valid_ie(code,uf):
+                raise APIError(f'Inscrição estadual inválida para {uf}: confira os dígitos')
+            if code and code!='ISENTO' and not uf and not code.lstrip('P').isdigit():
+                raise APIError('Inscrição estadual inválida')
+            tenant.state_registration=code
+        if 'city_ibge_code' in data:
+            value=digits_only(text(data['city_ibge_code'],'Código IBGE do município',10,optional=True))
+            if value and not valid_ibge_city(value,tenant.address_state or None):
+                raise APIError('Código IBGE do município inválido (7 dígitos, da UF da empresa)')
+            tenant.city_ibge_code=value
+        if 'cnae' in data:
+            value=digits_only(text(data['cnae'],'CNAE',12,optional=True))
+            if value and len(value)!=7:raise APIError('CNAE deve ter 7 dígitos')
+            tenant.cnae=value
+        if 'special_tax_regime' in data:
+            value=text(data['special_tax_regime'],'Regime especial de tributação',1,optional=True)
+            if value and value not in SPECIAL_TAX_REGIMES:raise APIError('Regime especial de tributação inválido')
+            tenant.special_tax_regime=value
+        for field,label in (('simples_credit_rate','Alíquota de crédito do Simples (pCredSN)'),
+                            ('approx_tax_fallback_rate','Percentual aproximado de tributos')):
+            if field in data:
+                value=data[field]
+                if value is None or value=='':setattr(tenant,field,None);continue
+                try:number=Decimal(str(value).replace(',','.'))
+                except InvalidOperation:raise APIError(f'{label} inválida')
+                if not number.is_finite() or not 0<=number<=100 or number!=number.quantize(Decimal('0.0001')):
+                    raise APIError(f'{label} deve ficar entre 0 e 100, com até 4 casas')
+                setattr(tenant,field,number)
         if 'address_zip' in data:
             value=text(data['address_zip'],'CEP',20,optional=True)
             digits=''.join(c for c in value if c.isascii() and c.isdigit())
             if value and len(digits)!=8:raise APIError('Informe o CEP com 8 dígitos')
             tenant.address_zip=digits
-        if 'tax_regime' in data:
+        if 'crt' in data:
+            if type(data['crt']) is not int or data['crt'] not in CRT_REGIME:
+                raise APIError('Regime tributário (CRT) inválido: use 1, 2, 3 ou 4')
+            tenant.crt=data['crt'];tenant.tax_regime=CRT_REGIME[tenant.crt]
+        elif 'tax_regime' in data:
+            # Older clients still send the text regime; the CRT follows it.
             value=text(data['tax_regime'],'Regime tributário',30)
-            if value not in ('simples_nacional','simples_excesso','regime_normal'):
+            if value not in REGIME_CRT:
                 raise APIError('Regime tributário inválido')
-            tenant.tax_regime=value
+            tenant.tax_regime=value;tenant.crt=REGIME_CRT[value]
         if 'fiscal_environment' in data:
             value=text(data['fiscal_environment'],'Ambiente fiscal',20)
             if value not in ('non_fiscal','homologation','production'):
@@ -90,8 +134,10 @@ def company(request):
                         raise APIError(f'Informe horários válidos para {day}')
                 normalized[day] = {'enabled': enabled, 'open': opening if enabled else '', 'close': closing if enabled else ''}
             tenant.business_hours = normalized
+        changed=set(data)
+        if changed&{'crt','tax_regime'}:changed|={'crt','tax_regime'}
         with transaction.atomic():
-            tenant.save(update_fields=list(data));audit(tenant,request.user,'company.updated',tenant,{'fields':list(data)})
+            tenant.save(update_fields=sorted(changed));audit(tenant,request.user,'company.updated',tenant,{'fields':sorted(changed)})
     return JsonResponse({'id':str(tenant.pk),'name':tenant.name,'trade_name':tenant.trade_name,
                          'document':tenant.document,'state_registration':tenant.state_registration,
                          'municipal_registration':tenant.municipal_registration,
@@ -102,7 +148,9 @@ def company(request):
                          'tax_regime':tenant.tax_regime,'fiscal_environment':tenant.fiscal_environment,
                          'nfce_series':tenant.nfce_series,'nfce_next_number':tenant.nfce_next_number,
                          'max_discount_bps': tenant.max_discount_bps,
-                         'business_hours': tenant.business_hours or {}})
+                         'business_hours': tenant.business_hours or {},
+                         **company_data(tenant),'fiscal_status':company_status(tenant),
+                         'tech_responsible':tech_responsible()})
 
 @endpoint
 def integration(request,provider):

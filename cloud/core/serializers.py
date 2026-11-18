@@ -32,7 +32,9 @@ def product(row):
             "stock_minimum_milli": row.stock_minimum_milli,
             "stock_controlled": row.stock_controlled,
             "image_url": row.image_url,
-            "tax_fields": row.tax_fields, "active": row.active}
+            "tax_fields": row.tax_fields, "active": row.active,
+            "tax_profile_id": str(row.tax_profile_id) if row.tax_profile_id else None,
+            "fiscal_overrides": row.fiscal_overrides or {}}
 
 
 def contact(row):

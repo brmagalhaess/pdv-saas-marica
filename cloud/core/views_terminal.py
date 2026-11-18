@@ -15,6 +15,7 @@ from django.views.decorators.csrf import csrf_exempt
 from shared.licensing import MAX_LEASE_SECONDS, LicenseError, load_private_key, load_public_key, payload_digest, sign_lease
 from shared.releases import load_release_public_key
 from .api_common import APIError, audit, client_ip, digest, endpoint, fields, membership_context, method, money, page, payload, quantity, reset_rate, scoped, subscription_window, take_rate, text, uuid_value
+from .fiscal import FiscalContext, issuer_profile_extras
 from .models import Customer, Membership, Product, Shop, StockMovement, Subscription, SyncConflict, SyncEvent, Tenant, Terminal
 from .models import CashSession, TerminalFormerToken
 from .backup_key import tenant_backup_key
@@ -102,6 +103,8 @@ def _issuer_profile(tenant):
         "tax_regime": tenant.tax_regime,
         "fiscal_environment": tenant.fiscal_environment,
         "nfce_series": tenant.nfce_series,
+        # Fiscal identity for the NFC-e (CRT, CNAE, IBGE...); old terminals ignore these keys.
+        **issuer_profile_extras(tenant),
     }
 
 
@@ -522,8 +525,9 @@ def bootstrap(request):
         raise APIError("Paginação inválida")
     if not 1 <= limit <= 1000 or not 0 <= offset <= 10**7:
         raise APIError("Paginação inválida")
-    rows = list(Product.objects.filter(tenant=terminal.tenant).select_related("category", "group")
+    rows = list(Product.objects.filter(tenant=terminal.tenant).select_related("category", "group", "tax_profile")
                 .order_by("id")[offset:offset + limit + 1])
+    fiscal_context = FiscalContext(terminal.tenant)
     shown = rows[:limit]
     by_product = stock_balances(terminal.tenant, terminal.shop, [p.id for p in shown])
     products = [{"id": str(p.id), "sku": p.sku, "barcode": p.barcode, "ncm": p.ncm, "scale_code": p.scale_code,
@@ -533,7 +537,9 @@ def bootstrap(request):
                  "quantity_milli": by_product.get(p.id, 0),
                  "category": p.category.name if p.category else None,
                  "group_id": str(p.group_id) if p.group_id else None,
-                 "group_name": p.group.name if p.group_id else None, "variant": p.variant}
+                 "group_name": p.group.name if p.group_id else None, "variant": p.variant,
+                 # Resolved tax profile and NFC-e readiness (docs/FISCAL.md); ignored by old terminals.
+                 "fiscal": fiscal_context.terminal_payload(p)}
             for p in shown]
     customers = payment_config = promotion_rules = None
     if offset == 0:  # non-catalog data travels on the first page only
