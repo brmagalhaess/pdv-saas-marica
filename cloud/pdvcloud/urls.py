@@ -10,6 +10,7 @@ from core import views_cash as cash, views_commissions as commissions, views_rep
 from core import views_sales as sales, views_stock as stock, views_terminal as terminal
 from core import views_users as users
 from core import views_owner as owner
+from core import views_fiscal as fiscal
 from core import views_labels as labels
 from core import views_app as app_api, views_app_admin as app_admin
 
@@ -86,6 +87,13 @@ urlpatterns = [
     path("api/v1/transfers/<uuid:pk>/cancel", transfers.transfer_cancel),
     path("api/v1/purchases/nfe/preview", purchases.nfe_preview),
     path("api/v1/purchases/nfe/import", purchases.nfe_import),
+    path("api/v1/tax-profiles", fiscal.tax_profiles),
+    path("api/v1/tax-profiles/presets", fiscal.tax_presets),
+    path("api/v1/tax-profiles/<uuid:pk>", fiscal.tax_profile_detail),
+    path("api/v1/fiscal/reference", fiscal.reference),
+    path("api/v1/fiscal/status", fiscal.status),
+    path("api/v1/fiscal/simulate", fiscal.simulate_view),
+    path("api/v1/products/import", fiscal.products_import),
     path("api/v1/product-groups", product_groups.product_groups),
     path("api/v1/product-groups/<uuid:pk>", product_groups.product_group_detail),
     path("api/v1/payment-methods", payment_methods.payment_methods),

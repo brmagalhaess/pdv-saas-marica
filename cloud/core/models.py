@@ -51,7 +51,19 @@ class Tenant(models.Model):
     address_city = models.CharField(max_length=100, blank=True)
     address_state = models.CharField(max_length=2, blank=True)
     address_zip = models.CharField(max_length=8, blank=True)
+    # Legacy text kept in sync with `crt` for older clients (see shared/fiscal/data.py CRT_REGIME).
     tax_regime = models.CharField(max_length=30, default="simples_nacional")
+    # Código de Regime Tributário of the NF-e: 1 Simples, 2 Simples excesso de sublimite,
+    # 3 Regime Normal, 4 MEI.
+    crt = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(4)])
+    cnae = models.CharField(max_length=7, blank=True)
+    # cRegTrib (ISSQN), optional: "" or "1".."6".
+    special_tax_regime = models.CharField(max_length=1, blank=True)
+    city_ibge_code = models.CharField(max_length=7, blank=True)
+    # pCredSN: ICMS credit rate (%) the Simples company may transfer (CSOSN 101/201).
+    simples_credit_rate = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    # Lei 12.741 approximate tax (%) used when the IBPT table has no row for the NCM.
+    approx_tax_fallback_rate = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
     fiscal_environment = models.CharField(max_length=20, default="non_fiscal")
     nfce_series = models.PositiveIntegerField(default=1)
     nfce_next_number = models.PositiveBigIntegerField(default=1)
@@ -153,6 +165,46 @@ class ProductGroup(models.Model):
         constraints = [models.UniqueConstraint(fields=["tenant", "name"], name="product_group_tenant_name")]
 
 
+class TaxProfile(models.Model):
+    """Grupo de tributação: fiscal rules shared by many products (docs/FISCAL.md)."""
+    id = models.UUIDField(primary_key=True, default=uid, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="tax_profiles")
+    name = models.CharField(max_length=120)
+    description = models.CharField(max_length=500, blank=True)
+    # Slug of the preset it started from (shared/fiscal/presets.py), informative.
+    preset = models.CharField(max_length=40, blank=True)
+    # Clean dict of shared.fiscal.schema.FIELDS.
+    fields = models.JSONField(default=dict, blank=True)
+    is_default = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "name"], name="taxprofile_tenant_name"),
+            models.UniqueConstraint(fields=["tenant"], condition=Q(is_default=True), name="taxprofile_one_default"),
+        ]
+
+
+class IbptRate(models.Model):
+    """Row of the IBPT table (Lei 12.741/2012), per UF. Public data, not tenant-scoped."""
+    uf = models.CharField(max_length=2)
+    ncm = models.CharField(max_length=8)
+    ex = models.CharField(max_length=3, blank=True)
+    federal_national = models.DecimalField(max_digits=7, decimal_places=4)
+    federal_imported = models.DecimalField(max_digits=7, decimal_places=4)
+    state = models.DecimalField(max_digits=7, decimal_places=4)
+    municipal = models.DecimalField(max_digits=7, decimal_places=4)
+    valid_from = models.DateField(null=True, blank=True)
+    valid_until = models.DateField(null=True, blank=True)
+    version = models.CharField(max_length=20, blank=True)
+    source = models.CharField(max_length=60, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["uf", "ncm", "ex"], name="ibpt_uf_ncm_ex")]
+
+
 class Product(models.Model):
     UNITS = [(s, s) for s in ("UN", "KG", "L")]
     id = models.UUIDField(primary_key=True, default=uid, editable=False)
@@ -172,7 +224,13 @@ class Product(models.Model):
     stock_minimum_milli = models.PositiveBigIntegerField(default=0)
     stock_controlled = models.BooleanField(default=True)
     image_url = models.CharField(max_length=500, blank=True)
+    # Legacy free-form fiscal data; read by shared.fiscal.schema.legacy_fields.
     tax_fields = models.JSONField(default=dict, blank=True)
+    # Null = the company's default tax profile.
+    tax_profile = models.ForeignKey("TaxProfile", on_delete=models.PROTECT, null=True, blank=True,
+                                    related_name="products")
+    # Product-specific fiscal fields over the profile (shared.fiscal.schema.FIELDS).
+    fiscal_overrides = models.JSONField(default=dict, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

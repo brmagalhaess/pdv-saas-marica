@@ -197,6 +197,20 @@ def _like(value):
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _catalog_fiscal(value):
+    """Fiscal block of a catalog product -> (JSON text, ready flag). Absent or malformed: unknown."""
+    if not isinstance(value, dict):
+        return "", None
+    ready = value.get("ready")
+    text = _json({"profile_id": value.get("profile_id") if isinstance(value.get("profile_id"), str) else None,
+                  "fields": value.get("fields") if isinstance(value.get("fields"), dict) else {},
+                  "missing": [item for item in value.get("missing", []) if isinstance(item, str)][:5]
+                  if isinstance(value.get("missing"), list) else []})
+    if len(text) > 8000:
+        return "", None
+    return text, (int(ready) if type(ready) is bool else None)
+
+
 def _line_gross(price_cents, quantity_milli):
     return int((Decimal(price_cents) * Decimal(quantity_milli) / Decimal(1000)).quantize(
         Decimal("1"), rounding=ROUND_HALF_UP))
@@ -326,6 +340,11 @@ class Store:
                 conn.execute("ALTER TABLE products ADD COLUMN group_name TEXT")
             if "variant" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN variant TEXT")
+            if "fiscal" not in columns:
+                # Resolved tax profile from the cloud (JSON) and NFC-e readiness: 1, 0 or NULL (unknown,
+                # catalog from a cloud without fiscal data). Never blocks a sale.
+                conn.execute("ALTER TABLE products ADD COLUMN fiscal TEXT NOT NULL DEFAULT ''")
+                conn.execute("ALTER TABLE products ADD COLUMN fiscal_ready INTEGER")
             if "search_text" not in columns:
                 conn.execute("ALTER TABLE products ADD COLUMN search_text TEXT NOT NULL DEFAULT ''")
                 for row in conn.execute("SELECT id,name,sku FROM products").fetchall():
@@ -1310,6 +1329,7 @@ class Store:
         stock_controlled = product.get("stock_controlled", True)
         if type(stock_controlled) is not bool:
             raise TerminalError("Configuração de estoque inválida")
+        fiscal, fiscal_ready = _catalog_fiscal(product.get("fiscal"))
         return {"id": product_id, "sku": product.get("sku") if isinstance(product.get("sku"), str) else None,
                 "barcode": _optional_text(product.get("barcode"), 80),
                 "ncm": _optional_text(product.get("ncm"), 20),
@@ -1322,15 +1342,17 @@ class Store:
                 "active": int(bool(product.get("active", True))), "updated_at": timestamp,
                 "group_id": _optional_text(product.get("group_id"), 160),
                 "group_name": _optional_text(product.get("group_name"), 140),
-                "variant": _optional_text(product.get("variant"), 120)}
+                "variant": _optional_text(product.get("variant"), 120),
+                "fiscal": fiscal, "fiscal_ready": fiscal_ready}
 
     @staticmethod
     def _upsert_product(conn, row):
         conn.execute("""INSERT INTO products
             (id,sku,barcode,ncm,scale_code,name,unit,category,price_cents,cost_cents,image_url,stock_controlled,stock_milli,active,updated_at,
-             group_id,group_name,variant,search_text)
+             group_id,group_name,variant,search_text,fiscal,fiscal_ready)
             VALUES (:id,:sku,:barcode,:ncm,:scale_code,:name,:unit,:category,:price_cents,:cost_cents,:image_url,
-                    :stock_controlled,:stock_milli,:active,:updated_at,:group_id,:group_name,:variant,:search_text)
+                    :stock_controlled,:stock_milli,:active,:updated_at,:group_id,:group_name,:variant,:search_text,
+                    :fiscal,:fiscal_ready)
             ON CONFLICT(id) DO UPDATE SET sku=excluded.sku,barcode=excluded.barcode,
             ncm=excluded.ncm,
             scale_code=excluded.scale_code,
@@ -1338,8 +1360,9 @@ class Store:
             price_cents=excluded.price_cents,cost_cents=excluded.cost_cents,
             image_url=excluded.image_url,stock_controlled=excluded.stock_controlled,stock_milli=excluded.stock_milli,
             active=excluded.active,updated_at=excluded.updated_at,group_id=excluded.group_id,
-            group_name=excluded.group_name,variant=excluded.variant,search_text=excluded.search_text""",
-                     {**row, "search_text": _search_text(row["name"], row["sku"])})
+            group_name=excluded.group_name,variant=excluded.variant,search_text=excluded.search_text,
+            fiscal=excluded.fiscal,fiscal_ready=excluded.fiscal_ready""",
+                     {"fiscal": "", "fiscal_ready": None, **row, "search_text": _search_text(row["name"], row["sku"])})
 
     def _apply_operators(self, conn, operators, skipped):
         operator_ids = []
@@ -2001,6 +2024,7 @@ class Store:
                               "stock_controlled": bool(row["stock_controlled"]),
                               "quantity_milli": qty, "unit_price_cents": row["price_cents"],
                               "gross_cents": gross, **self._line_promotion(conn, row, qty, priced_at)})
+            fiscal_warnings = self._fiscal_warnings(conn, [line["product_id"] for line in lines])
             gross_total = sum(line["gross_cents"] for line in lines)
             promo_total = sum(line["promo_discount_cents"] for line in lines)
             base_total = gross_total - promo_total  # manual discount and its limits apply to the promotional price
@@ -2096,7 +2120,26 @@ class Store:
             self._audit(conn, operator["id"], "sale.completed", sale_id,
                         f"manager_override={override_id}" if override_id else None)
             self._queue_receipt(conn, snapshot)
-            return self._receipt_data(conn, snapshot)
+            result = self._receipt_data(conn, snapshot)
+            if fiscal_warnings:
+                # Advice for the cashier screen only: never part of the sale event or the receipt.
+                result["fiscal_warnings"] = fiscal_warnings
+            return result
+
+    @staticmethod
+    def _fiscal_warnings(conn, product_ids):
+        """Products of this sale that the cloud marked as not ready for a NFC-e (fiscal_ready=0)."""
+        warnings = []
+        for product_id in product_ids:
+            row = conn.execute("SELECT name,fiscal FROM products WHERE id=? AND fiscal_ready=0", (product_id,)).fetchone()
+            if row:
+                try:
+                    missing = json.loads(row["fiscal"] or "{}").get("missing") or []
+                except (ValueError, AttributeError):
+                    missing = []
+                warnings.append({"product_id": product_id, "name": row["name"],
+                                 "missing": [str(item)[:200] for item in missing[:3] if isinstance(item, str)]})
+        return warnings
 
     def sales(self, limit=50):
         with self.connection() as conn:

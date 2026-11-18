@@ -8,7 +8,9 @@ from django.db.models import Q
 from django.http import JsonResponse
 
 from .api_common import APIError, audit, bps, endpoint, fields, membership_context, method, money, page, payload, scoped, text, uuid_value
-from .models import Category, Customer, Product, SaleItem, Shop, StockMovement, StockReceiptItem, Supplier, Terminal
+from .fiscal import FiscalContext, ensure_default_profile
+from .models import (Category, Customer, Product, SaleItem, Shop, StockMovement, StockReceiptItem, Supplier, TaxProfile,
+                     Terminal)
 from .nfe import valid_gtin
 from .serializers import category as category_data, contact as contact_data, product as product_data, shop as shop_data
 
@@ -28,10 +30,17 @@ RESOURCE = {
 }
 
 
-def response_for(row, serializer, member):
+def response_for(row, serializer, member, fiscal_context=None):
     result = serializer(row)
-    if isinstance(row, Product) and member.role == "cashier":
-        result.pop("cost_cents", None)
+    if isinstance(row, Product):
+        if member.role == "cashier":
+            result.pop("cost_cents", None)
+        context = fiscal_context or FiscalContext(member.tenant)
+        state = context.status(row)
+        # Readiness for a NFC-e: "ready", what is "missing" (errors) and advice ("warnings").
+        result["fiscal"] = {"ready": state["ready"], "missing": state["missing"], "warnings": state["warnings"],
+                            "issues": state["issues"], "profile_id": state["profile_id"],
+                            "profile_name": state["profile_name"]}
     return result
 
 
@@ -145,7 +154,8 @@ def form_values(kind, data, tenant, creating):
         allowed, required = {"name", "active", "commission_bps"}, {"name"}
     elif kind == "products":
         allowed = {"name", "category_id", "variant", "unit", "scale_code", "ncm", "barcode", "cost_cents",
-                   "price_cents", "stock_minimum_milli", "stock_controlled", "image_url", "tax_fields", "active"}
+                   "price_cents", "stock_minimum_milli", "stock_controlled", "image_url", "tax_fields", "active",
+                   "tax_profile_id", "fiscal_overrides"}
         required = {"name", "price_cents"}
     else:
         allowed, required = {"name", "document", "email", "phone", "active"}, {"name"}
@@ -182,6 +192,19 @@ def form_values(kind, data, tenant, creating):
         elif key == "barcode":
             # Validated by barcode_value, which needs to know the row being edited.
             result[key] = value
+        elif key == "tax_profile_id":
+            if value is None or value == "":
+                result["tax_profile"] = None
+            else:
+                profile = scoped(TaxProfile, tenant, value)
+                if not profile.active:
+                    raise APIError("Perfil tributário inativo", 409)
+                result["tax_profile"] = profile
+        elif key == "fiscal_overrides":
+            from .views_fiscal import clean_overrides
+            if not isinstance(value, dict) or len(str(value)) > 8000:
+                raise APIError("Dados fiscais do produto inválidos")
+            result[key] = clean_overrides(value)
         elif key == "tax_fields":
             if not isinstance(value, dict) or len(str(value)) > 16000:
                 raise APIError("Dados tributários inválidos")
@@ -240,14 +263,19 @@ def collection(request, kind):
             raise APIError("Busca muito longa")
         if q:
             if kind == "products":
-                rows = rows.filter(Q(name__icontains=q) | Q(sku__icontains=q) | Q(barcode__icontains=q))
+                rows = rows.filter(Q(name__icontains=q) | Q(sku__icontains=q) | Q(barcode__icontains=q)
+                                   | Q(ncm__startswith=q))
             elif kind in ("customers", "suppliers"):
                 rows = rows.filter(Q(name__icontains=q) | Q(document__icontains=q) | Q(phone__icontains=q))
             else:
                 rows = rows.filter(name__icontains=q)
         if member.role in ("cashier", "viewer") or request.GET.get("include_inactive") != "1":
             rows = rows.filter(active=True)
-        return page(request, rows.order_by("name", "id"), lambda row: response_for(row, serializer, member))
+        context = None
+        if kind == "products":
+            rows = rows.select_related("tax_profile")
+            context = FiscalContext(tenant)
+        return page(request, rows.order_by("name", "id"), lambda row: response_for(row, serializer, member, context))
     data = payload(request)
     if kind == "customers":
         customer_guard(member, data)
@@ -272,6 +300,8 @@ def collection(request, kind):
                 codes = generated_product_codes(tenant)
                 values["sku"] = codes["sku"]
                 values["barcode"] = values["barcode"] or codes["barcode"]
+                if "tax_profile" not in values:
+                    values["tax_profile"] = ensure_default_profile(tenant)
             row = model.objects.create(tenant=tenant, **values)
             audit(tenant, member.user, f"{kind}.created", row)
     except IntegrityError:
