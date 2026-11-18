@@ -20,17 +20,21 @@
     {key: 'F9', action: 'reprint', label: 'Reimprimir'},
     {key: 'F10', action: 'pay', label: 'Pagar'},
     {key: 'F11', action: 'focus', label: 'Foco', hint: 'Modo foco (tela cheia)'},
-    {key: 'F12', action: 'closeCash', label: 'Fechar caixa'},
+    {key: 'F12', action: 'closeCash', label: 'Caixa', hint: 'Menu do caixa: pausar, fechar turno, relatórios'},
     {key: 'Escape', cap: 'Esc', action: 'back', label: 'Voltar'},
+    // Dedicated key of PC keyboards; F12 also has it. Not on the key ruler (ruler: false).
+    {key: 'Pause', cap: 'Pause', action: 'pauseCash', label: 'Pausar caixa', ruler: false},
   ];
+  // key: digit while paying; alt: Alt+letter (mnemonic), which also works from the amount field.
   const PAY_KEYS = [
-    {key: '1', method: 'cash', label: 'Dinheiro'},
-    {key: '2', method: 'pix', label: 'Pix'},
-    {key: '3', method: 'card_debit', label: 'Débito'},
-    {key: '4', method: 'card_credit', label: 'Crédito'},
-    {key: '5', method: 'credit_account', label: 'A prazo (fiado)', short: 'A prazo'},
-    {key: '6', method: 'store_credit', label: 'Crédito na loja', short: 'Crédito loja'},
+    {key: '1', alt: 'D', method: 'cash', label: 'Dinheiro', icon: 'cash'},
+    {key: '2', alt: 'P', method: 'pix', label: 'Pix', icon: 'pix'},
+    {key: '3', alt: 'B', method: 'card_debit', label: 'Débito', icon: 'card'},
+    {key: '4', alt: 'C', method: 'card_credit', label: 'Crédito', icon: 'card'},
+    {key: '5', alt: 'F', method: 'credit_account', label: 'A prazo (fiado)', short: 'A prazo', icon: 'book'},
+    {key: '6', alt: 'L', method: 'store_credit', label: 'Crédito na loja', short: 'Crédito loja', icon: 'gift'},
   ];
+  const SPLIT_OPTION = {key: '0', alt: '0', method: 'split', label: 'Dividir', icon: 'split', hint: 'Dividir o pagamento em mais de uma forma'};
   // Mirrors DISCOUNT_BPS in terminal/store.py; the backend stays authoritative.
   const DISCOUNT_BPS = {cashier: 1000, manager: 5000, admin: 10000, owner: 10000};
   const STALE_CONTACT_MS = 150000;
@@ -186,12 +190,39 @@
     const rows = Array.isArray(config) ? config : [];
     const active = kind => rows.some(row => row.kind === kind && row.active);
     const options = PAY_KEYS.filter(option => active(option.method)).map(option => ({...option}));
-    let next = 7;
+    let next = 7, own = 1;
     for (const row of rows.filter(row => row.kind === 'other' && row.active)) {
-      options.push({key: next <= 9 ? String(next) : '', method: 'other', id: row.id, label: row.name, custom: true});
+      // 7 to 9 for the first three; Alt+1 to Alt+9 for every one of them, in the same order.
+      options.push({key: next <= 9 ? String(next) : '', alt: own <= 9 ? String(own) : '', method: 'other', id: row.id,
+                    label: row.name, custom: true, icon: 'wallet'});
       next += 1;
+      own += 1;
     }
     return options;
+  }
+  // "tecla 1 ou Alt+D": what the button title, its aria-label and the help panel say.
+  function payShortcutText(option) {
+    return [option.key ? `tecla ${option.key}` : '', option.alt ? `Alt+${option.alt}` : ''].filter(Boolean).join(' ou ');
+  }
+  // Alt+letter or Alt+digit by physical key (event.code), so it works with any layout and on macOS,
+  // where Alt changes the character. Returns the option, 'split' or null.
+  function payAltOption(code, options) {
+    const match = /^(?:Key([A-Z])|Digit([0-9])|Numpad([0-9]))$/.exec(String(code || ''));
+    if (!match) return null;
+    const wanted = match[1] || match[2] || match[3];
+    if (wanted === SPLIT_OPTION.alt) return 'split';
+    return (options || []).find(option => option.alt === wanted) || null;
+  }
+  // Whose cashier is open on this computer, for the screen: closed, mine, paused (mine) or other.
+  function shiftView(session) {
+    const cash = session && session.cash, me = session && session.operator;
+    if (!cash) return {state: 'closed', mine: false};
+    const mine = !cash.operator_id || !!(me && cash.operator_id === me.id);
+    const owner = cash.operator_name || 'outro operador';
+    const paused = cash.paused || null;
+    if (!mine) return {state: 'other', mine, owner, since: cash.opened_at, paused: !!paused, pausedSince: paused ? paused.since : null};
+    if (paused) return {state: 'paused', mine, owner, since: paused.since, reason: paused.reason || '', pausedBy: paused.operator_name || ''};
+    return {state: 'mine', mine, owner, since: cash.opened_at};
   }
 
   function receiptDimensions(sale) {
@@ -402,7 +433,7 @@
   return {restoreStep, restoreProgress, restoreErrorText, restoreSummary, restoreImportText, restoreImportNotice,
           transferredBlock, mirrorNotice, mirrorCard,
           stationNotice, stationsCard, enrollCodeText, promotionCard, draftSaleRequest, SERVER_DOWN_CODES, STATION_GONE_CODES,
-          SHORTCUTS, PAY_KEYS, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
+          SHORTCUTS, PAY_KEYS, SPLIT_OPTION, payShortcutText, payAltOption, shiftView, DISCOUNT_BPS, STALE_CONTACT_MS, esc, money, moneyPlain, qtyText, documentText,
           parseMoney, parsePercent, parseQty, parseScanInput, ean13Valid, scaleLabel, scaleLabelQuantity,
           scaleReading, createWeightGate, scaleTarget, discountCents, discountNeedsPin, syncIndicator,
           statusTone, keepSelection, paymentOptions, receiptDimensions, receiptBlocksMarkup};

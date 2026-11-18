@@ -820,6 +820,40 @@ def create_app(config=None):
         data = body()
         return jsonify(store.close_cash(operator["id"], data.get("counted_cents"), data.get("manager_pin")))
 
+    # ---------- operator shift: pause, reports of the day, closing of the day ----------
+
+    @app.post("/api/cash/pause")
+    @authenticated(*SELL_ROLES)
+    def cash_pause(operator):
+        return jsonify({"cash": store.pause_cash(operator, body().get("reason") or "")})
+
+    @app.post("/api/cash/resume")
+    @authenticated()
+    def cash_resume(operator):
+        return jsonify({"cash": store.resume_cash(operator, body().get("pin"))})
+
+    @app.get("/api/cash/shifts")
+    @authenticated(*SELL_ROLES)
+    def cash_shifts(operator):
+        result = store.shifts_of_day(request.args.get("day") or None)
+        if operator["role"] not in MANAGER_ROLES:
+            # A cashier reprints only their own reports.
+            result["shifts"] = [row for row in result["shifts"] if row["operator_id"] == operator["id"]]
+            result["older_open"] = [row for row in result["older_open"] if row["operator_id"] == operator["id"]]
+        return jsonify(result)
+
+    @app.post("/api/cash/shifts/<session_id>/print")
+    @authenticated(*SELL_ROLES)
+    def cash_shift_print(operator, session_id):
+        return jsonify(store.print_shift_report(session_id, operator["id"],
+                                                own_only=operator["role"] not in MANAGER_ROLES))
+
+    @app.post("/api/cash/day/close")
+    @authenticated(*SELL_ROLES)
+    def cash_day_close(operator):
+        data = body()
+        return jsonify(store.close_day(operator["id"], data.get("manager_pin"), data.get("day") or None))
+
     @app.post("/api/sales")
     @authenticated(*SELL_ROLES)
     def sell(operator):

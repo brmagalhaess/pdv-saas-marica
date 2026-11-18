@@ -31,6 +31,8 @@
     <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
     <symbol id="i-split" viewBox="0 0 24 24"><path d="M4 12h6l4-5h6M10 12l4 5h6"/></symbol>
     <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2V3Z"/><path d="M8 7h8M8 11h8M8 15h5"/></symbol>
+    <symbol id="i-gift" viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="11" rx="1.5"/><path d="M3 9h18M12 9v11M12 9c-1.5-3.5-5.5-4-5.5-1.5S10 9 12 9Zm0 0c1.5-3.5 5.5-4 5.5-1.5S14 9 12 9Z"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3"/><rect x="4" y="8" width="16" height="11" rx="2"/><path d="M15 13.5h5"/><circle cx="16" cy="13.5" r=".6"/></symbol>
   </svg>
 
   <div id="toast" role="status" aria-live="polite"></div>
@@ -181,6 +183,18 @@
     </div>
   </div>
 
+  <div id="pauseView" class="server-down pause-view hidden" role="alertdialog" aria-modal="true" aria-labelledby="pauseTitle" aria-describedby="pauseText">
+    <form id="pauseForm" class="server-down-card">
+      <svg class="ico server-down-icon" aria-hidden="true"><use href="#i-pause"/></svg>
+      <h1 id="pauseTitle">Caixa pausado</h1>
+      <p id="pauseText">As vendas estão bloqueadas.</p>
+      <label class="field"><span>PIN do operador do turno ou de um gerente</span><input id="pausePin" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="Digite o PIN"></label>
+      <p id="pauseError" class="inline-error" role="alert"></p>
+      <button class="btn primary big" type="submit">Retomar o caixa <kbd>Enter</kbd></button>
+      <button id="pauseLockBtn" class="btn ghost" type="button">Trocar operador</button>
+    </form>
+  </div>
+
   <div id="appView" class="app hidden">
     <header id="statusBar" class="statusbar" data-tone="ok">
       <div class="lockup" title="PDV2 por CrownTech"><svg class="lockup-mark"><use href="#i-mark"/></svg><span class="lockup-name">PDV2</span><span class="lockup-by">por CrownTech</span></div>
@@ -265,6 +279,8 @@
                   <label class="field"><span>Pix</span><input id="paySplitPix" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
                   <label class="field"><span>Débito</span><input id="paySplitDebit" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
                   <label class="field"><span>Crédito</span><input id="paySplitCredit" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+                  <label class="field hidden"><span>A prazo (fiado)</span><input id="paySplitAccount" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+                  <label class="field hidden"><span>Crédito na loja</span><input id="paySplitStore" class="money-input" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
                 </div>
               </div>
               </div>

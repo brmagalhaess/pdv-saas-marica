@@ -37,6 +37,11 @@ const state = {
           barcodeMode: prefs.get('scale.barcodeMode', 'weight'), baudRate: prefs.get('scale.baudRate', '9600')},
 };
 const role = () => state.session?.operator?.role;
+// Fields of "Dividir": a prazo and crédito na loja only show up with a registered customer.
+const SPLIT_FIELDS = [['paySplitCash', 'cash'], ['paySplitPix', 'pix'], ['paySplitDebit', 'card_debit'], ['paySplitCredit', 'card_credit'],
+  ['paySplitAccount', 'credit_account'], ['paySplitStore', 'store_credit']];
+const PAY_INPUTS = ['payCash', ...SPLIT_FIELDS.map(([id]) => id)];
+const shift = () => C.shiftView(state.session);
 
 /* ---------- feedback ---------- */
 let toastTimer;
@@ -309,8 +314,10 @@ function renderStatus() {
   // Warn: about to expire, or expired while the open cashier keeps selling.
   const leaseState = !license.can_sell ? 'danger' : (license.warning || license.state !== 'active') ? 'warn' : 'ok';
   setChip('leaseChip', leaseState, leaseText, license.reason || '', leaseState === 'ok' ? 'Licença' : '');
-  setChip('cashChip', !operator ? 'muted' : session.cash ? 'ok' : 'danger', session.cash ? 'Caixa aberto' : 'Caixa fechado',
-    session.cash ? `Aberto às ${timeText(session.cash.opened_at)} com ${money(session.cash.opening_cents)}` : 'Abra o caixa (F12) para vender.', session.cash ? 'Caixa' : '');
+  const view = C.shiftView(session);
+  setChip('cashChip', !operator ? 'muted' : view.state === 'mine' ? 'ok' : view.state === 'closed' ? 'danger' : 'warn',
+    view.state === 'closed' ? 'Caixa fechado' : view.state === 'paused' ? 'Caixa pausado' : view.state === 'other' ? `Turno de ${view.owner}` : 'Caixa aberto',
+    session.cash ? `Turno de ${view.owner}, aberto às ${timeText(session.cash.opened_at)} com ${money(session.cash.opening_cents)}` : 'Inicie o caixa (F12) para vender.', view.state === 'mine' ? 'Caixa' : '');
   const hours = session.hours || {};
   $('hoursChip').classList.toggle('hidden', !hours.configured || hours.open);
   setChip('hoursChip', 'warn', 'Fora do horário', 'Fora do horário de funcionamento da empresa. Um caixa já aberto continua ativo.');
@@ -468,6 +475,12 @@ async function loadSession() {
   renderSale();
   setTab(allowedTab(state.tab));
   focusHome();
+  // Each operator starts their own shift: right after the PIN, ask for the opening change once.
+  const operatorId = session.operator.id;
+  if (state.shiftAskedFor !== operatorId && canSell(role()) && !session.cash && session.license?.can_open_cash !== false && !modalStack.length) {
+    state.shiftAskedFor = operatorId;
+    openCash().catch(error => toast(error.message, true));
+  }
 }
 async function poll() {
   if (state.session?.operator) {
@@ -750,7 +763,7 @@ function clearLocalSale() {
   state.scale.awaitingId = null;
   state.saleRequest = null;
   state.quote = null;
-  for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit', 'productSearch']) $(id).value = '';
+  for (const id of [...PAY_INPUTS, 'productSearch']) $(id).value = '';
   payError('');
   renderPendingQty();
 }
@@ -830,7 +843,10 @@ function payBlockReason() {
   const session = state.session;
   if (!canSell(role())) return 'Seu perfil não realiza vendas';
   if (!session.license?.can_sell) return session.license?.reason || 'Licença indisponível';
-  if (!session.cash) return 'Abra o caixa antes de vender (F12)';
+  if (!session.cash) return 'Inicie o caixa antes de vender (F12)';
+  const view = shift();
+  if (view.state === 'other') return `O caixa está no turno de ${view.owner}. Encerre esse turno (F12) para iniciar o seu.`;
+  if (view.state === 'paused') return 'Caixa pausado. Retome com o seu PIN.';
   if (!state.cart.length) return 'Nenhum item na venda';
   const waiting = state.cart.find(item => item.quantity_milli <= 0);
   return waiting ? `Informe o peso de ${waiting.name} (F3)` : '';
@@ -840,13 +856,25 @@ function renderPaymentMethods() {
   if (signature !== state.payOptionsSig) {
     state.payOptionsSig = signature;
     state.payOptions = options;
-    $('paymentMethods').innerHTML = options.map((option, index) => `<button type="button" class="pay-method" data-pay="${index}" title="${esc(option.label)}">${option.key ? `<kbd>${option.key}</kbd>` : ''}<span>${esc(option.short || option.label)}</span></button>`).join('')
-      + '<button type="button" class="pay-method" data-pay="split" title="Dividir o pagamento em mais de uma forma"><kbd>0</kbd><span>Dividir</span></button>';
-    const enabled = method => options.some(option => option.method === method);
-    for (const [id, method] of [['paySplitCash', 'cash'], ['paySplitPix', 'pix'], ['paySplitDebit', 'card_debit'], ['paySplitCredit', 'card_credit']]) $(id).closest('.field').classList.toggle('hidden', !enabled(method));
+    $('paymentMethods').innerHTML = options.map((option, index) => payButton(option, index)).join('') + payButton(C.SPLIT_OPTION, 'split');
   }
+  syncSplitFields();
   const {method, other} = state.pay;
   if (method && method !== 'split' && !options.some(option => option.method === method && (method !== 'other' || option.id === other?.id))) state.pay = {active: state.pay.active, method: null, other: null};
+}
+function syncSplitFields() {
+  const options = state.payOptions || [], customer = !!state.customer.id;
+  for (const [id, method] of SPLIT_FIELDS) {
+    const show = options.some(option => option.method === method) && (customer || !['credit_account', 'store_credit'].includes(method));
+    $(id).closest('.field').classList.toggle('hidden', !show);
+    if (!show) $(id).value = '';
+  }
+}
+// One payment button: icon, name and the keys that pick it ("1" and "Alt+D"), also said to screen readers.
+function payButton(option, index) {
+  const keys = [option.key, option.alt && 'Alt+' + option.alt].filter(Boolean);
+  const said = `${option.label}${keys.length ? ', ' + C.payShortcutText(option) : ''}`;
+  return `<button type="button" class="pay-method" data-pay="${index}" title="${esc(option.hint || said)}" aria-label="${esc(said)}"${keys.length ? ` aria-keyshortcuts="${esc(keys.join(' '))}"` : ''}>${ico(option.icon || 'wallet', 'pm-icon')}<span class="pm-label">${esc(option.short || option.label)}</span>${keys.length ? `<span class="pm-keys" aria-hidden="true">${keys.map(key => `<kbd>${esc(key)}</kbd>`).join('')}</span>` : ''}</button>`;
 }
 function paymentState() {
   const total = cartTotal(), method = state.pay.method;
@@ -856,7 +884,7 @@ function paymentState() {
       return raw ? {paid: parseMoney(raw), change: parseMoney(raw) - total} : {paid: total, change: 0};
     }
     if (method === 'split') {
-      const parts = [['paySplitCash', 'cash'], ['paySplitPix', 'pix'], ['paySplitDebit', 'card_debit'], ['paySplitCredit', 'card_credit']]
+      const parts = SPLIT_FIELDS.filter(([id]) => !$(id).closest('.field').classList.contains('hidden'))
         .map(([id, kind]) => ({method: kind, amount_cents: parseMoney($(id).value)})).filter(part => part.amount_cents > 0);
       const paid = parts.reduce((sum, part) => sum + part.amount_cents, 0);
       return {paid, change: paid - total, parts, cash: parts.find(part => part.method === 'cash')?.amount_cents || 0};
@@ -874,6 +902,7 @@ function buildPayments() {
   }
   if (method === 'split') {
     if (!current.parts.length) throw Error('Informe os valores do pagamento dividido');
+    if (current.parts.some(part => ['credit_account', 'store_credit'].includes(part.method)) && !state.customer.id) throw Error('A prazo e crédito na loja exigem o cliente cadastrado (F4)');
     if (current.change < 0) throw Error(`Falta ${money(-current.change)} para fechar a venda`);
     if (current.change > current.cash) throw Error('O troco só pode sair do valor em dinheiro');
     return current.parts;
@@ -893,7 +922,8 @@ function renderPay() {
     const option = button.dataset.pay === 'split' ? {method: 'split'} : options[Number(button.dataset.pay)];
     button.classList.toggle('selected', active && !!method && option?.method === method && (method !== 'other' || option.id === other?.id));
   });
-  $('payHint').textContent = !active ? 'F10 para pagar' : method ? 'Enter confirma · Esc volta' : 'Escolha a forma pelo número';
+  syncSplitFields();
+  $('payHint').textContent = !active ? 'F10 para pagar' : method ? 'Enter confirma · Esc volta' : 'Escolha pelo número ou Alt+letra';
   $('payCashBox').classList.toggle('hidden', !(active && method === 'cash'));
   $('paySplitBox').classList.toggle('hidden', !(active && method === 'split'));
   const info = $('payInfo'), customer = state.customers.find(row => row.id === state.customer.id);
@@ -904,7 +934,7 @@ function renderPay() {
   else if (method === 'pix') text = `Confira o recebimento de ${money(total)} no Pix e tecle Enter.`;
   else if (method === 'card_debit' || method === 'card_credit') text = `Passe ${money(total)} na maquininha (${method === 'card_debit' ? 'débito' : 'crédito'}) e tecle Enter.`;
   else if (method === 'other') text = `${other?.name || 'Outra forma'}: ${money(total)}. Tecle Enter para confirmar.`;
-  else if (method === 'split') text = '';
+  else if (method === 'split') text = customer ? '' : 'Com cliente cadastrado (F4), a divisão também aceita a prazo e crédito na loja.';
   else if (!customer) { text = 'Escolha o cliente cadastrado (F4) para esta forma.'; kind = 'pending'; }
   else if (method === 'credit_account') { const over = total > customer.available_credit_cents; text = `A prazo para ${customer.name} · disponível ${money(customer.available_credit_cents)}${over ? ' · acima do limite: pede o PIN do gerente' : ''}`; if (over) kind = 'pending'; }
   else { const short = total > customer.store_credit_cents; text = `Crédito na loja de ${customer.name} · saldo ${money(customer.store_credit_cents)}${short ? ' · saldo insuficiente' : ''}`; if (short) kind = 'pending'; }
@@ -936,19 +966,34 @@ function renderPanels() {
   if (!session?.operator) return;
   let blocked = null;
   if (!session.license?.can_sell) blocked = licenseBlock(session.license);
-  else if (!session.cash && canSell(role())) blocked = {title: 'Caixa fechado', text: 'Informe o dinheiro em espécie da gaveta para abrir o caixa e começar a vender.', open: true};
+  else if (!session.cash && canSell(role())) blocked = {title: 'Caixa fechado', text: 'Inicie o seu turno: informe o troco inicial (dinheiro da gaveta) para começar a vender.', open: true};
+  else if (canSell(role()) && shift().state === 'other') {
+    const view = shift();
+    blocked = {title: `Caixa em uso por ${view.owner}`, text: `Turno aberto desde ${timeText(view.since)}${view.paused ? `, pausado desde ${timeText(view.pausedSince)}` : ''}. Um caixa tem um turno por vez: aguarde ${view.owner} encerrar, ou um gerente encerra o turno com a contagem do dinheiro.`, other: true};
+  }
   const signature = JSON.stringify(blocked);
   const panel = $('blockedPanel');
   panel.classList.toggle('hidden', !blocked);
   if (blocked && panel.dataset.signature !== signature) {
     panel.dataset.signature = signature;
-    panel.innerHTML = `<h2>${esc(blocked.title)}</h2><p>${esc(blocked.text)}</p>${blocked.steps ? `<ol class="guide-steps">${blocked.steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>` : ''}${blocked.recheck ? '<button type="button" class="btn primary big" data-action="recheckLicense">Verificar de novo</button>' : ''}${blocked.open ? '<button type="button" class="btn primary big" data-action="closeCash">Abrir caixa <kbd>F12</kbd></button>' : ''}`;
+    panel.innerHTML = `<h2>${esc(blocked.title)}</h2><p>${esc(blocked.text)}</p>${blocked.steps ? `<ol class="guide-steps">${blocked.steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>` : ''}${blocked.recheck ? '<button type="button" class="btn primary big" data-action="recheckLicense">Verificar de novo</button>' : ''}${blocked.open ? '<button type="button" class="btn primary big" data-action="closeCash">Iniciar caixa <kbd>F12</kbd></button>' : ''}${blocked.other ? `<button type="button" class="btn big" data-action="lock">Aguardar (sair)</button><button type="button" class="btn primary big" data-action="closeShift">Encerrar o turno de ${esc(shift().owner)}</button>` : ''}`;
   }
   const done = !blocked && state.done;
   $('donePanel').classList.toggle('hidden', !done);
   if (done) renderDone(); else state.doneRendered = null;
   $('payPanel').classList.toggle('hidden', !!blocked || !!done);
   renderPay();
+  renderPause();
+}
+// "Caixa pausado — Ana desde 10:15": covers the screen until the PIN of the shift owner or of a manager.
+function renderPause() {
+  const view = state.session?.operator && canSell(role()) ? shift() : {state: 'closed'};
+  const paused = view.state === 'paused', overlay = $('pauseView'), wasHidden = overlay.classList.contains('hidden');
+  overlay.classList.toggle('hidden', !paused);
+  if (!paused) return;
+  $('pauseTitle').textContent = `Caixa pausado — ${view.owner} desde ${timeText(view.since)}`;
+  $('pauseText').textContent = (view.reason ? `Motivo: ${view.reason}. ` : '') + 'As vendas estão bloqueadas. Digite o PIN para retomar.';
+  if (wasHidden) { $('pauseError').textContent = ''; $('pauseError').classList.remove('show'); $('pausePin').value = ''; $('pausePin').focus(); }
 }
 function renderPendingQty() {
   const badge = $('pendingQtyBadge');
@@ -1123,7 +1168,7 @@ function variantPicker(variants) {
 /* ---------- payment on the sale screen ---------- */
 function cancelPayment() {
   state.pay = {active: false, method: null, other: null};
-  for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit', 'productSearch']) $(id).value = '';
+  for (const id of [...PAY_INPUTS, 'productSearch']) $(id).value = '';
   payError('');
 }
 function startPayment() {
@@ -1271,7 +1316,7 @@ async function receiptDialog(sale, printStatus = '', options = {}) {
     try { sale = (await api('/api/sales/' + encodeURIComponent(sale.id))).sale || sale; } catch { /* show what we have */ }
   }
   const size = C.receiptDimensions(sale);
-  const modal = openModal({title: options.title || 'Comprovante da venda', eyebrow: sale.status === 'voided' ? 'Venda cancelada' : options.eyebrow || 'Venda registrada', text: 'Confira a via do cliente antes de entregar.', className: 'receipt-dialog', backdropClass: 'receipt-backdrop'});
+  const modal = openModal({title: options.title || 'Comprovante da venda', eyebrow: sale.status === 'voided' ? 'Venda cancelada' : options.eyebrow || 'Venda registrada', text: options.text ?? 'Confira a via do cliente antes de entregar.', className: 'receipt-dialog', backdropClass: 'receipt-backdrop'});
   modal.dialog.style.setProperty('--receipt-paper-mm', size.width + 'mm');
   const stage = el('div', 'receipt-preview-stage', `<div class="receipt-preview-label"><span>Prévia de impressão</span><span>Bobina ${size.width} mm</span></div><div class="receipt-preview-paper">${receiptMarkup(sale)}</div>`);
   stage.tabIndex = 0;
@@ -1301,6 +1346,8 @@ async function receiptDialog(sale, printStatus = '', options = {}) {
       setStatus('Comprovante colocado na fila da impressora térmica.');
       api('/api/print/flush', 'POST', {}).then(loadPrinterStatus).catch(() => {});
     } catch (error) { setStatus(error.status === 409 ? 'Configure uma impressora de recibos antes de reenviar para a fila.' : error.message, true); }
+  }) : options.reprint ? modal.action('Reimprimir na térmica', 'primary', async () => {
+    try { setStatus(await options.reprint()); } catch (error) { setStatus(error.message, true); }
   }) : null;
   (thermal && state.printer?.configured ? thermal : system).focus();
   if (options.autoPrint) printTimer = window.setTimeout(systemPrint, 180);
@@ -1484,17 +1531,19 @@ async function cashMoveDialog() {
   focusHome();
 }
 async function openCash() {
-  const raw = await textDialog('Abrir caixa', 'Informe quanto existe em dinheiro na gaveta antes da primeira venda. Use 0,00 se o caixa começar sem espécie.', {eyebrow: 'Início do turno · F12', fieldLabel: 'Dinheiro inicial (R$)', placeholder: 'Ex.: 150,00', inputMode: 'decimal', acceptLabel: 'Abrir caixa',
+  const raw = await textDialog('Iniciar caixa', `Turno de ${state.session?.operator?.name || 'operador'}. Informe o troco inicial: quanto existe em dinheiro na gaveta antes da primeira venda. Use 0,00 se o caixa começar sem espécie.`, {eyebrow: 'Início do turno · F12', fieldLabel: 'Troco inicial (R$)', placeholder: 'Ex.: 150,00', inputMode: 'decimal', acceptLabel: 'Iniciar caixa',
     validate: async value => { await api('/api/cash/open', 'POST', {opening_cents: parseMoney(value)}); }});
   if (raw === null) return;
-  toast(`Caixa aberto com ${money(parseMoney(raw))}`);
+  toast(`Turno iniciado com ${money(parseMoney(raw))} de troco`);
   await poll();
   renderSale();
   focusHome();
 }
 function cashSummaryMarkup(summary, result) {
   const c = summary.categories || {};
-  const rows = [['Saldo inicial', money(summary.opening_cents)], ['Vendas do turno', `${summary.sales_count || 0} · ${money(summary.sales_total_cents || 0)}`], ['Pix', money(c.pix_cents || 0)], ['Débito', money(c.card_debit_cents || 0)], ['Crédito', money(c.card_credit_cents || 0)],
+  // Every form of payment (a prazo, crédito na loja and the company's own ones too), to check against the machines.
+  const methods = (summary.methods || []).filter(row => row.key !== 'cash' && (row.amount_cents || ['pix', 'card_debit', 'card_credit'].includes(row.key))).map(row => [row.label, money(row.amount_cents)]);
+  const rows = [['Troco inicial', money(summary.opening_cents)], ['Vendas do turno', `${summary.sales_count || 0} · ${money(summary.sales_total_cents || 0)}`], ...methods,
     ['Suprimentos', money(c.supplied_cents || 0)], ['Sangrias', '− ' + money(c.withdrawn_cents || 0)], ['Devoluções em dinheiro', '− ' + money(c.cash_refunds_cents || 0)],
     ['Fiado recebido em dinheiro', money(c.credit_received_cash_cents || 0)], ['Fiado recebido em outras formas', money(c.credit_received_other_cents || 0)]];
   if (result) rows.splice(2, 0, ['Dinheiro das vendas', money(c.cash_sales_net_cents || 0)]);
@@ -1509,32 +1558,136 @@ function cashSummaryMarkup(summary, result) {
 // Blind count: the expected cash only appears after the counted amount is recorded.
 async function closeCash() {
   if (state.cart.length) throw Error('Finalize, cancele ou coloque a venda atual em espera (F6) antes de fechar o caixa');
-  const summary = await api('/api/cash/summary');
-  const modal = openModal({title: 'Fechar caixa', eyebrow: 'Conferência do turno · F12', className: 'wide', text: 'Conte o dinheiro da gaveta e informe o valor. O esperado e a diferença aparecem depois do fechamento.'});
+  const summary = await api('/api/cash/summary'), view = shift();
+  const owner = view.mine ? 'seu turno' : `o turno de ${view.owner}`;
+  const modal = openModal({title: view.mine ? 'Fechar turno' : `Encerrar o turno de ${view.owner}`, eyebrow: 'Conferência do turno · F12', className: 'wide', text: `Conte o dinheiro da gaveta e informe o valor para fechar ${owner}. O esperado e a diferença aparecem depois do fechamento. As demais formas aparecem abaixo para conferir com a maquininha e o Pix.`});
   const report = el('div', '', cashSummaryMarkup(summary, null));
   const fields = el('div', 'form-stack', `<label class="field"><span>Dinheiro contado na gaveta (R$)</span><input data-field="counted" class="money-input" inputmode="decimal" autocomplete="off" placeholder="Informe o valor contado"></label>
     <label class="field"><span>PIN do gerente ou superior</span><input data-field="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="Digite o PIN"></label>`);
   modal.body.append(fields, report);
   const counted = fields.querySelector('[data-field="counted"]'), pin = fields.querySelector('[data-field="pin"]');
   modal.action('Cancelar', '', () => modal.close(null));
+  let closed = null;
   const accept = modal.action('Fechar caixa', 'primary', async () => {
     if (!counted.value.trim()) { counted.focus(); throw Error('Informe o dinheiro contado na gaveta'); }
     const cents = parseMoney(counted.value);
     if (!pin.value.trim()) { pin.focus(); throw Error('Informe o PIN do gerente ou superior'); }
     let result;
     try { result = await api('/api/cash/close', 'POST', {counted_cents: cents, manager_pin: pin.value.trim()}); } catch (error) { pin.value = ''; pin.focus(); throw error; }
+    closed = result;
     modal.heading.textContent = 'Caixa fechado';
     modal.lead.textContent = result.difference_cents === 0 ? 'O valor contado confere com o esperado.' : result.difference_cents > 0 ? 'Há sobra no valor contado.' : 'Há falta no valor contado.';
     fields.remove();
     report.innerHTML = cashSummaryMarkup(summary, result);
     modal.actions.innerHTML = '';
-    modal.action('Concluir', 'primary', () => modal.close(result)).focus();
+    modal.action('Ver relatório do operador', '', () => modal.close(result));
+    modal.action('Concluir', 'primary', () => modal.close({...result, skipReport: true})).focus();
+    showReportResult(result.report, 'Relatório do operador');
   });
   counted.focus();
-  const result = await modal.promise;
-  if (result === null && accept.isConnected) return;
+  const choice = await modal.promise;
+  if (!closed) return;
   await poll();
   renderSale();
+  const closingReport = closed.report;
+  // "Ver relatório" opens it; without a thermal printer it always opens, ready for the system print.
+  if (closingReport?.layout && (choice && !choice.skipReport)) await reportDialog(closingReport, {title: 'Relatório do operador', eyebrow: 'Turno fechado', autoPrint: !closingReport.printer});
+  else if (closingReport?.layout && !closingReport.printer) await reportDialog(closingReport, {title: 'Relatório do operador', eyebrow: 'Turno fechado', autoPrint: true});
+  focusHome();
+}
+// The report went to the thermal printer (one job per report) or, without one, opens in the browser.
+function showReportResult(report, what) {
+  if (!report) return;
+  if (report.error) { toast(`${what}: ${report.error}`, true); return; }
+  if (report.printer) {
+    toast(`${what} enviado para a impressora.`);
+    api('/api/print/flush', 'POST', {}).then(loadPrinterStatus).catch(() => {});
+  }
+}
+function reportDialog(report, {title, eyebrow = 'Relatório do caixa', autoPrint = false, reprint = null} = {}) {
+  const status = report.printer ? 'Relatório enviado para a impressora térmica. Confira a impressão.' : 'Sem impressora de recibos configurada: imprima pelo sistema.';
+  return receiptDialog({receipt: report.layout}, status, {title, eyebrow, text: 'Mesmo conteúdo impresso na bobina.', autoPrint, reprint});
+}
+async function pauseCash() {
+  const view = shift();
+  if (view.state === 'closed') throw Error('Não há caixa aberto para pausar');
+  if (view.state === 'paused') return;
+  if (state.cart.length) throw Error('Finalize ou coloque a venda em espera (F6) antes de pausar o caixa');
+  const reason = await textDialog('Pausar caixa', 'As vendas ficam bloqueadas até alguém digitar o PIN do operador do turno ou de um gerente. A pausa entra no relatório do turno.', {eyebrow: 'Pausa · Pause ou F12', fieldLabel: 'Motivo (opcional)', placeholder: 'Ex.: almoço, banheiro, troca de bobina', acceptLabel: 'Pausar agora', minLength: 0, maxLength: 120});
+  if (reason === null) return;
+  await api('/api/cash/pause', 'POST', {reason});
+  await poll();
+  renderSale();
+}
+async function resumeCash(pin) {
+  await api('/api/cash/resume', 'POST', {pin});
+  await poll();
+  renderSale();
+  toast('Caixa retomado');
+  focusHome();
+}
+async function cashMenu() {
+  const view = shift();
+  if (view.state === 'closed') return openCash();
+  const modal = openModal({title: view.mine ? 'Caixa' : `Caixa em uso por ${view.owner}`, eyebrow: `Turno de ${view.owner} · desde ${timeText(state.session.cash.opened_at)} · F12`, className: 'menu', onKey: (event, self) => {
+    const pick = {p: 'pauseCash', f: 'closeShift', s: 'cashMove', r: 'shiftReports', d: 'closeDay'}[event.key.toLowerCase()];
+    if (pick && !event.target.matches?.('input')) { event.preventDefault(); self.close(); runAction(pick); return true; }
+    return arrowNav('.menu-item')(event, self);
+  }});
+  const item = (name, label, key) => {
+    const reason = actionBlocked(name);
+    return `<button type="button" class="menu-item" data-action="${name}" ${reason ? 'disabled' : ''} title="${esc(reason)}"><span>${esc(label)}${reason ? ` <small>· ${esc(reason)}</small>` : ''}</span><kbd>${key}</kbd></button>`;
+  };
+  modal.body.innerHTML = `<div class="menu-list">
+    ${view.mine ? item('pauseCash', 'Pausar caixa', 'P') : ''}
+    ${item('closeShift', view.mine ? 'Fechar meu turno' : `Encerrar o turno de ${view.owner}`, 'F')}
+    ${view.mine ? item('cashMove', 'Sangria ou suprimento', 'S') : ''}
+    <div class="menu-sep"></div>
+    ${item('shiftReports', 'Reimprimir relatórios de turnos do dia', 'R')}
+    ${item('closeDay', 'Fechamento do dia (gerente)', 'D')}</div>`;
+  modal.body.addEventListener('click', event => { const button = event.target.closest('[data-action]'); if (!button || button.disabled) return; modal.close(); runAction(button.dataset.action); });
+  modal.action('Fechar <kbd>Esc</kbd>', '', () => modal.close());
+  (modal.body.querySelector('.menu-item:not([disabled])') || modal.actions.firstElementChild).focus();
+  return modal.promise;
+}
+async function shiftReports() {
+  const data = await api('/api/cash/shifts');
+  const shifts = [...(data.older_open || []), ...(data.shifts || [])];
+  if (!shifts.length) { toast('Nenhum turno hoje neste caixa', true); return; }
+  const modal = openModal({title: 'Relatórios de turnos do dia', eyebrow: 'Reimprimir · F12', className: 'wide', text: data.all_stations ? 'Turnos de hoje de todos os caixas da loja.' : 'Turnos de hoje deste caixa.', onKey: arrowNav('.pick-row')});
+  const list = el('div', 'pick-list', shifts.map(row => `<button type="button" class="pick-row" data-id="${esc(row.id)}"><span><strong>${esc(row.operator_name || 'Operador')} · ${esc(row.station_name)}</strong><small>${timeText(row.opened_at)} às ${row.closed_at ? timeText(row.closed_at) : 'agora (aberto)'} · ${row.sales_count} venda(s) · ${money(row.net_cents)}${row.difference_cents ? ` · ${row.difference_cents > 0 ? 'sobra' : 'falta'} ${money(Math.abs(row.difference_cents))}` : ''}</small></span><span class="pick-side">Imprimir</span></button>`).join(''));
+  modal.body.append(list);
+  modal.action('Fechar', '', () => modal.close(null));
+  list.addEventListener('click', event => { const row = event.target.closest('.pick-row'); if (row) modal.close(row.dataset.id); });
+  list.firstElementChild.focus();
+  const id = await modal.promise;
+  if (!id) { focusHome(); return; }
+  const printReport = () => api(`/api/cash/shifts/${encodeURIComponent(id)}/print`, 'POST', {});
+  const report = await printReport();
+  showReportResult(report, 'Relatório do operador');
+  await reportDialog(report, {title: 'Relatório do operador', eyebrow: 'Reimpressão', autoPrint: !report.printer,
+    reprint: report.printer ? async () => { await printReport(); api('/api/print/flush', 'POST', {}).catch(() => {}); return 'Relatório colocado de novo na fila da impressora.'; } : null});
+  focusHome();
+}
+async function closeDay() {
+  const data = await api('/api/cash/shifts');
+  const shifts = data.shifts || [], open = [...(data.older_open || []), ...shifts.filter(row => row.status === 'open')];
+  const modal = openModal({title: 'Fechamento do dia', eyebrow: 'Gerente · F12', className: 'wide', text: (data.all_stations ? 'Todos os turnos de hoje dos caixas da loja.' : 'Turnos de hoje deste caixa.') + ' Imprime um relatório por operador, um por caixa e o consolidado do dia.'});
+  const rows = shifts.length ? shifts.map(row => `<div class="shift-row"><span><strong>${esc(row.operator_name || 'Operador')} · ${esc(row.station_name)}</strong><small>${timeText(row.opened_at)} às ${row.closed_at ? timeText(row.closed_at) : 'aberto'} · ${row.sales_count} venda(s) · ${money(row.net_cents)}</small></span><span>${row.status === 'open' ? (row.paused ? 'Pausado' : 'Aberto') : row.difference_cents ? `${row.difference_cents > 0 ? 'Sobra' : 'Falta'} ${money(Math.abs(row.difference_cents))}` : 'Conferido'}</span></div>`).join('') : '<p class="pick-empty">Nenhum turno hoje.</p>';
+  const warning = open.length ? `<p class="inline-error show">${open.length} turno(s) ainda aberto(s): os valores deles saem parciais. Feche-os antes, se puder${data.all_stations ? ' (Sistema → Caixas da loja, para outro computador)' : ''}.</p>` : '';
+  modal.body.innerHTML = `<div class="shift-list">${rows}</div>${warning}<label class="field"><span>PIN do gerente</span><input data-field="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="Digite o PIN"></label>`;
+  const pin = modal.body.querySelector('[data-field="pin"]');
+  modal.action('Cancelar', '', () => modal.close(null));
+  modal.action('Imprimir fechamento do dia', 'primary', async () => {
+    if (!shifts.length) throw Error('Nenhum turno hoje');
+    if (!pin.value.trim()) { pin.focus(); throw Error('Informe o PIN do gerente'); }
+    try { modal.close(await api('/api/cash/day/close', 'POST', {manager_pin: pin.value.trim()})); } catch (error) { pin.value = ''; pin.focus(); throw error; }
+  });
+  pin.focus();
+  const result = await modal.promise;
+  if (!result) { focusHome(); return; }
+  showReportResult(result, `Fechamento do dia (${result.layouts.length} relatórios)`);
+  await reportDialog(result, {title: 'Fechamento do dia', eyebrow: `${result.shifts} turno(s)`, autoPrint: !result.printer});
   focusHome();
 }
 async function receiveCreditDialog() {
@@ -1732,7 +1885,10 @@ async function toggleFocus() {
 }
 async function lockTerminal() {
   if (state.cart.length) throw Error('Finalize, cancele ou coloque a venda em espera (F6) antes de trocar de operador');
+  // My shift stays mine: it is paused (counts in the report) until I come back or a manager closes it.
+  if (shift().state === 'mine') await api('/api/cash/pause', 'POST', {reason: 'Troca de operador'});
   await api('/api/logout', 'POST', {});
+  state.shiftAskedFor = null;
   clearLocalSale();
   state.done = null;
   state.cartRestored = false;
@@ -1741,7 +1897,7 @@ async function lockTerminal() {
   await loadSession();
 }
 async function logout() {
-  if (state.session?.cash) throw Error('Feche o caixa (F12) antes de sair, ou use “Trocar operador”.');
+  if (shift().mine) throw Error('Feche o seu turno (F12) antes de sair, ou use “Trocar operador”.');
   await lockTerminal();
 }
 function goBack() {
@@ -1771,22 +1927,26 @@ const ACTIONS = {
   customer: {label: 'Cliente e CPF na nota', words: 'cpf cnpj cliente vendedor documento', sale: true, run: () => customerDialog('document')},
   discount: {label: 'Desconto na venda', words: 'abatimento percentual', sale: true, why: needsCart, pin: () => role() === 'cashier', run: discountDialog},
   hold: {label: 'Vendas em espera: guardar ou retomar', words: 'suspender espera retomar pausar', sale: true, run: holdDialog},
-  cashMove: {label: 'Sangria ou suprimento', words: 'retirada entrada dinheiro cofre troco', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: cashMoveDialog},
+  cashMove: {label: 'Sangria ou suprimento', words: 'retirada entrada dinheiro cofre troco', sell: true, why: () => ownShiftReason(), run: cashMoveDialog},
   removeItem: {label: 'Cancelar item selecionado', words: 'remover excluir tirar', sale: true, why: needsCart, pin: () => role() === 'cashier', run: () => removeItem()},
   reprint: {label: 'Reimprimir comprovante', words: 'recibo cupom segunda via imprimir', sell: true, run: reprint},
   pay: {label: 'Pagar a venda', words: 'receber finalizar fechar venda', sale: true, why: payBlockReason, run: startPayment},
   focus: {label: 'Modo foco (tela cheia)', words: 'fullscreen tela cheia abas', run: toggleFocus},
-  closeCash: {label: 'Abrir ou fechar caixa', words: 'abertura fechamento conferencia turno', sell: true, pin: () => !!state.session?.cash, run: () => (state.session?.cash ? closeCash() : openCash())},
+  closeCash: {label: 'Caixa: iniciar, pausar ou fechar turno', words: 'abertura fechamento conferencia turno pausa relatorio', sell: true, run: cashMenu},
+  pauseCash: {label: 'Pausar caixa', words: 'pausa intervalo almoco bloquear', sell: true, why: () => (shift().state === 'mine' || (shift().state === 'other' && canManage(role())) ? '' : shift().state === 'paused' ? 'O caixa já está pausado' : shift().state === 'closed' ? 'Nenhum caixa aberto' : 'Só o operador do turno ou um gerente'), run: pauseCash},
+  closeShift: {label: 'Fechar turno (contagem do dinheiro)', words: 'fechar caixa conferencia contagem encerrar turno', sell: true, pin: () => true, why: () => (state.session?.cash ? '' : 'Nenhum caixa aberto'), run: closeCash},
+  shiftReports: {label: 'Reimprimir relatórios de turnos do dia', words: 'relatorio operador turno reimprimir', sell: true, run: shiftReports},
+  closeDay: {label: 'Fechamento do dia (gerente)', words: 'fechamento dia consolidado relatorio z', sell: true, pin: () => true, run: closeDay},
   back: {label: 'Voltar', words: 'esc sair cancelar', run: goBack},
   palette: {label: 'Paleta de comandos', hidden: true, run: openPalette},
-  receiveCredit: {label: 'Receber fiado de cliente', words: 'fiado a prazo pagamento divida', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: receiveCreditDialog},
+  receiveCredit: {label: 'Receber fiado de cliente', words: 'fiado a prazo pagamento divida', sell: true, why: () => ownShiftReason(), run: receiveCreditDialog},
   returnSale: {label: 'Devolução ou troca', words: 'devolver trocar estorno', sell: true, why: () => (state.session?.cash ? '' : 'Abra o caixa primeiro (F12)'), run: returnFlow},
   discardSale: {label: 'Cancelar a venda atual', words: 'descartar limpar nova venda', sale: true, why: needsCart, pin: () => role() === 'cashier', run: discardSale},
   scale: {label: 'Balança e etiquetas', words: 'peso serial conectar', sell: true, run: scaleDialog},
   recheckLicense: {label: 'Verificar licença e relógio de novo', words: 'licenca renovar hora data relogio', run: recheckLicense},
   refreshCatalog: {label: 'Atualizar catálogo e operadores', words: 'sincronizar produtos precos', run: async () => { if (!C.stationNotice(state.session).isStation) await refreshOperators(); await poll(); await refreshCartProducts(); }},
   lock: {label: 'Trocar operador (bloquear caixa)', words: 'bloquear sair trocar', run: lockTerminal},
-  logout: {label: 'Sair', words: 'logout encerrar', why: () => (state.session?.cash ? 'Feche o caixa antes de sair' : ''), run: logout},
+  logout: {label: 'Sair', words: 'logout encerrar', why: () => (shift().mine ? 'Feche o seu turno antes de sair' : ''), run: logout},
   themeLight: {label: 'Tema claro', words: 'aparencia cor', run: () => setTheme('light')},
   themeDark: {label: 'Tema escuro', words: 'aparencia cor noite', run: () => setTheme('dark')},
   themeContrast: {label: 'Tema de alto contraste', words: 'aparencia acessibilidade', run: () => setTheme('contrast')},
@@ -1796,6 +1956,14 @@ const ACTIONS = {
   tabPrinters: {label: 'Ir para Impressoras', words: 'aba termica fila', why: () => (canManage(role()) ? '' : 'Disponível para gerentes'), run: () => setTab('printers')},
   tabSystem: {label: 'Ir para Sistema', words: 'aba diagnostico backup sincronizacao sobre', why: () => (canManage(role()) ? '' : 'Disponível para gerentes'), run: () => setTab('system')},
 };
+// Money in or out of the drawer belongs to the shift of whoever is logged in.
+function ownShiftReason() {
+  const view = shift();
+  if (view.state === 'closed') return 'Inicie o caixa primeiro (F12)';
+  if (view.state === 'other') return `O caixa está no turno de ${view.owner}`;
+  if (view.state === 'paused') return 'Caixa pausado';
+  return '';
+}
 function actionBlocked(name) {
   const action = ACTIONS[name];
   if ((action.sale || action.sell) && !canSell(role())) return 'Seu perfil não realiza vendas';
@@ -1819,17 +1987,17 @@ function renderKeybar() {
   let keys;
   if (state.pay.active && state.tab === 'checkout') {
     const {method, other} = state.pay;
-    keys = state.payOptions.filter(option => option.key).map(option => keyButton({cap: option.key, label: esc(option.short || option.label), pay: option.key, title: option.label,
+    keys = state.payOptions.filter(option => option.key).map(option => keyButton({cap: option.key, label: esc(option.short || option.label), pay: option.key, title: `${option.label} · ${C.payShortcutText(option)}`,
       on: option.method === method && (method !== 'other' || option.id === other?.id)}));
-    keys.push(keyButton({cap: '0', label: 'Dividir', pay: '0', title: 'Dividir o pagamento em mais de uma forma', on: method === 'split'}));
+    keys.push(keyButton({cap: '0', label: 'Dividir', pay: '0', title: `Dividir o pagamento em mais de uma forma · ${C.payShortcutText(C.SPLIT_OPTION)}`, on: method === 'split'}));
     keys.push(keyButton({cap: 'F4', label: 'Cliente/<wbr>CPF', action: 'customer'}), keyButton({cap: 'F5', label: 'Desconto', action: 'discount', lock: role() === 'cashier'}));
     keys.push(keyButton({cap: 'Enter', label: 'Confirmar', action: 'confirm', accent: true, dim: !method, title: method ? 'Confirmar a venda' : 'Escolha a forma de pagamento'}));
     keys.push(keyButton({cap: 'Esc', label: 'Voltar', action: 'back'}));
   } else {
-    keys = C.SHORTCUTS.map(shortcut => {
+    keys = C.SHORTCUTS.filter(shortcut => shortcut.ruler !== false).map(shortcut => {
       const action = ACTIONS[shortcut.action], reason = actionBlocked(shortcut.action);
       let label = shortcut.label.replace('/', '/<wbr>');
-      if (shortcut.action === 'closeCash' && !state.session.cash) label = 'Abrir caixa';
+      if (shortcut.action === 'closeCash' && !state.session.cash) label = 'Iniciar caixa';
       return keyButton({cap: shortcut.cap || shortcut.key, label, short: shortcut.short, action: shortcut.action, title: reason || shortcut.hint || action.label, dim: !!reason,
         accent: shortcut.action === 'pay' && !reason, on: shortcut.action === 'focus' && document.body.classList.contains('focus-mode'),
         lock: !reason && !!action.pin?.(), count: shortcut.action === 'hold' ? state.suspendedCount : 0});
@@ -1842,9 +2010,11 @@ function openHelp() {
   const modal = openModal({title: 'Atalhos do caixa', eyebrow: 'Ajuda · F1', text: 'Tudo o que está na régua de teclas também pode ser tocado. Ctrl+K abre a busca de comandos por nome.', className: 'wide', onKey: arrowNav('.help-item')});
   const item = (cap, label, action = '') => `<button type="button" class="help-item" ${action ? `data-action="${action}"` : 'tabindex="-1"'}><kbd>${esc(cap)}</kbd><span>${esc(label)}</span></button>`;
   const sections = [
-    ['Venda', C.SHORTCUTS.map(shortcut => item(shortcut.cap || shortcut.key, shortcut.action === 'closeCash' ? 'Abrir ou fechar caixa' : shortcut.hint || shortcut.label, shortcut.action)).join('')],
+    ['Venda', C.SHORTCUTS.map(shortcut => item(shortcut.cap || shortcut.key, shortcut.hint || shortcut.label, shortcut.action)).join('')],
     ['Leitura e lista', [item('Enter', 'Lança o código digitado ou lido'), item('3*cód', 'Lança 3 unidades do código'), item('↑ ↓', 'Seleciona o item da lista'), item('Delete', 'Cancela o item selecionado'), item('Ctrl+K', 'Busca de comandos por nome', 'palette')].join('')],
-    ['Pagamento (depois do F10)', [...C.PAY_KEYS.map(option => item(option.key, option.label)), item('7 a 9', 'Formas próprias da empresa'), item('0', 'Dividir o pagamento'), item('Enter', 'Confirma a venda'), item('Esc', 'Volta um passo')].join('')],
+    ['Pagamento (depois do F10; Alt+letra funciona também no campo do valor recebido)', [...(state.payOptions.length ? state.payOptions : C.PAY_KEYS).map(option => item([option.key, option.alt && 'Alt+' + option.alt].filter(Boolean).join(' · ') || '—', option.custom ? `${option.label} (forma própria)` : option.label)),
+      item('0 · Alt+0', 'Dividir o pagamento (a prazo e crédito na loja com cliente)'), item('Enter', 'Confirma a venda'), item('Esc', 'Volta um passo')].join('')],
+    ['Caixa (F12)', [item('F12', 'Menu do caixa: pausar, fechar turno, relatórios', 'closeCash'), item('Pause', 'Pausar caixa (o PIN retoma)', 'pauseCash'), item('F12 › F', 'Fechar turno: contagem do dinheiro e relatório do operador', 'closeShift'), item('F12 › R', 'Reimprimir relatórios de turnos do dia', 'shiftReports'), item('F12 › D', 'Fechamento do dia (PIN de gerente)', 'closeDay')].join('')],
     ['Outras ações', ['receiveCredit', 'returnSale', 'discardSale', 'scale', 'refreshCatalog', 'lock'].map(name => item('•', ACTIONS[name].label, name)).join('')],
   ];
   modal.body.innerHTML = sections.map(([title, items]) => `<div class="menu-label">${title}</div><div class="help-grid">${items}</div>`).join('');
@@ -1892,7 +2062,7 @@ function openMenu() {
   const sells = canSell(operator.role), theme = document.documentElement.dataset.theme || 'light';
   const toggle = (key, label, value) => `<button type="button" class="menu-item" data-pref="${key}"><span>${label}</span><small>${value}</small></button>`;
   modal.body.innerHTML = `<div class="menu-list">
-    ${sells ? `<div class="menu-label">Caixa</div>${item('closeCash', cashOpen ? 'Fechar caixa' : 'Abrir caixa')}${item('cashMove')}${item('hold', 'Vendas em espera')}${item('receiveCredit')}${item('returnSale')}${state.cart.length ? item('discardSale') : ''}<div class="menu-sep"></div>` : ''}
+    ${sells ? `<div class="menu-label">Caixa</div>${cashOpen ? item('pauseCash') + item('closeShift', shift().mine ? 'Fechar meu turno' : `Encerrar o turno de ${shift().owner}`) : item('closeCash', 'Iniciar caixa')}${item('shiftReports')}${canManage(operator.role) ? item('closeDay') : ''}${item('cashMove')}${item('hold', 'Vendas em espera')}${item('receiveCredit')}${item('returnSale')}${state.cart.length ? item('discardSale') : ''}<div class="menu-sep"></div>` : ''}
     <div class="menu-label">Aparência</div>
     <div class="segmented" role="group" aria-label="Tema"><button type="button" data-theme-choice="light" aria-pressed="${theme === 'light'}">Claro</button><button type="button" data-theme-choice="dark" aria-pressed="${theme === 'dark'}">Escuro</button><button type="button" data-theme-choice="contrast" aria-pressed="${theme === 'contrast'}">Alto contraste</button></div>
     ${sells ? item('focus', document.body.classList.contains('focus-mode') ? 'Sair do modo foco' : 'Modo foco (tela cheia)') : ''}
@@ -1901,7 +2071,7 @@ function openMenu() {
     <div class="menu-sep"></div><div class="menu-label">Equipamentos e ajuda</div>
     ${sells ? item('scale') : ''}${item('refreshCatalog')}${item('help')}
     <div class="menu-sep"></div><div class="menu-label">Sessão</div>
-    ${item('lock')}${cashOpen ? '' : item('logout')}</div>`;
+    ${item('lock')}${shift().mine ? '' : item('logout')}</div>`;
   modal.body.addEventListener('click', event => {
     const themeButton = event.target.closest('[data-theme-choice]'), pref = event.target.closest('[data-pref]'), action = event.target.closest('[data-action]');
     if (themeButton) {
@@ -2389,6 +2559,14 @@ $('pinPad').addEventListener('click', event => {
   if (key === 'clear') input.value = ''; else if (key === 'back') input.value = input.value.slice(0, -1); else if (input.value.length < 12) input.value += key;
   input.focus();
 });
+$('pauseForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const pin = $('pausePin').value.trim(), error = $('pauseError');
+  if (!pin) { error.textContent = 'Digite o PIN'; error.classList.add('show'); return; }
+  try { $('pausePin').value = ''; await resumeCash(pin); error.textContent = ''; error.classList.remove('show'); }
+  catch (failure) { error.textContent = failure.message; error.classList.add('show'); beep('error'); $('pausePin').focus(); }
+});
+$('pauseLockBtn').addEventListener('click', () => { state.shiftAskedFor = null; api('/api/logout', 'POST', {}).then(() => { clearLocalSale(); return loadSession(); }).catch(error => toast(error.message, true)); });
 on('refreshBootstrap', 'click', async () => { state.lastOperatorsRefreshAt = Date.now(); await refreshOperators(); await loadSession(); });
 on('changeConnection', 'click', async () => {
   if (!(await confirmDialog('Corrigir pareamento de teste?', 'Use esta opção apenas quando não existem vendas, caixa ou movimentações. Para outra empresa, crie um perfil separado.', 'Corrigir pareamento', {danger: true}))) return;
@@ -2436,7 +2614,7 @@ $('quickValues').addEventListener('click', event => {
   renderPay();
   $('payCash').focus();
 });
-for (const id of ['payCash', 'paySplitCash', 'paySplitPix', 'paySplitDebit', 'paySplitCredit']) {
+for (const id of PAY_INPUTS) {
   $(id).addEventListener('input', () => { payError(''); renderPay(); });
   $(id).addEventListener('blur', () => formatMoneyInput($(id)));
 }
@@ -2559,7 +2737,19 @@ document.addEventListener('keydown', event => {
   if (logged && functionKey) event.preventDefault();
   if (modalStack.length) { modalStack.at(-1).handleKey(event); return; }
   if (!logged) return;
+  // Paused: only the PIN form of the pause screen takes keys.
+  if (!$('pauseView').classList.contains('hidden')) { if (functionKey || !$('pauseView').contains(event.target)) { event.preventDefault(); $('pausePin').focus(); } return; }
   if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === 'k') { event.preventDefault(); runAction('palette'); return; }
+  if (event.altKey && !event.ctrlKey && !event.metaKey && state.tab === 'checkout' && canSell(role())) {
+    const option = C.payAltOption(event.code, state.payOptions);
+    if (option) {
+      event.preventDefault();
+      if (event.repeat || state.submitting) return;
+      if (!state.pay.active) { try { startPayment(); } catch (error) { toast(error.message, true); beep('error'); return; } }
+      selectPayMethod(option);
+      return;
+    }
+  }
   const shortcut = !event.ctrlKey && !event.metaKey && !event.altKey ? C.SHORTCUTS.find(row => row.key === key) : null;
   if (shortcut) {
     event.preventDefault();
