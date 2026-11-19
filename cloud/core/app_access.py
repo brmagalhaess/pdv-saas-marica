@@ -442,7 +442,7 @@ def resolve_deletion(actor, row, data):
     note = text(data.get("note", ""), "Observação", 500, optional=True)
     notify = None
     with transaction.atomic():
-        row = AccountDeletionRequest.objects.select_for_update().select_related("user").get(pk=row.pk)
+        row = AccountDeletionRequest.objects.select_for_update(of=("self",)).select_related("user").get(pk=row.pk)
         if row.status != "pending":
             fail("conflict", "Este pedido já foi atendido.")
         user = row.user
