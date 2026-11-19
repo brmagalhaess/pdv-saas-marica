@@ -589,9 +589,11 @@ const cartPromo = () => (quoteValid() ? state.quote.promo : 0);
 const cartBase = () => cartGross() - cartPromo();
 const cartDiscount = () => C.discountCents(state.discount, cartBase());
 const cartTotal = () => Math.max(0, cartBase() - cartDiscount());
-const isOut = product => product.stock_controlled !== false && Number(product.stock_milli) <= 0;
+// stock_controlled may arrive as false or 0 (older caixa responses): both mean "sell without stock".
+const freeStock = product => product.stock_controlled === false || product.stock_controlled === 0 || product.stock_controlled === '0';
+const isOut = product => !freeStock(product) && Number(product.stock_milli) <= 0;
 function stockLimitError(product, quantity) {
-  if (product.stock_controlled === false) return '';
+  if (freeStock(product)) return '';
   const available = Math.max(0, Number(product.stock_milli) || 0);
   return quantity <= available ? '' : `Estoque insuficiente: ${product.name} tem ${qtyText(available, product.unit)} ${product.unit} disponíveis`;
 }
@@ -1092,7 +1094,7 @@ function productCard(product, index, active) {
     return `<button type="button" class="product${active ? ' active' : ''}" role="option" aria-selected="${active}" data-index="${index}">${image}<span><span class="p-name">${esc(product.group_name || product.name)}</span><span class="p-meta">${product.__group.length} variações · escolha a grade</span><span class="p-price">${low === high ? money(low) : `${money(low)} a ${money(high)}`}</span></span></button>`;
   }
   const out = isOut(product), code = product.barcode ? `EAN ${product.barcode}` : product.sku || '';
-  const stock = out ? 'Sem estoque' : product.stock_controlled === false ? 'Venda liberada' : `${qtyText(product.stock_milli, product.unit)} ${product.unit} em estoque`;
+  const stock = out ? 'Sem estoque' : freeStock(product) ? 'Venda liberada' : `${qtyText(product.stock_milli, product.unit)} ${product.unit} em estoque`;
   return `<button type="button" class="product${active ? ' active' : ''}${out ? ' out' : ''}" role="option" aria-selected="${active}" data-index="${index}">${image}<span><span class="p-name">${esc(product.name)}</span><span class="p-meta">${esc(code || stock)}</span><span class="p-price">${money(product.price_cents)}/${esc(product.unit)}${code ? ` <small>· ${esc(stock)}</small>` : ''}</span></span></button>`;
 }
 // Catalog overlay: typing filters, arrows choose, Enter adds and closes; a tap adds and keeps it open.
@@ -2225,7 +2227,7 @@ async function loadStock() {
   $('stockCount').textContent = total > products.length ? `Mostrando ${products.length} de ${total} produtos. Refine a busca para ver os demais.` : '';
   select.innerHTML = products.map(product => `<option value="${esc(product.id)}">${esc(product.name)} (${esc(product.unit)})</option>`).join('');
   select.value = C.keepSelection(previous, products.map(product => product.id));
-  $('stockList').innerHTML = products.length ? products.map(product => `<div class="list-row"><span><strong>${esc(product.name)}</strong><small>${esc(product.sku || product.id)}${product.barcode ? ' · EAN ' + esc(product.barcode) : ''}</small></span><span class="list-actions"><strong class="num">${product.stock_controlled === false ? 'Sem controle' : `${qtyText(product.stock_milli, product.unit)} ${esc(product.unit)}`}</strong>${state.labelPrinter ? `<button class="btn" type="button" data-shelf-label="${esc(product.id)}" title="Imprimir etiqueta de gôndola na etiquetadora">Etiqueta</button>` : ''}</span></div>`).join('') : '<p class="list-empty">Nenhum produto encontrado.</p>';
+  $('stockList').innerHTML = products.length ? products.map(product => `<div class="list-row"><span><strong>${esc(product.name)}</strong><small>${esc(product.sku || product.id)}${product.barcode ? ' · EAN ' + esc(product.barcode) : ''}</small></span><span class="list-actions"><strong class="num">${freeStock(product) ? 'Sem controle' : `${qtyText(product.stock_milli, product.unit)} ${esc(product.unit)}`}</strong>${state.labelPrinter ? `<button class="btn" type="button" data-shelf-label="${esc(product.id)}" title="Imprimir etiqueta de gôndola na etiquetadora">Etiqueta</button>` : ''}</span></div>`).join('') : '<p class="list-empty">Nenhum produto encontrado.</p>';
 }
 async function loadPrinters() {
   const data = await api('/api/print/settings');

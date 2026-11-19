@@ -189,6 +189,14 @@ def _optional_text(value, maximum):
     return value.strip()[:maximum]
 
 
+
+def _product_out(row):
+    """Product row for the browser: SQLite keeps stock_controlled as 0/1, the screen expects true/false."""
+    product = dict(row)
+    if "stock_controlled" in product:
+        product["stock_controlled"] = bool(product["stock_controlled"])
+    return product
+
 def _fold(value):
     """Lowercase without accents: SQLite LIKE only folds ASCII letters."""
     text = unicodedata.normalize("NFKD", str(value or ""))
@@ -1748,7 +1756,7 @@ class Store:
                 exact = conn.execute("SELECT * FROM products WHERE active=1 AND (id=? OR barcode=? OR sku=?)",
                                      (query, query, query)).fetchone()
                 if exact:
-                    return {"products": [dict(exact)], "total": 1, "limit": PRODUCT_PAGE_SIZE}
+                    return {"products": [_product_out(exact)], "total": 1, "limit": PRODUCT_PAGE_SIZE}
             where, params = "active=1", []
             for word in _fold(query).split():
                 where += " AND search_text LIKE ? ESCAPE '\\'"
@@ -1759,7 +1767,7 @@ class Store:
             total = conn.execute(f"SELECT COUNT(*) FROM products WHERE {where}", params).fetchone()[0]
             rows = conn.execute(f"SELECT * FROM products WHERE {where} ORDER BY name LIMIT ?",
                                 (*params, PRODUCT_PAGE_SIZE))
-            return {"products": [dict(row) for row in rows], "total": total, "limit": PRODUCT_PAGE_SIZE}
+            return {"products": [_product_out(row) for row in rows], "total": total, "limit": PRODUCT_PAGE_SIZE}
 
     def product_by_scale_code(self, scale_code):
         """Weighed product of a scale label, searched over the whole catalog."""
@@ -1770,7 +1778,7 @@ class Store:
                 (code, code.lstrip("0") or code)).fetchone()
         if not row:
             raise TerminalError("Nenhum produto por quilo com este código de balança", 404)
-        return dict(row)
+        return _product_out(row)
 
     def products_by_ids(self, ids):
         """Current price and stock of specific products (cart resume, catalog refresh)."""
@@ -1778,7 +1786,7 @@ class Store:
         if not ids:
             return []
         with self.connection() as conn:
-            return [dict(row) for row in conn.execute(
+            return [_product_out(row) for row in conn.execute(
                 "SELECT * FROM products WHERE active=1 AND id IN (" + ",".join("?" for _ in ids) + ")", ids)]
 
     def categories(self):
