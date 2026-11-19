@@ -27,7 +27,7 @@ datas = [
 # Windows has no IANA time zone database; receipts need America/Sao_Paulo.
 datas += collect_data_files("tzdata")
 
-hiddenimports = ["tzdata"]
+hiddenimports = ["tzdata", "qrcode", "qrcode.constants", "qrcode.main"]
 hiddenimports += collect_submodules("terminal", filter=no_tests)
 hiddenimports += collect_submodules("shared", filter=no_tests)
 hiddenimports += collect_submodules("waitress")
@@ -38,8 +38,10 @@ if WINDOWS:
 version_file = None
 if WINDOWS:
     numbers = ", ".join(VERSION.split(".") + ["0"])
-    version_file = os.path.join(WORKPATH, "version-info.txt")
-    os.makedirs(WORKPATH, exist_ok=True)
+    # PyInstaller exposes the --workpath folder to the spec as "workpath" (lowercase).
+    work = globals().get("workpath") or os.path.join(ROOT, "build", "pyinstaller")
+    version_file = os.path.join(work, "version-info.txt")
+    os.makedirs(work, exist_ok=True)
     with open(version_file, "w", encoding="utf-8") as stream:
         stream.write(f"""VSVersionInfo(
   ffi=FixedFileInfo(filevers=({numbers}), prodvers=({numbers}), mask=0x3f, flags=0x0, OS=0x40004,
