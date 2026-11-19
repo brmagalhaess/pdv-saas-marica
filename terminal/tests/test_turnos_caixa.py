@@ -556,8 +556,8 @@ class ScreenWiringTests(unittest.TestCase):
     """The page wires what the backend and the core expose (no browser here)."""
 
     def test_buttons_icons_and_pause_screen(self):
-        page = (ROOT / "terminal" / "templates" / "index.html").read_text()
-        script = (ROOT / "terminal" / "static" / "terminal.js").read_text()
+        page = (ROOT / "terminal" / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "terminal" / "static" / "terminal.js").read_text(encoding="utf-8")
         for symbol in ("i-cash", "i-pix", "i-card", "i-book", "i-gift", "i-wallet", "i-split"):
             self.assertIn(f'id="{symbol}"', page)
         for node in ("pauseView", "pauseForm", "pausePin", "paySplitAccount", "paySplitStore"):

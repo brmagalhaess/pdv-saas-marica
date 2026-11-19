@@ -14,8 +14,8 @@ parser.add_argument('manifest',type=Path)
 parser.add_argument('trusted_public_key',type=Path,help='Chave pública de versões já fixada no terminal (ou a de licença, em terminais antigos), nunca uma chave recebida junto do pacote')
 args=parser.parse_args()
 try:
-    raw=json.loads(args.manifest.read_text())
-    payload=verify_release(raw.get('release',raw),args.trusted_public_key.read_text())
+    raw=json.loads(args.manifest.read_text(encoding="utf-8"))
+    payload=verify_release(raw.get('release',raw),args.trusted_public_key.read_text(encoding="utf-8"))
     if args.archive.stat().st_size!=payload['size_bytes']:raise ValueError('Tamanho divergente')
     digest=hashlib.sha256()
     with args.archive.open('rb') as stream:

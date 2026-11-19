@@ -27,7 +27,7 @@ class ModeFileTests(unittest.TestCase):
     def test_write_and_read(self):
         paths.write_mode(self.data, "station")
         self.assertEqual(paths.read_mode(self.data, {}), "station")
-        content = json.loads((self.data / "mode.json").read_text())
+        content = json.loads((self.data / "mode.json").read_text(encoding="utf-8"))
         self.assertEqual((content["v"], content["mode"]), (1, "station"))
         self.assertIsInstance(content["changed_at"], int)
         paths.write_mode(self.data, "server")
@@ -43,7 +43,7 @@ class ModeFileTests(unittest.TestCase):
 
     def test_unreadable_file_means_server(self):
         for content in ("", "{", "[]", '{"mode": "tablet"}', '{"v": 1}'):
-            (self.data / "mode.json").write_text(content)
+            (self.data / "mode.json").write_text(content, encoding="utf-8")
             self.assertEqual(paths.read_mode(self.data, {}), "server", content)
         (self.data / "mode.json").write_bytes(b"\xff\xfe")
         self.assertEqual(paths.read_mode(self.data, {}), "server")
@@ -161,7 +161,7 @@ class RestartTests(unittest.TestCase):
                                                                  "PDV_TERMINAL_DATA": self.temp.name}))
             reexec.assert_not_called()
         request = self.data / "updates" / "restart.request"
-        self.assertEqual(json.loads(request.read_text())["reason"], "promocao")
+        self.assertEqual(json.loads(request.read_text(encoding="utf-8"))["reason"], "promocao")
         self.assertEqual([item.name for item in (self.data / "updates").iterdir()], ["restart.request"])
 
     def test_supervisor_restarts_the_child_on_that_file(self):
@@ -182,7 +182,7 @@ class RestartTests(unittest.TestCase):
 
     def test_never_raises(self):
         blocked = self.data / "arquivo"
-        blocked.write_text("x")
+        blocked.write_text("x", encoding="utf-8")
         self.assertFalse(runtime.request_restart("x", {"PDV_SUPERVISED": "1", "PDV_TERMINAL_DATA": str(blocked)}))
         with patch.object(runtime, "_reexec", side_effect=OSError("sem permissão")):
             runtime._restart_now()

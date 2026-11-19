@@ -96,7 +96,7 @@ def build_frozen_bundle(version, out, frozen_dir):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Empacota o terminal PDV2')
     parser.add_argument('--out', type=Path, default=ROOT / 'dist')
-    parser.add_argument('--version', default=(ROOT / 'VERSION').read_text().strip())
+    parser.add_argument('--version', default=(ROOT / 'VERSION').read_text(encoding='utf-8').strip())
     parser.add_argument('--frozen-dir', type=Path, help='pasta app-<versão> gerada pelo PyInstaller')
     parser.add_argument('--installer', type=Path, help='instalador pronto: gera só os metadados (kind=installer)')
     args = parser.parse_args(argv)

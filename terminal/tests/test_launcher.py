@@ -169,11 +169,14 @@ class MainTests(unittest.TestCase):
 
     def test_opens_the_cashier_and_waits_for_the_window(self):
         process = MagicMock(pid=4321)
-        with patch.object(launcher.updater, "probe_health", return_value=True), \
+        # The shortcut probes with probe_responding (damaged-database mode also counts).
+        with patch.object(launcher.updater, "probe_responding", return_value=True), \
+                patch.object(launcher, "start_service") as started, \
                 patch.object(launcher, "open_cashier", return_value=process) as opened, \
                 patch.object(launcher, "show_message") as message:
             self.assertEqual(launcher.main([], self.env), 0)
         opened.assert_called_once_with("http://pdv2.localhost:8010/", self.env)
+        started.assert_not_called()
         process.wait.assert_called_once_with()
         message.assert_not_called()
         lock = launcher.acquire_single_instance(Path(paths.user_data_dir(self.env)) / "launcher.lock")
@@ -183,7 +186,7 @@ class MainTests(unittest.TestCase):
     def test_second_instance_exits_without_opening_anything(self):
         held = launcher.acquire_single_instance(Path(paths.user_data_dir(self.env)) / "launcher.lock")
         self.addCleanup(held.close)
-        with patch.object(launcher.updater, "probe_health") as probe, \
+        with patch.object(launcher.updater, "probe_responding") as probe, \
                 patch.object(launcher, "open_cashier") as opened:
             self.assertEqual(launcher.main([], self.env), 0)
         probe.assert_not_called()
@@ -231,8 +234,10 @@ class DamagedDatabaseProbeTests(unittest.TestCase):
 
         server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.shutdown)
+        # Cleanups run last-in first-out: stop serve_forever before closing the socket
+        # (closing first makes select() fail on Windows with WinError 10038).
         self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_port}/health"
 
     def test_damaged_mode_counts_as_responding_but_not_as_healthy(self):

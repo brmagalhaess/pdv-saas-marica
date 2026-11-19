@@ -443,12 +443,12 @@ class ScaleRouteTests(unittest.TestCase):
 
 class ScalePageTests(unittest.TestCase):
     def test_page_loads_scale_scripts_before_the_cashier(self):
-        html = (ROOT / "terminal" / "templates" / "index.html").read_text()
+        html = (ROOT / "terminal" / "templates" / "index.html").read_text(encoding="utf-8")
         order = [html.index(name) for name in ("terminal-core.js", "scale-core.js", "scale.js", "terminal.js")]
         self.assertEqual(order, sorted(order))
         self.assertIn('data-tab="scale"', html)
         self.assertIn('id="labelPrinterForm"', html)
-        js = (STATIC / "terminal.js").read_text()
+        js = (STATIC / "terminal.js").read_text(encoding="utf-8")
         self.assertIn("key.toLowerCase() === 'b'", js)  # Ctrl+B, fora de F1–F12/Esc do caixa
 
 

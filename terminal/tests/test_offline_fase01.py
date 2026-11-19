@@ -398,7 +398,7 @@ class DataDirectoryTests(unittest.TestCase):
                          "Outra Empresa")
         self.assertEqual((self.target / "session.key").read_bytes(), b"k" * 32)
         self.assertTrue((self.target / "backups" / backup["name"]).exists())
-        self.assertEqual(json.loads((self.target / terminal_app.MIGRATION_MARKER).read_text())["source"],
+        self.assertEqual(json.loads((self.target / terminal_app.MIGRATION_MARKER).read_text(encoding="utf-8"))["source"],
                          str(self.legacy))
         self.assertFalse((self.target / ".migrating").exists())
         after = {path.relative_to(self.legacy): path.stat().st_size

@@ -267,7 +267,7 @@ class LocalRoutesTests(StationCase):
         client = app.test_client()
         client.post("/station/api/unlink", json={"confirm": True}, base_url=BASE, headers=LOCAL)
         self.assertFalse((bridge.test_dir / "station.json").exists())
-        previous = json.loads((bridge.test_dir / "station-anterior.json").read_text())
+        previous = json.loads((bridge.test_dir / "station-anterior.json").read_text(encoding="utf-8"))
         self.assertEqual((previous["station_id"], previous["token"]), (bridge.test_id, bridge.test_token))
         self.assertIsNone(station.load_state(bridge.test_dir))
         self.assertEqual(client.get("/station/api/status", base_url=BASE).json["state"], "unlinked")
@@ -1026,7 +1026,7 @@ class PrintAgentTests(StationCase):
         self.assertEqual(bridge.print_once(), 1)
         self.assertEqual(bridge.print_once(), 0, "nothing new is fetched while a result waits")
         pending = bridge.test_dir / station.PRINT_PENDING_FILE
-        self.assertEqual(json.loads(pending.read_text()), [{"id": job, "error": None}])
+        self.assertEqual(json.loads(pending.read_text(encoding="utf-8")), [{"id": job, "error": None}])
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(pending.stat().st_mode), 0o600)
         self.assertEqual((len(sent), self.store.finished), (1, []))
@@ -1201,7 +1201,7 @@ class PromotionTests(StationCase):
         self.assertEqual(self.promotion.calls, [(bridge.test_dir, "654321", bridge.test_id, "Caixa 2")])
         self.assertEqual(paths.read_mode(bridge.test_dir, {}), "server")
         self.assertFalse((bridge.test_dir / "station.json").exists())
-        self.assertEqual(json.loads((bridge.test_dir / "station-anterior.json").read_text())["station_id"],
+        self.assertEqual(json.loads((bridge.test_dir / "station-anterior.json").read_text(encoding="utf-8"))["station_id"],
                          bridge.test_id)
         payload = client.get("/station/api/promotion", base_url=BASE).json
         self.assertEqual((payload["finished"], payload["state"], payload["can_promote"]), (True, "done", False))

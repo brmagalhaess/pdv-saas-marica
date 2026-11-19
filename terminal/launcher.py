@@ -100,7 +100,7 @@ def focus_existing(pid_file):
     try:
         import ctypes
         from ctypes import wintypes
-        pid = int(Path(pid_file).read_text().strip())
+        pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         user32 = ctypes.windll.user32
         found = []
 

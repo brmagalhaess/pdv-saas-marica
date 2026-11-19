@@ -37,6 +37,10 @@ jobs:
           PDV_SECRET_KEY: ci-only-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ
           PDV_ALLOWED_HOSTS: pdv.example.test
           PDV_LICENSE_PRIVATE_KEY: ci-only-not-a-real-key
+      # Throwaway Fernet key generated per run (no secret stored in the repository).
+      - name: CI-only encryption key
+        run: python -c "from cryptography.fernet import Fernet;print('PDV_ENCRYPTION_KEY='+Fernet.generate_key().decode())" >> "$GITHUB_ENV"
+      # Django's test runner swaps EMAIL_BACKEND for the in-memory backend, so no SMTP is used.
       - run: python cloud/manage.py test core operations -v 2
       - run: python -m unittest discover -s shared/tests -v
       - run: python -m unittest discover -s integrations/tests -v

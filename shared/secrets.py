@@ -6,7 +6,7 @@ from cryptography.fernet import Fernet, InvalidToken
 def _key():
     value=os.environ.get("PDV_ENCRYPTION_KEY","")
     filename=os.environ.get("PDV_ENCRYPTION_KEY_FILE","")
-    if filename: value=Path(filename).read_text().strip()
+    if filename: value=Path(filename).read_text(encoding="utf-8").strip()
     if not value: raise ValueError("PDV_ENCRYPTION_KEY não configurada")
     return Fernet(value.encode())
 

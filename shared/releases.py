@@ -58,7 +58,7 @@ def _configured(name):
     value=os.environ.get(name,'')
     filename=os.environ.get(name+'_FILE','')
     if filename:
-        try:value=Path(filename).read_text().strip()
+        try:value=Path(filename).read_text(encoding="utf-8").strip()
         except OSError as exc:raise LicenseError(f'Arquivo de {name} indisponível') from exc
     return value.replace('\\n','\n')
 

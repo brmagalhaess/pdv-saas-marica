@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
@@ -176,7 +177,7 @@ class FakeChildTests(SupervisorCase):
     def add_version(self, version, broken=False):
         folder = self.install / f"app-{version}"
         folder.mkdir(parents=True)
-        (folder / "child.py").write_text(FAKE_CHILD.format(broken=broken))
+        (folder / "child.py").write_text(FAKE_CHILD.format(broken=broken), encoding="utf-8")
 
     def command(self, root, version):
         folder = paths.app_dir(root, version)
@@ -187,7 +188,7 @@ class FakeChildTests(SupervisorCase):
 
     def starts(self):
         log = self.data / "starts.log"
-        return log.read_text().split("\n")[:-1] if log.exists() else []
+        return log.read_text(encoding="utf-8").split("\n")[:-1] if log.exists() else []
 
     def begin(self, **kwargs):
         self.start(command=self.command, probe=self.probe, **kwargs)
@@ -220,7 +221,7 @@ class FakeChildTests(SupervisorCase):
         previous = paths.read_pointer(self.install)
         updater.save_state(self.data / "updates", state="applying", version=version, previous_version=previous)
         paths.write_pointer(self.install, version)
-        (self.data / "updates" / updater.RESTART_REQUEST).write_text("{}")
+        (self.data / "updates" / updater.RESTART_REQUEST).write_text("{}", encoding="utf-8")
 
     def test_update_restart_confirms_a_healthy_version(self):
         self.add_version("1.0.0")
@@ -281,7 +282,7 @@ class RealTerminalTests(SupervisorCase):
         ignore = shutil.ignore_patterns("__pycache__", "tests", "*.sqlite3", "*.pyc")
         for package in ("terminal", "shared"):
             shutil.copytree(ROOT / package, folder / package, ignore=ignore)
-        (folder / "bundle.json").write_text('{"version": "%s", "format": "source"}' % version)
+        (folder / "bundle.json").write_text('{"version": "%s", "format": "source"}' % version, encoding="utf-8")
 
     def log_text(self):
         log = self.data / "logs" / "terminal.log"
@@ -324,7 +325,9 @@ class RealTerminalTests(SupervisorCase):
         self.assertTrue(updater.probe_health(health))
         self.assertIn("Terminal PDV2 1.0.1", self.log_text())
         self.assertEqual(paths.read_pointer(self.install), "1.0.1")
-        with sqlite3.connect(self.data / "backups" / result["backup"]) as backup:
+        # closing(): "with sqlite3.connect()" only commits; the open handle would keep
+        # Windows from deleting the temporary folder at the end (WinError 32).
+        with closing(sqlite3.connect(self.data / "backups" / result["backup"])) as backup:
             self.assertEqual(backup.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
         broken = make_bundle("1.0.2", {"terminal/__init__.py": "raise RuntimeError('versão quebrada')\n",
@@ -359,7 +362,7 @@ class LegacyMigrationTests(unittest.TestCase):
         store.set_release_result(error="marca antiga")
         Store(self.source / "profiles" / "loja2" / "terminal.sqlite3")
         (self.source / "session.key").write_bytes(b"k" * 32)
-        (self.source / "active-profile.json").write_text('{"profile": "loja2"}')
+        (self.source / "active-profile.json").write_text('{"profile": "loja2"}', encoding="utf-8")
         (self.source / "backups").mkdir()
         (self.source / "backups" / "terminal-1-abc.sqlite3").write_bytes(b"copy")
         result = service_win.migrate_legacy_data(self.source, self.target)
@@ -371,7 +374,7 @@ class LegacyMigrationTests(unittest.TestCase):
         self.assertTrue((self.target / "active-profile.json").is_file())
         self.assertEqual((self.target / "backups" / "terminal-1-abc.sqlite3").read_bytes(), b"copy")
         self.assertTrue((self.source / "terminal.sqlite3").is_file(), "the old data stays where it was")
-        self.assertEqual((self.target / "migrated-from.txt").read_text().strip(), str(self.source))
+        self.assertEqual((self.target / "migrated-from.txt").read_text(encoding="utf-8").strip(), str(self.source))
 
     def test_never_overwrites_an_existing_database(self):
         Store(self.source / "terminal.sqlite3")

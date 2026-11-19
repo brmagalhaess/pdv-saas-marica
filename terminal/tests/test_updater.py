@@ -95,7 +95,7 @@ class UpdaterCase(unittest.TestCase):
         base = Path(self.temp.name)
         self.install, self.data = base / "install", base / "data"
         (self.install / "app-1.0.0").mkdir(parents=True)
-        (self.install / "app-1.0.0" / "marker.txt").write_text("old")
+        (self.install / "app-1.0.0" / "marker.txt").write_text("old", encoding="utf-8")
         paths.write_pointer(self.install, "1.0.0")
         self.store = Store(self.data / "terminal.sqlite3")
         self.updates = self.data / "updates"
@@ -323,9 +323,9 @@ class DownloadTests(UpdaterCase):
 
     def test_corrupted_state_file_is_treated_as_idle(self):
         self.updates.mkdir(parents=True)
-        (self.updates / "state.json").write_text("{not json")
+        (self.updates / "state.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(self.state(), {"state": "idle"})
-        (self.updates / "state.json").write_text('{"state": "weird"}')
+        (self.updates / "state.json").write_text('{"state": "weird"}', encoding="utf-8")
         self.assertEqual(self.state(), {"state": "idle"})
 
     def test_background_download_does_not_block_the_worker(self):
@@ -383,13 +383,13 @@ class BundleSafetyTests(unittest.TestCase):
         body = make_bundle("1.0.1", {"terminal/a.txt": "a", "shared/deep/b.txt": "b"})
         target = updater.extract_bundle(self.package(body), "1.0.1", self.install, "source")
         self.assertEqual(target, self.install / "app-1.0.1")
-        self.assertEqual((target / "shared" / "deep" / "b.txt").read_text(), "b")
-        self.assertEqual(json.loads((target / "bundle.json").read_text())["version"], "1.0.1")
+        self.assertEqual((target / "shared" / "deep" / "b.txt").read_text(encoding="utf-8"), "b")
+        self.assertEqual(json.loads((target / "bundle.json").read_text(encoding="utf-8"))["version"], "1.0.1")
         self.assertEqual(sorted(entry.name for entry in self.install.iterdir()), ["app-1.0.1"])
 
     def test_leftover_folder_of_a_previous_attempt_is_replaced(self):
         (self.install / "app-1.0.1").mkdir()
-        (self.install / "app-1.0.1" / "stale.txt").write_text("x")
+        (self.install / "app-1.0.1" / "stale.txt").write_text("x", encoding="utf-8")
         updater.extract_bundle(self.package(make_bundle("1.0.1")), "1.0.1", self.install)
         self.assertFalse((self.install / "app-1.0.1" / "stale.txt").exists())
 
@@ -428,7 +428,7 @@ class BundleSafetyTests(unittest.TestCase):
     def test_cleanup_keeps_current_and_previous(self):
         for name in ("app-0.8.0", "app-0.9.0", "app-1.0.0", "app-1.0.1", ".staging-1.0.2-abcd", "bin", "app-data"):
             (self.install / name).mkdir()
-        (self.install / "current.txt").write_text("1.0.1\n")
+        (self.install / "current.txt").write_text("1.0.1\n", encoding="utf-8")
         removed = updater.cleanup_versions(self.install, keep=("1.0.1", "1.0.0", None))
         self.assertEqual(sorted(removed), [".staging-1.0.2-abcd", "app-0.8.0", "app-0.9.0"])
         self.assertEqual(sorted(entry.name for entry in self.install.iterdir()),
@@ -476,7 +476,7 @@ class ApplyTests(UpdaterCase):
         self.assertEqual((result["version"], result["previous_version"], result["restart"]),
                          ("1.0.1", "1.0.0", "manual"))
         self.assertEqual(paths.read_pointer(self.install), "1.0.1")
-        self.assertEqual((self.install / "app-1.0.1" / "marker.txt").read_text(), "new")
+        self.assertEqual((self.install / "app-1.0.1" / "marker.txt").read_text(encoding="utf-8"), "new")
         self.assertTrue((self.install / "app-1.0.0").is_dir(), "previous version stays for rollback")
         self.assertTrue((self.data / "backups" / result["backup"]).is_file())
         self.assertTrue((self.updates / updater.RESTART_REQUEST).is_file())
@@ -623,7 +623,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(bundle_meta["kind"], "bundle")
         self.assertEqual(bundle_meta["sha256"], hashlib.sha256(bundle.read_bytes()).hexdigest())
         self.assertEqual(bundle_meta["size_bytes"], bundle.stat().st_size)
-        self.assertEqual(json.loads((self.out / "PDV2-Terminal-3.2.1-bundle.metadata.json").read_text()), bundle_meta)
+        self.assertEqual(json.loads((self.out / "PDV2-Terminal-3.2.1-bundle.metadata.json").read_text(encoding="utf-8")), bundle_meta)
         self.assertEqual(updater.inspect_bundle(bundle, "3.2.1", "source")["format"], "source")
         with zipfile.ZipFile(bundle) as archive:
             names = archive.namelist()
@@ -643,7 +643,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("instalador completo", updater.manifest_block(manifest, "2.0.7"))
         self.assertEqual(updater.manifest_block(manifest, "2.1.0"), "")
         self.assertEqual(updater.manifest_block(manifest, "2.1.4"), "")
-        self.assertEqual((ROOT / "VERSION").read_text().strip().split(".")[:2], ["2", "1"],
+        self.assertEqual((ROOT / "VERSION").read_text(encoding="utf-8").strip().split(".")[:2], ["2", "1"],
                          "the version that brought the change carries a new second number")
 
     def test_frozen_bundle_and_installer_metadata(self):
@@ -651,7 +651,7 @@ class PackagingTests(unittest.TestCase):
         (frozen / "_internal").mkdir(parents=True)
         (frozen / "PDV2Server.exe").write_bytes(b"MZ")
         (frozen / "_internal" / "base.zip").write_bytes(b"PK")
-        (frozen / "bundle.json").write_text("{}")
+        (frozen / "bundle.json").write_text("{}", encoding="utf-8")
         installer = self.out / "PDV2-Instalar-3.2.1.exe"
         installer.write_bytes(b"MZ installer")
         with patch("builtins.print"):

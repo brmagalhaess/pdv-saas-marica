@@ -284,7 +284,7 @@ class CertificateTests(unittest.TestCase):
             with self.assertLogs("pdv2.lan", level="DEBUG") as logs:
                 logging.getLogger("pdv2.lan").debug("início")
                 first = lan.ensure_certificate(temp, "loja-1")
-                key_text = Path(first["key_path"]).read_text()
+                key_text = Path(first["key_path"]).read_text(encoding="utf-8")
                 written = (Path(first["cert_path"]).stat().st_mtime_ns, Path(first["key_path"]).stat().st_mtime_ns)
                 second = lan.ensure_certificate(temp, "loja-1")
             self.assertEqual(first["fingerprint"], second["fingerprint"])

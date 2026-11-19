@@ -1,4 +1,4 @@
-; Instalador do PDV2 para Windows (Inno Setup 6). Gerado por installer\build.ps1:
+﻿; Instalador do PDV2 para Windows (Inno Setup 6). Gerado por installer\build.ps1:
 ;   ISCC /DAppVersion=2.0.1 /DStageDir=...\dist\windows\stage /DOutputDir=...\dist\windows pdv2.iss
 ;
 ; Na máquina:

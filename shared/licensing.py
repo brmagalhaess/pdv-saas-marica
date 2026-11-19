@@ -109,7 +109,7 @@ def _load(name):
     value = os.environ.get(name, "")
     filename = os.environ.get(name + "_FILE", "")
     if filename:
-        value = Path(filename).read_text().strip()
+        value = Path(filename).read_text(encoding="utf-8").strip()
     if not value:
         raise LicenseError(f"Configure {name} ou {name}_FILE")
     return value.replace("\\n", "\n")

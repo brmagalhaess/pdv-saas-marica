@@ -69,7 +69,7 @@ def main(argv=None):
     parser.add_argument("--report", type=Path, help="Read an existing pip-audit JSON report instead of running it")
     args = parser.parse_args(argv)
     if args.report:
-        report = json.loads(args.report.read_text())
+        report = json.loads(args.report.read_text(encoding="utf-8"))
     else:
         report = run_pip_audit(args.requirement or DEFAULT_REQUIREMENTS)
     fixable, unfixable, skipped = classify(report)
