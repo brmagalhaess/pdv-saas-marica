@@ -1058,6 +1058,15 @@ class PrintAgentTests(StationCase):
         app, bridge, sent = self.agent(PING_UP_SECONDS=0.05, PING_DOWN_SECONDS=0.05, PRINT_SECONDS=30)
         station.start_background(app)
         wait_for(lambda: self.store.recovered, message="recover at start")
+
+        def idle():
+            # The round that recovered may still be asking /print/next; queue only after it ends.
+            if bridge._print_wake.is_set() or not bridge._print_lock.acquire(blocking=False):
+                return False
+            bridge._print_lock.release()
+            return True
+
+        wait_for(idle, message="agent asleep after the first round")
         job = self.store.queue(bridge.test_id, b"recibo")
         time.sleep(0.2)
         self.assertEqual(sent, [], "the agent sleeps until something wakes it")
