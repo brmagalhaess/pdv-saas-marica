@@ -42,8 +42,17 @@ class BrowserTests(unittest.TestCase):
         self.assertIn("--no-first-run", command)
 
     def test_url_follows_the_configured_port(self):
-        self.assertEqual(launcher.cashier_url({}), "http://127.0.0.1:8010/")
-        self.assertEqual(launcher.cashier_url({"PDV_TERMINAL_PORT": "8020"}), "http://127.0.0.1:8020/")
+        self.assertEqual(launcher.cashier_url({}), "http://pdv2.localhost:8010/")
+        self.assertEqual(launcher.cashier_url({"PDV_TERMINAL_PORT": "8020"}), "http://pdv2.localhost:8020/")
+        self.assertEqual(launcher.cashier_url({"PDV_TERMINAL_PORT": "80"}), "http://pdv2.localhost/")
+        self.assertEqual(launcher.cashier_url({}, friendly=False), "http://127.0.0.1:8010/")
+
+    def test_default_browser_gets_the_loopback_address(self):
+        seen = []
+        result = launcher.open_cashier("http://pdv2.localhost/", {}, find=lambda *_: None,
+                                       fallback=lambda url: seen.append(url) or True)
+        self.assertTrue(result)
+        self.assertEqual(seen, ["http://127.0.0.1/"])
 
     def test_open_cashier_falls_back_to_the_default_browser(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -164,7 +173,7 @@ class MainTests(unittest.TestCase):
                 patch.object(launcher, "open_cashier", return_value=process) as opened, \
                 patch.object(launcher, "show_message") as message:
             self.assertEqual(launcher.main([], self.env), 0)
-        opened.assert_called_once_with("http://127.0.0.1:8010/", self.env)
+        opened.assert_called_once_with("http://pdv2.localhost:8010/", self.env)
         process.wait.assert_called_once_with()
         message.assert_not_called()
         lock = launcher.acquire_single_instance(Path(paths.user_data_dir(self.env)) / "launcher.lock")
@@ -193,7 +202,7 @@ class MainTests(unittest.TestCase):
                 patch.object(launcher, "open_cashier", return_value=None), \
                 patch.object(launcher, "show_message") as message:
             self.assertEqual(launcher.main([], self.env), 1)
-        self.assertIn("http://127.0.0.1:8010/", message.call_args[0][0])
+        self.assertIn("http://pdv2.localhost:8010/", message.call_args[0][0])
 
 
 if __name__ == "__main__":
@@ -247,5 +256,5 @@ class DamagedDatabaseProbeTests(unittest.TestCase):
         url = self._serve(200, body)
         self.assertTrue(updater.probe_responding(url))
         self.assertTrue(updater.probe_health(url))
-        self.assertEqual(launcher.cashier_url({}), "http://127.0.0.1:8010/",
-                         "the browser of a station still opens the loopback address")
+        self.assertEqual(launcher.cashier_url({}), "http://pdv2.localhost:8010/",
+                         "the browser of a station opens the same friendly address")

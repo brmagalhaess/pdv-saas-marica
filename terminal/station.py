@@ -989,7 +989,7 @@ def create_app(config=None):
     station = Station(data_dir, config)
     app.extensions["station"] = station
     app.extensions["terminal_data_dir"] = data_dir
-    allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]"))
+    allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]", "pdv2.localhost"))
     static_dir = Path(__file__).resolve().parent / "static"
 
     def refuse(status, message, code=None):

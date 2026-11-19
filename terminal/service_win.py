@@ -59,7 +59,8 @@ def service_config(env=None, install_root=None, platform=None):
         "service_log": join(data, "logs", "service.log"),
         "server_log": join(data, "logs", "terminal.log"),
         "host": "127.0.0.1",
-        "port": paths.terminal_port(env),
+        # 80 when free: the cashier opens at http://pdv2.localhost/ without a port.
+        "port": paths.choose_service_port(env, data),
         "start": "auto",
         # Restart after 5 s, 5 s and then every 30 s; the counter resets after a day.
         "failure_reset_seconds": 86400,

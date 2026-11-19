@@ -60,8 +60,12 @@ def browser_command(path, url, profile_dir):
             "--no-default-browser-check", "--disable-background-mode", "--start-maximized"]
 
 
-def cashier_url(env=None):
-    return f"http://127.0.0.1:{paths.terminal_port(env)}/"
+def cashier_url(env=None, friendly=True):
+    """Address of the cashier screen: http://pdv2.localhost/ (Edge/Chrome), 127.0.0.1 otherwise."""
+    port = paths.terminal_port(env)
+    if friendly:
+        return paths.cashier_address(port)
+    return f"http://127.0.0.1:{port}/"
 
 
 def profile_dir(env=None, platform=None):
@@ -212,7 +216,8 @@ def open_cashier(url, env=None, platform=None, popen=subprocess.Popen, find=find
         except OSError:
             pass
     try:
-        return True if fallback(url) else None
+        # Other browsers may not resolve *.localhost: the default one gets the plain address.
+        return True if fallback(url.replace(paths.FRIENDLY_HOST, "127.0.0.1")) else None
     except Exception:
         return None
 

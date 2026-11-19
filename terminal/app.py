@@ -185,7 +185,7 @@ def create_app(config=None):
     app.config.update(config)
     configured_db = Path(config.get("DB_PATH") or os.environ.get("PDV_TERMINAL_DB") or data_dir / "terminal.sqlite3")
     db_path = _active_profile_db(data_dir, configured_db)
-    allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]"))
+    allowed_hosts = set(config.get("ALLOWED_HOSTS") or ("localhost", "127.0.0.1", "[::1]", "pdv2.localhost"))
     # A damaged file must not take the screen down: start without selling and
     # tell the shop how to bring the last local backup back.
     damage = Store.quick_check(db_path)

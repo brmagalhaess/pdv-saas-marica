@@ -12,7 +12,7 @@ Na pasta do projeto, com Python 3.12 e as dependências de `terminal/requirement
 ./.venv/bin/python -m terminal
 ```
 
-Abra `http://127.0.0.1:8010`. Por padrão o serviço escuta somente em `127.0.0.1`. No contêiner, configure `PDV_TERMINAL_HOST=0.0.0.0`, `PDV_TERMINAL_PORT=8010`, `PDV_TERMINAL_DATA=/data`, `PDV_TERMINAL_DB=/data/terminal.sqlite3` e publique a porta somente no loopback do host. O serviço aceita Host `localhost`/`127.0.0.1` por padrão.
+Abra `http://127.0.0.1:8010`. Por padrão o serviço escuta somente em `127.0.0.1`. No contêiner, configure `PDV_TERMINAL_HOST=0.0.0.0`, `PDV_TERMINAL_PORT=8010`, `PDV_TERMINAL_DATA=/data`, `PDV_TERMINAL_DB=/data/terminal.sqlite3` e publique a porta somente no loopback do host. O serviço aceita Host `localhost`/`127.0.0.1`/`pdv2.localhost` por padrão. Instalado no Windows, o atalho "PDV2 Caixa" abre `http://pdv2.localhost/` (porta 80 quando livre, senão 8010; ver INSTALADOR-WINDOWS.md).
 
 No Windows, `terminal/install-windows.ps1` copia `terminal/` e `shared/` para `%LOCALAPPDATA%\PDV2`, cria um ambiente Python e um lançador `PDV2-Terminal.cmd`. Antes de substituir uma instalação existente, faz um backup SQLite verificado em `data\backups`; uma falha cancela a atualização. A opção `-Autostart` cria um atalho na inicialização do usuário. É um **instalador de desenvolvimento**, requer Python 3.12 e internet para instalar dependências, e ainda não foi validado em Windows físico. Em Linux/macOS, `sh terminal/run-local.sh` usa a `.venv` do projeto quando disponível.
 

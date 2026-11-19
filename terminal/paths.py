@@ -144,13 +144,73 @@ def source_version(env=None):
     return "2.1.0"
 
 
-def terminal_port(env=None):
-    env = os.environ if env is None else env
+# Friendly address of the cashier screen. Edge and Chrome resolve any *.localhost name to
+# this computer and treat it as a secure origin (Web Serial for the scale keeps working),
+# so no hosts-file entry is needed.
+FRIENDLY_HOST = "pdv2.localhost"
+PREFERRED_PORT = 80
+PORT_FILE = "porta.txt"
+
+
+def _valid_port(value):
     try:
-        port = int(env.get("PDV_TERMINAL_PORT") or DEFAULT_PORT)
-    except ValueError:
-        return DEFAULT_PORT
-    return port if 0 < port < 65536 else DEFAULT_PORT
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def port_file(data):
+    return os.path.join(str(data), PORT_FILE)
+
+
+def terminal_port(env=None):
+    """PDV_TERMINAL_PORT wins; an installed terminal uses the port its service chose (porta.txt)."""
+    env = os.environ if env is None else env
+    if env.get("PDV_TERMINAL_PORT"):
+        return _valid_port(env.get("PDV_TERMINAL_PORT")) or DEFAULT_PORT
+    try:
+        if read_pointer(install_root(env)) is not None:
+            with open(port_file(data_dir(env, installed=True)), encoding="utf-8") as stream:
+                return _valid_port(stream.read()) or DEFAULT_PORT
+    except OSError:
+        pass
+    return DEFAULT_PORT
+
+
+def choose_service_port(env=None, data=None, try_bind=None):
+    """Port for the installed service: 80 when free (address without port), else 8010.
+
+    The choice is written to porta.txt so the launcher opens the same address.
+    """
+    env = os.environ if env is None else env
+    if env.get("PDV_TERMINAL_PORT"):
+        return _valid_port(env.get("PDV_TERMINAL_PORT")) or DEFAULT_PORT
+
+    def can_bind(port):
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    port = PREFERRED_PORT if (try_bind or can_bind)(PREFERRED_PORT) else DEFAULT_PORT
+    if data:
+        try:
+            os.makedirs(data, exist_ok=True)
+            with open(port_file(data), "w", encoding="utf-8") as stream:
+                stream.write(str(port))
+        except OSError:
+            pass
+    return port
+
+
+def cashier_address(port, host=FRIENDLY_HOST):
+    return f"http://{host}/" if port == 80 else f"http://{host}:{port}/"
 
 
 def health_url(env=None):

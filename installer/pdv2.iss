@@ -58,7 +58,7 @@ VersionInfoDescription=Instalador do PDV2
 Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Criar atalho na área de trabalho"
+Name: "desktopicon"; Description: "Criar o atalho ""PDV2 Caixa"" na área de trabalho"
 ; Rede entre caixas (TCP 8011 e UDP 8012). Sem marcar, o serviço cria a mesma regra sozinho quando o
 ; caixa principal passa a ter caixas adicionais (terminal\lan.py, ensure_firewall).
 ; A regra vale para todos os perfis de rede (Particular, Domínio e Pública), sempre limitada à sub-rede local:
@@ -69,24 +69,30 @@ Name: "lanserver"; Description: "Este computador será o caixa principal de uma 
 Name: "{commonappdata}\PDV2"
 
 [InstallDelete]
+; Atalhos antigos chamados só "PDV2" (versões até 2.1.0) dão lugar a "PDV2 Caixa".
+Type: files; Name: "{autodesktop}\PDV2.lnk"
+Type: files; Name: "{autoprograms}\PDV2.lnk"
 ; Um download ou uma troca de versão pela metade não vale para a instalação nova.
 Type: filesandordirs; Name: "{commonappdata}\PDV2\updates"
 Type: filesandordirs; Name: "{commonappdata}\PDV2\run"
 
 [Files]
+Source: "pdv2.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\app-{#AppVersion}\*"; DestDir: "{app}\app-{#AppVersion}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#StageDir}\app-{#AppVersion}\*"; DestDir: "{app}\bin"; Excludes: "bundle.json"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{autoprograms}\PDV2"; Filename: "{app}\bin\PDV2.exe"; WorkingDir: "{app}\bin"; Comment: "Abrir o caixa PDV2"
-Name: "{autodesktop}\PDV2"; Filename: "{app}\bin\PDV2.exe"; WorkingDir: "{app}\bin"; Comment: "Abrir o caixa PDV2"; Tasks: desktopicon
+; Abre o caixa numa janela própria (Edge/Chrome em modo aplicativo) em http://pdv2.localhost/,
+; sem barra de endereço: o operador não vê localhost nem porta (terminal\launcher.py).
+Name: "{autoprograms}\PDV2 Caixa"; Filename: "{app}\bin\PDV2.exe"; WorkingDir: "{app}\bin"; IconFilename: "{app}\pdv2.ico"; Comment: "Abrir o caixa PDV2"
+Name: "{autodesktop}\PDV2 Caixa"; Filename: "{app}\bin\PDV2.exe"; WorkingDir: "{app}\bin"; IconFilename: "{app}\pdv2.ico"; Comment: "Abrir o caixa PDV2"; Tasks: desktopicon
 
 [Run]
 ; Apaga antes de criar: "netsh add" não substitui, e reinstalar com a opção marcada duplicaria a regra.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FirewallRule}"""; Flags: runhidden; Tasks: lanserver
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=TCP localport=8011 remoteip=localsubnet profile=any"; Flags: runhidden; Tasks: lanserver
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=UDP localport=8012 remoteip=localsubnet profile=any"; Flags: runhidden; Tasks: lanserver
-Filename: "{app}\bin\PDV2.exe"; Description: "Abrir o PDV2 agora"; Flags: postinstall nowait skipifsilent runasoriginaluser
+Filename: "{app}\bin\PDV2.exe"; Description: "Abrir o PDV2 Caixa agora"; Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM PDV2.exe"; Flags: runhidden; RunOnceId: "PDV2Launcher"

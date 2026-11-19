@@ -45,9 +45,9 @@ Instalação silenciosa: `PDV2-Instalar-<versão>.exe /VERYSILENT /NORESTART`.
 
 ### Os três programas
 
-- **`PDV2.exe` (atalho).** Uma instância por usuário. Confere `http://127.0.0.1:8010/health`; se não responde, pede o início do serviço e espera até 40 s. Abre o caixa no Edge em modo aplicativo (`--app=`) com perfil dedicado; sem Edge usa o Chrome; sem os dois, o navegador padrão. Se nada funcionar, mostra uma mensagem em português com o que fazer. O atalho de `bin\` repassa para o `PDV2.exe` da versão em uso.
+- **Atalho "PDV2 Caixa" (`PDV2.exe`, ícone `pdv2.ico`).** Abre o caixa em **`http://pdv2.localhost/`**, numa janela própria sem barra de endereço: o serviço usa a porta 80 quando está livre (endereço sem porta) e cai para a 8010 se outro programa ocupar a 80; a escolha fica em `C:\ProgramData\PDV2\porta.txt`. Edge e Chrome resolvem `*.localhost` para o próprio computador e o tratam como origem segura (a balança por Web Serial continua funcionando), sem mexer no arquivo hosts. Uma instância por usuário. Confere `/health` na porta escolhida; se não responde, pede o início do serviço e espera até 40 s. Abre o caixa no Edge em modo aplicativo (`--app=`) com perfil dedicado; sem Edge usa o Chrome; sem os dois, o navegador padrão. Se nada funcionar, mostra uma mensagem em português com o que fazer. O atalho de `bin\` repassa para o `PDV2.exe` da versão em uso.
 - **`PDV2Service.exe` (serviço).** Hospedeiro estável: lê `current.txt`, inicia `app-<versão>\PDV2Server.exe`, reinicia se ele cair ou parar de responder por 3 minutos, e confirma a saúde depois de uma troca de versão. Registro em `C:\ProgramData\PDV2\logs\service.log` (rotativo, 5 arquivos de 1 MB).
-- **`PDV2Server.exe` (caixa local).** O mesmo terminal de sempre (Flask + Waitress em `127.0.0.1:8010`), com os dados em `C:\ProgramData\PDV2`. Registro em `logs\terminal.log`. Para de forma limpa quando o serviço pede.
+- **`PDV2Server.exe` (caixa local).** O mesmo terminal de sempre (Flask + Waitress em `127.0.0.1`, porta 80 ou 8010 conforme `porta.txt`), com os dados em `C:\ProgramData\PDV2`. Registro em `logs\terminal.log`. Para de forma limpa quando o serviço pede.
 
 `PDV_TERMINAL_DATA` continua tendo precedência sobre a pasta padrão de dados.
 
@@ -142,7 +142,8 @@ Uma instalação rodando do código-fonte (sem `current.txt`) nunca baixa nem ap
 
 ### 7.3 Reinício e quedas
 
-- [ ] Reiniciar o Windows: sem entrar em nenhuma conta, `http://127.0.0.1:8010/health` responde (testar logo após entrar).
+- [ ] Atalho "PDV2 Caixa" com o ícone do PDV2 na área de trabalho e no menu Iniciar; abre a janela "PDV2 Caixa" sem barra de endereço em `http://pdv2.localhost/`. Com a porta 80 ocupada (ex.: IIS), abre em `http://pdv2.localhost:8010/`.
+- [ ] Reiniciar o Windows: sem entrar em nenhuma conta, `/health` responde na porta de `porta.txt` (testar logo após entrar).
 - [ ] Encerrar `PDV2Server.exe` pelo Gerenciador de Tarefas: volta sozinho em segundos.
 - [ ] Encerrar `PDV2Service.exe`: o Windows reinicia o serviço e não sobra `PDV2Server.exe` órfão segurando a porta 8010.
 - [ ] Desligar da tomada com caixa aberto: ao religar, o caixa aberto e as vendas estão lá.
