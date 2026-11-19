@@ -24,6 +24,15 @@ class FriendlyAddressTests(unittest.TestCase):
                                                        try_bind=lambda port: True), 8030)
             self.assertFalse(os.path.exists(os.path.join(data, paths.PORT_FILE)))
 
+    def test_config_for_another_system_does_not_probe_or_write(self):
+        from terminal import service_win
+        with tempfile.TemporaryDirectory() as data, \
+                patch.object(paths, "choose_service_port") as chosen:
+            config = service_win.service_config({"PDV_TERMINAL_DATA": data}, platform="win32")
+            self.assertEqual(config["port"], paths.DEFAULT_PORT)
+            chosen.assert_not_called()
+            self.assertFalse(os.path.exists(os.path.join(data, paths.PORT_FILE)))
+
     def test_installed_launcher_reads_the_port_the_service_chose(self):
         with tempfile.TemporaryDirectory() as data:
             with open(os.path.join(data, paths.PORT_FILE), "w", encoding="utf-8") as stream:

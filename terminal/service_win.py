@@ -49,6 +49,12 @@ def service_config(env=None, install_root=None, platform=None):
     root = install_root or paths.install_root(env, platform=platform) or paths.default_install_root(env, platform)
     data = paths.data_dir(env, platform, installed=True)
     join = paths._flavor(platform).join
+    if platform is None:
+        # This machine: 80 when free (http://pdv2.localhost/ without a port), recorded in porta.txt.
+        port = paths.choose_service_port(env, data)
+    else:
+        # Configuration for another system (tests, tooling): no port probe, nothing written.
+        port = paths._valid_port(env.get("PDV_TERMINAL_PORT")) or paths.DEFAULT_PORT
     return {
         "name": SERVICE_NAME,
         "display_name": DISPLAY_NAME,
@@ -59,8 +65,7 @@ def service_config(env=None, install_root=None, platform=None):
         "service_log": join(data, "logs", "service.log"),
         "server_log": join(data, "logs", "terminal.log"),
         "host": "127.0.0.1",
-        # 80 when free: the cashier opens at http://pdv2.localhost/ without a port.
-        "port": paths.choose_service_port(env, data),
+        "port": port,
         "start": "auto",
         # Restart after 5 s, 5 s and then every 30 s; the counter resets after a day.
         "failure_reset_seconds": 86400,
