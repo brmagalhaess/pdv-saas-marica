@@ -75,6 +75,16 @@ def data_dir(env=None, platform=None, installed=False, home=None):
     return user_data_dir(env, platform, home)
 
 
+def default_cloud_url(env=None, frozen=None):
+    """Server the cashier pairs with. PDV_CLOUD_URL wins; the installed program already
+    knows the CrownTech server, so nobody types an address at the customer's shop."""
+    env = os.environ if env is None else env
+    if env.get("PDV_CLOUD_URL"):
+        return env["PDV_CLOUD_URL"]
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    return PRODUCTION_CLOUD_URL if frozen else ""
+
+
 def default_install_root(env=None, platform=None):
     env = os.environ if env is None else env
     if is_windows(platform):
@@ -148,6 +158,7 @@ def source_version(env=None):
 # this computer and treat it as a secure origin (Web Serial for the scale keeps working),
 # so no hosts-file entry is needed.
 FRIENDLY_HOST = "pdv2.localhost"
+PRODUCTION_CLOUD_URL = "https://pdv2.crowntech.com.br"
 PREFERRED_PORT = 80
 PORT_FILE = "porta.txt"
 

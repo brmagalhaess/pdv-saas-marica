@@ -507,7 +507,7 @@ def create_app(config=None):
                         "station": station_info(),
                         "promotion": store.promotion_status(),
                         "stations_limit": store.station_limit(),
-                        "default_cloud_url": os.environ.get("PDV_CLOUD_URL", ""),
+                        "default_cloud_url": paths.default_cloud_url(),
                         "payment_methods": store.payment_methods()})
 
     @app.post("/api/unpair")
@@ -575,7 +575,7 @@ def create_app(config=None):
     @app.post("/api/pair")
     def pair():
         data = body()
-        result = sync.pair(store, data.get("cloud_url"), data.get("license_key"), data.get("code"))
+        result = sync.pair(store, data.get("cloud_url") or paths.default_cloud_url(), data.get("license_key"), data.get("code"))
         return jsonify({"paired": True, "bootstrap": result})
 
     @app.post("/api/restore/start")
@@ -585,7 +585,7 @@ def create_app(config=None):
         result = warning = None
         already_paired = bool(store.identity()["terminal_id"])
         try:
-            result = sync.pair(store, data.get("cloud_url") or os.environ.get("PDV_CLOUD_URL", ""),
+            result = sync.pair(store, data.get("cloud_url") or paths.default_cloud_url(),
                                data.get("license_key"), data.get("code"))
         except TerminalError as exc:
             if already_paired or not store.identity()["terminal_id"]:
@@ -1131,7 +1131,7 @@ def create_app(config=None):
         if not session_manager():
             store.manager_override(data.get("manager_pin"))
         throttle_cloud_calls()
-        cloud_url = data.get("cloud_url") or store.meta().get("cloud_url") or os.environ.get("PDV_CLOUD_URL", "")
+        cloud_url = data.get("cloud_url") or store.meta().get("cloud_url") or paths.default_cloud_url()
         result = sync.regularize_promotion(store, cloud_url, data.get("license_key"), data.get("code"))
         answer = {"regularized": True, "promotion": store.promotion_status(), "bootstrap": result.get("bootstrap")}
         if result.get("warning"):

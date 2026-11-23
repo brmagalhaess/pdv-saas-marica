@@ -457,7 +457,7 @@ async function loadSession() {
   const session = state.session;
   // A new computer brings the shop's data back before anyone logs in.
   if (session.restore?.active || state.restore.finished) { renderRestore(session.restore); return; }
-  if (!session.paired) { if (state.restore.open) renderRestore(session.restore); else showView('pairView'); return; }
+  if (!session.paired) { if (state.restore.open) renderRestore(session.restore); else { const fixed = !!session.default_cloud_url; $('cloudField').classList.toggle('hidden', fixed); $('cloudUrl').required = !fixed; showView('pairView'); } return; }
   if (!session.operator) {
     renderOperatorSelect();
     const first = $('loginView').classList.contains('hidden');
@@ -2590,7 +2590,7 @@ async function pairingCall(path, payload) {
   try { return await api(path, 'POST', payload); } catch (error) { await loadSession().catch(() => {}); throw error; }
 }
 on('pairForm', 'submit', async () => {
-  await pairingCall('/api/pair', {cloud_url: $('cloudUrl').value, license_key: $('licenseKey').value.trim(), code: $('pairCode').value.trim()});
+  await pairingCall('/api/pair', {cloud_url: state.session?.default_cloud_url || $('cloudUrl').value, license_key: $('licenseKey').value.trim(), code: $('pairCode').value.trim()});
   $('licenseKey').value = '';
   $('pairCode').value = '';
   toast('Terminal vinculado à empresa. Entre com o PIN do operador.');
